@@ -1,8 +1,9 @@
-# Fieldscape media Worker (phase 1b). Not deployed; `npx wrangler dev` runs it locally.
+# Fieldscape media Worker (phase 1b). Deployed 2026-09-26 on its workers.dev address (Kerem: "lets go").
+# `npx wrangler dev` runs it locally; `npx wrangler deploy` publishes.
 name = "fieldscape-media"
 main = "src/index.js"
 compatibility_date = "2026-09-01"
-workers_dev = false
+workers_dev = true      # the test address; a custom domain can replace it later
 
 [[r2_buckets]]
 binding = "MEDIA"
