@@ -35,6 +35,7 @@ enum Ink {
 struct MapView: UIViewRepresentable {
     let features: [String: Any]
     @ObservedObject var walk: Walk
+    @ObservedObject var map: MapState
 
     func makeUIView(context: Context) -> MLNMapView {
         let v = MLNMapView(frame: .zero, styleURL: styleURL())
@@ -62,6 +63,8 @@ struct MapView: UIViewRepresentable {
 
     func updateUIView(_ v: MLNMapView, context: Context) {
         context.coordinator.walk = walk
+        context.coordinator.map = map
+        context.coordinator.apply(map, walk, on: v)
         context.coordinator.show(walk.mode == .byHand ? walk.here : nil, on: v)
         if let g = walk.goTo, context.coordinator.wentTo.map({ $0.latitude != g.latitude || $0.longitude != g.longitude }) ?? true {
             context.coordinator.wentTo = g
@@ -76,7 +79,35 @@ struct MapView: UIViewRepresentable {
         func gestureRecognizer(_ g: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith o: UIGestureRecognizer) -> Bool { true }
         let bounds: MLNCoordinateBounds?
         weak var walk: Walk?
+        weak var map: MapState?
         var wentTo: CLLocationCoordinate2D?
+        private var style: MLNStyle?
+        private var framed: UUID?
+        private var zonesDone = false
+        private var sectionsKey = ""
+
+        /* The Layers sheet's choices, the Places sheet's framing, and the zone / section overlays. */
+        func apply(_ m: MapState, _ w: Walk, on v: MLNMapView) {
+            if let f = m.frame, f.id != framed {
+                framed = f.id
+                v.setVisibleCoordinateBounds(MLNCoordinateBounds(sw: f.sw, ne: f.ne), edgePadding: UIEdgeInsets(top: 120, left: 40, bottom: 320, right: 40), animated: true, completionHandler: nil)
+            }
+            guard let s = style else { return }
+            for (id, base) in [("base-osm", MapState.Base.map), ("base-topo", .topo), ("base-sat", .satellite)] { s.layer(withIdentifier: id)?.isVisible = m.base == base }
+            s.layer(withIdentifier: "park-line")?.isVisible = m.boundary
+            s.layer(withIdentifier: "zones-line")?.isVisible = m.zones
+            s.layer(withIdentifier: "sections-fill")?.isVisible = m.sections
+            s.layer(withIdentifier: "sections-line")?.isVisible = m.sections
+            if m.zones && !zonesDone, let src = s.source(withIdentifier: "zones") as? MLNShapeSource {
+                zonesDone = true
+                src.shape = MapView.shape(w.zoneCircles.map { MapView.circle($0.lon, $0.lat, $0.r) }, active: -1)
+            }
+            if m.sections, let src = s.source(withIdentifier: "sections") as? MLNShapeSource {
+                let (cells, active) = w.sectionCells()
+                let key = "\(cells.count) \(active) \(cells.first?.first ?? [])"
+                if key != sectionsKey { sectionsKey = key; src.shape = MapView.shape(cells, active: active) }
+            }
+        }
         private var walker: MLNPointAnnotation?
         private var lastDrag: CLLocationCoordinate2D?
         init(bounds: MLNCoordinateBounds?) { self.bounds = bounds }
@@ -115,6 +146,8 @@ struct MapView: UIViewRepresentable {
             return view
         }
         func mapView(_ v: MLNMapView, didFinishLoading style: MLNStyle) {
+            self.style = style
+            if let m = map, let w = walk { apply(m, w, on: v) }
             guard let b = bounds, !centred else { return }
             v.setVisibleCoordinateBounds(b, edgePadding: UIEdgeInsets(top: 80, left: 40, bottom: 140, right: 40), animated: false, completionHandler: nil)
         }
@@ -134,11 +167,28 @@ struct MapView: UIViewRepresentable {
             "sources": [
                 "base-sat": ["type": "raster", "tileSize": 256, "maxzoom": 19, "attribution": "Imagery © Esri",
                              "tiles": ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"]],
-                "features": ["type": "geojson", "data": features]
+                /* the web's other base maps (index.html BASEMAPS): OpenStreetMap and OpenTopoMap */
+                "base-osm": ["type": "raster", "tileSize": 256, "maxzoom": 19, "attribution": "© OpenStreetMap contributors",
+                             "tiles": ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"]],
+                "base-topo": ["type": "raster", "tileSize": 256, "maxzoom": 17, "attribution": "© OpenStreetMap contributors, SRTM · © OpenTopoMap (CC-BY-SA)",
+                              "tiles": ["https://a.tile.opentopomap.org/{z}/{x}/{y}.png"]],
+                "features": ["type": "geojson", "data": features],
+                "parks": ["type": "geojson", "data": MapView.parks()],
+                "zones": ["type": "geojson", "data": ["type": "FeatureCollection", "features": []]],
+                "sections": ["type": "geojson", "data": ["type": "FeatureCollection", "features": []]]
             ],
             "layers": [
                 ["id": "ground", "type": "background", "paint": ["background-color": Ink.sunk]],
+                ["id": "base-osm", "type": "raster", "source": "base-osm", "layout": ["visibility": "none"]],
+                ["id": "base-topo", "type": "raster", "source": "base-topo", "layout": ["visibility": "none"]],
                 ["id": "base-sat", "type": "raster", "source": "base-sat"],
+                ["id": "park-line", "type": "line", "source": "parks", "paint": ["line-color": Ink.ink, "line-opacity": 0.75, "line-width": 1.5]],
+                ["id": "sections-fill", "type": "fill", "source": "sections", "layout": ["visibility": "none"],
+                 "paint": ["fill-color": Ink.lamp, "fill-opacity": ["case", ["==", ["get", "active"], 1], 0.14, 0.03]]],
+                ["id": "sections-line", "type": "line", "source": "sections", "layout": ["visibility": "none"],
+                 "paint": ["line-color": Ink.lamp, "line-opacity": 0.5, "line-width": 1, "line-dasharray": [3, 3]]],
+                ["id": "zones-line", "type": "line", "source": "zones", "layout": ["visibility": "none"],
+                 "paint": ["line-color": Ink.lamp, "line-opacity": 0.85, "line-width": 1.6, "line-dasharray": [2, 2]]],
                 ["id": "route-casing", "type": "line", "source": "features",
                  "filter": ["==", ["geometry-type"], "LineString"],
                  "paint": ["line-color": Ink.sunk, "line-opacity": 0.8, "line-width": 8],
@@ -164,6 +214,27 @@ struct MapView: UIViewRepresentable {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("fieldscape-style.json")
         try? JSONSerialization.data(withJSONObject: style).write(to: url)
         return url
+    }
+
+    /* the park boundaries (places.geojson, bundled) */
+    static func parks() -> Any {
+        guard let u = Bundle.main.url(forResource: "places", withExtension: "geojson"), let d = try? Data(contentsOf: u),
+              let j = try? JSONSerialization.jsonObject(with: d) else { return ["type": "FeatureCollection", "features": []] }
+        return j
+    }
+    /* a circle of r metres as a ring of 48 corners */
+    static func circle(_ lon: Double, _ lat: Double, _ r: Double) -> [[Double]] {
+        let dLat = r / 111_320, dLon = r / (111_320 * cos(lat * .pi / 180))
+        return (0...48).map { i in let a = Double(i) / 48 * 2 * .pi; return [lon + dLon * cos(a), lat + dLat * sin(a)] }
+    }
+    /* rings -> an MLNShape (polygons, the active one marked) */
+    static func shape(_ rings: [[[Double]]], active: Int) -> MLNShape {
+        let fc: [String: Any] = ["type": "FeatureCollection", "features": rings.enumerated().map { i, r -> [String: Any] in
+            let closed = r.first == r.last ? r : r + [r[0]]
+            return ["type": "Feature", "properties": ["active": i == active ? 1 : 0], "geometry": ["type": "Polygon", "coordinates": [closed]]]
+        }]
+        let data = (try? JSONSerialization.data(withJSONObject: fc)) ?? Data()
+        return (try? MLNShape(data: data, encoding: String.Encoding.utf8.rawValue)) ?? MLNShapeCollectionFeature(shapes: [])
     }
 
     /* Everything published, framed. */

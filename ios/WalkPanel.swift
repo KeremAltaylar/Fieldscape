@@ -56,22 +56,8 @@ struct WalkPanel: View {
     @ViewBuilder private var hearing: some View {
         /* the route's own sound and the rhythm points in reach (the piece) */
         if walk.route != nil || !walk.rhythms.isEmpty {
-            note((walk.route.map { Text("Route ") + Text($0).foregroundColor(T.ink) } ?? Text(""))
+            note((walk.route.map { Text("Route ") + Text($0).foregroundColor(T.ink) + Text(walk.chord.map { " · " + $0 } ?? "") } ?? Text(""))
                  + (walk.rhythms.isEmpty ? Text("") : Text(walk.route == nil ? "Rhythm " : " · rhythm ") + Text(walk.rhythms.joined(separator: ", ")).foregroundColor(T.ink)))
-        }
-        /* away from every route: go to one (the map flies there, the walker stands at its start) */
-        if walk.route == nil && !walk.routes.isEmpty {
-            HStack(spacing: T.s2) {
-                ForEach(Array(walk.routes.enumerated()), id: \.offset) { i, r in
-                    Button { walk.visit(route: i) } label: {
-                        Text(r.name).font(T.body(T.sm, .medium)).foregroundStyle(T.ink).lineLimit(1)
-                            .frame(maxWidth: .infinity, minHeight: T.target).padding(.horizontal, T.s2)
-                            .background(T.raised, in: RoundedRectangle(cornerRadius: 10))
-                            .overlay(RoundedRectangle(cornerRadius: 10).stroke(T.hairline))
-                    }
-                    .accessibilityLabel("Go to " + r.name)
-                }
-            }
         }
         if walk.rows.isEmpty {
             if let n = walk.nearest {

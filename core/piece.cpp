@@ -17,6 +17,7 @@
 #include "json.hpp"
 #include "synths.hpp"
 
+#include <cstdio>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -516,6 +517,7 @@ struct Inbox {
     std::vector<Patch> routes;        /* registered, read by the audio thread only under the lock */
     /* written back by the audio thread: pacer.routeId, its patch's sect.n and bed voices, sect.idx */
     int taken = -1, sect_n = 7, bed_voices = 4, sector_back = -1;
+    int chord = -1, nprog = 0; char chord_label[24] = "";   /* the chord playing, for the screen */
 };
 
 struct Piece : Device {
@@ -1189,6 +1191,12 @@ struct Piece : Device {
         for (short *p : my_trash) { if (in.trash.size() < in.trash.capacity()) in.trash.push_back(p); else my_trash[kept++] = p; }
         my_trash.resize(kept);
         in.taken = route; in.sect_n = patch.sect.n; in.bed_voices = patch.bed_on ? patch.bed_voices : 0;
+        in.chord = H.chord; in.nprog = patch.nprog;
+        if (H.chord >= 0) {                /* chordLabel: root name + quality, as the web writes it */
+            static const char *const NOTE[12] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+            int q = chord_quality(H.chord);
+            std::snprintf(in.chord_label, sizeof in.chord_label, "%s%s", NOTE[pc(chord_root(H.chord))], q >= 0 ? CHORDS[q].name : "m7");
+        } else in.chord_label[0] = 0;
         if (!in.sector) in.sector_back = sector;
         mu.unlock();
     }
@@ -1362,6 +1370,15 @@ void fs_piece_walk(fs_device *d, int route, double t, double dist) {
     Piece *p = P(d); if (!p) return;
     std::lock_guard<std::mutex> g(p->mu); sweep(p);
     p->in.walk = true; p->in.route = route; p->in.t = t; p->in.dist = dist;
+}
+
+/* the chord playing (0-based, -1 before the first bar), the progression's length, and its label */
+int fs_piece_chord(fs_device *d, int *count, char *label, int label_size) {
+    Piece *p = P(d); if (!p) return -1;
+    std::lock_guard<std::mutex> g(p->mu);
+    if (count) *count = p->in.nprog;
+    if (label && label_size > 0) { std::strncpy(label, p->in.chord_label, label_size - 1); label[label_size - 1] = 0; }
+    return p->in.chord;
 }
 
 int fs_piece_route(fs_device *d) { Piece *p = P(d); if (!p) return -1; std::lock_guard<std::mutex> g(p->mu); return p->in.taken; }

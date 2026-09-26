@@ -25,6 +25,21 @@ final class RouteSound {
     private(set) var routeName: String? = nil
     /* every route and where it starts: the panel's Go to buttons */
     private(set) var routeStarts: [(name: String, lon: Double, lat: Double)] = []
+    /* every route's line (lon, lat pairs) and length, for the Places list and framing */
+    private(set) var routeLines: [(name: String, coords: [[Double]], metres: Double)] = []
+    /* every point's zone (the zoneR circle), for the Zones layer */
+    var zoneCircles: [(lon: Double, lat: Double, r: Double)] { spots.map { ($0.lon, $0.lat, $0.zoneR) } }
+    /* the sections of the park underfoot and the one the walker is in, for the Sections layer */
+    func sectionCells() -> (cells: [[[Double]]], active: Int) {
+        guard let s = sections else { return ([], -1) }
+        var out: [[[Double]]] = []
+        for i in 0..<Int(fs_sections_count(s)) {
+            var buf = [Double](repeating: 0, count: 512)
+            let k = Int(fs_sections_cell(s, Int32(i), &buf, 256))
+            if k >= 3 { out.append((0..<k).map { [buf[2 * $0], buf[2 * $0 + 1]] }) }
+        }
+        return (out, Int(fs_piece_sector_now(piece)))
+    }
     private(set) var rhythmNames: [String] = []
 
     init(core: Core) { self.core = core }
@@ -40,6 +55,7 @@ final class RouteSound {
                 routes.append(r)
                 routeNames.append(p["name"] as? String ?? "Route")
                 routeStarts.append((p["name"] as? String ?? "Route", c[0][0], c[0][1]))
+                routeLines.append((p["name"] as? String ?? "Route", c, fs_route_length(r)))
                 _ = fs_piece_add_route(piece, RouteSound.json(p["patch"]))
             } else if g["type"] as? String == "Point", let c = g["coordinates"] as? [Double], c.count >= 2 {
                 let q = p["sound"] as? [String: Any] ?? [:], a = p["audio"] as? [String: Any] ?? [:]

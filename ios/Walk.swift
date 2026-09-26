@@ -31,6 +31,16 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
     @Published var here: CLLocationCoordinate2D? = nil
     /* a place the map should show (Go to), and the routes it can go to */
     @Published var goTo: CLLocationCoordinate2D? = nil
+    /* the chord the route is on, "chord 7 of 16, D#maj7#11" (from the piece, twice a second) */
+    @Published var chord: String? = nil
+    struct Place: Identifiable { let id: String; let name, detail: String; let sw, ne: CLLocationCoordinate2D }
+    struct RouteItem: Identifiable { let id: String; let name, length: String; let sw, ne: CLLocationCoordinate2D }
+    /* the Places sheet: parks with what they hold, routes with their length; and everything, framed */
+    @Published var placeList: [Place] = []
+    @Published var routeList: [RouteItem] = []
+    @Published var allBounds: (sw: CLLocationCoordinate2D, ne: CLLocationCoordinate2D)? = nil
+    var zoneCircles: [(lon: Double, lat: Double, r: Double)] { sound.zoneCircles }
+    func sectionCells() -> (cells: [[[Double]]], active: Int) { sound.sectionCells() }
     var routes: [(name: String, lon: Double, lat: Double)] { sound.routeStarts }
     /* Go to a route: the map flies there and the walker stands at its start, walking by hand. */
     func visit(route i: Int) {
@@ -92,7 +102,36 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
                          path: p["storage_path"] as? String,
                          sounds: (p["has_audio"] as? Bool ?? false) && mode != "hits" && mode != "grains")
         }
-        sound.start(features: (features["features"] as? [[String: Any]]) ?? [])
+        sound.start(features: (features["features"] as? [[String: Any]]) ?? [])
+        /* what the Places sheet lists */
+        let fs = (features["features"] as? [[String: Any]]) ?? []
+        func box(_ pts: [[Double]]) -> (CLLocationCoordinate2D, CLLocationCoordinate2D) {
+            let lons = pts.map { $0[0] }, lats = pts.map { $0[1] }
+            return (CLLocationCoordinate2D(latitude: lats.min() ?? 0, longitude: lons.min() ?? 0),
+                    CLLocationCoordinate2D(latitude: lats.max() ?? 0, longitude: lons.max() ?? 0))
+        }
+        let inside = { (lon: Double, lat: Double, rings: [[Double]]) in
+            rings.contains { r in r.withUnsafeBufferPointer { fs_point_in_ring(lon, lat, $0.baseAddress, Int32(r.count / 2)) != 0 } }
+        }
+        placeList = parks.enumerated().map { i, park in
+            let pts = park.rings.flatMap { r in stride(from: 0, to: r.count - 1, by: 2).map { [r[$0], r[$0 + 1]] } }
+            let recs = points.filter { inside($0.lon, $0.lat, park.rings) }.count
+            let rts = sound.routeLines.filter { inside($0.coords[0][0], $0.coords[0][1], park.rings) }.count
+            let (sw, ne) = box(pts)
+            let what = [rts > 0 ? "\(rts) route\(rts == 1 ? "" : "s")" : nil, recs > 0 ? "\(recs) recording\(recs == 1 ? "" : "s")" : nil]
+                .compactMap { $0 }.joined(separator: " · ")
+            let detail = what.isEmpty ? "nothing yet" : what
+            return Place(id: "p\(i)", name: park.name, detail: detail, sw: sw, ne: ne)
+        }.sorted { ($0.detail == "nothing yet" ? 1 : 0, $0.name) < ($1.detail == "nothing yet" ? 1 : 0, $1.name) }
+        routeList = sound.routeLines.enumerated().map { i, r in
+            let (sw, ne) = box(r.coords)
+            return RouteItem(id: "r\(i)", name: r.name, length: r.metres < 1000 ? String(format: "%.0f m", r.metres) : String(format: "%.1f km", r.metres / 1000), sw: sw, ne: ne)
+        }
+        var all: [[Double]] = points.map { [$0.lon, $0.lat] }
+        for r in sound.routeLines { all += r.coords }
+        if !all.isEmpty { let (sw, ne) = box(all); allBounds = (sw, ne) }
+        _ = fs
+        Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.refreshChord() }
         loc.requestWhenInUseAuthorization()
         loc.startUpdatingLocation()
     }
@@ -118,6 +157,14 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
     func useLocation() {
         mode = .waiting
         loc.stopUpdatingLocation(); loc.startUpdatingLocation()
+    }
+
+    private func refreshChord() {
+        var count: Int32 = 0
+        var buf = [CChar](repeating: 0, count: 32)
+        let i = fs_piece_chord(core.piece, &count, &buf, 32)
+        let c = (i >= 0 && route != nil) ? "chord \(i + 1) of \(count), " + String(cString: buf) : nil
+        if c != chord { chord = c }
     }
 
     /* One position through the place layer. */

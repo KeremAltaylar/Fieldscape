@@ -9,7 +9,7 @@ import os
 
 /* The test number of this build (docs/TESTS.md): shown first in the developer line, so Kerem can
    see which build he is testing. Bump it with every build handed over. */
-let TEST_BUILD = 4
+let TEST_BUILD = 5
 
 final class Core: ObservableObject {
     struct Param: Identifiable { let id: Int; let key, name, unit: String; let min, max: Float }
@@ -284,9 +284,11 @@ final class Core: ObservableObject {
 struct ContentView: View {
     @StateObject var core: Core
     @StateObject var walk: Walk
+    @StateObject var map = MapState()
     @State var features: [String: Any]? = nil
     @State var failed: String? = nil
     @State var developer = false
+    @State var sheet: Sheet = .walk
     init() {
         let c = Core()
         _core = StateObject(wrappedValue: c)
@@ -295,22 +297,30 @@ struct ContentView: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             T.ground.ignoresSafeArea()
-            if let f = features { MapView(features: f, walk: walk).ignoresSafeArea() }
+            if let f = features { MapView(features: f, walk: walk, map: map).ignoresSafeArea() }
             else { Text(failed ?? "Loading the map…").font(T.body(T.sm)).foregroundStyle(T.dim).frame(maxHeight: .infinity) }
             VStack(alignment: .leading, spacing: T.s5) {
                 Capsule().fill(T.hairline).frame(width: 38, height: 4).frame(maxWidth: .infinity)
                 /* the long-press lives on the place name alone: on the whole panel it swallowed its
                    buttons' taps (Go to did nothing on the simulator, 2026-09-26) */
-                WalkPanel(walk: walk, core: core, onLongPress: { withAnimation(.easeOut(duration: 0.18)) { developer.toggle() } })
-                if developer {
-                    ScrollView { DeveloperPanel(core: core, open: true) }.frame(maxHeight: 360)
+                switch sheet {
+                case .walk:
+                    WalkPanel(walk: walk, core: core, onLongPress: { withAnimation(.easeOut(duration: 0.18)) { developer.toggle() } })
+                    if developer {
+                        ScrollView { DeveloperPanel(core: core, open: true) }.frame(maxHeight: 360)
+                    }
+                case .places: PlacesSheet(walk: walk, map: map, sheet: $sheet).frame(maxHeight: 560)
+                case .layers: LayersSheet(walk: walk, map: map, sheet: $sheet)
+                case .account: AccountSheet(core: core, sheet: $sheet)
                 }
             }
             .padding(.horizontal, T.s4).padding(.top, T.s2).padding(.bottom, T.s5)
             .background { UnevenRoundedRectangle(topLeadingRadius: 20, topTrailingRadius: 20).fill(T.panel).ignoresSafeArea(edges: .bottom) }
             .overlay(alignment: .top) { Rectangle().fill(T.hairline).frame(height: 1).padding(.horizontal, 20) }
             .animation(.easeOut(duration: 0.18), value: walk.rows)
+            .animation(.easeOut(duration: 0.2), value: sheet)
         }
+        .overlay(alignment: .top) { if features != nil { TopBar(walk: walk, sheet: $sheet).padding(.top, T.s2) } }
         .preferredColorScheme(.dark)
         .task {
             do {

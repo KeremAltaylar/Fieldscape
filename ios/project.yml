@@ -20,6 +20,7 @@ targets:
       - Theme.swift
       - WalkPanel.swift
       - RouteSound.swift
+      - Chrome.swift
       - path: ../places.geojson
         buildPhase: resources
       - path: Fonts
