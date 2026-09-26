@@ -47,13 +47,26 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
     /** The route whose patch is playing, and the rhythm points sounding (the piece). */
     var route by mutableStateOf<String?>(null)
     var rhythms by mutableStateOf("")
-    /** A place the map should show (Go to), and every route with where it starts. */
-    var goTo by mutableStateOf<Pair<Double, Double>?>(null)
-    val routes: List<Triple<String, Double, Double>> by lazy {
-        Core.pieceRouteStarts().lines().filter { it.isNotBlank() }.map { val p = it.split("\t"); Triple(p[0], p[1].toDouble(), p[2].toDouble()) }
+    /** The route's chord, "chord 7 of 16, D#maj7#11" (from the piece, twice a second). */
+    var chord by mutableStateOf<String?>(null)
+    /** The Places sheet: parks with what they hold, routes with their length (boxes are w, s, e, n); everything, framed. */
+    data class Place(val name: String, val detail: String, val box: DoubleArray)
+    data class RouteItem(val name: String, val length: String, val box: DoubleArray)
+    var placeList by mutableStateOf(listOf<Place>())
+    var routeList by mutableStateOf(listOf<RouteItem>())
+    var allBounds by mutableStateOf<DoubleArray?>(null)
+    /** The Zones layer's circles (lon, lat, metres), and the Sections layer's cells with the one underfoot. */
+    val zoneCircles: List<DoubleArray> by lazy {
+        Core.pieceZones().lines().filter { it.isNotBlank() }.map { l -> l.split(" ").map { it.toDouble() }.toDoubleArray() }
     }
-    /** Go to a route: the map flies there and the walker stands at its start, walking by hand. */
-    fun visit(i: Int) { val r = routes.getOrNull(i) ?: return; goTo = r.second to r.third; walkBy(r.second, r.third) }
+    fun sectionCells(): Pair<List<List<DoubleArray>>, Int> {
+        var active = -1
+        val cells = Core.pieceSections().lines().filter { it.isNotBlank() }.mapIndexed { i, l ->
+            if (l.startsWith("1")) active = i
+            l.substring(2).split(";").map { c -> c.split(",").map { it.toDouble() }.toDoubleArray() }
+        }
+        return cells to active
+    }
 
     private val main = Handler(Looper.getMainLooper())
     private var points = listOf<Point>()
@@ -91,6 +104,28 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
                   sounds = p.optBoolean("has_audio") && mode != "hits" && mode != "grains")
         }
         Core.pieceStart(features.toString())
+        /* what the Places sheet lists */
+        fun box(pts: List<DoubleArray>) = doubleArrayOf(pts.minOf { it[0] }, pts.minOf { it[1] }, pts.maxOf { it[0] }, pts.maxOf { it[1] })
+        val starts = Core.pieceRouteStarts().lines().filter { it.isNotBlank() }.map { l -> l.split("\t").let { doubleArrayOf(it[1].toDouble(), it[2].toDouble()) } }
+        fun inside(lon: Double, lat: Double, rings: List<DoubleArray>) = rings.any { Core.pointInRing(lon, lat, it) }
+        fun plural(n: Int, w: String) = if (n > 0) "$n $w${if (n == 1) "" else "s"}" else null
+        placeList = parks.map { (name, rings) ->
+            val recs = points.count { inside(it.lon, it.lat, rings) }
+            val rts = starts.count { inside(it[0], it[1], rings) }
+            val detail = listOfNotNull(plural(rts, "route"), plural(recs, "recording")).joinToString(" · ").ifEmpty { "nothing yet" }
+            Place(name, detail, box(rings.flatMap { r -> (0 until r.size / 2).map { doubleArrayOf(r[2 * it], r[2 * it + 1]) } }))
+        }.sortedWith(compareBy({ it.detail == "nothing yet" }, { it.name }))
+        routeList = Core.pieceRoutes().lines().filter { it.isNotBlank() }.map { l ->
+            val (name, m, b) = l.split("\t"); val metres = m.toDouble()
+            RouteItem(name, if (metres < 1000) String.format("%.0f m", metres) else String.format("%.1f km", metres / 1000),
+                      b.split(" ").map { it.toDouble() }.toDoubleArray())
+        }
+        val all = points.map { doubleArrayOf(it.lon, it.lat) } + routeList.flatMap { listOf(doubleArrayOf(it.box[0], it.box[1]), doubleArrayOf(it.box[2], it.box[3])) }
+        if (all.isNotEmpty()) allBounds = box(all)
+        main.post(object : Runnable { override fun run() {
+            val c = Core.pieceChord().ifEmpty { null }; if (c != chord) chord = c
+            main.postDelayed(this, 500)
+        } })
     }
 
     @SuppressLint("MissingPermission")

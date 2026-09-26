@@ -41,12 +41,16 @@ import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.geometry.LatLngBounds
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
+import org.maplibre.android.style.layers.Property
+import org.maplibre.android.style.layers.PropertyFactory
 import org.maplibre.android.style.sources.GeoJsonSource
 import java.io.File
 
 /** The map fills the screen; the walk panel lies over its foot and hugs its content, as on iOS. */
 class MainActivity : ComponentActivity() {
     private lateinit var walk: Walk
+    private val mapUi = MapUi()
+    private var sheet by mutableStateOf(Sheet.Walk)
     private var features by mutableStateOf<JSONObject?>(null)
     private var failed by mutableStateOf<String?>(null)
     /** Why the sound is paused, when it is; the panel offers Resume (rulebook M-6). */
@@ -129,13 +133,22 @@ class MainActivity : ComponentActivity() {
                         Text("Resume", color = T.ink, style = TextStyle(fontFamily = T.body, fontSize = T.sm))
                     }
                 }
-                Panel(onLongPress = { developer = !developer })
-                if (developer) Text(String.format("engine: worst %.2f ms per burst of %d frames · xruns %d · out %.1f dBFS",
-                    Core.worstMs(), Core.bufferFrames(), Core.xruns(), Core.outputDb()), color = T.faint,
-                    style = TextStyle(fontFamily = T.mono, fontSize = T.xs))
+                when (sheet) {
+                    Sheet.Places -> PlacesSheet(walk, mapUi) { sheet = it }
+                    Sheet.Layers -> LayersSheet(walk, mapUi) { sheet = it }
+                    Sheet.Account -> AccountSheet({ sheet = it }, engineLine())
+                    Sheet.Walk -> {
+                        Panel(onLongPress = { developer = !developer })
+                        if (developer) Text(engineLine(), color = T.faint, style = TextStyle(fontFamily = T.mono, fontSize = T.xs))
+                    }
+                }
             }
+            if (features != null) TopBar(walk) { sheet = it }
         }
     }
+
+    private fun engineLine() = String.format("Fieldscape · Test %d · engine: worst %.2f ms per burst of %d frames · xruns %d · out %.1f dBFS",
+        TEST_BUILD, Core.worstMs(), Core.bufferFrames(), Core.xruns(), Core.outputDb())
 
     @Composable
     private fun Panel(onLongPress: () -> Unit) {
@@ -180,21 +193,12 @@ class MainActivity : ComponentActivity() {
         /* the route's own sound and the rhythm points in reach (the piece) */
         if (walk.route != null || walk.rhythms.isNotEmpty()) Text(buildAnnotatedString {
             walk.route?.let { append("Route "); withStyle(SpanStyle(color = T.ink)) { append(it) } }
+            walk.chord?.let { append(" · $it") }
             if (walk.rhythms.isNotEmpty()) {
                 append(if (walk.route == null) "Rhythm " else " · rhythm ")
                 withStyle(SpanStyle(color = T.ink)) { append(walk.rhythms) }
             }
         }, color = T.dim, style = TextStyle(fontFamily = T.body, fontSize = T.sm))
-        /* away from every route: go to one (the map flies there, the walker stands at its start) */
-        if (walk.route == null && walk.routes.isNotEmpty()) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(T.s2)) {
-            walk.routes.forEachIndexed { i, r ->
-                Box(Modifier.weight(1f).heightIn(min = T.target).clip(RoundedCornerShape(10.dp_)).background(T.raised)
-                    .border(1.dp_, T.hairline, RoundedCornerShape(10.dp_)).clickable { walk.visit(i) }.padding(horizontal = T.s2),
-                    contentAlignment = Alignment.Center) {
-                    Text(r.first, color = T.ink, style = TextStyle(fontFamily = T.body, fontSize = T.sm), maxLines = 1)
-                }
-            }
-        }
         if (rows.isEmpty()) {
             val n = walk.nearest
             if (n != null) Text(buildAnnotatedString {
@@ -255,8 +259,10 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun Map(fc: JSONObject) {
         val here = walk.here
-        val goTo = walk.goTo
-        val state = remember { object { var style: Style? = null; var map: org.maplibre.android.maps.MapLibreMap? = null; var centredAt: Pair<Double, Double>? = null; var wentTo: Pair<Double, Double>? = null } }
+        val m = mapUi; val base = m.base; val boundary = m.boundary; val zones = m.zones; val sections = m.sections; val frame = m.frame
+        val chord = walk.chord                                        /* re-read the sections as the walker crosses them */
+        val state = remember { object { var style: Style? = null; var map: org.maplibre.android.maps.MapLibreMap? = null; var centredAt: Pair<Double, Double>? = null
+                                        var framed = 0L; var zonesDone = false; var sectionsKey = "" } }
         AndroidView(factory = { ctx ->
             MapView(ctx).apply {
                 onCreate(null); onStart(); onResume()
@@ -275,19 +281,32 @@ class MainActivity : ComponentActivity() {
             }
         }, Modifier.fillMaxSize(), update = {
             val style = state.style ?: return@AndroidView
-            if (goTo != null && goTo != state.wentTo) {             // Go to: fly there, and keep the walker's re-centring quiet
-                state.wentTo = goTo; state.centredAt = goTo
-                state.map?.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(goTo.second, goTo.first), 16.5))
+            fun show(id: String, on: Boolean) { style.getLayer(id)?.setProperties(PropertyFactory.visibility(if (on) Property.VISIBLE else Property.NONE)) }
+            show("base-osm", base == MapUi.Base.Map); show("base-topo", base == MapUi.Base.Topo); show("base-sat", base == MapUi.Base.Satellite)
+            show("park-line", boundary); show("zones-line", zones); show("sections-fill", sections); show("sections-line", sections)
+            if (zones && !state.zonesDone) {
+                state.zonesDone = true
+                (style.getSource("zones") as? GeoJsonSource)?.setGeoJson(shape(walk.zoneCircles.map { circle(it[0], it[1], it[2]) }, -1))
+            }
+            if (sections) {
+                val (cells, active) = walk.sectionCells()
+                val key = "${cells.size} $active ${cells.firstOrNull()?.firstOrNull()?.toList()} $chord"
+                if (key != state.sectionsKey) { state.sectionsKey = key; (style.getSource("sections") as? GeoJsonSource)?.setGeoJson(shape(cells, active)) }
+            }
+            if (frame != null && frame.second != state.framed) {    // Places / Fit all: frame it, and keep the walker's re-centring quiet
+                state.framed = frame.second
+                val (w, so, e, n) = frame.first.toList()
+                state.map?.animateCamera(CameraUpdateFactory.newLatLngBounds(LatLngBounds.Builder().include(LatLng(so, w)).include(LatLng(n, e)).build(), 120))
             }
             here?.let { (lon, lat) ->
                 (style.getSource("me") as? GeoJsonSource)?.setGeoJson("""{"type":"Point","coordinates":[$lon,$lat]}""")
-                /* Street level on the walker; again if a fix lands far from there (a stale first fix,
-                   or the emulator's default position, would otherwise keep the map in the wrong city). */
+                /* Street level on the walker; again if a fix jumps far (a stale first fix, or the emulator's
+                   default position, would otherwise keep the map in the wrong city). Never for a walk by hand:
+                   the tap is already on screen, and a framed place must stay framed while the fixes arrive. */
                 val c = state.centredAt
-                if (c == null || Core.geoDistance(c.first, c.second, lon, lat) > 1000) {
-                    state.centredAt = lon to lat
+                if (walk.mode != Walk.Mode.ByHand && (c == null || Core.geoDistance(c.first, c.second, lon, lat) > 1000))
                     state.map?.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(lat, lon), 15.5))
-                }
+                if (walk.mode != Walk.Mode.ByHand) state.centredAt = lon to lat
             }
         })
     }
@@ -296,11 +315,27 @@ class MainActivity : ComponentActivity() {
     {"version":8,"sources":{
       "base-sat":{"type":"raster","tileSize":256,"maxzoom":19,"attribution":"Imagery © Esri",
                   "tiles":["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"]},
+      "base-osm":{"type":"raster","tileSize":256,"maxzoom":19,"attribution":"© OpenStreetMap contributors",
+                  "tiles":["https://tile.openstreetmap.org/{z}/{x}/{y}.png"]},
+      "base-topo":{"type":"raster","tileSize":256,"maxzoom":17,"attribution":"© OpenStreetMap contributors, SRTM · © OpenTopoMap (CC-BY-SA)",
+                  "tiles":["https://a.tile.opentopomap.org/{z}/{x}/{y}.png"]},
       "features":{"type":"geojson","data":$fc},
+      "parks":{"type":"geojson","data":${assets.open("places.geojson").bufferedReader().readText()}},
+      "zones":{"type":"geojson","data":{"type":"FeatureCollection","features":[]}},
+      "sections":{"type":"geojson","data":{"type":"FeatureCollection","features":[]}},
       "me":{"type":"geojson","data":{"type":"FeatureCollection","features":[]}}},
      "layers":[
       {"id":"ground","type":"background","paint":{"background-color":"#0d1310"}},
+      {"id":"base-osm","type":"raster","source":"base-osm","layout":{"visibility":"none"}},
+      {"id":"base-topo","type":"raster","source":"base-topo","layout":{"visibility":"none"}},
       {"id":"base-sat","type":"raster","source":"base-sat"},
+      {"id":"park-line","type":"line","source":"parks","paint":{"line-color":"#e3e7e4","line-opacity":0.75,"line-width":1.5}},
+      {"id":"sections-fill","type":"fill","source":"sections","layout":{"visibility":"none"},
+       "paint":{"fill-color":"#bae6b1","fill-opacity":["case",["==",["get","active"],1],0.14,0.03]}},
+      {"id":"sections-line","type":"line","source":"sections","layout":{"visibility":"none"},
+       "paint":{"line-color":"#bae6b1","line-opacity":0.5,"line-width":1,"line-dasharray":[3,3]}},
+      {"id":"zones-line","type":"line","source":"zones","layout":{"visibility":"none"},
+       "paint":{"line-color":"#bae6b1","line-opacity":0.85,"line-width":1.6,"line-dasharray":[2,2]}},
       {"id":"route-casing","type":"line","source":"features","filter":["==",["geometry-type"],"LineString"],
        "paint":{"line-color":"#0d1310","line-opacity":0.8,"line-width":8},"layout":{"line-cap":"round","line-join":"round"}},
       {"id":"route-line","type":"line","source":"features","filter":["==",["geometry-type"],"LineString"],
@@ -315,6 +350,22 @@ class MainActivity : ComponentActivity() {
                 "circle-stroke-color":["case",["==",["get","has_audio"],true],"#0d1310","#e3e7e4"]}},
       {"id":"me","type":"circle","source":"me","paint":{"circle-radius":8,"circle-color":"#3b82f6","circle-stroke-width":2.5,"circle-stroke-color":"#ffffff"}}
      ]}"""
+
+    /** a circle of r metres as a ring of 48 corners */
+    private fun circle(lon: Double, lat: Double, r: Double): List<DoubleArray> {
+        val dLat = r / 111_320; val dLon = r / (111_320 * Math.cos(Math.toRadians(lat)))
+        return (0..48).map { i -> val a = i / 48.0 * 2 * Math.PI; doubleArrayOf(lon + dLon * Math.cos(a), lat + dLat * Math.sin(a)) }
+    }
+    /** rings -> polygons, the active one marked */
+    private fun shape(rings: List<List<DoubleArray>>, active: Int): String {
+        val fs = org.json.JSONArray()
+        rings.forEachIndexed { i, r ->
+            val ring = org.json.JSONArray(); (r + listOf(r.first())).forEach { ring.put(org.json.JSONArray().put(it[0]).put(it[1])) }
+            fs.put(JSONObject().put("type", "Feature").put("properties", JSONObject().put("active", if (i == active) 1 else 0))
+                .put("geometry", JSONObject().put("type", "Polygon").put("coordinates", org.json.JSONArray().put(ring))))
+        }
+        return JSONObject().put("type", "FeatureCollection").put("features", fs).toString()
+    }
 
     private fun bounds(fc: JSONObject): LatLngBounds? {
         val b = LatLngBounds.Builder(); var n = 0

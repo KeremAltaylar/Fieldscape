@@ -453,6 +453,50 @@ JNIEXPORT jstring JNICALL FN(pieceRouteStarts)(JNIEnv *env, jclass) {
     }
     return env->NewStringUTF(o.c_str());
 }
+/* The Places and Layers sheets: every route with its length and extent ("name<TAB>metres<TAB>w s e n"),
+   every point's zone ("lon lat r"), the sections of the park underfoot ("1|0 lon,lat;lon,lat..."),
+   and the chord playing ("chord 4 of 16, G6/9", empty before the first bar or off every route). */
+JNIEXPORT jstring JNICALL FN(pieceRoutes)(JNIEnv *env, jclass) {
+    std::string o;
+    if (W) for (size_t i = 0; i < W->routes.size(); i++) {
+        double w = 1e9, s = 1e9, e = -1e9, n = -1e9;
+        for (int k = 0; k <= 64; k++) {
+            double lon, lat; fs_route_point_along(W->routes[i], k / 64.0, &lon, &lat);
+            w = std::min(w, lon); e = std::max(e, lon); s = std::min(s, lat); n = std::max(n, lat);
+        }
+        char b[160]; snprintf(b, sizeof b, "\t%.1f\t%.7f %.7f %.7f %.7f\n", fs_route_length(W->routes[i]), w, s, e, n);
+        o += W->route_names[i] + b;
+    }
+    return env->NewStringUTF(o.c_str());
+}
+JNIEXPORT jstring JNICALL FN(pieceZones)(JNIEnv *env, jclass) {
+    std::string o;
+    if (W) for (auto &s : W->spots) { char b[96]; snprintf(b, sizeof b, "%.7f %.7f %.1f\n", s.lon, s.lat, s.zoneR); o += b; }
+    return env->NewStringUTF(o.c_str());
+}
+JNIEXPORT jstring JNICALL FN(pieceSections)(JNIEnv *env, jclass) {
+    std::string o;
+    if (W && W->sections) {
+        int active = fs_piece_sector_now(E->piece);
+        std::vector<double> buf(512);
+        for (int i = 0; i < fs_sections_count(W->sections); i++) {
+            int k = fs_sections_cell(W->sections, i, buf.data(), 256);
+            if (k < 3) continue;
+            o += i == active ? "1 " : "0 ";
+            for (int j = 0; j < k; j++) { char b[64]; snprintf(b, sizeof b, "%s%.7f,%.7f", j ? ";" : "", buf[2 * j], buf[2 * j + 1]); o += b; }
+            o += "\n";
+        }
+    }
+    return env->NewStringUTF(o.c_str());
+}
+JNIEXPORT jstring JNICALL FN(pieceChord)(JNIEnv *env, jclass) {
+    if (!E || !W || W->route_name.empty()) return env->NewStringUTF("");
+    int count = 0; char label[32];
+    int i = fs_piece_chord(E->piece, &count, label, sizeof label);
+    if (i < 0) return env->NewStringUTF("");
+    char b[80]; snprintf(b, sizeof b, "chord %d of %d, %s", i + 1, count, label);
+    return env->NewStringUTF(b);
+}
 JNIEXPORT jstring JNICALL FN(pieceRoute)(JNIEnv *env, jclass) { return env->NewStringUTF(W ? W->route_name.c_str() : ""); }
 JNIEXPORT jstring JNICALL FN(pieceRhythms)(JNIEnv *env, jclass) {
     std::string o;
