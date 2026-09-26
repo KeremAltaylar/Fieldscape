@@ -39,6 +39,7 @@ targets:
       SWIFT_OBJC_BRIDGING_HEADER: ../core/fieldscape.h
       CLANG_CXX_LANGUAGE_STANDARD: c++17
       CODE_SIGN_STYLE: Automatic
+      DEVELOPMENT_TEAM: NLAADNGLNW          # Kerem's Personal Team, pinned so regenerating never drops it
       TARGETED_DEVICE_FAMILY: "1"
       GENERATE_INFOPLIST_FILE: NO
       INFOPLIST_FILE: Info.plist
@@ -57,6 +58,7 @@ targets:
       TEST_TARGET_NAME: Fieldscape
       GENERATE_INFOPLIST_FILE: YES
       CODE_SIGN_STYLE: Automatic
+      DEVELOPMENT_TEAM: NLAADNGLNW
 schemes:
   Fieldscape:
     build:
