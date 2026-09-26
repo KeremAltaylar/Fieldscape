@@ -49,6 +49,8 @@ object Core {
     @JvmStatic external fun pieceRouteInfo(i: Int): String
     @JvmStatic external fun piecePlayingRoute(): Int
     @JvmStatic external fun pieceChordStep(): Int
+    /** Listen on a rhythm or grains point (its id; "" lets go); applied at the next pieceStep. */
+    @JvmStatic external fun pieceSolo(id: String)
     /** The point card's player (core/devices/play.cpp): load with loadInterleaved(SLOTS, ...). */
     @JvmStatic external fun rawPlay(on: Boolean)
     @JvmStatic external fun rawSeek(f: Double)

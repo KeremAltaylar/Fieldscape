@@ -39,6 +39,7 @@ final class RouteSound {
         return (out, Int(fs_piece_sector_now(piece)))
     }
     private(set) var rhythmNames: [String] = []
+    private var soloHandle: Int32 = -1
 
     init(core: Core) { self.core = core }
     deinit { routes.forEach { fs_route_destroy($0) }; if let s = sections { fs_sections_destroy(s) } }
@@ -91,7 +92,7 @@ final class RouteSound {
     }
 
     /* One position (worldMove). */
-    func step(lon: Double, lat: Double) {
+    func step(lon: Double, lat: Double, solo: String? = nil) {
         /* the route: the nearest, held by sectorHold's margin */
         var proj = fs_projection()
         let r = fs_nearest_route(routes, Int32(routes.count), lon, lat, fs_piece_route(piece), fs_sections_hold(sections), &proj)
@@ -124,9 +125,13 @@ final class RouteSound {
         var el = [UInt8](repeating: 1, count: beats.count)
         var picked = [Int32](repeating: 0, count: max(beats.count, 1))
         let k = Int(fs_pick_voices(&bd, &br, &el, Int32(beats.count), Int32(min(Int(FS_MAX_VOICES), max(bedVoices, 1))), 1, &picked))
-        let want = Set(picked.prefix(k).map { beats[Int($0)].id })
+        /* Listen on a rhythm point: it joins at its full level from wherever the walker is */
+        let soloJ = solo.flatMap { id in beats.firstIndex { $0.id == id } }
+        var chosen = picked.prefix(k).map { Int($0) }
+        if let j = soloJ, !chosen.contains(j) { chosen = Array(chosen.prefix(Int(FS_MAX_VOICES) - 1)) + [j] }
+        let want = Set(chosen.map { beats[$0].id })
         for (id, h) in handle where !want.contains(id) { fs_piece_rhythm_remove(piece, h); handle[id] = nil }
-        for j in picked.prefix(k).map({ Int($0) }) {
+        for j in chosen {
             let b = beats[j]
             if handle[b.id] == nil {
                 let h = fs_piece_rhythm_add(piece, b.json, b.grains ? 1 : 0)
@@ -134,9 +139,11 @@ final class RouteSound {
                 handle[b.id] = h
                 load(b, h)
             }
-            if let h = handle[b.id] { fs_piece_rhythm_gain(piece, h, Float(fs_point_gain(bd[j], b.radius, b.gain))) }
+            if let h = handle[b.id] { fs_piece_rhythm_gain(piece, h, Float(j == soloJ ? b.gain : fs_point_gain(bd[j], b.radius, b.gain))) }
         }
-        rhythmNames = picked.prefix(k).map { beats[Int($0)].name }
+        let h = soloJ.flatMap { handle[beats[$0].id] } ?? -1
+        if h != soloHandle { soloHandle = h; fs_piece_solo(piece, h) }
+        rhythmNames = chosen.map { beats[$0].name }
     }
 
     /* Each recording of a rhythm point: fetched and cached as the soundscape's are, decoded at the

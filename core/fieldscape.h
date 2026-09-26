@@ -166,6 +166,7 @@ int fs_piece_rhythm_add(fs_device *d, const char *rhythm_json, int grains);
 void fs_piece_rhythm_gain(fs_device *d, int handle, float gain);
 void fs_piece_rhythm_source(fs_device *d, int handle, int slot, int channels, long long frames, short *interleaved);
 void fs_piece_rhythm_remove(fs_device *d, int handle);
+void fs_piece_solo(fs_device *d, int handle);   /* Listen on a rhythm point: it alone, the route and other points resting (-1: all) */
 short *fs_alloc_i16(size_t n);
 /* tests: replace the random stream, and hear every note the steps choose (role 0 bass, 1 top,
    2 sector, 3 third, 4 water zone, 5 zone) */

@@ -247,10 +247,13 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
         /* the playing patch's bed: bed.on and how many voices (BED.maxVoices) */
         let voices = min(Core.slots - (core.test ? 1 : 0), sound.bedVoices)
         let k = Int(fs_pick_voices(&dist, &radius, &eligible, Int32(n), Int32(voices), 0, &picked))
-        let soloIndex = solo.flatMap { id in points.firstIndex { $0.id == id } }
+        /* Listen: a stretch point here, alone; a rhythm or grains point is soloed inside the piece (RouteSound) */
+        let soloAny = solo.flatMap { id in points.firstIndex { $0.id == id } }
+        let soloIndex = soloAny.flatMap { points[$0].sounds ? $0 : nil }
+        let soloBeat = soloAny != nil && soloIndex == nil
         let chosen = soloIndex.map { [$0] } ?? picked.prefix(k).map { Int($0) }
         /* the card's player rests the walk; Listen rests everything but its point */
-        let rest = rawPlaying
+        let rest = rawPlaying || soloBeat
         let want = Set(chosen.map { points[$0].id })
 
         for (id, slot) in slotOf where !want.contains(id) {                /* left: fade, free after the ramp */
@@ -267,18 +270,18 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
             /* ensureVoice: the filter opens with proximity, from 300 Hz to the recording's own ceiling */
             core.lowpass(slot: slot, Float(full ? p.brightest : 300 + (p.brightest - 300) * fs_point_proximity(dist[j], p.radius)))
         }
-        core.gain(slot: Core.pieceSlot, rest || soloIndex != nil ? 0 : 1)
+        core.gain(slot: Core.pieceSlot, rawPlaying || soloIndex != nil ? 0 : 1)
         /* the panel: the two nearest points of any kind, each opening its card */
         rows = (0..<n).sorted { dist[$0] < dist[$1] }.prefix(2).map { j in
             let p = points[j]
-            return Row(id: p.id, name: p.name, level: soloIndex == j ? 1 : soloIndex != nil ? 0 : fs_point_gain(dist[j], p.radius, 1), dist: dist[j],
+            return Row(id: p.id, name: p.name, level: soloAny == j ? 1 : soloAny != nil ? 0 : fs_point_gain(dist[j], p.radius, 1), dist: dist[j],
                        phase: slotOf[p.id] == nil || loaded.contains(p.id) ? .playing : (phase[p.id] ?? .decoding))
         }
         if chosen.isEmpty, let j = (0..<n).filter({ points[$0].sounds }).min(by: { dist[$0] < dist[$1] }) {
             nearest = (points[j].name, dist[j], Walk.direction(lon, lat, points[j].lon, points[j].lat))
         } else { nearest = nil }
         updatePlace(lon: lon, lat: lat)
-        sound.step(lon: lon, lat: lat)
+        sound.step(lon: lon, lat: lat, solo: soloBeat ? solo : nil)
         route = sound.routeName
         rhythms = sound.rhythmNames
         append(String(format: "%.6f %.6f %.0f out %.1f dBFS | %@", lon, lat, acc, core.outputDb,

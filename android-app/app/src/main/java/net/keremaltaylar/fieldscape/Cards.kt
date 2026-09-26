@@ -82,15 +82,16 @@ fun PointCard(walk: Walk, map: MapUi, id: String, onSheet: (Sheet) -> Unit) {
         }
         Eyebrow("Where and when")
         Note(where(q))
-        if (q.sounds) {
+        if (q.mode != "silent") {
             val on = walk.solo == id
-            Note(if (on) "Listening to this point alone, from wherever you are. The rest waits." else "Listen: this point alone, stretched, from wherever you are.")
+            Note(if (on) "Listening to this point alone, from wherever you are. The rest waits."
+                 else if (q.sounds) "Listen: this point alone, stretched, from wherever you are." else "Listen: this point's ${q.mode} alone, from wherever you are.")
             Row(horizontalArrangement = Arrangement.spacedBy(T.s2)) {
                 CardButton(if (on) "Stop listening" else "Listen", !on, Modifier.weight(1f), if (on) "■" else "▶") { walk.listen(if (on) null else id) }
                 CardButton("Zoom to", false, Modifier.width(110.dp)) { zoom(map, q) }
             }
         } else {
-            Note(if (q.mode == "silent") "A quiet point: it speaks once as you step into its circle." else "A ${q.mode} point: it plays as you walk into its circle.")
+            Note("A quiet point: it speaks once as you step into its circle.")
             CardButton("Zoom to", false, Modifier.fillMaxWidth()) { zoom(map, q) }
         }
     }

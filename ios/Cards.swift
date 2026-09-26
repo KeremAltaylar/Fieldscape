@@ -89,15 +89,16 @@ struct PointCard: View {
                 }
                 eyebrow("Where and when")
                 note(where_(q))
-                if q.sounds {
+                if q.mode != "silent" {
                     let on = walk.solo == id
-                    note(on ? "Listening to this point alone, from wherever you are. The rest waits." : "Listen: this point alone, stretched, from wherever you are.")
+                    note(on ? "Listening to this point alone, from wherever you are. The rest waits."
+                            : q.sounds ? "Listen: this point alone, stretched, from wherever you are." : "Listen: this point's \(q.mode) alone, from wherever you are.")
                     HStack(spacing: T.s2) {
                         CardButton(title: on ? "Stop listening" : "Listen", primary: !on, action: { walk.listen(on ? nil : id) }, system: on ? "stop.fill" : "play.fill")
                         CardButton(title: "Zoom to", primary: false, action: { zoom(q) }).frame(width: 110)
                     }
                 } else {
-                    note(q.mode == "silent" ? "A quiet point: it speaks once as you step into its circle." : "A \(q.mode) point: it plays as you walk into its circle.")
+                    note("A quiet point: it speaks once as you step into its circle.")
                     CardButton(title: "Zoom to", primary: false, action: { zoom(q) })
                 }
             }

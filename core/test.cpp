@@ -215,6 +215,24 @@ int main() {
         fs_process(pl, B); assert(fs_out(pl, 0)[B - 1] == 0.0f);
         fs_destroy(pl);
     }
+    {   /* solo on a rhythm point: the route's synths fall silent, and come back when it is let go */
+        fs_device *pc = fs_create("piece");
+        fs_prepare(pc, SR, B);
+        fs_piece_add_route(pc, "{}");
+        int h = fs_piece_rhythm_add(pc, "{}", 0);
+        assert(h >= 0);
+        auto energy = [&](double secs) {
+            double e = 0; int blocks = (int)(secs * SR / B);
+            for (int b = 0; b < blocks; b++) { fs_piece_walk(pc, 0, 0.3, 0); fs_process(pc, B); for (int i = 0; i < B; i++) e += fs_out(pc, 0)[i] * fs_out(pc, 0)[i]; }
+            return e / (blocks * B);
+        };
+        energy(6); double open = energy(2);
+        fs_piece_solo(pc, h); energy(1); double soloed = energy(1);
+        fs_piece_solo(pc, -1); energy(1); double back = energy(2);
+        std::printf("piece solo: route %.2e, soloed %.2e, let go %.2e\n", open, soloed, back);
+        assert(open > 1e-7 && soloed < open * 1e-6 && back > open * 0.05);
+        fs_destroy(pc);
+    }
     std::printf("core ok\n");
     return 0;
 }

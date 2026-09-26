@@ -9,7 +9,7 @@ import os
 
 /* The test number of this build (docs/TESTS.md): shown first in the developer line, so Kerem can
    see which build he is testing. Bump it with every build handed over. */
-let TEST_BUILD = 6
+let TEST_BUILD = 7
 
 final class Core: ObservableObject {
     struct Param: Identifiable { let id: Int; let key, name, unit: String; let min, max: Float }

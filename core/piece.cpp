@@ -498,6 +498,7 @@ struct Rhythm {
     bool grains = false;
     RhythmCfg cfg;
     Ctl gain;
+    float host_g = 0;                 /* the level the walk last gave it, before any solo */
     HitSlot hit[4];
     Src gsrc;
     GrainV gv[192];
@@ -511,6 +512,7 @@ struct Inbox {
     bool sector = false; int sector_v = -1;
     bool character = false; double centroid = 2000, onsets = 1;
     int zones[8]; int nzones = 0;
+    bool solo_set = false; int solo_v = -1;    /* Listen on a rhythm point: that handle alone (-1: everything) */
     struct ROp { int op = 0; RhythmCfg cfg; bool grains = false; bool gain = false; float g = 0; Src src[4]; bool src_set[4] = {}; } r[FS_MAX_VOICES];
     std::vector<short *> trash;       /* buffers the audio thread let go of */
     bool freed[FS_MAX_VOICES] = {};
@@ -564,6 +566,8 @@ struct Piece : Device {
     FxChain fx, fx2, fx3, rfx;
     Layer rdrive;                     /* the rhythm effects' drive and lowpass (no warp) */
     Ctl synth_level;
+    Ctl route_solo;                   /* 0 while a rhythm point is soloed: the route's synths and zones rest */
+    int solo = -1;
     struct OneShot { SimpleSynth s; NoiseSynth ns; bool noise = false; double free_at = 0; } shots[6];
     Rhythm rh[FS_MAX_VOICES];
     std::vector<short *> my_trash;
@@ -649,6 +653,7 @@ struct Piece : Device {
         rdrive.q = 1.1;
         apply_rhythm_fx(p, 0);
         synth_level.init(0);          /* silent until a walk says a route is near (world mode starts with none) */
+        route_solo.init(1);
         bpm = p.tempo;
         for (auto &r : rh) { r.gain.init(0); init_hits(r, true); }
     }
@@ -1158,6 +1163,11 @@ struct Piece : Device {
         if (in.character) { in.character = false; centroid = in.centroid; onsets = in.onsets; }
         for (int i = 0; i < in.nzones; i++) if (patch.zones_on) zone_fire(in.zones[i], now + 0.008);
         in.nzones = 0;
+        if (in.solo_set) {
+            in.solo_set = false; solo = in.solo_v;
+            route_solo.p.linearRampTo(solo >= 0 ? 0 : 1, 0.35, now);
+            for (int h = 0; h < FS_MAX_VOICES; h++) if (rh[h].used && !rh[h].dying) rh[h].gain.p.linearRampTo(rhythm_level(rh[h], h), 0.35, now);
+        }
         for (int h = 0; h < FS_MAX_VOICES; h++) {
             auto &op = in.r[h]; Rhythm &R = rh[h];
             if (op.op == 1) {
@@ -1172,7 +1182,7 @@ struct Piece : Device {
                 R.gain.p.linearRampTo(0, 0.25, now);
             }
             op.op = 0;
-            if (op.gain) { op.gain = false; R.gain.p.linearRampTo(op.g * (R.cfg.on ? R.cfg.gain : 0), 0.35, now); }
+            if (op.gain) { op.gain = false; R.host_g = op.g; R.gain.p.linearRampTo(rhythm_level(R, h), 0.35, now); }
             for (int s = 0; s < 4; s++) if (op.src_set[s]) {
                 op.src_set[s] = false;
                 Src &dst = R.grains ? R.gsrc : R.hit[s].src;
@@ -1207,6 +1217,10 @@ struct Piece : Device {
     }
 
     /* ---- rendering ---- */
+    /* a rhythm point's level: what the walk gave it, unless another point is soloed */
+    float rhythm_level(const Rhythm &R, int h) const {
+        return (solo < 0 || solo == h) ? R.host_g * (R.cfg.on ? R.cfg.gain : 0) : 0.0f;
+    }
     void render_rhythm(Rhythm &R, float *L, float *Rr, int n, double t0) {
         double te = t0 + n / sr;
         R.gain.block(te);
@@ -1315,8 +1329,8 @@ struct Piece : Device {
         v3L.process(fx3.L, fx3.R, n, te);
         for (auto &o : shots) if (o.free_at > t0) { if (o.noise) o.ns.render(fx.L, fx.R, n, t0); else o.s.render(fx.L, fx.R, n, t0); }
         fx.process(oL, oR, n, te); fx2.process(oL, oR, n, te); fx3.process(oL, oR, n, te);
-        synth_level.block(te);
-        for (int i = 0; i < n; i++) { float g = synth_level.at(i, n); oL[i] *= g; oR[i] *= g; }
+        synth_level.block(te); route_solo.block(te);
+        for (int i = 0; i < n; i++) { float g = synth_level.at(i, n) * route_solo.at(i, n); oL[i] *= g; oR[i] *= g; }
         /* the rhythm points, through the rhythm effects, beside the route (bed.master, not bed.synth) */
         bool any = false;
         for (auto &R : rh) if (R.used) { any = true; render_rhythm(R, rdrive.L, rdrive.R, n, t0); }
@@ -1476,6 +1490,11 @@ void fs_piece_rhythm_source(fs_device *d, int h, int slot, int channels, long lo
     if (op.src_set[slot] && op.src[slot].data) std::free(op.src[slot].data);
     op.src[slot] = Src{ interleaved, channels < 1 ? 1 : channels, frames };
     op.src_set[slot] = true;
+}
+void fs_piece_solo(fs_device *d, int h) {
+    Piece *p = P(d); if (!p) return;
+    std::lock_guard<std::mutex> g(p->mu); sweep(p);
+    p->in.solo_set = true; p->in.solo_v = h >= 0 && h < FS_MAX_VOICES ? h : -1;
 }
 void fs_piece_rhythm_remove(fs_device *d, int h) {
     Piece *p = P(d); if (!p || h < 0 || h >= FS_MAX_VOICES) return;

@@ -231,9 +231,13 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
         val radius = DoubleArray(n) { points[it].radius }
         val eligible = BooleanArray(n) { points[it].sounds }
         val voices = minOf(Core.SLOTS, Core.pieceBedVoices())             // the playing patch's bed: on, and how many
-        val soloIndex = solo?.let { id -> points.indexOfFirst { it.id == id }.takeIf { it >= 0 } }
+        /* Listen: a stretch point here, alone; a rhythm or grains point is soloed inside the piece */
+        val soloAny = solo?.let { id -> points.indexOfFirst { it.id == id }.takeIf { it >= 0 } }
+        val soloIndex = soloAny?.takeIf { points[it].sounds }
+        val soloBeat = soloAny != null && soloIndex == null
+        Core.pieceSolo(if (soloBeat) solo!! else "")
         val chosen = soloIndex?.let { listOf(it) } ?: Core.pickVoices(dist, radius, eligible, voices, false).toList()
-        val rest = rawPlaying                                              /* the card's player rests the walk */
+        val rest = rawPlaying || soloBeat                                  /* the card's player rests the walk */
         val want = chosen.map { points[it].id }.toSet()
         for ((id, slot) in slotOf.toMap()) if (id !in want) {                // left: fade, free after the ramp
             Core.gain(slot, 0f)
@@ -248,10 +252,10 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
             Core.gain(slot, if (p.id in loaded) earned[p.id]!! else 0f)
             Core.lowpass(slot, (if (full) p.brightest else 300 + (p.brightest - 300) * Core.pointProximity(dist[j], p.radius)).toFloat())   // ensureVoice
         }
-        Core.gain(Core.SLOTS, if (rest || soloIndex != null) 0f else 1f)       /* the piece's slot */
+        Core.gain(Core.SLOTS, if (rawPlaying || soloIndex != null) 0f else 1f)       /* the piece's slot */
         /* the panel: the two nearest points of any kind, each opening its card */
         rows = (0 until n).sortedBy { dist[it] }.take(2).map { j -> val p = points[j]
-            Row(p.id, p.name, if (soloIndex == j) 1.0 else if (soloIndex != null) 0.0 else Core.pointGain(dist[j], p.radius, 1.0), dist[j], phaseOf(p.id)) }
+            Row(p.id, p.name, if (soloAny == j) 1.0 else if (soloAny != null) 0.0 else Core.pointGain(dist[j], p.radius, 1.0), dist[j], phaseOf(p.id)) }
         nearest = if (chosen.isEmpty()) (0 until n).filter { points[it].sounds }.minByOrNull { dist[it] }?.let {
             Nearest(points[it].name, dist[it], direction(lon, lat, points[it].lon, points[it].lat)) } else null
         updatePlace(lon, lat)

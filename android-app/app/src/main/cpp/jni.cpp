@@ -7,6 +7,7 @@
 #include <android/log.h>
 #include <jni.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -169,8 +170,9 @@ JNIEXPORT jdouble JNICALL FN(start)(JNIEnv *, jclass) {
         for (;;) {
             std::this_thread::sleep_for(std::chrono::seconds(2));
             AAudioStream *s = E->stream;
-            if (s) LOG("engine xruns %d worst %.2f ms buffer %d of %d frames burst %d", AAudioStream_getXRunCount(s), E->worst_ms.load(),
-                       AAudioStream_getBufferSizeInFrames(s), AAudioStream_getBufferCapacityInFrames(s), AAudioStream_getFramesPerBurst(s));
+            if (s) LOG("engine xruns %d worst %.2f ms buffer %d of %d frames burst %d out %.1f dBFS", AAudioStream_getXRunCount(s), E->worst_ms.load(),
+                       AAudioStream_getBufferSizeInFrames(s), AAudioStream_getBufferCapacityInFrames(s), AAudioStream_getFramesPerBurst(s),
+                       10 * std::log10(std::max(E->power.load(), 1e-12)));
         }
     }).detach();
     return E->sr;
@@ -305,6 +307,7 @@ struct Walker {
     fs_sections *sections = nullptr;
     std::vector<std::string> rhythm_names;
     std::string route_name;
+    std::string solo; int solo_handle = -1;   /* Listen on a rhythm point (its id), and its handle in the piece */
     std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
 };
 Walker *W = nullptr;
@@ -414,6 +417,14 @@ JNIEXPORT jstring JNICALL FN(pieceStep)(JNIEnv *env, jclass, jdouble lon, jdoubl
     std::vector<double> bd(nb), br(nb); std::vector<unsigned char> el(nb, 1); std::vector<int> picked(std::max<size_t>(nb, 1));
     for (size_t i = 0; i < nb; i++) { bd[i] = fs_geo_distance(lon, lat, W->beats[i].lon, W->beats[i].lat); br[i] = W->beats[i].radius; }
     int k = fs_pick_voices(bd.data(), br.data(), el.data(), (int)nb, std::min(FS_MAX_VOICES, std::max(fs_piece_bed_voices(E->piece), 1)), 1, picked.data());
+    /* Listen on a rhythm point: it joins at its full level from wherever the walker is */
+    int solo_j = -1;
+    for (size_t i = 0; i < nb; i++) if (!W->solo.empty() && W->beats[i].id == W->solo) solo_j = (int)i;
+    if (solo_j >= 0 && std::find(picked.begin(), picked.begin() + k, solo_j) == picked.begin() + k) {
+        if (k >= FS_MAX_VOICES) k = FS_MAX_VOICES - 1;
+        if ((int)picked.size() <= k) picked.resize(k + 1);
+        picked[k++] = solo_j;
+    }
     std::map<std::string, bool> want;
     for (int i = 0; i < k; i++) want[W->beats[picked[i]].id] = true;
     for (auto it = W->handle.begin(); it != W->handle.end();) {
@@ -431,8 +442,10 @@ JNIEXPORT jstring JNICALL FN(pieceStep)(JNIEnv *env, jclass, jdouble lon, jdoubl
             for (size_t s = 0; s < b.paths.size(); s++)
                 if (!b.paths[s].empty()) loads += std::to_string(h) + " " + std::to_string(s) + " " + b.id + " " + b.paths[s] + "\n";
         }
-        fs_piece_rhythm_gain(E->piece, W->handle[b.id], (float)fs_point_gain(bd[picked[i]], b.radius, b.gain));
+        fs_piece_rhythm_gain(E->piece, W->handle[b.id], (float)(picked[i] == solo_j ? b.gain : fs_point_gain(bd[picked[i]], b.radius, b.gain)));
     }
+    int sh = solo_j >= 0 && W->handle.count(W->beats[solo_j].id) ? W->handle[W->beats[solo_j].id] : -1;
+    if (sh != W->solo_handle) { W->solo_handle = sh; fs_piece_solo(E->piece, sh); }
     return env->NewStringUTF(loads.c_str());
 }
 
@@ -522,6 +535,8 @@ JNIEXPORT jstring JNICALL FN(pieceRouteInfo)(JNIEnv *env, jclass, jint i) {
 /* The route playing (-1 none, or off every route) and the chord step it is on (-1 before the first bar). */
 JNIEXPORT jint JNICALL FN(piecePlayingRoute)(JNIEnv *, jclass) { return W && !W->route_name.empty() ? fs_piece_route(E->piece) : -1; }
 JNIEXPORT jint JNICALL FN(pieceChordStep)(JNIEnv *, jclass) { return W && !W->route_name.empty() ? fs_piece_chord(E->piece, nullptr, nullptr, 0) : -1; }
+/* Listen on a rhythm or grains point: its id, or "" to let go; the next pieceStep applies it. */
+JNIEXPORT void JNICALL FN(pieceSolo)(JNIEnv *env, jclass, jstring id) { if (W) W->solo = jstr(env, id); }
 JNIEXPORT jstring JNICALL FN(pieceRoute)(JNIEnv *env, jclass) { return env->NewStringUTF(W ? W->route_name.c_str() : ""); }
 JNIEXPORT jstring JNICALL FN(pieceRhythms)(JNIEnv *env, jclass) {
     std::string o;
