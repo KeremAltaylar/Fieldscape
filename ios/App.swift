@@ -9,7 +9,7 @@ import os
 
 /* The test number of this build (docs/TESTS.md): shown first in the developer line, so Kerem can
    see which build he is testing. Bump it with every build handed over. */
-let TEST_BUILD = 5
+let TEST_BUILD = 6
 
 final class Core: ObservableObject {
     struct Param: Identifiable { let id: Int; let key, name, unit: String; let min, max: Float }
@@ -20,6 +20,9 @@ final class Core: ObservableObject {
     /* The route's generative sound. Walk tells it where the walker is (fs_piece_*); it is never
        re-created, so its Transport and chords run on through route changes, as the web's bed does. */
     let piece = fs_create("piece")!
+    /* The point card's player: a recording as it was made (core/devices/play.cpp), mix slot 5. Its
+       recording goes through the same handoff as the voices', as handoff slot Core.slots. */
+    private let raw = fs_create("play")!
     private let worstMs = UnsafeMutablePointer<Double>.allocate(capacity: 1)
     private let outPower = UnsafeMutablePointer<Double>.allocate(capacity: 1)   /* mean square of the output, smoothed */
     /* What actually leaves the app, not what the gains say (rulebook A-17). */
@@ -60,8 +63,8 @@ final class Core: ObservableObject {
         }()
         var pending: [(slot: Int, ptrs: [UnsafeMutablePointer<Int16>], consts: [UnsafePointer<Int16>?], frames: Int)] = []
         var retired: [UnsafeMutablePointer<Int16>] = []
-        var live: [[UnsafeMutablePointer<Int16>]] = Array(repeating: [], count: Core.slots)
-        var liveFrames: [Int] = Array(repeating: 0, count: Core.slots)
+        var live: [[UnsafeMutablePointer<Int16>]] = Array(repeating: [], count: Core.slots + 1)
+        var liveFrames: [Int] = Array(repeating: 0, count: Core.slots + 1)
         init() { pending.reserveCapacity(16); retired.reserveCapacity(64) }
     }
     private let handoff = Handoff()
@@ -73,7 +76,8 @@ final class Core: ObservableObject {
         let h = handoff
         guard os_unfair_lock_trylock(h.lock) else { return }
         for p in h.pending {
-            p.consts.withUnsafeBufferPointer { fs_set_source_i16(voices[p.slot], Int32(p.consts.count), Int32(p.frames), $0.baseAddress) }
+            let dev = p.slot < Core.slots ? voices[p.slot] : raw
+            p.consts.withUnsafeBufferPointer { fs_set_source_i16(dev, Int32(p.consts.count), Int32(p.frames), $0.baseAddress) }
             h.retired += h.live[p.slot]
             h.live[p.slot] = p.ptrs
             h.liveFrames[p.slot] = p.frames
@@ -90,7 +94,7 @@ final class Core: ObservableObject {
         bufferMs = session.ioBufferDuration * 1000
         let sr = session.sampleRate
         sampleRate = sr
-        fs_mix_prepare(mix, Float(sr), 4096, Int32(Core.slots + 1))
+        fs_mix_prepare(mix, Float(sr), 4096, Int32(Core.slots + 2))
         for (i, v) in voices.enumerated() {
             fs_set_param(v, 6, Float(i + 1))            /* seed: each voice its own random phases */
             fs_prepare(v, Float(sr), 4096)
@@ -99,6 +103,8 @@ final class Core: ObservableObject {
         }
         fs_prepare(piece, Float(sr), 4096)
         fs_mix_add(mix, piece, Float(sr), 1)
+        fs_prepare(raw, Float(sr), 4096)
+        fs_mix_add(mix, raw, Float(sr), 1)
         worstMs.pointee = 0
         outPower.pointee = 0
 
@@ -231,6 +237,18 @@ final class Core: ObservableObject {
         os_unfair_lock_unlock(handoff.lock)
     }
 
+    /* the point card's player: load (nil clears it), play / pause, seek 0-1, where it is */
+    func loadRaw(_ pcm: Decode.Pcm?) {
+        let consts = (pcm?.planar ?? []).map { UnsafePointer($0) as UnsafePointer<Int16>? }
+        os_unfair_lock_lock(handoff.lock)
+        handoff.pending.append((Core.slots, pcm?.planar ?? [], consts, pcm?.frames ?? 0))
+        os_unfair_lock_unlock(handoff.lock)
+    }
+    func playRaw(_ on: Bool) { fs_set_param(raw, 0, on ? 1 : 0) }
+    func seekRaw(_ f: Double) { fs_set_param(raw, 1, Float(f)) }
+    var rawFrames: Int { var s = fs_stats_t(); fs_stats(raw, &s); return Int(s.frames) }
+    static let pieceSlot = Core.slots
+
     func gain(slot: Int, _ g: Float) { fs_mix_set_gain(mix, Int32(slot), g) }
     func lowpass(slot: Int, _ hz: Float) { fs_mix_set_lowpass(mix, Int32(slot), hz, 350) }   /* BED.fade */
     func grit(slot: Int, _ a: Float) { fs_mix_set_grit(mix, Int32(slot), a) }
@@ -297,7 +315,7 @@ struct ContentView: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             T.ground.ignoresSafeArea()
-            if let f = features { MapView(features: f, walk: walk, map: map).ignoresSafeArea() }
+            if let f = features { MapView(features: f, walk: walk, map: map, sheet: $sheet).ignoresSafeArea() }
             else { Text(failed ?? "Loading the map…").font(T.body(T.sm)).foregroundStyle(T.dim).frame(maxHeight: .infinity) }
             VStack(alignment: .leading, spacing: T.s5) {
                 Capsule().fill(T.hairline).frame(width: 38, height: 4).frame(maxWidth: .infinity)
@@ -305,13 +323,16 @@ struct ContentView: View {
                    buttons' taps (Go to did nothing on the simulator, 2026-09-26) */
                 switch sheet {
                 case .walk:
-                    WalkPanel(walk: walk, core: core, onLongPress: { withAnimation(.easeOut(duration: 0.18)) { developer.toggle() } })
+                    WalkPanel(walk: walk, core: core, onLongPress: { withAnimation(.easeOut(duration: 0.18)) { developer.toggle() } },
+                              open: { sheet = .point($0) })
                     if developer {
                         ScrollView { DeveloperPanel(core: core, open: true) }.frame(maxHeight: 360)
                     }
                 case .places: PlacesSheet(walk: walk, map: map, sheet: $sheet).frame(maxHeight: 560)
                 case .layers: LayersSheet(walk: walk, map: map, sheet: $sheet)
                 case .account: AccountSheet(core: core, sheet: $sheet)
+                case .point(let id): PointCard(walk: walk, map: map, sheet: $sheet, id: id)
+                case .route(let i): RouteCard(walk: walk, map: map, sheet: $sheet, index: i)
                 }
             }
             .padding(.horizontal, T.s4).padding(.top, T.s2).padding(.bottom, T.s5)
@@ -319,6 +340,8 @@ struct ContentView: View {
             .overlay(alignment: .top) { Rectangle().fill(T.hairline).frame(height: 1).padding(.horizontal, 20) }
             .animation(.easeOut(duration: 0.18), value: walk.rows)
             .animation(.easeOut(duration: 0.2), value: sheet)
+            /* leaving a point's card stops its player (Listen stays until let go: it is the walk's state) */
+            .onChange(of: sheet) { s in if case .point(let id) = s, id == walk.rawId { return }; if walk.rawId != nil { walk.stopRaw() } }
         }
         .overlay(alignment: .top) { if features != nil { TopBar(walk: walk, sheet: $sheet).padding(.top, T.s2) } }
         .preferredColorScheme(.dark)

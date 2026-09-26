@@ -24,4 +24,13 @@ enum T {
     // spacing
     static let s1: CGFloat = 4, s2: CGFloat = 8, s3: CGFloat = 12, s4: CGFloat = 16, s5: CGFloat = 24, s6: CGFloat = 32, s8: CGFloat = 48
     static let target: CGFloat = 44                                        // M-4: touch targets
+
+    // data scale (Tokens.md): a chord root's colour, hsl(pc x 30, 42%, 62%) - index.html rootColour
+    static func rootHex(_ pc: Int) -> String {
+        let h = Double(((pc % 12) + 12) % 12 * 30), s = 0.42, l = 0.62
+        let c = (1 - abs(2 * l - 1)) * s, x = c * (1 - abs((h / 60).truncatingRemainder(dividingBy: 2) - 1)), m = l - c / 2
+        let (r, g, b): (Double, Double, Double) = h < 60 ? (c, x, 0) : h < 120 ? (x, c, 0) : h < 180 ? (0, c, x) : h < 240 ? (0, x, c) : h < 300 ? (x, 0, c) : (c, 0, x)
+        return String(format: "#%02x%02x%02x", Int(((r + m) * 255).rounded()), Int(((g + m) * 255).rounded()), Int(((b + m) * 255).rounded()))
+    }
+    static func root(_ pc: Int) -> Color { hex(UInt32(rootHex(pc).dropFirst(), radix: 16) ?? 0) }
 }

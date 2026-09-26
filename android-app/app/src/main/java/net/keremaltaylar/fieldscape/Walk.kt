@@ -47,14 +47,74 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
     /** The route whose patch is playing, and the rhythm points sounding (the piece). */
     var route by mutableStateOf<String?>(null)
     var rhythms by mutableStateOf("")
-    /** The route's chord, "chord 7 of 16, D#maj7#11" (from the piece, twice a second). */
+    /** The route's chord, "chord 7 of 16, D#maj7#11" (from the piece, twice a second), and which route and
+     *  step that is: the map lights that chord's stretch of the route. */
     var chord by mutableStateOf<String?>(null)
-    /** The Places sheet: parks with what they hold, routes with their length (boxes are w, s, e, n); everything, framed. */
-    data class Place(val name: String, val detail: String, val box: DoubleArray)
-    data class RouteItem(val name: String, val length: String, val box: DoubleArray)
-    var placeList by mutableStateOf(listOf<Place>())
-    var routeList by mutableStateOf(listOf<RouteItem>())
+    var playingRoute by mutableStateOf(-1)
+    var chordStep by mutableStateOf(-1)
+    /** What a point's card shows (its feature's properties). mode: stretch, rhythm, grains or silent. */
+    data class PointInfo(val id: String, val name: String, val note: String, val mode: String, val lon: Double, val lat: Double,
+                         val peaks: DoubleArray, val duration: Double, val recorded: String?, val path: String?, val sounds: Boolean)
+    /** What a route's card shows: its line, and its patch from the piece (boxes are w, s, e, n). */
+    data class RouteInfo(val index: Int, val name: String, val note: String, val metres: Double, val coords: List<DoubleArray>,
+                         val tempo: Int, val key: String, val key2: String, val sections: Int,
+                         val prog: List<Pair<Int, String>>, val sectors: List<Int>) {
+        val length get() = if (metres < 1000) String.format("%.0f m", metres) else String.format("%.1f km", metres / 1000)
+        val box get() = doubleArrayOf(coords.minOf { it[0] }, coords.minOf { it[1] }, coords.maxOf { it[0] }, coords.maxOf { it[1] })
+    }
+    /** The routes a setter published (the Routes sheet), every point's card, and everything, framed. */
+    var routeList by mutableStateOf(listOf<RouteInfo>())
+    val pointInfo = HashMap<String, PointInfo>()
     var allBounds by mutableStateOf<DoubleArray?>(null)
+    fun distance(id: String): Double? { val h = here ?: return null; val q = pointInfo[id] ?: return null; return Core.geoDistance(h.first, h.second, q.lon, q.lat) }
+
+    /** Listen (the point card): that point alone, at its full level from any distance; the other points and
+     *  the route's sound rest until it is let go. Kerem: "it works as solo". */
+    var solo by mutableStateOf<String?>(null)
+    fun listen(id: String?) {
+        solo = id
+        val pos = lastPos ?: id?.let { pointInfo[it] }?.let { it.lon to it.lat } ?: return
+        step(pos.first, pos.second, moved = lastPos != null)
+    }
+    /** The card's player: a point's recording as it was made. The walk rests while it plays. */
+    var rawId by mutableStateOf<String?>(null)
+    var rawPlaying by mutableStateOf(false)
+    var rawLoading by mutableStateOf(false)
+    var rawPosition by mutableStateOf(0.0)
+    private val rawTick = object : Runnable { override fun run() {
+        rawPosition = Core.rawFrames() / engineRate
+        val q = rawId?.let { pointInfo[it] }
+        if (q != null && rawPosition >= q.duration - 0.05) { setRaw(false); Core.rawSeek(0.0) } else main.postDelayed(this, 250)
+    } }
+    fun playRaw(id: String) {
+        val q = pointInfo[id] ?: return; val path = q.path ?: return
+        if (rawId == id) { if (!rawLoading) setRaw(!rawPlaying); return }
+        stopRaw()
+        rawId = id; rawLoading = true
+        Thread {
+            try {
+                val pcm = Decode.pcm(recording(path, id))
+                main.post {
+                    if (rawId == id) { Core.loadInterleaved(Core.SLOTS, pcm.data, pcm.channels, pcm.frames, pcm.rate.toDouble()); rawLoading = false; setRaw(true) }
+                    Core.freeDirect(pcm.data)
+                }
+            } catch (e: Throwable) { main.post { if (rawId == id) { rawLoading = false; rawId = null; failure = "Could not play ${q.name}: ${e.message}" } } }
+        }.start()
+    }
+    fun seekRaw(f: Double) = Core.rawSeek(f)
+    fun stopRaw() {
+        setRaw(false)
+        if (rawId != null) { Core.rawClear(); Core.collect() }
+        rawId = null; rawPosition = 0.0; rawLoading = false
+    }
+    private fun setRaw(on: Boolean) {
+        rawPlaying = on
+        Core.rawPlay(on)
+        main.removeCallbacks(rawTick)
+        if (on) main.post(rawTick)
+        lastPos?.let { step(it.first, it.second, moved = false) }
+    }
+    private var lastPos: Pair<Double, Double>? = null
     /** The Zones layer's circles (lon, lat, metres), and the Sections layer's cells with the one underfoot. */
     val zoneCircles: List<DoubleArray> by lazy {
         Core.pieceZones().lines().filter { it.isNotBlank() }.map { l -> l.split(" ").map { it.toDouble() }.toDoubleArray() }
@@ -104,26 +164,37 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
                   sounds = p.optBoolean("has_audio") && mode != "hits" && mode != "grains")
         }
         Core.pieceStart(features.toString())
-        /* what the Places sheet lists */
-        fun box(pts: List<DoubleArray>) = doubleArrayOf(pts.minOf { it[0] }, pts.minOf { it[1] }, pts.maxOf { it[0] }, pts.maxOf { it[1] })
-        val starts = Core.pieceRouteStarts().lines().filter { it.isNotBlank() }.map { l -> l.split("\t").let { doubleArrayOf(it[1].toDouble(), it[2].toDouble()) } }
-        fun inside(lon: Double, lat: Double, rings: List<DoubleArray>) = rings.any { Core.pointInRing(lon, lat, it) }
-        fun plural(n: Int, w: String) = if (n > 0) "$n $w${if (n == 1) "" else "s"}" else null
-        placeList = parks.map { (name, rings) ->
-            val recs = points.count { inside(it.lon, it.lat, rings) }
-            val rts = starts.count { inside(it[0], it[1], rings) }
-            val detail = listOfNotNull(plural(rts, "route"), plural(recs, "recording")).joinToString(" · ").ifEmpty { "nothing yet" }
-            Place(name, detail, box(rings.flatMap { r -> (0 until r.size / 2).map { doubleArrayOf(r[2 * it], r[2 * it + 1]) } }))
-        }.sortedWith(compareBy({ it.detail == "nothing yet" }, { it.name }))
-        routeList = Core.pieceRoutes().lines().filter { it.isNotBlank() }.map { l ->
-            val (name, m, b) = l.split("\t"); val metres = m.toDouble()
-            RouteItem(name, if (metres < 1000) String.format("%.0f m", metres) else String.format("%.1f km", metres / 1000),
-                      b.split(" ").map { it.toDouble() }.toDoubleArray())
+        /* every point's card, and the routes with their patches */
+        for (i in 0 until fs.length()) {
+            val f = fs.getJSONObject(i)
+            val g = f.optJSONObject("geometry") ?: continue
+            if (g.optString("type") != "Point") continue
+            val c = g.getJSONArray("coordinates"); val p = f.getJSONObject("properties")
+            val a = p.optJSONObject("audio") ?: JSONObject()
+            val m = p.optString("audio_mode", ""); val has = p.optBoolean("has_audio")
+            val mode = when { m == "hits" -> "rhythm"; m == "grains" -> "grains"; has -> "stretch"; else -> "silent" }
+            val pk = a.optJSONArray("peaks")
+            val id = p.optString("id")
+            pointInfo[id] = PointInfo(id, p.optString("name", "Unnamed point").ifEmpty { "Unnamed point" }, p.optString("note", ""), mode,
+                c.getDouble(0), c.getDouble(1), DoubleArray(pk?.length() ?: 0) { pk!!.getDouble(it) }, a.optDouble("duration_s", 0.0),
+                a.optString("recorded_at").ifEmpty { p.optString("created_at").ifEmpty { null } },
+                if (has) p.optString("storage_path").ifEmpty { null } else null, mode == "stretch")
         }
-        val all = points.map { doubleArrayOf(it.lon, it.lat) } + routeList.flatMap { listOf(doubleArrayOf(it.box[0], it.box[1]), doubleArrayOf(it.box[2], it.box[3])) }
-        if (all.isNotEmpty()) allBounds = box(all)
+        routeList = Core.pieceRoutes().lines().filter { it.isNotBlank() }.indices.mapNotNull { i ->
+            val j = Core.pieceRouteInfo(i).ifEmpty { return@mapNotNull null }.let { JSONObject(it) }
+            val cs = j.getJSONArray("coords"); val pr = j.getJSONArray("prog"); val se = j.getJSONArray("sectors")
+            val coords = (0 until cs.length()).map { k -> doubleArrayOf(cs.getJSONArray(k).getDouble(0), cs.getJSONArray(k).getDouble(1)) }
+            RouteInfo(i, j.optString("name"), j.optString("note"), Core.pieceRoutes().lines()[i].split("\t")[1].toDouble(), coords,
+                j.optInt("tempo", 72), j.optString("key"), j.optString("key2"), j.optInt("sections"),
+                (0 until pr.length()).map { k -> pr.getJSONArray(k).let { it.getInt(0) to it.getString(1) } },
+                (0 until se.length()).map { se.getInt(it) })
+        }
+        val all = points.map { doubleArrayOf(it.lon, it.lat) } + routeList.flatMap { it.coords }
+        if (all.isNotEmpty()) allBounds = doubleArrayOf(all.minOf { it[0] }, all.minOf { it[1] }, all.maxOf { it[0] }, all.maxOf { it[1] })
         main.post(object : Runnable { override fun run() {
             val c = Core.pieceChord().ifEmpty { null }; if (c != chord) chord = c
+            val r = Core.piecePlayingRoute(); if (r != playingRoute) playingRoute = r
+            val k = if (r >= 0) Core.pieceChordStep() else -1; if (k != chordStep) chordStep = k
             main.postDelayed(this, 500)
         } })
     }
@@ -140,7 +211,6 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
     /** The walker put down on the map by hand, to listen from anywhere. */
     fun walkBy(lon: Double, lat: Double) {
         mode = Mode.ByHand
-        here = lon to lat
         step(lon, lat)
     }
     /** Back to the phone's own position. */
@@ -149,19 +219,21 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
     override fun onLocationChanged(l: Location) {
         if (mode == Mode.ByHand) return
         val acc = l.accuracy.toDouble()
-        here = l.longitude to l.latitude
-        if (acc > Core.GPS_ACC_MAX) { mode = Mode.Holding(acc); return }
+        if (acc > Core.GPS_ACC_MAX) { here = l.longitude to l.latitude; mode = Mode.Holding(acc); return }
         mode = Mode.Live(acc)
         step(l.longitude, l.latitude)
     }
 
-    fun step(lon: Double, lat: Double) {
+    fun step(lon: Double, lat: Double, moved: Boolean = true) {
+        if (moved) { here = lon to lat; lastPos = lon to lat }
         val n = points.size
         val dist = DoubleArray(n) { Core.geoDistance(lon, lat, points[it].lon, points[it].lat) }
         val radius = DoubleArray(n) { points[it].radius }
         val eligible = BooleanArray(n) { points[it].sounds }
         val voices = minOf(Core.SLOTS, Core.pieceBedVoices())             // the playing patch's bed: on, and how many
-        val chosen = Core.pickVoices(dist, radius, eligible, voices, false).toList()
+        val soloIndex = solo?.let { id -> points.indexOfFirst { it.id == id }.takeIf { it >= 0 } }
+        val chosen = soloIndex?.let { listOf(it) } ?: Core.pickVoices(dist, radius, eligible, voices, false).toList()
+        val rest = rawPlaying                                              /* the card's player rests the walk */
         val want = chosen.map { points[it].id }.toSet()
         for ((id, slot) in slotOf.toMap()) if (id !in want) {                // left: fade, free after the ramp
             Core.gain(slot, 0f)
@@ -171,12 +243,16 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
             val p = points[j]
             if (p.id !in slotOf) freeSlot()?.let { slotOf[p.id] = it; begin(p, it) }
             val slot = slotOf[p.id] ?: continue
-            earned[p.id] = Core.pointGain(dist[j], p.radius, p.gain).toFloat()
+            val full = soloIndex == j
+            earned[p.id] = if (rest) 0f else (if (full) p.gain else Core.pointGain(dist[j], p.radius, p.gain)).toFloat()
             Core.gain(slot, if (p.id in loaded) earned[p.id]!! else 0f)
-            Core.lowpass(slot, (300 + (p.brightest - 300) * Core.pointProximity(dist[j], p.radius)).toFloat())   // ensureVoice
+            Core.lowpass(slot, (if (full) p.brightest else 300 + (p.brightest - 300) * Core.pointProximity(dist[j], p.radius)).toFloat())   // ensureVoice
         }
-        rows = chosen.map { j -> val p = points[j]; Row(p.id, p.name, Core.pointGain(dist[j], p.radius, 1.0), dist[j], phaseOf(p.id)) }
-        nearest = if (rows.isEmpty()) (0 until n).filter { points[it].sounds }.minByOrNull { dist[it] }?.let {
+        Core.gain(Core.SLOTS, if (rest || soloIndex != null) 0f else 1f)       /* the piece's slot */
+        /* the panel: the two nearest points of any kind, each opening its card */
+        rows = (0 until n).sortedBy { dist[it] }.take(2).map { j -> val p = points[j]
+            Row(p.id, p.name, if (soloIndex == j) 1.0 else if (soloIndex != null) 0.0 else Core.pointGain(dist[j], p.radius, 1.0), dist[j], phaseOf(p.id)) }
+        nearest = if (chosen.isEmpty()) (0 until n).filter { points[it].sounds }.minByOrNull { dist[it] }?.let {
             Nearest(points[it].name, dist[it], direction(lon, lat, points[it].lon, points[it].lat)) } else null
         updatePlace(lon, lat)
         Core.pieceStep(lon, lat).lines().filter { it.isNotBlank() }.forEach { loadRhythm(it) }
@@ -185,7 +261,7 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
         Core.collect()
     }
 
-    private fun phaseOf(id: String) = if (id in loaded) Phase.Playing else phase[id] ?: Phase.Decoding
+    private fun phaseOf(id: String) = if (id !in slotOf || id in loaded) Phase.Playing else phase[id] ?: Phase.Decoding
     private fun refreshRows() { rows = rows.map { it.copy(phase = phaseOf(it.id)) } }
 
     private fun freeSlot(): Int? = (0 until Core.SLOTS).firstOrNull { s ->

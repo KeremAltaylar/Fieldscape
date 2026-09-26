@@ -520,6 +520,22 @@ struct Inbox {
     int chord = -1, nprog = 0; char chord_label[24] = "";   /* the chord playing, for the screen */
 };
 
+/* chordRoot / chordQuality of a patch's step */
+static int root_of(const Patch &P, int step) {
+    const Chord &c = step < P.nprog ? P.prog[step] : P.prog[0];
+    int base = (c.k == 2 ? P.key2 : P.key) + c.r;
+    if (!c.sd) return base;
+    const Chord &nx = P.prog[(step + 1) % P.nprog];
+    return (nx.k == 2 ? P.key2 : P.key) + nx.r + 7;
+}
+static int quality_of(const Patch &P, int step) {
+    const Chord &c = step < P.nprog ? P.prog[step] : P.prog[0];
+    if (c.sd && !dom_q(c.q)) return Q_7B9;
+    return c.q;
+}
+static const char *const NOTE[12] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+static int pc12(int m) { return ((m % 12) + 12) % 12; }
+
 struct Piece : Device {
     double sr = 48000;
     long long frame = 0;
@@ -702,18 +718,8 @@ struct Piece : Device {
         else if (raw > H.idx + 1.25 || raw < H.idx - 0.25) H.idx = std::max(0, std::min(n - 1, (int)std::floor(raw)));
         return H.idx;
     }
-    int chord_root(int step) {
-        const Chord &c = step < patch.nprog ? patch.prog[step] : patch.prog[0];
-        int base = (c.k == 2 ? patch.key2 : patch.key) + c.r;
-        if (!c.sd) return base;
-        const Chord &nx = patch.prog[(step + 1) % patch.nprog];
-        return (nx.k == 2 ? patch.key2 : patch.key) + nx.r + 7;
-    }
-    int chord_quality(int step) {
-        const Chord &c = step < patch.nprog ? patch.prog[step] : patch.prog[0];
-        if (c.sd && !dom_q(c.q)) return Q_7B9;
-        return c.q;
-    }
+    int chord_root(int step) { return root_of(patch, step); }
+    int chord_quality(int step) { return quality_of(patch, step); }
     int chord_tones(int step, int *out) {
         int q = chord_quality(step);
         if (q < 0) q = Q_M7;
@@ -1193,7 +1199,6 @@ struct Piece : Device {
         in.taken = route; in.sect_n = patch.sect.n; in.bed_voices = patch.bed_on ? patch.bed_voices : 0;
         in.chord = H.chord; in.nprog = patch.nprog;
         if (H.chord >= 0) {                /* chordLabel: root name + quality, as the web writes it */
-            static const char *const NOTE[12] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
             int q = chord_quality(H.chord);
             std::snprintf(in.chord_label, sizeof in.chord_label, "%s%s", NOTE[pc(chord_root(H.chord))], q >= 0 ? CHORDS[q].name : "m7");
         } else in.chord_label[0] = 0;
@@ -1379,6 +1384,28 @@ int fs_piece_chord(fs_device *d, int *count, char *label, int label_size) {
     if (count) *count = p->in.nprog;
     if (label && label_size > 0) { std::strncpy(label, p->in.chord_label, label_size - 1); label[label_size - 1] = 0; }
     return p->in.chord;
+}
+
+/* A route's patch for the screen, as JSON: {"tempo":72,"key":"D","key2":"G","sections":7,"voices":4,
+   "prog":[[root pc, "Dm7"], ...16], "sectors":[root pc, ...]} - the chord segments along the route and the
+   section colours follow the roots (the web's rootColour). Returns the length written, 0 if no such route. */
+int fs_piece_route_info(fs_device *d, int route, char *out, int size) {
+    Piece *p = P(d); if (!p || !out || size < 64) return 0;
+    std::lock_guard<std::mutex> g(p->mu);
+    if (route < 0 || route >= (int)p->in.routes.size()) { out[0] = 0; return 0; }
+    const Patch &pt = p->in.routes[route];
+    std::string o = "{\"tempo\":" + std::to_string((int)std::lround(pt.tempo)) + ",\"key\":\"" + NOTE[pc12(pt.key)] +
+                    "\",\"key2\":\"" + NOTE[pc12(pt.key2)] + "\",\"sections\":" + std::to_string(pt.sect.n) +
+                    ",\"voices\":" + std::to_string(pt.bed_on ? pt.bed_voices : 0) + ",\"prog\":[";
+    for (int i = 0; i < pt.nprog; i++) {
+        int q = quality_of(pt, i), r = root_of(pt, i);
+        o += (i ? ",[" : "[") + std::to_string(pc12(r)) + ",\"" + NOTE[pc12(r)] + (q >= 0 ? CHORDS[q].name : "m7") + "\"]";
+    }
+    o += "],\"sectors\":[";
+    for (int i = 0; i < pt.nsectors; i++) o += (i ? "," : "") + std::to_string(pc12(pt.key + pt.sectors[i].r));
+    o += "]}";
+    std::snprintf(out, size, "%s", o.c_str());
+    return (int)std::strlen(out);
 }
 
 int fs_piece_route(fs_device *d) { Piece *p = P(d); if (!p) return -1; std::lock_guard<std::mutex> g(p->mu); return p->in.taken; }

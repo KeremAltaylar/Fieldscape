@@ -46,6 +46,14 @@ object Core {
     @JvmStatic external fun pieceZones(): String
     @JvmStatic external fun pieceSections(): String
     @JvmStatic external fun pieceChord(): String
+    @JvmStatic external fun pieceRouteInfo(i: Int): String
+    @JvmStatic external fun piecePlayingRoute(): Int
+    @JvmStatic external fun pieceChordStep(): Int
+    /** The point card's player (core/devices/play.cpp): load with loadInterleaved(SLOTS, ...). */
+    @JvmStatic external fun rawPlay(on: Boolean)
+    @JvmStatic external fun rawSeek(f: Double)
+    @JvmStatic external fun rawFrames(): Long
+    @JvmStatic external fun rawClear()
     /** Sound / Stop: fade the whole output to [to] over [seconds]. */
     @JvmStatic external fun master(to: Float, seconds: Float)
     @JvmStatic external fun pieceRhythms(): String

@@ -23,8 +23,6 @@ final class RouteSound {
     private let t0 = Date()
     /* what the walk panel shows */
     private(set) var routeName: String? = nil
-    /* every route and where it starts: the panel's Go to buttons */
-    private(set) var routeStarts: [(name: String, lon: Double, lat: Double)] = []
     /* every route's line (lon, lat pairs) and length, for the Places list and framing */
     private(set) var routeLines: [(name: String, coords: [[Double]], metres: Double)] = []
     /* every point's zone (the zoneR circle), for the Zones layer */
@@ -54,7 +52,6 @@ final class RouteSound {
                 guard let r = fs_route_create(&flat, Int32(c.count)), fs_route_length(r) > 0 else { continue }
                 routes.append(r)
                 routeNames.append(p["name"] as? String ?? "Route")
-                routeStarts.append((p["name"] as? String ?? "Route", c[0][0], c[0][1]))
                 routeLines.append((p["name"] as? String ?? "Route", c, fs_route_length(r)))
                 _ = fs_piece_add_route(piece, RouteSound.json(p["patch"]))
             } else if g["type"] as? String == "Point", let c = g["coordinates"] as? [Double], c.count >= 2 {

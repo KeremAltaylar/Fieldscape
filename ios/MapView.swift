@@ -29,13 +29,14 @@ enum Supa {
 
 /* Studio tokens (Design System/Tokens.md), as the web resolves them from OKLCH. */
 enum Ink {
-    static let sunk = "#0d1310", ink = "#e3e7e4", lamp = "#bae6b1"
+    static let sunk = "#0d1310", ink = "#e3e7e4", lamp = "#bae6b1", accent = "#bbceb5"
 }
 
 struct MapView: UIViewRepresentable {
     let features: [String: Any]
     @ObservedObject var walk: Walk
     @ObservedObject var map: MapState
+    @Binding var sheet: Sheet
 
     func makeUIView(context: Context) -> MLNMapView {
         let v = MLNMapView(frame: .zero, styleURL: styleURL())
@@ -45,10 +46,11 @@ struct MapView: UIViewRepresentable {
         v.attributionButton.tintColor = UIColor(T.faint)
         v.delegate = context.coordinator
         v.showsUserLocation = true
-        /* walking by hand: a tap puts the walker there, a press-and-drag walks it (the web's
-           draggable walker) - so a place can be heard from anywhere, and a point or the route
-           line is reached by tapping it */
-        /* MapLibre has its own tap and press recognisers on the view, which won over these (Kerem's
+        /* A tap opens what is under it - a point's card, a route's card. The walker moves by being
+           dragged (Kerem, 2026-09-26: "move the listener by clicking and dragging it, this will allow
+           us to click points and routes"): a drag that starts on the dot moves it at once; a press
+           and hold anywhere puts it there and keeps dragging.
+           MapLibre has its own tap and press recognisers on the view, which won over these (Kerem's
            iPhone: taps did nothing): the delegate lets ours recognise alongside them. */
         let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Frame.tapped(_:)))
         tap.delegate = context.coordinator
@@ -58,18 +60,22 @@ struct MapView: UIViewRepresentable {
         drag.minimumPressDuration = 0.25
         drag.delegate = context.coordinator
         v.addGestureRecognizer(drag)
+        let grab = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Frame.dragged(_:)))
+        grab.delegate = context.coordinator
+        context.coordinator.grab = grab
+        v.addGestureRecognizer(grab)
+        /* a press that became a walk is not also a tap on what lies under it */
+        tap.require(toFail: drag); tap.require(toFail: grab)
         return v
     }
 
     func updateUIView(_ v: MLNMapView, context: Context) {
         context.coordinator.walk = walk
         context.coordinator.map = map
+        context.coordinator.pick = { s in sheet = s }
+        context.coordinator.carded = sheet != .walk && sheet != .places && sheet != .layers && sheet != .account
         context.coordinator.apply(map, walk, on: v)
         context.coordinator.show(walk.mode == .byHand ? walk.here : nil, on: v)
-        if let g = walk.goTo, context.coordinator.wentTo.map({ $0.latitude != g.latitude || $0.longitude != g.longitude }) ?? true {
-            context.coordinator.wentTo = g
-            v.setCenter(g, zoomLevel: 16.5, animated: true)
-        }
     }
 
     func makeCoordinator() -> Frame { let f = Frame(bounds: bounds()); f.walk = walk; return f }
@@ -77,14 +83,29 @@ struct MapView: UIViewRepresentable {
     /* Framing needs the view's real size, which it only has once the style has loaded. */
     final class Frame: NSObject, MLNMapViewDelegate, UIGestureRecognizerDelegate {
         func gestureRecognizer(_ g: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith o: UIGestureRecognizer) -> Bool { true }
+        /* A touch that lands on the walker's dot drags it, and the map holds still; any other touch
+           leaves the map free to pan (asked at touch-down, before any recogniser decides). */
+        func gestureRecognizer(_ g: UIGestureRecognizer, shouldReceive t: UITouch) -> Bool {
+            guard g === grab, let v = g.view as? MLNMapView else { return true }
+            let on = walk?.here.map { h -> Bool in
+                let p = v.convert(h, toPointTo: v), q = t.location(in: v)
+                return hypot(p.x - q.x, p.y - q.y) < 32
+            } ?? false
+            v.isScrollEnabled = !on
+            return on
+        }
         let bounds: MLNCoordinateBounds?
         weak var walk: Walk?
         weak var map: MapState?
-        var wentTo: CLLocationCoordinate2D?
+        weak var grab: UIPanGestureRecognizer?
+        var pick: (Sheet) -> Void = { _ in }
+        var carded = false
         private var style: MLNStyle?
         private var framed: UUID?
-        private var zonesDone = false
+        private var zonesKey = ""
         private var sectionsKey = ""
+        private var progKey = ""
+        private var segments: [[String: Any]] = []           /* every route's chord segments, drawn once */
 
         /* The Layers sheet's choices, the Places sheet's framing, and the zone / section overlays. */
         func apply(_ m: MapState, _ w: Walk, on v: MLNMapView) {
@@ -95,17 +116,48 @@ struct MapView: UIViewRepresentable {
             guard let s = style else { return }
             for (id, base) in [("base-osm", MapState.Base.map), ("base-topo", .topo), ("base-sat", .satellite)] { s.layer(withIdentifier: id)?.isVisible = m.base == base }
             s.layer(withIdentifier: "park-line")?.isVisible = m.boundary
-            s.layer(withIdentifier: "zones-line")?.isVisible = m.zones
-            s.layer(withIdentifier: "sections-fill")?.isVisible = m.sections
-            s.layer(withIdentifier: "sections-line")?.isVisible = m.sections
-            if m.zones && !zonesDone, let src = s.source(withIdentifier: "zones") as? MLNShapeSource {
-                zonesDone = true
-                src.shape = MapView.shape(w.zoneCircles.map { MapView.circle($0.lon, $0.lat, $0.r) }, active: -1)
+            for id in ["zones-fill", "zones-line"] { s.layer(withIdentifier: id)?.isVisible = m.zones }
+            for id in ["sections-fill", "sections-line"] { s.layer(withIdentifier: id)?.isVisible = m.sections }
+            /* zones: the one you stand in lit (drawZones) */
+            if m.zones, let src = s.source(withIdentifier: "zones") as? MLNShapeSource {
+                let zs = w.zoneCircles
+                let inside = zs.map { z in w.here.map { fs_geo_distance($0.longitude, $0.latitude, z.lon, z.lat) <= z.r } ?? false }
+                let key = "\(zs.count) " + inside.map { $0 ? "1" : "0" }.joined()
+                if key != zonesKey {
+                    zonesKey = key
+                    src.shape = MapView.shape(zs.indices.map { i in (MapView.circle(zs[i].lon, zs[i].lat, zs[i].r), ["inside": inside[i] ? 1 : 0]) })
+                }
             }
+            /* sections: each in its mode's root colour from the playing route (drawSectors), the one underfoot lit */
             if m.sections, let src = s.source(withIdentifier: "sections") as? MLNShapeSource {
                 let (cells, active) = w.sectionCells()
-                let key = "\(cells.count) \(active) \(cells.first?.first ?? [])"
-                if key != sectionsKey { sectionsKey = key; src.shape = MapView.shape(cells, active: active) }
+                let roots = w.playingRoute >= 0 && w.playingRoute < w.routeList.count ? w.routeList[w.playingRoute].sectors : (w.routeList.first?.sectors ?? [])
+                let key = "\(cells.count) \(active) \(w.playingRoute) \(cells.first?.first ?? [])"
+                if key != sectionsKey {
+                    sectionsKey = key
+                    src.shape = MapView.shape(cells.indices.map { i in
+                        (cells[i], ["active": i == active ? 1 : 0, "colour": roots.isEmpty ? Ink.lamp : T.rootHex(roots[i % roots.count])] as [String: Any])
+                    })
+                }
+            }
+            /* the progression along every route, the chord playing lit (drawProgSegments) */
+            if let src = s.source(withIdentifier: "progseg") as? MLNShapeSource {
+                if segments.isEmpty {
+                    for r in w.routeList { for (k, c) in r.prog.enumerated() {
+                        let n = Double(r.prog.count)
+                        segments.append(["route": r.index, "step": k, "colour": T.rootHex(c.pc), "coords": MapView.segment(r.coords, Double(k) / n, Double(k + 1) / n)])
+                    } }
+                }
+                let key = "\(segments.count) \(w.playingRoute) \(w.chordStep)"
+                if key != progKey {
+                    progKey = key
+                    let fc: [String: Any] = ["type": "FeatureCollection", "features": segments.map { f -> [String: Any] in
+                        let lit = f["route"] as? Int == w.playingRoute && f["step"] as? Int == w.chordStep
+                        return ["type": "Feature", "properties": ["route": f["route"]!, "step": f["step"]!, "colour": f["colour"]!, "active": lit ? 1 : 0],
+                                "geometry": ["type": "LineString", "coordinates": f["coords"]!]]
+                    }]
+                    if let d = try? JSONSerialization.data(withJSONObject: fc), let sh = try? MLNShape(data: d, encoding: String.Encoding.utf8.rawValue) { src.shape = sh }
+                }
             }
         }
         private var walker: MLNPointAnnotation?
@@ -114,16 +166,24 @@ struct MapView: UIViewRepresentable {
         private var centred = false
 
         @objc func tapped(_ g: UITapGestureRecognizer) {
-            guard let v = g.view as? MLNMapView else { return }
-            let c = v.convert(g.location(in: v), toCoordinateFrom: v)
-            walk?.walkBy(lon: c.longitude, lat: c.latitude)
+            guard let v = g.view as? MLNMapView, let w = walk else { return }
+            let p = g.location(in: v), box = CGRect(x: p.x - 22, y: p.y - 22, width: 44, height: 44)   /* M-4: a 44 pt target */
+            if let f = v.visibleFeatures(in: box, styleLayerIdentifiers: ["point-dot"]).first, let id = (f.attribute(forKey: "id") as? String) ?? (f.identifier as? String) {
+                pick(.point(id)); return
+            }
+            let rs = v.visibleFeatures(in: box, styleLayerIdentifiers: ["prog-seg", "route-line"])
+            if let i = rs.compactMap({ $0.attribute(forKey: "route") as? Int }).first
+                ?? rs.compactMap({ f in (f.attribute(forKey: "name") as? String).flatMap { n in w.routeList.first { $0.name == n }?.index } }).first {
+                pick(.route(i)); return
+            }
+            if carded { pick(.walk) }                                    /* a tap on nothing closes a card */
         }
-        @objc func dragged(_ g: UILongPressGestureRecognizer) {
+        @objc func dragged(_ g: UIGestureRecognizer) {
             guard let v = g.view as? MLNMapView else { return }
             let c = v.convert(g.location(in: v), toCoordinateFrom: v)
             /* while the walker is dragged the map holds still */
             if g.state == .began { lastDrag = nil; v.isScrollEnabled = false }
-            if g.state == .ended || g.state == .cancelled || g.state == .failed { v.isScrollEnabled = true }
+            if g.state == .ended || g.state == .cancelled || g.state == .failed { v.isScrollEnabled = true; return }
             /* a fix every couple of metres, as GPS would give (distanceFilter 2) */
             if let l = lastDrag, fs_geo_distance(l.longitude, l.latitude, c.longitude, c.latitude) < 2, g.state == .changed { return }
             lastDrag = c
@@ -138,11 +198,16 @@ struct MapView: UIViewRepresentable {
         func mapView(_ v: MLNMapView, viewFor a: MLNAnnotation) -> MLNAnnotationView? {
             guard a === walker else { return nil }
             let view = MLNAnnotationView(reuseIdentifier: "walker")
-            view.frame = CGRect(x: 0, y: 0, width: 22, height: 22)
-            view.layer.cornerRadius = 11
-            view.backgroundColor = UIColor(T.lamp)
+            /* the walker is not a recording: ink, ringed, larger than any point, so it reads as "you" */
+            view.frame = CGRect(x: 0, y: 0, width: 26, height: 26)
+            view.layer.cornerRadius = 13
+            view.backgroundColor = UIColor(T.ink)
             view.layer.borderColor = UIColor(T.sunk).cgColor
-            view.layer.borderWidth = 3
+            view.layer.borderWidth = 4
+            view.layer.shadowColor = UIColor(T.sunk).cgColor
+            view.layer.shadowOpacity = 0.6
+            view.layer.shadowRadius = 6
+            view.layer.shadowOffset = .zero
             return view
         }
         func mapView(_ v: MLNMapView, didFinishLoading style: MLNStyle) {
@@ -175,7 +240,8 @@ struct MapView: UIViewRepresentable {
                 "features": ["type": "geojson", "data": features],
                 "parks": ["type": "geojson", "data": MapView.parks()],
                 "zones": ["type": "geojson", "data": ["type": "FeatureCollection", "features": []]],
-                "sections": ["type": "geojson", "data": ["type": "FeatureCollection", "features": []]]
+                "sections": ["type": "geojson", "data": ["type": "FeatureCollection", "features": []]],
+                "progseg": ["type": "geojson", "data": ["type": "FeatureCollection", "features": []]]
             ],
             "layers": [
                 ["id": "ground", "type": "background", "paint": ["background-color": Ink.sunk]],
@@ -183,12 +249,18 @@ struct MapView: UIViewRepresentable {
                 ["id": "base-topo", "type": "raster", "source": "base-topo", "layout": ["visibility": "none"]],
                 ["id": "base-sat", "type": "raster", "source": "base-sat"],
                 ["id": "park-line", "type": "line", "source": "parks", "paint": ["line-color": Ink.ink, "line-opacity": 0.75, "line-width": 1.5]],
-                ["id": "sections-fill", "type": "fill", "source": "sections", "layout": ["visibility": "none"],
-                 "paint": ["fill-color": Ink.lamp, "fill-opacity": ["case", ["==", ["get", "active"], 1], 0.14, 0.03]]],
-                ["id": "sections-line", "type": "line", "source": "sections", "layout": ["visibility": "none"],
-                 "paint": ["line-color": Ink.lamp, "line-opacity": 0.5, "line-width": 1, "line-dasharray": [3, 3]]],
-                ["id": "zones-line", "type": "line", "source": "zones", "layout": ["visibility": "none"],
-                 "paint": ["line-color": Ink.lamp, "line-opacity": 0.85, "line-width": 1.6, "line-dasharray": [2, 2]]],
+                /* the web's own sections and zones (index.html sector-* / zone-*): coloured, filled, the
+                   one underfoot lit - Kerem asked for them "more distinguishable and present" */
+                ["id": "sections-fill", "type": "fill", "source": "sections",
+                 "paint": ["fill-color": ["get", "colour"], "fill-opacity": ["case", ["==", ["get", "active"], 1], 0.22, 0.10]]],
+                ["id": "sections-line", "type": "line", "source": "sections",
+                 "paint": ["line-color": ["get", "colour"], "line-opacity": 0.7, "line-width": ["case", ["==", ["get", "active"], 1], 2, 1]]],
+                ["id": "zones-fill", "type": "fill", "source": "zones",
+                 "paint": ["fill-color": ["case", ["==", ["get", "inside"], 1], Ink.lamp, Ink.accent],
+                           "fill-opacity": ["case", ["==", ["get", "inside"], 1], 0.34, 0.16]]],
+                ["id": "zones-line", "type": "line", "source": "zones",
+                 "paint": ["line-color": ["case", ["==", ["get", "inside"], 1], Ink.lamp, Ink.accent],
+                           "line-width": ["case", ["==", ["get", "inside"], 1], 2.4, 1.4], "line-opacity": 0.9]],
                 ["id": "route-casing", "type": "line", "source": "features",
                  "filter": ["==", ["geometry-type"], "LineString"],
                  "paint": ["line-color": Ink.sunk, "line-opacity": 0.8, "line-width": 8],
@@ -197,6 +269,14 @@ struct MapView: UIViewRepresentable {
                  "filter": ["==", ["geometry-type"], "LineString"],
                  "paint": ["line-color": "#ffffff", "line-width": 3],
                  "layout": ["line-cap": "round", "line-join": "round"]],
+                /* the progression beside the route: sixteen chords, each its root's colour, the one
+                   playing thick (index.html prog-seg / prog-active) */
+                ["id": "prog-seg", "type": "line", "source": "progseg",
+                 "paint": ["line-color": ["get", "colour"], "line-width": 5, "line-opacity": 0.85, "line-offset": 8],
+                 "layout": ["line-cap": "butt", "line-join": "round"]],
+                ["id": "prog-active", "type": "line", "source": "progseg", "filter": ["==", ["get", "active"], 1],
+                 "paint": ["line-color": ["get", "colour"], "line-width": 11, "line-opacity": 1, "line-offset": 8],
+                 "layout": ["line-cap": "butt", "line-join": "round"]],
                 ["id": "point-halo", "type": "circle", "source": "features",
                  "filter": ["==", ["geometry-type"], "Point"],
                  "paint": ["circle-radius": ["interpolate", ["linear"], ["zoom"],
@@ -227,14 +307,28 @@ struct MapView: UIViewRepresentable {
         let dLat = r / 111_320, dLon = r / (111_320 * cos(lat * .pi / 180))
         return (0...48).map { i in let a = Double(i) / 48 * 2 * .pi; return [lon + dLon * cos(a), lat + dLat * sin(a)] }
     }
-    /* rings -> an MLNShape (polygons, the active one marked) */
-    static func shape(_ rings: [[[Double]]], active: Int) -> MLNShape {
-        let fc: [String: Any] = ["type": "FeatureCollection", "features": rings.enumerated().map { i, r -> [String: Any] in
+    /* rings with their properties -> an MLNShape of polygons */
+    static func shape(_ rings: [([[Double]], [String: Any])]) -> MLNShape {
+        let fc: [String: Any] = ["type": "FeatureCollection", "features": rings.map { r, props -> [String: Any] in
             let closed = r.first == r.last ? r : r + [r[0]]
-            return ["type": "Feature", "properties": ["active": i == active ? 1 : 0], "geometry": ["type": "Polygon", "coordinates": [closed]]]
+            return ["type": "Feature", "properties": props, "geometry": ["type": "Polygon", "coordinates": [closed]]]
         }]
         let data = (try? JSONSerialization.data(withJSONObject: fc)) ?? Data()
         return (try? MLNShape(data: data, encoding: String.Encoding.utf8.rawValue)) ?? MLNShapeCollectionFeature(shapes: [])
+    }
+
+    /* the stretch of a line from t0 to t1 of its length (index.html segmentCoords) */
+    static func segment(_ c: [[Double]], _ t0: Double, _ t1: Double) -> [[Double]] {
+        var cum = [0.0]
+        for i in 1..<max(c.count, 1) { cum.append(cum[i - 1] + fs_geo_distance(c[i - 1][0], c[i - 1][1], c[i][0], c[i][1])) }
+        let total = cum.last ?? 0
+        func at(_ d: Double) -> [Double] {
+            guard total > 0, let i = cum.indices.dropFirst().first(where: { cum[$0] >= d }) else { return c.last ?? [0, 0] }
+            let f = (d - cum[i - 1]) / max(cum[i] - cum[i - 1], 1e-9)
+            return [c[i - 1][0] + (c[i][0] - c[i - 1][0]) * f, c[i - 1][1] + (c[i][1] - c[i - 1][1]) * f]
+        }
+        let d0 = t0 * total, d1 = t1 * total
+        return [at(d0)] + c.indices.filter { cum[$0] > d0 && cum[$0] < d1 }.map { c[$0] } + [at(d1)]
     }
 
     /* Everything published, framed. */

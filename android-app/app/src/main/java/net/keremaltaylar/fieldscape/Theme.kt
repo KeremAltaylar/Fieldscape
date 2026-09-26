@@ -20,4 +20,14 @@ object T {
     val xs = 10.88.sp; val sm = 12.48.sp; val base = 17.sp; val md = 18.4.sp
     val s1 = 4.dp; val s2 = 8.dp; val s3 = 12.dp; val s4 = 16.dp; val s5 = 24.dp
     val target = 48.dp          // Android's touch target (Material), the M-4 floor here
+
+    /** data scale (Tokens.md): a chord root's colour, hsl(pc x 30, 42%, 62%) - index.html rootColour */
+    fun rootHex(pc: Int): String {
+        val h = (((pc % 12) + 12) % 12) * 30.0; val sat = 0.42; val l = 0.62
+        val c = (1 - Math.abs(2 * l - 1)) * sat; val x = c * (1 - Math.abs((h / 60) % 2 - 1)); val m = l - c / 2
+        val (r, g, b) = when { h < 60 -> Triple(c, x, 0.0); h < 120 -> Triple(x, c, 0.0); h < 180 -> Triple(0.0, c, x)
+                               h < 240 -> Triple(0.0, x, c); h < 300 -> Triple(x, 0.0, c); else -> Triple(c, 0.0, x) }
+        return String.format("#%02x%02x%02x", Math.round((r + m) * 255), Math.round((g + m) * 255), Math.round((b + m) * 255))
+    }
+    fun root(pc: Int) = Color(android.graphics.Color.parseColor(rootHex(pc)))
 }

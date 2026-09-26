@@ -9,14 +9,15 @@ final class MapState: ObservableObject {
     enum Base: String, CaseIterable { case map = "Map", topo = "Topo", satellite = "Satellite", virtual = "Virtual" }
     @Published var base: Base = .satellite
     @Published var boundary = true
-    @Published var zones = false
-    @Published var sections = false
+    /* on from the start: a listener should see where the zones and sections are (Kerem, 2026-09-26) */
+    @Published var zones = true
+    @Published var sections = true
     /* a request to frame these corners (sw, ne); a new value each time, so the same place can be asked twice */
     @Published var frame: (sw: CLLocationCoordinate2D, ne: CLLocationCoordinate2D, id: UUID)? = nil
     func show(_ sw: CLLocationCoordinate2D, _ ne: CLLocationCoordinate2D) { frame = (sw, ne, UUID()) }
 }
 
-enum Sheet: Equatable { case walk, places, layers, account }
+enum Sheet: Equatable { case walk, places, layers, account, point(String), route(Int) }
 
 struct TopBar: View {
     @ObservedObject var walk: Walk
@@ -31,7 +32,7 @@ struct TopBar: View {
                 .padding(.horizontal, T.s4).frame(minHeight: T.target)
                 .background(T.panel, in: Capsule()).overlay(Capsule().stroke(T.hairline))
             }
-            .accessibilityLabel("Places and routes")
+            .accessibilityLabel("Routes")
             Spacer(minLength: T.s2)
             RoundButton(system: "square.3.layers.3d", label: "Map layers") { sheet = .layers }
             RoundButton(system: "person", label: "Account") { sheet = .account }
@@ -104,50 +105,45 @@ struct SheetTitle: View {
     }
 }
 
+/* The routes a setter published; the map already opens on the open world, so this is the only list. */
 struct PlacesSheet: View {
     @ObservedObject var walk: Walk
     @ObservedObject var map: MapState
     @Binding var sheet: Sheet
     @State private var q = ""
     var body: some View {
-        let places = walk.placeList.filter { q.isEmpty || $0.name.localizedCaseInsensitiveContains(q) }
         let routes = walk.routeList.filter { q.isEmpty || $0.name.localizedCaseInsensitiveContains(q) }
         VStack(alignment: .leading, spacing: T.s3) {
-            SheetTitle(title: "Places") { sheet = .walk }
-            HStack(spacing: T.s2) {
-                Image(systemName: "magnifyingglass").foregroundStyle(T.faint)
-                TextField("", text: $q, prompt: Text("Search parks and routes").foregroundColor(T.faint))
-                    .font(T.body(15)).foregroundStyle(T.ink).autocorrectionDisabled()
+            SheetTitle(title: "Routes") { sheet = .walk }
+            if walk.routeList.count > 6 {
+                HStack(spacing: T.s2) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(T.faint)
+                    TextField("", text: $q, prompt: Text("Search routes").foregroundColor(T.faint))
+                        .font(T.body(15)).foregroundStyle(T.ink).autocorrectionDisabled()
+                }
+                .padding(.horizontal, T.s3).frame(minHeight: T.target)
+                .background(T.sunk, in: RoundedRectangle(cornerRadius: 10)).overlay(RoundedRectangle(cornerRadius: 10).stroke(T.hairline))
             }
-            .padding(.horizontal, T.s3).frame(minHeight: T.target)
-            .background(T.sunk, in: RoundedRectangle(cornerRadius: 10)).overlay(RoundedRectangle(cornerRadius: 10).stroke(T.hairline))
+            if walk.routeList.isEmpty {
+                Text("No routes are published yet. Walk anywhere: the points sound wherever you are.")
+                    .font(T.body(T.sm)).foregroundStyle(T.dim).fixedSize(horizontal: false, vertical: true)
+            } else if routes.isEmpty {
+                Text("Nothing matches “\(q)”.").font(T.body(T.sm)).foregroundStyle(T.dim)
+            }
             ScrollView {
-                VStack(alignment: .leading, spacing: T.s2) {
-                    if places.isEmpty && routes.isEmpty {
-                        Text("Nothing matches “\(q)”.").font(T.body(T.sm)).foregroundStyle(T.dim).padding(.vertical, T.s3)
-                    }
-                    if !places.isEmpty { eyebrow("Parks") }
-                    ForEach(places) { p in
-                        Button { map.show(p.sw, p.ne); sheet = .walk } label: {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(p.name).font(T.body(17)).foregroundStyle(T.ink)
-                                Text(p.detail).font(T.mono(11.5)).foregroundStyle(T.faint)
-                            }
-                            .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading).padding(.horizontal, T.s3)
-                            .background(p.name == walk.place ? T.raised : .clear, in: RoundedRectangle(cornerRadius: 10))
-                        }
-                    }
-                    if !routes.isEmpty { eyebrow("Routes").padding(.top, T.s2) }
-                    ForEach(routes) { r in
-                        Button { map.show(r.sw, r.ne); sheet = .walk } label: {
+                VStack(alignment: .leading, spacing: T.s1) {
+                    ForEach(routes, id: \.index) { r in
+                        Button { map.show(r.sw, r.ne); sheet = .route(r.index) } label: {
                             HStack(spacing: T.s3) {
-                                Image(systemName: "point.topleft.down.to.point.bottomright.curvepath").foregroundStyle(T.dim)
-                                Text(r.name).font(T.body(16)).foregroundStyle(T.ink)
+                                ChordStrip(route: r, active: -1).frame(width: 44, height: 10)
+                                Text(r.name).font(T.body(17)).foregroundStyle(T.ink)
                                 Spacer()
                                 Text(r.length).font(T.mono(11.5)).foregroundStyle(T.faint)
                             }
-                            .frame(minHeight: T.target).padding(.horizontal, T.s3)
+                            .frame(minHeight: 52).padding(.horizontal, T.s3)
+                            .background(r.index == walk.playingRoute ? T.raised : .clear, in: RoundedRectangle(cornerRadius: 10))
                         }
+                        .accessibilityLabel("\(r.name), \(r.length)")
                     }
                 }
             }

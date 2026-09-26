@@ -21,6 +21,7 @@ targets:
       - WalkPanel.swift
       - RouteSound.swift
       - Chrome.swift
+      - Cards.swift
       - path: ../places.geojson
         buildPhase: resources
       - path: Fonts

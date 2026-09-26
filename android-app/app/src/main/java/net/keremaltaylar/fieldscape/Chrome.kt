@@ -33,15 +33,20 @@ class MapUi {
     enum class Base(val label: String) { Map("Map"), Topo("Topo"), Satellite("Satellite"), Virtual("Virtual") }
     var base by mutableStateOf(Base.Satellite)
     var boundary by mutableStateOf(true)
-    var zones by mutableStateOf(false)
-    var sections by mutableStateOf(false)
+    /* on from the start: a listener should see where the zones and sections are (Kerem, 2026-09-26) */
+    var zones by mutableStateOf(true)
+    var sections by mutableStateOf(true)
     /** a request to frame w, s, e, n; a new serial each time so the same place can be asked twice */
     var frame by mutableStateOf<Pair<DoubleArray, Long>?>(null)
     private var serial = 0L
     fun show(box: DoubleArray) { frame = box to ++serial }
 }
 
-enum class Sheet { Walk, Places, Layers, Account }
+sealed interface Sheet {
+    data object Walk : Sheet; data object Places : Sheet; data object Layers : Sheet; data object Account : Sheet
+    data class Point(val id: String) : Sheet
+    data class Route(val index: Int) : Sheet
+}
 
 
 @Composable
@@ -50,7 +55,7 @@ fun TopBar(walk: Walk, onSheet: (Sheet) -> Unit) {
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(T.s2)) {
         Row(Modifier.heightIn(min = T.target).clip(RoundedCornerShape(50)).background(T.panel)
             .border(1.dp, T.hairline, RoundedCornerShape(50)).clickable { onSheet(Sheet.Places) }
-            .semantics { contentDescription = "Places and routes" }.padding(horizontal = T.s4),
+            .semantics { contentDescription = "Routes" }.padding(horizontal = T.s4),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(T.s2)) {
             Text(walk.place ?: "Open world", color = T.ink, style = TextStyle(fontFamily = T.display, fontSize = 20.sp), maxLines = 1)
             Text("▾", color = T.faint)
@@ -103,42 +108,45 @@ fun SheetTitle(title: String, onClose: () -> Unit) {
     }
 }
 
+/** The routes a setter published; the map already opens on the open world, so this is the only list. */
 @Composable
 fun PlacesSheet(walk: Walk, map: MapUi, onSheet: (Sheet) -> Unit) {
     var q by remember { mutableStateOf("") }
-    val places = walk.placeList.filter { q.isEmpty() || it.name.contains(q, ignoreCase = true) }
     val routes = walk.routeList.filter { q.isEmpty() || it.name.contains(q, ignoreCase = true) }
     Column(verticalArrangement = Arrangement.spacedBy(T.s3)) {
-        SheetTitle("Places") { onSheet(Sheet.Walk) }
-        Box(Modifier.fillMaxWidth().heightIn(min = T.target).clip(RoundedCornerShape(10.dp)).background(T.sunk)
+        SheetTitle("Routes") { onSheet(Sheet.Walk) }
+        if (walk.routeList.size > 6) Box(Modifier.fillMaxWidth().heightIn(min = T.target).clip(RoundedCornerShape(10.dp)).background(T.sunk)
             .border(1.dp, T.hairline, RoundedCornerShape(10.dp)).padding(horizontal = T.s3), contentAlignment = Alignment.CenterStart) {
-            if (q.isEmpty()) Text("Search parks and routes", color = T.faint, style = TextStyle(fontFamily = T.body, fontSize = 15.sp))
-            BasicTextField(q, { q = it }, Modifier.fillMaxWidth().semantics { contentDescription = "Search parks and routes" },
+            if (q.isEmpty()) Text("Search routes", color = T.faint, style = TextStyle(fontFamily = T.body, fontSize = 15.sp))
+            BasicTextField(q, { q = it }, Modifier.fillMaxWidth().semantics { contentDescription = "Search routes" },
                 textStyle = TextStyle(fontFamily = T.body, fontSize = 15.sp, color = T.ink), cursorBrush = SolidColor(T.ink), singleLine = true)
         }
+        if (walk.routeList.isEmpty()) Text("No routes are published yet. Walk anywhere: the points sound wherever you are.",
+            color = T.dim, style = TextStyle(fontFamily = T.body, fontSize = T.sm))
+        else if (routes.isEmpty()) Text("Nothing matches “$q”.", color = T.dim, style = TextStyle(fontFamily = T.body, fontSize = T.sm))
         LazyColumn(Modifier.heightIn(max = 420.dp), verticalArrangement = Arrangement.spacedBy(T.s1)) {
-            if (places.isEmpty() && routes.isEmpty()) item {
-                Text("Nothing matches “$q”.", color = T.dim, style = TextStyle(fontFamily = T.body, fontSize = T.sm))
-            }
-            if (places.isNotEmpty()) item { Eyebrow("Parks") }
-            items(places) { p ->
-                Column(Modifier.fillMaxWidth().heightIn(min = 52.dp).clip(RoundedCornerShape(10.dp))
-                    .background(if (p.name == walk.place) T.raised else T.panel)
-                    .clickable { map.show(p.box); onSheet(Sheet.Walk) }.padding(horizontal = T.s3, vertical = T.s2),
-                    verticalArrangement = Arrangement.Center) {
-                    Text(p.name, color = T.ink, style = TextStyle(fontFamily = T.body, fontSize = 17.sp))
-                    Text(p.detail, color = T.faint, style = TextStyle(fontFamily = T.mono, fontSize = 11.5.sp))
-                }
-            }
-            if (routes.isNotEmpty()) item { Box(Modifier.padding(top = T.s2)) { Eyebrow("Routes") } }
             items(routes) { r ->
-                Row(Modifier.fillMaxWidth().heightIn(min = T.target).clip(RoundedCornerShape(10.dp))
-                    .clickable { map.show(r.box); onSheet(Sheet.Walk) }.semantics { contentDescription = "${r.name}, ${r.length}" }
-                    .padding(horizontal = T.s3), verticalAlignment = Alignment.CenterVertically) {
-                    Text(r.name, Modifier.weight(1f), color = T.ink, style = TextStyle(fontFamily = T.body, fontSize = 16.sp))
+                Row(Modifier.fillMaxWidth().heightIn(min = 52.dp).clip(RoundedCornerShape(10.dp))
+                    .background(if (r.index == walk.playingRoute) T.raised else T.panel)
+                    .clickable { map.show(r.box); onSheet(Sheet.Route(r.index)) }.semantics { contentDescription = "${r.name}, ${r.length}" }
+                    .padding(horizontal = T.s3), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(T.s3)) {
+                    ChordStrip(r, -1, Modifier.width(44.dp).height(10.dp))
+                    Text(r.name, Modifier.weight(1f), color = T.ink, style = TextStyle(fontFamily = T.body, fontSize = 17.sp))
                     Text(r.length, color = T.faint, style = TextStyle(fontFamily = T.mono, fontSize = 11.5.sp))
                 }
             }
+        }
+    }
+}
+
+/** A route's progression as coloured cells, one per chord, the playing one lit. */
+@Composable
+fun ChordStrip(r: Walk.RouteInfo, active: Int, modifier: Modifier = Modifier) {
+    Row(modifier, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+        r.prog.forEachIndexed { i, (pc, _) ->
+            Box(Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(3.dp))
+                .background(T.root(pc).copy(alpha = if (active < 0 || i == active) 1f else 0.45f))
+                .then(if (i == active) Modifier.border(2.dp, T.ink, RoundedCornerShape(3.dp)) else Modifier))
         }
     }
 }
@@ -182,5 +190,5 @@ fun AccountSheet(onSheet: (Sheet) -> Unit, engineLine: String) {
 }
 
 /** The test number of this build (docs/TESTS.md), shown in Account. */
-const val TEST_BUILD = 5
+const val TEST_BUILD = 6
 

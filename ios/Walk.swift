@@ -15,6 +15,22 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
     }
     enum Phase: Equatable { case playing, downloading(fraction: Double, bytes: Int64), decoding }
     struct Row: Identifiable, Equatable { let id: String, name: String; let level: Double, dist: Double; let phase: Phase }
+    /* what a point's card shows (its feature's properties) */
+    struct PointInfo {
+        let id, name, note, mode: String      /* mode: "stretch", "rhythm", "grains", or "silent" */
+        let lon, lat: Double
+        let peaks: [Double], duration: Double, recorded: String?
+        let path: String?, sounds: Bool
+    }
+    /* what a route's card shows: its line, and its patch from the piece (fs_piece_route_info) */
+    struct RouteInfo {
+        let index: Int, name, note: String, metres: Double, coords: [[Double]]
+        let tempo: Int, key: String, key2: String, sections: Int
+        let prog: [(pc: Int, label: String)], sectors: [Int]
+        var length: String { metres < 1000 ? String(format: "%.0f m", metres) : String(format: "%.1f km", metres / 1000) }
+        var sw: CLLocationCoordinate2D { CLLocationCoordinate2D(latitude: coords.map { $0[1] }.min() ?? 0, longitude: coords.map { $0[0] }.min() ?? 0) }
+        var ne: CLLocationCoordinate2D { CLLocationCoordinate2D(latitude: coords.map { $0[1] }.max() ?? 0, longitude: coords.map { $0[0] }.max() ?? 0) }
+    }
     /* byHand: the walker placed on the map by a tap or a drag (the web's draggable walker), for
        listening to a place from anywhere; GPS fixes are ignored until "Use my location". */
     enum Mode: Equatable { case waiting, denied, live(accuracy: Double), holding(accuracy: Double), byHand }
@@ -29,26 +45,68 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
     @Published var rhythms: [String] = []
     /* where the walker is, for the map's walker dot */
     @Published var here: CLLocationCoordinate2D? = nil
-    /* a place the map should show (Go to), and the routes it can go to */
-    @Published var goTo: CLLocationCoordinate2D? = nil
-    /* the chord the route is on, "chord 7 of 16, D#maj7#11" (from the piece, twice a second) */
+    /* the chord the route is on, "chord 7 of 16, D#maj7#11" (from the piece, twice a second), and which
+       route and step that is - the map lights that chord's stretch of the route */
     @Published var chord: String? = nil
-    struct Place: Identifiable { let id: String; let name, detail: String; let sw, ne: CLLocationCoordinate2D }
-    struct RouteItem: Identifiable { let id: String; let name, length: String; let sw, ne: CLLocationCoordinate2D }
-    /* the Places sheet: parks with what they hold, routes with their length; and everything, framed */
-    @Published var placeList: [Place] = []
-    @Published var routeList: [RouteItem] = []
+    @Published var playingRoute = -1
+    @Published var chordStep = -1
+    /* the routes a setter published (the Routes sheet and the route cards), every point's card, and
+       everything, framed */
+    @Published var routeList: [RouteInfo] = []
+    private(set) var pointInfo: [String: PointInfo] = [:]
     @Published var allBounds: (sw: CLLocationCoordinate2D, ne: CLLocationCoordinate2D)? = nil
     var zoneCircles: [(lon: Double, lat: Double, r: Double)] { sound.zoneCircles }
     func sectionCells() -> (cells: [[[Double]]], active: Int) { sound.sectionCells() }
-    var routes: [(name: String, lon: Double, lat: Double)] { sound.routeStarts }
-    /* Go to a route: the map flies there and the walker stands at its start, walking by hand. */
-    func visit(route i: Int) {
-        guard i < routes.count else { return }
-        let r = routes[i]
-        goTo = CLLocationCoordinate2D(latitude: r.lat, longitude: r.lon)
-        walkBy(lon: r.lon, lat: r.lat)
+
+    /* Listen (the point card): that point alone, at its full level from any distance; the other
+       points and the route's sound rest until it is let go. Kerem: "it works as solo". */
+    @Published var solo: String? = nil
+    func listen(_ id: String?) {
+        solo = id
+        if let pos = lastPos { step(lon: pos.0, lat: pos.1, acc: 0, moved: false) }
+        else if let id, let q = pointInfo[id] { step(lon: q.lon, lat: q.lat, acc: 0, moved: false) }
     }
+    /* The card's player: a point's recording as it was made. The walk rests while it plays. */
+    @Published var rawId: String? = nil
+    @Published var rawPlaying = false
+    @Published var rawLoading = false
+    @Published var rawPosition = 0.0                 /* seconds */
+    private var rawTimer: Timer?
+    func playRaw(_ id: String) {
+        guard let q = pointInfo[id], let path = q.path else { return }
+        if rawId == id { setRaw(!rawPlaying); return }
+        stopRaw()
+        rawId = id; rawLoading = true
+        let sr = core.sampleRate
+        Task { @MainActor [weak self] in
+            guard let self, let data = try? await self.recording(path, for: id),
+                  let pcm = try? await Decode.pcm16(data, sampleRate: sr) else { self?.rawLoading = false; return }
+            guard self.rawId == id else { pcm.free(); return }
+            self.core.loadRaw(pcm)
+            self.rawLoading = false
+            self.setRaw(true)
+        }
+    }
+    func seekRaw(_ f: Double) { core.seekRaw(f) }
+    func stopRaw() {
+        setRaw(false)
+        if rawId != nil { core.loadRaw(nil) }                  /* frees its memory */
+        rawId = nil; rawPosition = 0
+    }
+    private func setRaw(_ on: Bool) {
+        rawPlaying = on
+        core.playRaw(on)
+        rawTimer?.invalidate()
+        if on {
+            rawTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+                guard let self else { return }
+                self.rawPosition = Double(self.core.rawFrames) / self.core.sampleRate
+                if let q = self.rawId.flatMap({ self.pointInfo[$0] }), self.rawPosition >= q.duration - 0.05 { self.setRaw(false); self.core.seekRaw(0) }
+            }
+        }
+        if let pos = lastPos { step(lon: pos.0, lat: pos.1, acc: 0, moved: false) }
+    }
+    private var lastPos: (Double, Double)? = nil
 
     private let core: Core
     private let sound: RouteSound
@@ -102,35 +160,38 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
                          path: p["storage_path"] as? String,
                          sounds: (p["has_audio"] as? Bool ?? false) && mode != "hits" && mode != "grains")
         }
-        sound.start(features: (features["features"] as? [[String: Any]]) ?? [])
-        /* what the Places sheet lists */
+        sound.start(features: (features["features"] as? [[String: Any]]) ?? [])
+
         let fs = (features["features"] as? [[String: Any]]) ?? []
-        func box(_ pts: [[Double]]) -> (CLLocationCoordinate2D, CLLocationCoordinate2D) {
-            let lons = pts.map { $0[0] }, lats = pts.map { $0[1] }
-            return (CLLocationCoordinate2D(latitude: lats.min() ?? 0, longitude: lons.min() ?? 0),
-                    CLLocationCoordinate2D(latitude: lats.max() ?? 0, longitude: lons.max() ?? 0))
+        for f in fs {
+            guard let g = f["geometry"] as? [String: Any], g["type"] as? String == "Point", let c = g["coordinates"] as? [Double], c.count >= 2,
+                  let p = f["properties"] as? [String: Any], let id = p["id"] as? String else { continue }
+            let a = p["audio"] as? [String: Any] ?? [:]
+            let m = p["audio_mode"] as? String, has = p["has_audio"] as? Bool ?? false
+            let mode = m == "hits" ? "rhythm" : m == "grains" ? "grains" : has ? "stretch" : "silent"
+            pointInfo[id] = PointInfo(id: id, name: p["name"] as? String ?? "Unnamed point", note: p["note"] as? String ?? "", mode: mode,
+                                      lon: c[0], lat: c[1], peaks: (a["peaks"] as? [Double]) ?? [], duration: (a["duration_s"] as? Double) ?? 0,
+                                      recorded: (a["recorded_at"] as? String) ?? (p["created_at"] as? String),
+                                      path: has ? p["storage_path"] as? String : nil, sounds: mode == "stretch")
         }
-        let inside = { (lon: Double, lat: Double, rings: [[Double]]) in
-            rings.contains { r in r.withUnsafeBufferPointer { fs_point_in_ring(lon, lat, $0.baseAddress, Int32(r.count / 2)) != 0 } }
-        }
-        placeList = parks.enumerated().map { i, park in
-            let pts = park.rings.flatMap { r in stride(from: 0, to: r.count - 1, by: 2).map { [r[$0], r[$0 + 1]] } }
-            let recs = points.filter { inside($0.lon, $0.lat, park.rings) }.count
-            let rts = sound.routeLines.filter { inside($0.coords[0][0], $0.coords[0][1], park.rings) }.count
-            let (sw, ne) = box(pts)
-            let what = [rts > 0 ? "\(rts) route\(rts == 1 ? "" : "s")" : nil, recs > 0 ? "\(recs) recording\(recs == 1 ? "" : "s")" : nil]
-                .compactMap { $0 }.joined(separator: " · ")
-            let detail = what.isEmpty ? "nothing yet" : what
-            return Place(id: "p\(i)", name: park.name, detail: detail, sw: sw, ne: ne)
-        }.sorted { ($0.detail == "nothing yet" ? 1 : 0, $0.name) < ($1.detail == "nothing yet" ? 1 : 0, $1.name) }
+        let notes = Dictionary(fs.compactMap { f -> (String, String)? in
+            guard let p = f["properties"] as? [String: Any], p["kind"] as? String == "route" else { return nil }
+            return (p["name"] as? String ?? "", p["note"] as? String ?? "")
+        }, uniquingKeysWith: { a, _ in a })
         routeList = sound.routeLines.enumerated().map { i, r in
-            let (sw, ne) = box(r.coords)
-            return RouteItem(id: "r\(i)", name: r.name, length: r.metres < 1000 ? String(format: "%.0f m", r.metres) : String(format: "%.1f km", r.metres / 1000), sw: sw, ne: ne)
+            var buf = [CChar](repeating: 0, count: 4096)
+            _ = fs_piece_route_info(core.piece, Int32(i), &buf, 4096)
+            let j = (try? JSONSerialization.jsonObject(with: Data(String(cString: buf).utf8)) as? [String: Any]) ?? [:]
+            let prog = ((j["prog"] as? [[Any]]) ?? []).map { (pc: ($0.first as? Int) ?? 0, label: ($0.last as? String) ?? "") }
+            return RouteInfo(index: i, name: r.name, note: notes[r.name] ?? "", metres: r.metres, coords: r.coords,
+                             tempo: j["tempo"] as? Int ?? 72, key: j["key"] as? String ?? "", key2: j["key2"] as? String ?? "",
+                             sections: j["sections"] as? Int ?? 0, prog: prog, sectors: (j["sectors"] as? [Int]) ?? [])
         }
         var all: [[Double]] = points.map { [$0.lon, $0.lat] }
         for r in sound.routeLines { all += r.coords }
-        if !all.isEmpty { let (sw, ne) = box(all); allBounds = (sw, ne) }
-        _ = fs
+        if let x0 = all.map({ $0[0] }).min(), let x1 = all.map({ $0[0] }).max(), let y0 = all.map({ $0[1] }).min(), let y1 = all.map({ $0[1] }).max() {
+            allBounds = (CLLocationCoordinate2D(latitude: y0, longitude: x0), CLLocationCoordinate2D(latitude: y1, longitude: x1))
+        }
         Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.refreshChord() }
         loc.requestWhenInUseAuthorization()
         loc.startUpdatingLocation()
@@ -153,6 +214,11 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
         mode = .byHand
         step(lon: lon, lat: lat, acc: 0)
     }
+    /* where the walker is now, for the card's distance */
+    func distance(to id: String) -> Double? {
+        guard let h = here, let q = pointInfo[id] else { return nil }
+        return fs_geo_distance(h.longitude, h.latitude, q.lon, q.lat)
+    }
     /* Back to the phone's own position. */
     func useLocation() {
         mode = .waiting
@@ -165,11 +231,14 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
         let i = fs_piece_chord(core.piece, &count, &buf, 32)
         let c = (i >= 0 && route != nil) ? "chord \(i + 1) of \(count), " + String(cString: buf) : nil
         if c != chord { chord = c }
+        let r = route != nil ? Int(fs_piece_route(core.piece)) : -1, k = r >= 0 ? Int(i) : -1
+        if r != playingRoute { playingRoute = r }
+        if k != chordStep { chordStep = k }
     }
 
     /* One position through the place layer. */
-    func step(lon: Double, lat: Double, acc: Double) {
-        here = CLLocationCoordinate2D(latitude: lat, longitude: lon)
+    func step(lon: Double, lat: Double, acc: Double, moved: Bool = true) {
+        if moved { here = CLLocationCoordinate2D(latitude: lat, longitude: lon); lastPos = (lon, lat) }
         let n = points.count
         var dist = points.map { fs_geo_distance(lon, lat, $0.lon, $0.lat) }
         var radius = points.map { $0.radius }
@@ -178,7 +247,10 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
         /* the playing patch's bed: bed.on and how many voices (BED.maxVoices) */
         let voices = min(Core.slots - (core.test ? 1 : 0), sound.bedVoices)
         let k = Int(fs_pick_voices(&dist, &radius, &eligible, Int32(n), Int32(voices), 0, &picked))
-        let chosen = picked.prefix(k).map { Int($0) }
+        let soloIndex = solo.flatMap { id in points.firstIndex { $0.id == id } }
+        let chosen = soloIndex.map { [$0] } ?? picked.prefix(k).map { Int($0) }
+        /* the card's player rests the walk; Listen rests everything but its point */
+        let rest = rawPlaying
         let want = Set(chosen.map { points[$0].id })
 
         for (id, slot) in slotOf where !want.contains(id) {                /* left: fade, free after the ramp */
@@ -189,17 +261,20 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
             let p = points[j]
             if slotOf[p.id] == nil, let slot = freeSlot() { slotOf[p.id] = slot; begin(p, slot: slot) }
             guard let slot = slotOf[p.id] else { continue }
-            earned[p.id] = Float(fs_point_gain(dist[j], p.radius, p.gain))
+            let full = soloIndex == j
+            earned[p.id] = rest ? 0 : Float(full ? p.gain : fs_point_gain(dist[j], p.radius, p.gain))
             core.gain(slot: slot, loaded.contains(p.id) ? earned[p.id]! : 0)
             /* ensureVoice: the filter opens with proximity, from 300 Hz to the recording's own ceiling */
-            core.lowpass(slot: slot, Float(300 + (p.brightest - 300) * fs_point_proximity(dist[j], p.radius)))
+            core.lowpass(slot: slot, Float(full ? p.brightest : 300 + (p.brightest - 300) * fs_point_proximity(dist[j], p.radius)))
         }
-        rows = chosen.map { j in
+        core.gain(slot: Core.pieceSlot, rest || soloIndex != nil ? 0 : 1)
+        /* the panel: the two nearest points of any kind, each opening its card */
+        rows = (0..<n).sorted { dist[$0] < dist[$1] }.prefix(2).map { j in
             let p = points[j]
-            return Row(id: p.id, name: p.name, level: fs_point_gain(dist[j], p.radius, 1), dist: dist[j],
-                       phase: loaded.contains(p.id) ? .playing : (phase[p.id] ?? .decoding))
+            return Row(id: p.id, name: p.name, level: soloIndex == j ? 1 : soloIndex != nil ? 0 : fs_point_gain(dist[j], p.radius, 1), dist: dist[j],
+                       phase: slotOf[p.id] == nil || loaded.contains(p.id) ? .playing : (phase[p.id] ?? .decoding))
         }
-        if rows.isEmpty, let j = (0..<n).filter({ points[$0].sounds }).min(by: { dist[$0] < dist[$1] }) {
+        if chosen.isEmpty, let j = (0..<n).filter({ points[$0].sounds }).min(by: { dist[$0] < dist[$1] }) {
             nearest = (points[j].name, dist[j], Walk.direction(lon, lat, points[j].lon, points[j].lat))
         } else { nearest = nil }
         updatePlace(lon: lon, lat: lat)
@@ -213,7 +288,7 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
     /* Progress between fixes: a download moves while the walker stands still. */
     private func refreshRows() {
         rows = rows.map { r in Row(id: r.id, name: r.name, level: r.level, dist: r.dist,
-                                   phase: loaded.contains(r.id) ? .playing : (phase[r.id] ?? .decoding)) }
+                                   phase: slotOf[r.id] == nil || loaded.contains(r.id) ? .playing : (phase[r.id] ?? .decoding)) }
     }
 
     /* The park underfoot (placeAt), re-asked only after a few metres (the web's PLACE_CHECK_M). */

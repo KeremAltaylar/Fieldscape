@@ -29,14 +29,15 @@ struct Engine {
     fs_mix *mix = nullptr;
     fs_device *voice[SLOTS] = {};
     fs_device *piece = nullptr;          /* the route's synths, zones and rhythm points (core/piece.cpp), slot SLOTS */
+    fs_device *raw = nullptr;            /* the point card's player (core/devices/play.cpp), mix slot SLOTS + 1, handoff slot SLOTS */
     AAudioStream *stream = nullptr;
     double sr = 48000;
     std::mutex lock;
     struct Pending { int slot; short *l, *r; int frames; };
     std::vector<Pending> pending;
     std::vector<short *> retired;
-    short *live[SLOTS][2] = {};
-    int live_frames[SLOTS] = {};
+    short *live[SLOTS + 1][2] = {};
+    int live_frames[SLOTS + 1] = {};
     std::atomic<double> power{ 0 };
     std::atomic<float> worst_ms{ 0 };
     std::atomic<int> reopens{ 0 };
@@ -51,7 +52,7 @@ aaudio_data_callback_result_t render(AAudioStream *, void *, void *data, int32_t
     if (E->lock.try_lock()) {
         for (auto &p : E->pending) {
             const short *ch[2] = { p.l, p.r };
-            fs_set_source_i16(E->voice[p.slot], 2, p.frames, ch);
+            fs_set_source_i16(p.slot < SLOTS ? E->voice[p.slot] : E->raw, p.l ? 2 : 0, p.frames, p.l ? ch : nullptr);
             for (short *old : E->live[p.slot]) if (old) E->retired.push_back(old);
             E->live[p.slot][0] = p.l; E->live[p.slot][1] = p.r;
             E->live_frames[p.slot] = p.frames;
@@ -136,7 +137,7 @@ JNIEXPORT jdouble JNICALL FN(start)(JNIEnv *, jclass) {
     E = new Engine();
     E->pending.reserve(16); E->retired.reserve(64);
     E->mix = fs_mix_create();
-    fs_mix_prepare(E->mix, (float)E->sr, MAX_BLOCK, SLOTS + 1);
+    fs_mix_prepare(E->mix, (float)E->sr, MAX_BLOCK, SLOTS + 2);
     for (int i = 0; i < SLOTS; i++) {
         E->voice[i] = fs_create("stretch");
         fs_set_param(E->voice[i], 6, (float)(i + 1));   /* seed: each voice its own phases */
@@ -147,6 +148,9 @@ JNIEXPORT jdouble JNICALL FN(start)(JNIEnv *, jclass) {
     E->piece = fs_create("piece");
     fs_prepare(E->piece, (float)E->sr, MAX_BLOCK);
     fs_mix_add(E->mix, E->piece, (float)E->sr, 1);
+    E->raw = fs_create("play");
+    fs_prepare(E->raw, (float)E->sr, MAX_BLOCK);
+    fs_mix_add(E->mix, E->raw, (float)E->sr, 1);
     open_stream();
     /* The loaded recordings, read a page at a time every 2 s off the audio thread, as on iOS: when the
        app leaves the foreground Android reclaims memory it has not touched lately, and the callback
@@ -156,7 +160,7 @@ JNIEXPORT jdouble JNICALL FN(start)(JNIEnv *, jclass) {
         for (;;) {
             std::this_thread::sleep_for(std::chrono::seconds(2));
             std::lock_guard<std::mutex> g(E->lock);
-            for (int s = 0; s < SLOTS; s++)
+            for (int s = 0; s <= SLOTS; s++)
                 for (short *p : E->live[s]) if (p) for (int i = 0; i < E->live_frames[s]; i += 2048) sink = sink + p[i];
         }
     }).detach();
@@ -220,6 +224,13 @@ JNIEXPORT void JNICALL FN(loadInterleaved)(JNIEnv *env, jclass, jint slot, jobje
     std::lock_guard<std::mutex> g(E->lock);
     E->pending.push_back({ slot, a, b, (int)n });
 }
+
+/* The point card's player: its recording goes in through loadInterleaved(slot SLOTS); these play it,
+   seek it (0-1), say where it is (frames), and let it go. */
+JNIEXPORT void JNICALL FN(rawPlay)(JNIEnv *, jclass, jboolean on) { fs_set_param(E->raw, 0, on ? 1.0f : 0.0f); }
+JNIEXPORT void JNICALL FN(rawSeek)(JNIEnv *, jclass, jdouble f) { fs_set_param(E->raw, 1, (float)f); }
+JNIEXPORT jlong JNICALL FN(rawFrames)(JNIEnv *, jclass) { fs_stats_t s{}; fs_stats(E->raw, &s); return s.frames; }
+JNIEXPORT void JNICALL FN(rawClear)(JNIEnv *, jclass) { std::lock_guard<std::mutex> g(E->lock); E->pending.push_back({ SLOTS, nullptr, nullptr, 0 }); }
 
 /* Frees what the audio thread let go of; call now and then from the app. */
 JNIEXPORT void JNICALL FN(collect)(JNIEnv *, jclass) {
@@ -288,6 +299,7 @@ struct Walker {
     struct Spot { std::string icon; double lon, lat, radius, zoneR, centroid, onsets; bool audio, plain; fs_zone_state zone{}; };
     struct Beat { std::string id, name; double lon, lat, radius, gain; bool grains; std::string json; std::vector<std::string> paths; };
     std::vector<fs_route *> routes; std::vector<std::string> route_names;
+    std::vector<std::string> route_extra;     /* "name", "note", "coords" as JSON, for the route card */
     std::vector<Spot> spots; std::vector<Beat> beats;
     std::map<std::string, int> handle;
     fs_sections *sections = nullptr;
@@ -303,7 +315,7 @@ std::string dump(const Json *j) {   /* back to text for the piece's own parser *
     case Json::NUL: return "null";
     case Json::BOOL: return j->b ? "true" : "false";
     case Json::NUM: { char b[32]; snprintf(b, sizeof b, "%.17g", j->num); return b; }
-    case Json::STR: { std::string o = "\""; for (char c : j->str) { if (c == '"' || c == '\\') o += '\\'; o += c; } return o + "\""; }
+    case Json::STR: { std::string o = "\""; for (char c : j->str) { if (c == '\n') { o += "\\n"; continue; } if ((unsigned char)c < 0x20) continue; if (c == '"' || c == '\\') o += '\\'; o += c; } return o + "\""; }
     case Json::ARR: { std::string o = "["; for (size_t i = 0; i < j->arr.size(); i++) { if (i) o += ","; o += dump(&j->arr[i]); } return o + "]"; }
     default: {
         std::string o = "{";
@@ -331,6 +343,8 @@ JNIEXPORT void JNICALL FN(pieceStart)(JNIEnv *env, jclass, jstring features) {
             fs_route *r = fs_route_create(flat.data(), (int)c->size());
             if (!r || fs_route_length(r) <= 0) { if (r) fs_route_destroy(r); continue; }
             W->routes.push_back(r); W->route_names.push_back(p->s("name", "Route"));
+            Json nm, nt; nm.kind = nt.kind = Json::STR; nm.str = p->s("name", "Route"); nt.str = p->s("note", "");
+            W->route_extra.push_back("\"name\":" + dump(&nm) + ",\"note\":" + dump(&nt) + ",\"coords\":" + dump(c) + ",");
             fs_piece_add_route(E->piece, dump(p->get("patch")).c_str());
         } else if (type == "Point" && c && c->size() >= 2) {
             const Json *q = p->get("sound"), *a = p->get("audio"), *hits = p->get("hits");
@@ -497,6 +511,17 @@ JNIEXPORT jstring JNICALL FN(pieceChord)(JNIEnv *env, jclass) {
     char b[80]; snprintf(b, sizeof b, "chord %d of %d, %s", i + 1, count, label);
     return env->NewStringUTF(b);
 }
+/* A route's card: its name, note and line, and its patch from the piece (fs_piece_route_info), as JSON. */
+JNIEXPORT jstring JNICALL FN(pieceRouteInfo)(JNIEnv *env, jclass, jint i) {
+    if (!W || i < 0 || i >= (int)W->route_extra.size()) return env->NewStringUTF("");
+    std::vector<char> buf(8192);
+    if (fs_piece_route_info(E->piece, i, buf.data(), (int)buf.size()) <= 0) return env->NewStringUTF("");
+    std::string o = "{" + W->route_extra[i] + std::string(buf.data() + 1);
+    return env->NewStringUTF(o.c_str());
+}
+/* The route playing (-1 none, or off every route) and the chord step it is on (-1 before the first bar). */
+JNIEXPORT jint JNICALL FN(piecePlayingRoute)(JNIEnv *, jclass) { return W && !W->route_name.empty() ? fs_piece_route(E->piece) : -1; }
+JNIEXPORT jint JNICALL FN(pieceChordStep)(JNIEnv *, jclass) { return W && !W->route_name.empty() ? fs_piece_chord(E->piece, nullptr, nullptr, 0) : -1; }
 JNIEXPORT jstring JNICALL FN(pieceRoute)(JNIEnv *env, jclass) { return env->NewStringUTF(W ? W->route_name.c_str() : ""); }
 JNIEXPORT jstring JNICALL FN(pieceRhythms)(JNIEnv *env, jclass) {
     std::string o;

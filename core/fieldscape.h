@@ -148,7 +148,8 @@ double fs_sections_hold(const fs_sections *s);                                  
 int fs_piece_add_route(fs_device *d, const char *patch_json);          /* a route's properties.patch -> its index */
 void fs_piece_walk(fs_device *d, int route, double t, double dist);     /* nearest route (-1 none), 0-1 along it, metres off it */
 int fs_piece_route(fs_device *d);                                       /* the route whose patch is playing (pacer.routeId) */
-int fs_piece_chord(fs_device *d, int *count, char *label, int label_size); /* chord playing (-1 none), of count, its name */
+int fs_piece_chord(fs_device *d, int *count, char *label, int label_size);
+int fs_piece_route_info(fs_device *d, int route, char *out, int size); /* the route card and chord segments: JSON (piece.cpp) */ /* chord playing (-1 none), of count, its name */
 int fs_piece_sect_n(fs_device *d);                                      /* its patch's sector count */
 int fs_piece_bed_voices(fs_device *d);                                  /* its patch's soundscape voices (0: bed off) */
 void fs_piece_sector(fs_device *d, int sector);                         /* the section underfoot (-1 none) */

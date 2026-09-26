@@ -4,6 +4,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <string>
 #include <vector>
 
 int main() {
@@ -171,6 +172,49 @@ int main() {
         fs_mix_destroy(m); fs_destroy(p2);
     }
 
+    {   /* the route card's patch: the default progression (16 chords, D dorian), key D, 72 bpm */
+        fs_device *pc = fs_create("piece");
+        assert(fs_piece_add_route(pc, "{}") == 0);
+        char buf[4096];
+        assert(fs_piece_route_info(pc, 0, buf, sizeof buf) > 0);
+        std::string j = buf;
+        int chords = 1; for (size_t k = 0; (k = j.find("],[", k)) != std::string::npos; k++) chords++;
+        assert(chords == 16);
+        assert(j.find("{\"tempo\":72,\"key\":\"D\",\"key2\":\"G\",\"sections\":7,\"voices\":4,\"prog\":[[") == 0);
+        assert(j.find("],\"sectors\":[") != std::string::npos && j.back() == '}');
+        assert(fs_piece_route_info(pc, 1, buf, sizeof buf) == 0);
+        std::printf("route info: %s\n", j.c_str());
+        fs_destroy(pc);
+    }
+    {   /* play: 1x as made, holds when paused, seeks without a step, stops at the end */
+        const int n = 48000;
+        std::vector<short> q(n); for (int i = 0; i < n; i++) q[i] = (short)(10000 * std::sin(i * 0.01));
+        const short *qs[1] = { q.data() };
+        fs_device *pl = fs_create("play");
+        fs_prepare(pl, SR, B);
+        fs_set_source_i16(pl, 1, n, qs);
+        fs_stats_t st;
+        fs_process(pl, B); fs_stats(pl, &st); assert(st.frames == 0);          /* not playing: holds */
+        fs_set_param(pl, 0, 1);
+        float maxstep = 0, prev = 0; double err = 0;
+        for (int b = 0; b < 100; b++) {
+            fs_process(pl, B);
+            for (int i = 0; i < B; i++) {
+                float v = fs_out(pl, 0)[i];
+                maxstep = std::fmax(maxstep, std::fabs(v - prev)); prev = v;
+                if (b > 10) { fs_stats(pl, &st); }
+            }
+            if (b == 40) fs_set_param(pl, 1, 0.5f);                            /* seek mid-way */
+        }
+        fs_stats(pl, &st);
+        std::printf("play: position %lld, max step %.4f\n", st.frames, maxstep);
+        assert(st.frames > n / 2 && st.frames < n / 2 + 60 * B);
+        assert(maxstep < 0.02f);                                               /* the sine's own slope ~0.003; a hard jump would be ~0.6 */
+        for (int b = 0; b < 400; b++) fs_process(pl, B);                       /* past the end */
+        fs_stats(pl, &st); assert(st.frames == n);
+        fs_process(pl, B); assert(fs_out(pl, 0)[B - 1] == 0.0f);
+        fs_destroy(pl);
+    }
     std::printf("core ok\n");
     return 0;
 }

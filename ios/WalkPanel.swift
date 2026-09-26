@@ -9,6 +9,8 @@ struct WalkPanel: View {
     @ObservedObject var walk: Walk
     @ObservedObject var core: Core
     var onLongPress: () -> Void = {}
+    /* a point in the list opens its card */
+    var open: (String) -> Void = { _ in }
 
     var body: some View {
         VStack(alignment: .leading, spacing: T.s3) {
@@ -24,7 +26,7 @@ struct WalkPanel: View {
             }
             switch walk.mode {
             case .denied: denied
-            case .waiting: note(Text("Finding where you are… Or tap the map to listen from there."))
+            case .waiting: note(Text("Finding where you are… Or press and hold the map to put yourself there, then drag to walk."))
             case .live, .holding, .byHand: hearing
             }
             if let f = walk.failure { note(Text(f)) }
@@ -59,6 +61,19 @@ struct WalkPanel: View {
             note((walk.route.map { Text("Route ") + Text($0).foregroundColor(T.ink) + Text(walk.chord.map { " · " + $0 } ?? "") } ?? Text(""))
                  + (walk.rhythms.isEmpty ? Text("") : Text(walk.route == nil ? "Rhythm " : " · rhythm ") + Text(walk.rhythms.joined(separator: ", ")).foregroundColor(T.ink)))
         }
+        if let s = walk.solo, let q = walk.pointInfo[s] {
+            HStack(spacing: T.s2) {
+                note(Text("Listening to ") + Text(q.name).foregroundColor(T.ink) + Text(" alone."))
+                Spacer(minLength: T.s2)
+                Button { walk.listen(nil) } label: {
+                    Text("Everything").font(T.body(T.sm, .medium)).foregroundStyle(T.ink)
+                        .padding(.horizontal, T.s3).frame(minHeight: T.target)
+                        .background(T.raised, in: RoundedRectangle(cornerRadius: 10))
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(T.hairline))
+                }
+                .accessibilityLabel("Listen to everything again")
+            }
+        }
         if walk.rows.isEmpty {
             if let n = walk.nearest {
                 note(Text("Nothing in range here. ").foregroundColor(T.ink)
@@ -71,15 +86,18 @@ struct WalkPanel: View {
             VStack(spacing: 0) {
                 ForEach(Array(walk.rows.enumerated()), id: \.element.id) { i, r in
                     if i > 0 { Rectangle().fill(T.hairline).frame(height: 1) }
-                    row(r)
+                    Button { open(r.id) } label: { row(r) }.buttonStyle(.plain)
                 }
+            }
+            if let n = walk.nearest, walk.solo == nil {
+                note(Text("Nothing in range here. ").foregroundColor(T.ink) + Text("Walk toward \(n.name), \(n.direction)."))
             }
             if walk.rows.contains(where: { if case .downloading = $0.phase { return true }; return false }) {
                 note(Text("First time here: each recording downloads once, then plays offline."))
             }
         }
         if walk.mode == .byHand {
-            note(Text("Listening from where you tapped. Drag on the map to walk."))
+            note(Text("Listening from where you put yourself. Drag your dot, or press and hold anywhere, to walk."))
             Button { walk.useLocation() } label: {
                 Text("Use my location").font(T.body(T.sm, .medium)).foregroundStyle(T.ink)
                     .frame(maxWidth: .infinity, minHeight: T.target)
@@ -100,6 +118,7 @@ struct WalkPanel: View {
                 Text(r.name).font(T.body()).foregroundStyle(T.ink).lineLimit(1)
                 Spacer(minLength: T.s2)
                 Text(detail(r)).font(T.mono()).foregroundStyle(T.dim)
+                Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(T.faint)
             }
             GeometryReader { g in
                 ZStack(alignment: .leading) {
@@ -117,7 +136,7 @@ struct WalkPanel: View {
 
     private func detail(_ r: Walk.Row) -> String {
         switch r.phase {
-        case .playing: return String(format: "%.0f m", r.dist)
+        case .playing: return r.dist < 1000 ? String(format: "%.0f m", r.dist) : String(format: "%.1f km", r.dist / 1000)
         case .decoding: return "Preparing"
         case .downloading(_, let b): return b > 0 ? String(format: "Downloading · %.1f MB", Double(b) / 1_048_576) : "Downloading"
         }
