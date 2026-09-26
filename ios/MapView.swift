@@ -37,6 +37,7 @@ struct MapView: UIViewRepresentable {
     @ObservedObject var walk: Walk
     @ObservedObject var map: MapState
     @Binding var sheet: Sheet
+    @Binding var collapsed: Bool
 
     func makeUIView(context: Context) -> MLNMapView {
         let v = MLNMapView(frame: .zero, styleURL: styleURL())
@@ -72,7 +73,7 @@ struct MapView: UIViewRepresentable {
     func updateUIView(_ v: MLNMapView, context: Context) {
         context.coordinator.walk = walk
         context.coordinator.map = map
-        context.coordinator.pick = { s in sheet = s }
+        context.coordinator.pick = { s in sheet = s; if s != .walk { collapsed = false } }
         context.coordinator.carded = sheet != .walk && sheet != .places && sheet != .layers && sheet != .account
         context.coordinator.apply(map, walk, on: v)
         context.coordinator.show(walk.mode == .byHand ? walk.here : nil, on: v)
@@ -176,7 +177,7 @@ struct MapView: UIViewRepresentable {
                 ?? rs.compactMap({ f in (f.attribute(forKey: "name") as? String).flatMap { n in w.routeList.first { $0.name == n }?.index } }).first {
                 pick(.route(i)); return
             }
-            if carded { pick(.walk) }                                    /* a tap on nothing closes a card */
+            if carded { pick(.walk) }                                    /* a tap on nothing puts a card away */
         }
         @objc func dragged(_ g: UIGestureRecognizer) {
             guard let v = g.view as? MLNMapView else { return }

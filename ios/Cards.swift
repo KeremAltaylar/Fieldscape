@@ -53,16 +53,29 @@ struct PointCard: View {
     @ObservedObject var map: MapState
     @Binding var sheet: Sheet
     let id: String
+    var close: () -> Void = {}
+    var photos: () -> Void = {}
     var body: some View {
         if let q = walk.pointInfo[id] {
             VStack(alignment: .leading, spacing: T.s3) {
                 HStack(spacing: T.s2) {
-                    RoundButton(system: "chevron.left", label: "Back to the walk") { sheet = .walk }
+                    RoundButton(system: "xmark", label: "Close", action: close)
                     Circle().fill(q.mode == "silent" ? T.sunk : T.lamp).overlay(Circle().stroke(T.ink, lineWidth: q.mode == "silent" ? 1.5 : 0))
                         .frame(width: 12, height: 12)
                     chip(q.mode.uppercased())
                     Spacer()
                     if let d = walk.distance(to: id) { chip(metres(d) + " away") }
+                    Button(action: photos) {
+                        HStack(spacing: T.s1) {
+                            Image(systemName: "photo.on.rectangle").font(.system(size: 15))
+                            if !q.images.isEmpty { Text("\(q.images.count)").font(T.mono(T.sm)) }
+                        }
+                        .foregroundStyle(q.images.isEmpty ? T.faint : T.ink)
+                        .frame(minWidth: T.target, minHeight: T.target).padding(.horizontal, q.images.isEmpty ? 0 : T.s2)
+                        .background(T.panel, in: Capsule()).overlay(Capsule().stroke(T.hairline))
+                    }
+                    .disabled(q.images.isEmpty)
+                    .accessibilityLabel(q.images.isEmpty ? "No photos yet" : "Photos, \(q.images.count)")
                 }
                 Text(q.name).font(T.display(T.lg)).foregroundStyle(T.ink).lineLimit(2)
                 if !q.note.isEmpty { note(q.note).lineLimit(3) }
@@ -70,7 +83,7 @@ struct PointCard: View {
                     eyebrow("The recording")
                     HStack(spacing: T.s3) {
                         let mine = walk.rawId == id
-                        Button { walk.playRaw(id) } label: {
+                        Button { walk.playRaw(id, path: q.path!) } label: {
                             Group {
                                 if mine && walk.rawLoading { ProgressView().tint(T.ink) }
                                 else { Image(systemName: mine && walk.rawPlaying ? "pause.fill" : "play.fill").font(.system(size: 16)) }
@@ -85,6 +98,12 @@ struct PointCard: View {
                         .frame(height: 44)
                         Text(clock(mine ? walk.rawPosition : 0) + " / " + clock(q.duration)).font(T.mono(11.5)).foregroundStyle(T.dim)
                             .fixedSize()
+                    }
+                }
+                if !q.hits.isEmpty {
+                    eyebrow("The recordings")
+                    LazyVGrid(columns: [GridItem(.flexible(), spacing: T.s2), GridItem(.flexible(), spacing: T.s2)], spacing: T.s2) {
+                        ForEach(q.hits, id: \.slot) { h in HitButton(walk: walk, key: id + "#" + h.slot, slot: h.slot, name: h.name, path: h.path) }
                     }
                 }
                 eyebrow("Where and when")
@@ -115,6 +134,73 @@ struct PointCard: View {
         }
         if q.duration > 0 { parts.append(q.duration < 60 ? String(format: "%.0f s", q.duration) : String(format: "%d min %d s", Int(q.duration) / 60, Int(q.duration) % 60)) }
         return parts.joined(separator: " · ")
+    }
+}
+
+/* One of a rhythm point's originals: its slot, its file, and a play button. */
+struct HitButton: View {
+    @ObservedObject var walk: Walk
+    let key, slot, name, path: String
+    var body: some View {
+        let mine = walk.rawId == key
+        Button { walk.playRaw(key, path: path) } label: {
+            HStack(spacing: T.s2) {
+                Group {
+                    if mine && walk.rawLoading { ProgressView().tint(T.ink).scaleEffect(0.7) }
+                    else { Image(systemName: mine && walk.rawPlaying ? "pause.fill" : "play.fill").font(.system(size: 12)) }
+                }
+                .frame(width: 18)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(slot == "rand" ? "RANDOM" : slot.uppercased()).font(T.mono(T.xs)).tracking(T.xs * T.trackMeta).foregroundStyle(T.faint)
+                    Text(HitButton.tidy(name)).font(T.body(T.sm)).foregroundStyle(T.ink).lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(T.ink).padding(.horizontal, T.s3).frame(maxWidth: .infinity, minHeight: T.target)
+            .background(mine && walk.rawPlaying ? T.raised : T.sunk, in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(mine && walk.rawPlaying ? T.accent : T.hairline))
+        }
+        .accessibilityLabel((mine && walk.rawPlaying ? "Pause " : "Play ") + slot + ", " + HitButton.tidy(name))
+    }
+    /* "50549__broumbroum__hit-low.wav" -> "hit-low": the archive's file name, without its id and author */
+    static func tidy(_ n: String) -> String {
+        let base = (n as NSString).deletingPathExtension
+        return base.components(separatedBy: "__").last ?? base
+    }
+}
+
+/* A point's photos, full screen, swiped sideways; a tap closes. */
+struct PhotoViewer: View {
+    @ObservedObject var walk: Walk
+    let id: String
+    let close: () -> Void
+    @State private var images: [Int: UIImage] = [:]
+    @State private var page = 0
+    var body: some View {
+        let paths = walk.pointInfo[id]?.images ?? []
+        ZStack(alignment: .topTrailing) {
+            T.sunk.ignoresSafeArea()
+            TabView(selection: $page) {
+                ForEach(paths.indices, id: \.self) { i in
+                    Group {
+                        if let im = images[i] { Image(uiImage: im).resizable().scaledToFit() }
+                        else { ProgressView().tint(T.ink) }
+                    }
+                    .tag(i)
+                    .task {
+                        guard images[i] == nil, let d = try? await walk.recording(paths[i], for: "img:" + paths[i]), let im = UIImage(data: d) else { return }
+                        images[i] = im
+                    }
+                }
+            }
+            .tabViewStyle(.page(indexDisplayMode: paths.count > 1 ? .always : .never))
+            .onTapGesture(perform: close)
+            HStack(spacing: T.s2) {
+                if paths.count > 1 { Text("\(page + 1) / \(paths.count)").font(T.mono(T.sm)).foregroundStyle(T.dim) }
+                RoundButton(system: "xmark", label: "Close the photos", action: close)
+            }
+            .padding(T.s4)
+        }
     }
 }
 
@@ -152,13 +238,14 @@ struct RouteCard: View {
     @ObservedObject var map: MapState
     @Binding var sheet: Sheet
     let index: Int
+    var close: () -> Void = {}
     var body: some View {
         if index < walk.routeList.count {
             let r = walk.routeList[index]
             let here = walk.playingRoute == index ? walk.chordStep : -1
             VStack(alignment: .leading, spacing: T.s3) {
                 HStack(spacing: T.s2) {
-                    RoundButton(system: "chevron.left", label: "Back to the walk") { sheet = .walk }
+                    RoundButton(system: "xmark", label: "Close", action: close)
                     chip("ROUTE")
                     Spacer()
                     chip(r.length)

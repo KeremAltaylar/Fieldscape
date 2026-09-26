@@ -17,6 +17,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -52,16 +53,23 @@ fun CardButton(title: String, primary: Boolean, modifier: Modifier = Modifier, g
 }
 
 @Composable
-fun PointCard(walk: Walk, map: MapUi, id: String, onSheet: (Sheet) -> Unit) {
+fun PointCard(walk: Walk, map: MapUi, id: String, close: () -> Unit, photos: () -> Unit) {
     val q = walk.pointInfo[id] ?: return
     Column(verticalArrangement = Arrangement.spacedBy(T.s3)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(T.s2)) {
-            Round("‹", "Back to the walk") { onSheet(Sheet.Walk) }
+            Round("✕", "Close", close)
             Box(Modifier.size(12.dp).clip(CircleShape).background(if (q.mode == "silent") T.sunk else T.lamp)
                 .then(if (q.mode == "silent") Modifier.border(1.5.dp, T.ink, CircleShape) else Modifier))
             Chip(q.mode.uppercase())
             Spacer(Modifier.weight(1f))
             walk.distance(id)?.let { Chip(metres(it) + " away") }
+            val none = q.images.isEmpty()
+            Box(Modifier.heightIn(min = T.target).widthIn(min = T.target).clip(RoundedCornerShape(50)).background(T.panel)
+                .border(1.dp, T.hairline, RoundedCornerShape(50)).clickable(enabled = !none, onClick = photos)
+                .semantics { contentDescription = if (none) "No photos yet" else "Photos, ${q.images.size}" }.padding(horizontal = T.s2),
+                contentAlignment = Alignment.Center) {
+                Text(if (none) "▣" else "▣ ${q.images.size}", color = if (none) T.faint else T.ink, style = TextStyle(fontFamily = T.mono, fontSize = 15.sp))
+            }
         }
         Title(q.name)
         if (q.note.isNotEmpty()) Note(q.note, 3)
@@ -70,7 +78,7 @@ fun PointCard(walk: Walk, map: MapUi, id: String, onSheet: (Sheet) -> Unit) {
             val mine = walk.rawId == id
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(T.s3)) {
                 Box(Modifier.size(T.target).clip(CircleShape).background(T.raised).border(1.dp, T.hairline, CircleShape)
-                    .clickable { walk.playRaw(id) }
+                    .clickable { walk.playRaw(id, q.path) }
                     .semantics { contentDescription = if (mine && walk.rawPlaying) "Pause the recording" else "Play the recording as it was made" },
                     contentAlignment = Alignment.Center) {
                     if (mine && walk.rawLoading) CircularProgressIndicator(Modifier.size(18.dp), color = T.ink, strokeWidth = 2.dp)
@@ -78,6 +86,15 @@ fun PointCard(walk: Walk, map: MapUi, id: String, onSheet: (Sheet) -> Unit) {
                 }
                 Waveform(q.peaks, if (mine) walk.rawPosition / maxOf(q.duration, 1.0) else 0.0, Modifier.weight(1f).height(44.dp)) { if (mine) walk.seekRaw(it) }
                 Text(clock(if (mine) walk.rawPosition else 0.0) + " / " + clock(q.duration), color = T.dim, style = TextStyle(fontFamily = T.mono, fontSize = 11.5.sp))
+            }
+        }
+        if (q.hits.isNotEmpty()) {
+            Eyebrow("The recordings")
+            q.hits.chunked(2).forEach { pair ->
+                Row(horizontalArrangement = Arrangement.spacedBy(T.s2)) {
+                    pair.forEach { (slot, name, path) -> HitButton(walk, "$id#$slot", slot, name, path, Modifier.weight(1f)) }
+                    if (pair.size == 1) Spacer(Modifier.weight(1f))
+                }
             }
         }
         Eyebrow("Where and when")
@@ -93,6 +110,49 @@ fun PointCard(walk: Walk, map: MapUi, id: String, onSheet: (Sheet) -> Unit) {
         } else {
             Note("A quiet point: it speaks once as you step into its circle.")
             CardButton("Zoom to", false, Modifier.fillMaxWidth()) { zoom(map, q) }
+        }
+    }
+}
+
+/** One of a rhythm point's originals: its slot, its file, and a play button. */
+@Composable
+fun HitButton(walk: Walk, key: String, slot: String, name: String, path: String, modifier: Modifier) {
+    val mine = walk.rawId == key; val on = mine && walk.rawPlaying
+    val tidy = name.substringBeforeLast('.').substringAfterLast("__")      /* "50549__broumbroum__hit-low.wav" -> "hit-low" */
+    Row(modifier.heightIn(min = T.target).clip(RoundedCornerShape(10.dp)).background(if (on) T.raised else T.sunk)
+        .border(1.dp, if (on) T.accent else T.hairline, RoundedCornerShape(10.dp)).clickable { walk.playRaw(key, path) }
+        .semantics { contentDescription = (if (on) "Pause " else "Play ") + slot + ", " + tidy }.padding(horizontal = T.s3, vertical = T.s1),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(T.s2)) {
+        if (mine && walk.rawLoading) CircularProgressIndicator(Modifier.size(14.dp), color = T.ink, strokeWidth = 2.dp)
+        else Text(if (on) "❚❚" else "▶", color = T.ink, style = TextStyle(fontSize = 12.sp))
+        Column {
+            Text(if (slot == "rand") "RANDOM" else slot.uppercase(), color = T.faint, style = TextStyle(fontFamily = T.mono, fontSize = T.xs, letterSpacing = (T.xs.value * 0.18).sp))
+            Text(tidy, color = T.ink, maxLines = 1, overflow = TextOverflow.Ellipsis, style = TextStyle(fontFamily = T.body, fontSize = T.sm))
+        }
+    }
+}
+
+/** A point's photos, full screen, swiped sideways; a tap closes. */
+@Composable
+fun PhotoViewer(walk: Walk, id: String, close: () -> Unit) {
+    val paths = walk.pointInfo[id]?.images ?: emptyList()
+    val pager = androidx.compose.foundation.pager.rememberPagerState { paths.size }
+    Box(Modifier.fillMaxSize().background(T.sunk).clickable(onClick = close)) {
+        androidx.compose.foundation.pager.HorizontalPager(pager, Modifier.fillMaxSize()) { i ->
+            val bmp = androidx.compose.runtime.produceState<android.graphics.Bitmap?>(null, paths[i]) {
+                value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    runCatching { android.graphics.BitmapFactory.decodeFile(walk.recording(paths[i], "img:" + paths[i]).path) }.getOrNull()
+                }
+            }.value
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                if (bmp != null) androidx.compose.foundation.Image(bmp.asImageBitmap(), "Photo ${i + 1} of ${paths.size}", Modifier.fillMaxWidth())
+                else CircularProgressIndicator(color = T.ink)
+            }
+        }
+        Row(Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(T.s4), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(T.s2)) {
+            if (paths.size > 1) Text("${pager.currentPage + 1} / ${paths.size}", color = T.dim, style = TextStyle(fontFamily = T.mono, fontSize = T.sm))
+            Round("✕", "Close the photos", close)
         }
     }
 }
@@ -123,12 +183,12 @@ fun Waveform(peaks: DoubleArray, played: Double, modifier: Modifier, seek: (Doub
 }
 
 @Composable
-fun RouteCard(walk: Walk, map: MapUi, index: Int, onSheet: (Sheet) -> Unit) {
+fun RouteCard(walk: Walk, map: MapUi, index: Int, close: () -> Unit) {
     val r = walk.routeList.getOrNull(index) ?: return
     val here = if (walk.playingRoute == index) walk.chordStep else -1
     Column(verticalArrangement = Arrangement.spacedBy(T.s3)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(T.s2)) {
-            Round("‹", "Back to the walk") { onSheet(Sheet.Walk) }
+            Round("✕", "Close", close)
             Chip("ROUTE")
             Spacer(Modifier.weight(1f))
             Chip(r.length)

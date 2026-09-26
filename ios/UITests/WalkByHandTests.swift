@@ -30,10 +30,13 @@ final class WalkByHandTests: XCTestCase {
         XCTAssertTrue(app.buttons["Show whole route"].waitForExistence(timeout: 3), "a route opens its card")
         sleep(3)                                    /* the map flies to the route */
         shot(app, "route card")
-        app.buttons["Back to the walk"].tap()
+        app.buttons["Close"].tap()                  /* the card pops off, the panel folds down */
+        XCTAssertTrue(app.buttons["Show the panel"].waitForExistence(timeout: 3), "closing a card folds the panel")
+        shot(app, "folded")
 
         /* press and hold on the framed route: the walker goes there, and the route plays */
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.38)).press(forDuration: 0.8)
+        app.buttons["Show the panel"].firstMatch.tap()
         XCTAssertTrue(app.staticTexts["BY HAND"].waitForExistence(timeout: 5), "press and hold puts the walker on the map")
         let playing = app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH 'Route Koşuyolu'")).firstMatch
         XCTAssertTrue(playing.waitForExistence(timeout: 8), "standing on the route plays it")
@@ -53,7 +56,7 @@ final class WalkByHandTests: XCTestCase {
         shot(app, "point card")
         app.buttons["Pause the recording"].tap()
         app.buttons["Stop listening"].tap()
-        app.buttons["Back to the walk"].tap()
+        app.buttons["Close"].firstMatch.tap()
 
         /* Layers: the base map */
         app.buttons["Map layers"].tap()

@@ -21,6 +21,9 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
         let lon, lat: Double
         let peaks: [Double], duration: Double, recorded: String?
         let path: String?, sounds: Bool
+        /* a rhythm point's four originals (low, mid, high, random), and the point's photos */
+        let hits: [(slot: String, name: String, path: String)]
+        let images: [String]                  /* storage paths */
     }
     /* what a route's card shows: its line, and its patch from the piece (fs_piece_route_info) */
     struct RouteInfo {
@@ -66,15 +69,16 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
         if let pos = lastPos { step(lon: pos.0, lat: pos.1, acc: 0, moved: false) }
         else if let id, let q = pointInfo[id] { step(lon: q.lon, lat: q.lat, acc: 0, moved: false) }
     }
-    /* The card's player: a point's recording as it was made. The walk rests while it plays. */
+    /* The card's player: a recording as it was made (a point's, or one of a rhythm point's four), keyed
+       "id" or "id#slot". The walk rests while it plays. */
     @Published var rawId: String? = nil
+    @Published var rawDuration = 0.0
     @Published var rawPlaying = false
     @Published var rawLoading = false
     @Published var rawPosition = 0.0                 /* seconds */
     private var rawTimer: Timer?
-    func playRaw(_ id: String) {
-        guard let q = pointInfo[id], let path = q.path else { return }
-        if rawId == id { setRaw(!rawPlaying); return }
+    func playRaw(_ id: String, path: String) {
+        if rawId == id { if !rawLoading { setRaw(!rawPlaying) }; return }
         stopRaw()
         rawId = id; rawLoading = true
         let sr = core.sampleRate
@@ -82,6 +86,7 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
             guard let self, let data = try? await self.recording(path, for: id),
                   let pcm = try? await Decode.pcm16(data, sampleRate: sr) else { self?.rawLoading = false; return }
             guard self.rawId == id else { pcm.free(); return }
+            self.rawDuration = Double(pcm.frames) / sr
             self.core.loadRaw(pcm)
             self.rawLoading = false
             self.setRaw(true)
@@ -91,7 +96,7 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
     func stopRaw() {
         setRaw(false)
         if rawId != nil { core.loadRaw(nil) }                  /* frees its memory */
-        rawId = nil; rawPosition = 0
+        rawId = nil; rawPosition = 0; rawLoading = false
     }
     private func setRaw(_ on: Bool) {
         rawPlaying = on
@@ -101,7 +106,7 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
             rawTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
                 guard let self else { return }
                 self.rawPosition = Double(self.core.rawFrames) / self.core.sampleRate
-                if let q = self.rawId.flatMap({ self.pointInfo[$0] }), self.rawPosition >= q.duration - 0.05 { self.setRaw(false); self.core.seekRaw(0) }
+                if self.rawPosition >= self.rawDuration - 0.05 { self.setRaw(false); self.core.seekRaw(0) }
             }
         }
         if let pos = lastPos { step(lon: pos.0, lat: pos.1, acc: 0, moved: false) }
@@ -169,10 +174,18 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
             let a = p["audio"] as? [String: Any] ?? [:]
             let m = p["audio_mode"] as? String, has = p["has_audio"] as? Bool ?? false
             let mode = m == "hits" ? "rhythm" : m == "grains" ? "grains" : has ? "stretch" : "silent"
+            let hits = p["hits"] as? [String: Any] ?? [:]
+            let slots: [(slot: String, name: String, path: String)] = ["low", "mid", "high", "rand"].compactMap { k in
+                guard let h = hits[k] as? [String: Any], let sp = h["storage_path"] as? String else { return nil }
+                return (k, h["name"] as? String ?? k, sp)
+            }
+            let imgs = ((p["images"] as? [[String: Any]]) ?? []).compactMap { i -> String? in
+                (i["storage_path"] as? String) ?? (i["key"] as? String).map { "\(id)/images/\($0).jpg" }
+            }
             pointInfo[id] = PointInfo(id: id, name: p["name"] as? String ?? "Unnamed point", note: p["note"] as? String ?? "", mode: mode,
                                       lon: c[0], lat: c[1], peaks: (a["peaks"] as? [Double]) ?? [], duration: (a["duration_s"] as? Double) ?? 0,
                                       recorded: (a["recorded_at"] as? String) ?? (p["created_at"] as? String),
-                                      path: has ? p["storage_path"] as? String : nil, sounds: mode == "stretch")
+                                      path: has ? p["storage_path"] as? String : nil, sounds: mode == "stretch", hits: slots, images: imgs)
         }
         let notes = Dictionary(fs.compactMap { f -> (String, String)? in
             guard let p = f["properties"] as? [String: Any], p["kind"] as? String == "route" else { return nil }

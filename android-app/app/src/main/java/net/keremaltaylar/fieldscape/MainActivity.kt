@@ -28,6 +28,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -51,6 +53,11 @@ class MainActivity : ComponentActivity() {
     private lateinit var walk: Walk
     private val mapUi = MapUi()
     private var sheet by mutableStateOf<Sheet>(Sheet.Walk)
+    /** the panel folded down to a bar, so the map has the screen; a card pops it back up */
+    private var collapsed by mutableStateOf(false)
+    private var photos by mutableStateOf<String?>(null)
+    private fun open(s: Sheet) { sheet = s; if (s != Sheet.Walk) collapsed = false }
+    private fun closeCard() { sheet = Sheet.Walk; collapsed = true }
     private var features by mutableStateOf<JSONObject?>(null)
     private var failed by mutableStateOf<String?>(null)
     /** Why the sound is paused, when it is; the panel offers Resume (rulebook M-6). */
@@ -121,9 +128,14 @@ class MainActivity : ComponentActivity() {
                                               style = TextStyle(fontFamily = T.body, fontSize = T.sm))
             Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth()
                 .clip(RoundedCornerShape(topStart = 20.dp_, topEnd = 20.dp_)).background(T.panel)
-                .navigationBarsPadding().padding(start = T.s4, end = T.s4, top = T.s2, bottom = T.s5),
+                .navigationBarsPadding().padding(start = T.s4, end = T.s4, bottom = T.s5),
                 verticalArrangement = Arrangement.spacedBy(T.s3)) {
-                Box(Modifier.align(Alignment.CenterHorizontally).size(38.dp_, 4.dp_).clip(CircleShape).background(T.hairline))
+                /* the grip folds the panel away and brings it back */
+                Box(Modifier.fillMaxWidth().height(T.target).clickable { collapsed = !collapsed }
+                    .semantics { contentDescription = if (collapsed) "Show the panel" else "Hide the panel" }, contentAlignment = Alignment.Center) {
+                    Box(Modifier.size(38.dp_, 4.dp_).clip(CircleShape).background(T.hairline))
+                }
+                if (collapsed) CollapsedBar() else {
                 paused?.let { why ->
                     Note("Paused. $why")
                     Box(Modifier.fillMaxWidth().heightIn(min = T.target).clip(RoundedCornerShape(10.dp_)).background(T.raised)
@@ -137,18 +149,38 @@ class MainActivity : ComponentActivity() {
                     Sheet.Places -> PlacesSheet(walk, mapUi) { sheet = it }
                     Sheet.Layers -> LayersSheet(walk, mapUi) { sheet = it }
                     Sheet.Account -> AccountSheet({ sheet = it }, engineLine())
-                    is Sheet.Point -> PointCard(walk, mapUi, s.id) { sheet = it }
-                    is Sheet.Route -> RouteCard(walk, mapUi, s.index) { sheet = it }
+                    is Sheet.Point -> PointCard(walk, mapUi, s.id, ::closeCard) { photos = s.id }
+                    is Sheet.Route -> RouteCard(walk, mapUi, s.index, ::closeCard)
                     Sheet.Walk -> {
                         Panel(onLongPress = { developer = !developer })
                         if (developer) Text(engineLine(), color = T.faint, style = TextStyle(fontFamily = T.mono, fontSize = T.xs))
                     }
                 }
+                }
             }
-            if (features != null) TopBar(walk) { sheet = it }
+            if (features != null) TopBar(walk) { open(it) }
+            photos?.let { PhotoViewer(walk, it) { photos = null } }
         }
         /* leaving a point's card stops its player (Listen stays until let go: it is the walk's state) */
-        LaunchedEffect(sheet) { val s = sheet; if (walk.rawId != null && !(s is Sheet.Point && s.id == walk.rawId)) walk.stopRaw() }
+        LaunchedEffect(sheet) { val s = sheet; if (walk.rawId != null && !(s is Sheet.Point && walk.rawId!!.startsWith(s.id))) walk.stopRaw() }
+    }
+
+    /** The panel folded down: where you are, the sound, and a way back up. */
+    @Composable
+    private fun CollapsedBar() {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(T.s3)) {
+            Column(Modifier.weight(1f).heightIn(min = T.target).clickable { collapsed = false }
+                .semantics { contentDescription = "Show the panel" }, verticalArrangement = Arrangement.Center) {
+                Text(walk.solo?.let { walk.pointInfo[it]?.name }?.let { "Listening to $it" } ?: walk.place ?: "Fieldscape",
+                     color = T.ink, maxLines = 1, style = TextStyle(fontFamily = T.display, fontSize = T.md))
+                walk.chord?.let { Text(it, color = T.dim, maxLines = 1, style = TextStyle(fontFamily = T.body, fontSize = T.sm)) }
+            }
+            Box(Modifier.heightIn(min = T.target).widthIn(min = 64.dp_).clip(RoundedCornerShape(10.dp_)).background(T.raised)
+                .border(1.dp_, T.hairline, RoundedCornerShape(10.dp_)).clickable { setSound(!soundOn) }.padding(horizontal = T.s3),
+                contentAlignment = Alignment.Center) {
+                Text(if (soundOn) "Stop" else "Sound", color = T.ink, style = TextStyle(fontFamily = T.body, fontSize = T.sm))
+            }
+        }
     }
 
     private fun engineLine() = String.format("Fieldscape · Test %d · engine: worst %.2f ms per burst of %d frames · xruns %d · out %.1f dBFS",
@@ -225,7 +257,7 @@ class MainActivity : ComponentActivity() {
             Column {
                 rows.forEachIndexed { i, r ->
                     if (i > 0) Box(Modifier.fillMaxWidth().height(1.dp_).background(T.hairline))
-                    Box(Modifier.clickable { sheet = Sheet.Point(r.id) }) { RowView(r) }
+                    Box(Modifier.clickable { open(Sheet.Point(r.id)) }) { RowView(r) }
                 }
             }
             walk.nearest?.let { n -> if (walk.solo == null) Text(buildAnnotatedString {
@@ -298,8 +330,8 @@ class MainActivity : ComponentActivity() {
                             if (f.hasProperty("route")) f.getNumberProperty("route").toInt()
                             else f.getStringProperty("name")?.let { n -> walk.routeList.firstOrNull { it.name == n }?.index } }
                         when {
-                            pt != null -> sheet = Sheet.Point(pt)
-                            rt != null -> sheet = Sheet.Route(rt)
+                            pt != null -> open(Sheet.Point(pt))
+                            rt != null -> open(Sheet.Route(rt))
                             sheet is Sheet.Point || sheet is Sheet.Route -> sheet = Sheet.Walk
                         }
                         true

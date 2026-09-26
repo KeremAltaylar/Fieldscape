@@ -9,7 +9,7 @@ import os
 
 /* The test number of this build (docs/TESTS.md): shown first in the developer line, so Kerem can
    see which build he is testing. Bump it with every build handed over. */
-let TEST_BUILD = 7
+let TEST_BUILD = 8
 
 final class Core: ObservableObject {
     struct Param: Identifiable { let id: Int; let key, name, unit: String; let min, max: Float }
@@ -307,6 +307,9 @@ struct ContentView: View {
     @State var failed: String? = nil
     @State var developer = false
     @State var sheet: Sheet = .walk
+    /* the panel folded down to a bar, so the map has the screen (Kerem: "we will see routes bigger") */
+    @State var collapsed = false
+    @State var photos: String? = nil
     init() {
         let c = Core()
         _core = StateObject(wrappedValue: c)
@@ -315,10 +318,17 @@ struct ContentView: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             T.ground.ignoresSafeArea()
-            if let f = features { MapView(features: f, walk: walk, map: map, sheet: $sheet).ignoresSafeArea() }
+            if let f = features { MapView(features: f, walk: walk, map: map, sheet: $sheet, collapsed: $collapsed).ignoresSafeArea() }
             else { Text(failed ?? "Loading the map…").font(T.body(T.sm)).foregroundStyle(T.dim).frame(maxHeight: .infinity) }
-            VStack(alignment: .leading, spacing: T.s5) {
-                Capsule().fill(T.hairline).frame(width: 38, height: 4).frame(maxWidth: .infinity)
+            VStack(alignment: .leading, spacing: collapsed ? T.s2 : T.s5) {
+                /* the grip folds the panel away and brings it back */
+                Button { withAnimation(.easeOut(duration: 0.2)) { collapsed.toggle() } } label: {
+                    Capsule().fill(T.hairline).frame(width: 38, height: 4).frame(maxWidth: .infinity, minHeight: T.target)
+                }
+                .accessibilityLabel(collapsed ? "Show the panel" : "Hide the panel")
+                if collapsed {
+                    CollapsedBar(walk: walk, core: core) { withAnimation(.easeOut(duration: 0.2)) { collapsed = false } }
+                } else {
                 /* the long-press lives on the place name alone: on the whole panel it swallowed its
                    buttons' taps (Go to did nothing on the simulator, 2026-09-26) */
                 switch sheet {
@@ -331,19 +341,22 @@ struct ContentView: View {
                 case .places: PlacesSheet(walk: walk, map: map, sheet: $sheet).frame(maxHeight: 560)
                 case .layers: LayersSheet(walk: walk, map: map, sheet: $sheet)
                 case .account: AccountSheet(core: core, sheet: $sheet)
-                case .point(let id): PointCard(walk: walk, map: map, sheet: $sheet, id: id)
-                case .route(let i): RouteCard(walk: walk, map: map, sheet: $sheet, index: i)
+                case .point(let id): PointCard(walk: walk, map: map, sheet: $sheet, id: id, close: closeCard, photos: { photos = id })
+                case .route(let i): RouteCard(walk: walk, map: map, sheet: $sheet, index: i, close: closeCard)
+                }
                 }
             }
-            .padding(.horizontal, T.s4).padding(.top, T.s2).padding(.bottom, T.s5)
+            .padding(.horizontal, T.s4).padding(.bottom, T.s5)
             .background { UnevenRoundedRectangle(topLeadingRadius: 20, topTrailingRadius: 20).fill(T.panel).ignoresSafeArea(edges: .bottom) }
             .overlay(alignment: .top) { Rectangle().fill(T.hairline).frame(height: 1).padding(.horizontal, 20) }
             .animation(.easeOut(duration: 0.18), value: walk.rows)
             .animation(.easeOut(duration: 0.2), value: sheet)
             /* leaving a point's card stops its player (Listen stays until let go: it is the walk's state) */
-            .onChange(of: sheet) { s in if case .point(let id) = s, id == walk.rawId { return }; if walk.rawId != nil { walk.stopRaw() } }
+            .onChange(of: sheet) { s in if case .point(let id) = s, walk.rawId?.hasPrefix(id) == true { return }; if walk.rawId != nil { walk.stopRaw() } }
         }
         .overlay(alignment: .top) { if features != nil { TopBar(walk: walk, sheet: $sheet).padding(.top, T.s2) } }
+        .overlay { if let id = photos { PhotoViewer(walk: walk, id: id) { photos = nil }.transition(.opacity) } }
+        .onChange(of: sheet) { _ in if sheet != .walk { collapsed = false } }
         .preferredColorScheme(.dark)
         .task {
             do {
@@ -351,6 +364,38 @@ struct ContentView: View {
                 features = f
                 walk.start(features: f)
             } catch { failed = "The map could not load: " + error.localizedDescription + ". Check the connection and reopen the app." }
+        }
+    }
+}
+
+extension ContentView {
+    /* a card's close: it pops off, and the panel folds down with it */
+    func closeCard() { withAnimation(.easeOut(duration: 0.2)) { sheet = .walk; collapsed = true } }
+}
+
+/* The panel folded down: where you are, the sound, and a way back up. */
+struct CollapsedBar: View {
+    @ObservedObject var walk: Walk
+    @ObservedObject var core: Core
+    let expand: () -> Void
+    var body: some View {
+        HStack(spacing: T.s3) {
+            Button(action: expand) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(walk.solo.flatMap { walk.pointInfo[$0]?.name }.map { "Listening to " + $0 } ?? walk.place ?? "Fieldscape")
+                        .font(T.display(T.md)).foregroundStyle(T.ink).lineLimit(1)
+                    if let c = walk.chord { Text(c).font(T.body(T.sm)).foregroundStyle(T.dim).lineLimit(1) }
+                }
+                .frame(maxWidth: .infinity, minHeight: T.target, alignment: .leading)
+            }
+            .accessibilityLabel("Show the panel")
+            Button { core.setSound(!core.soundOn) } label: {
+                Text(core.soundOn ? "Stop" : "Sound").font(T.body(T.sm, .medium)).foregroundStyle(T.ink)
+                    .frame(minWidth: 64, minHeight: T.target)
+                    .background(T.raised, in: RoundedRectangle(cornerRadius: 10))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(T.hairline))
+            }
+            .accessibilityLabel(core.soundOn ? "Stop the sound" : "Play the sound")
         }
     }
 }

@@ -54,7 +54,9 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
     var chordStep by mutableStateOf(-1)
     /** What a point's card shows (its feature's properties). mode: stretch, rhythm, grains or silent. */
     data class PointInfo(val id: String, val name: String, val note: String, val mode: String, val lon: Double, val lat: Double,
-                         val peaks: DoubleArray, val duration: Double, val recorded: String?, val path: String?, val sounds: Boolean)
+                         val peaks: DoubleArray, val duration: Double, val recorded: String?, val path: String?, val sounds: Boolean,
+                         /** a rhythm point's four originals (slot, file name, storage path), and the point's photos (storage paths) */
+                         val hits: List<Triple<String, String, String>>, val images: List<String>)
     /** What a route's card shows: its line, and its patch from the piece (boxes are w, s, e, n). */
     data class RouteInfo(val index: Int, val name: String, val note: String, val metres: Double, val coords: List<DoubleArray>,
                          val tempo: Int, val key: String, val key2: String, val sections: Int,
@@ -81,13 +83,13 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
     var rawPlaying by mutableStateOf(false)
     var rawLoading by mutableStateOf(false)
     var rawPosition by mutableStateOf(0.0)
+    var rawDuration by mutableStateOf(0.0)
     private val rawTick = object : Runnable { override fun run() {
         rawPosition = Core.rawFrames() / engineRate
-        val q = rawId?.let { pointInfo[it] }
-        if (q != null && rawPosition >= q.duration - 0.05) { setRaw(false); Core.rawSeek(0.0) } else main.postDelayed(this, 250)
+        if (rawPosition >= rawDuration - 0.05) { setRaw(false); Core.rawSeek(0.0) } else main.postDelayed(this, 250)
     } }
-    fun playRaw(id: String) {
-        val q = pointInfo[id] ?: return; val path = q.path ?: return
+    /** A recording as it was made - a point's, or one of a rhythm point's four - keyed "id" or "id#slot". */
+    fun playRaw(id: String, path: String) {
         if (rawId == id) { if (!rawLoading) setRaw(!rawPlaying); return }
         stopRaw()
         rawId = id; rawLoading = true
@@ -95,10 +97,10 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
             try {
                 val pcm = Decode.pcm(recording(path, id))
                 main.post {
-                    if (rawId == id) { Core.loadInterleaved(Core.SLOTS, pcm.data, pcm.channels, pcm.frames, pcm.rate.toDouble()); rawLoading = false; setRaw(true) }
+                    if (rawId == id) { Core.loadInterleaved(Core.SLOTS, pcm.data, pcm.channels, pcm.frames, pcm.rate.toDouble()); rawDuration = pcm.frames / pcm.rate.toDouble(); rawLoading = false; setRaw(true) }
                     Core.freeDirect(pcm.data)
                 }
-            } catch (e: Throwable) { main.post { if (rawId == id) { rawLoading = false; rawId = null; failure = "Could not play ${q.name}: ${e.message}" } } }
+            } catch (e: Throwable) { main.post { if (rawId == id) { rawLoading = false; rawId = null; failure = "Could not play that recording: ${e.message}" } } }
         }.start()
     }
     fun seekRaw(f: Double) = Core.rawSeek(f)
@@ -175,10 +177,16 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
             val mode = when { m == "hits" -> "rhythm"; m == "grains" -> "grains"; has -> "stretch"; else -> "silent" }
             val pk = a.optJSONArray("peaks")
             val id = p.optString("id")
+            val hj = p.optJSONObject("hits")
+            val hits = listOf("low", "mid", "high", "rand").mapNotNull { k -> hj?.optJSONObject(k)?.let { h ->
+                h.optString("storage_path").ifEmpty { null }?.let { Triple(k, h.optString("name", k), it) } } }
+            val ij = p.optJSONArray("images")
+            val images = (0 until (ij?.length() ?: 0)).mapNotNull { k -> ij!!.optJSONObject(k)?.let { i ->
+                i.optString("storage_path").ifEmpty { i.optString("key").ifEmpty { null }?.let { "$id/images/$it.jpg" } } } }
             pointInfo[id] = PointInfo(id, p.optString("name", "Unnamed point").ifEmpty { "Unnamed point" }, p.optString("note", ""), mode,
                 c.getDouble(0), c.getDouble(1), DoubleArray(pk?.length() ?: 0) { pk!!.getDouble(it) }, a.optDouble("duration_s", 0.0),
                 a.optString("recorded_at").ifEmpty { p.optString("created_at").ifEmpty { null } },
-                if (has) p.optString("storage_path").ifEmpty { null } else null, mode == "stretch")
+                if (has) p.optString("storage_path").ifEmpty { null } else null, mode == "stretch", hits, images)
         }
         routeList = Core.pieceRoutes().lines().filter { it.isNotBlank() }.indices.mapNotNull { i ->
             val j = Core.pieceRouteInfo(i).ifEmpty { return@mapNotNull null }.let { JSONObject(it) }
@@ -310,7 +318,7 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
     }
 
     /** Downloaded once, kept in the cache (the web keeps them in IndexedDB); progress reported. */
-    private fun recording(path: String, id: String): File {
+    fun recording(path: String, id: String): File {
         val dir = File(context.cacheDir, "recordings").apply { mkdirs() }
         val file = File(dir, path.replace("/", "__"))
         if (file.exists() && file.length() > 0) return file
