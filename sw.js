@@ -15,7 +15,8 @@
 /* v4: the shared core (web/core.wasm + web/core-worklet.js) joins the shell, so a ?core walk
    plays offline like the Tone one; the bump replaces installed shells that lack them. */
 /* v5: the listener shell (web/listener.js, web/listener.css) joins it. */
-var SHELL = "fieldarc-shell-v5";
+/* v6: knobs and the patch tabs (web/knobs.js, web/patch.js). */
+var SHELL = "fieldarc-shell-v6";
 var TILES = "fieldarc-tiles-v1";
 
 var SHELL_FILES = [
@@ -32,6 +33,8 @@ var SHELL_FILES = [
   "./web/core-worklet.js",
   "./web/listener.js",
   "./web/listener.css",
+  "./web/knobs.js",
+  "./web/patch.js",
   "https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.js",
   "https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.css"
 ];

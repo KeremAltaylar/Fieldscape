@@ -211,3 +211,53 @@ header, #panel, #patchbar, #pacerbar, #readout, #markbar, #sheet, #layers-btn { 
 #ls .ls-setcard #f-name:focus-visible { outline: none; border-bottom-color: var(--accent); }
 #ls .ls-setcard textarea, #ls .ls-setcard input[type="text"] { font-size: 16px; }   /* iOS: no zoom into a field */
 .ls-setacct, .ls-setplaces { display: flex; flex-direction: column; gap: var(--s-2); }
+
+/* ---- the sound panels (S2): the route patch, in the new look ---- */
+#patchpanel { background: var(--ground); }
+#patchpanel .viewerbar { display: flex; align-items: center; gap: var(--s-3); padding: var(--s-3) var(--s-4); border-bottom: 1px solid var(--hairline); background: var(--panel); }
+#pp-title { font-family: var(--font-display) !important; font-size: var(--t-md) !important; font-weight: 600; letter-spacing: normal !important;
+            text-transform: none !important; color: var(--ink) !important; }
+#patchpanel .viewerbar button { min-height: 44px; padding: 0 var(--s-3); border: 1px solid var(--hairline); border-radius: 10px; background: var(--raised);
+  color: var(--ink); font-family: var(--font-body); font-size: var(--t-sm); letter-spacing: normal; text-transform: none; }
+#patchpanel .viewerbar #pp-reset { background: none; color: var(--dim); }
+#pp-tabs, #pp-sub { display: none; }
+
+/* a row: name · knob · value (computer); the slider stays, hidden, for the page's own handlers */
+.pprow.has-knob { grid-template-columns: minmax(0, 1fr) 24px 3.4rem; margin-bottom: 2px; }
+#pp-body input[type=range][data-knob], #rp-body input[type=range][data-knob] { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+#pp-body .knob, #rp-body .knob { flex: none; }
+#pp-body .pprow, #rp-body .pprow { font-family: var(--font-body); font-size: 12.5px; letter-spacing: normal; text-transform: none; color: var(--dim); position: relative; }
+#pp-body .pprow i, #rp-body .pprow i { font-family: var(--font-mono); font-size: var(--t-xs); color: var(--ink); }
+#pp-body select, #rp-body select { background: var(--sunk); color: var(--ink); border: 1px solid var(--hairline); border-radius: 6px; font-family: var(--font-body); font-size: 12.5px; }
+#pp-body h2, #rp-body h2 { color: var(--faint); }
+.knob { width: 24px; height: 24px; cursor: ns-resize; touch-action: none; border-radius: 50%; outline-offset: 2px; }
+.knob:focus-visible { outline: 2px solid var(--accent); }
+.knob svg { width: 100%; height: 100%; display: block; overflow: visible; }
+.knob-track { fill: none; stroke: var(--raised); stroke-width: 3.5; stroke-linecap: round; }
+.knob-fill { fill: none; stroke: var(--accent); stroke-width: 3.5; stroke-linecap: round; }
+.knob-tick { stroke: var(--ink); stroke-width: 2; stroke-linecap: round; }
+.knob.on .knob-fill { stroke: var(--lamp); }
+
+/* a phone: one tab at a time, knobs as 44 px cells, three to a row */
+@media (max-width: 860px) {
+  #pp-tabs { display: grid; grid-template-columns: repeat(5, 1fr); border-bottom: 1px solid var(--hairline); background: var(--panel); }
+  #pp-tabs button { min-height: 44px; border: 0; border-radius: 0; background: none; color: var(--dim);
+    font-family: var(--font-body); font-size: var(--t-sm); letter-spacing: normal; text-transform: none; padding: 0; }
+  #pp-tabs button[aria-selected="true"] { color: var(--ink); box-shadow: inset 0 -2px 0 var(--accent); }
+  #pp-body .pp-off { display: none !important; }
+  #pp-sub { display: grid; grid-template-columns: repeat(3, 1fr); margin: var(--s-2) var(--s-4) 0; border: 1px solid var(--hairline); border-radius: 10px; overflow: hidden; }
+  #pp-sub[hidden] { display: none; }
+  #pp-sub button { min-height: 40px; border: 0; border-radius: 0; background: none; color: var(--dim); font-family: var(--font-body); font-size: var(--t-sm); letter-spacing: normal; text-transform: none; padding: 0; }
+  #pp-sub button + button { border-left: 1px solid var(--hairline); }
+  #pp-sub button[aria-pressed="true"] { background: var(--raised); color: var(--ink); }
+  #pp-body .ppcol { display: flex; flex-wrap: wrap; align-items: flex-start; }
+  #pp-body .ppcol > h2, #pp-body .ppcol > .pprow:not(.has-knob) { flex: 0 0 100%; }
+  #pp-body .pprow.has-knob { flex: 0 0 33.333%; box-sizing: border-box; display: grid; grid-template-columns: 1fr; justify-items: center;
+    gap: 2px; padding: var(--s-1) 2px; margin: 0; text-align: center; }
+  #pp-body .pprow.has-knob .knob { order: -1; width: 44px; height: 44px; }
+  #pp-body .pprow.has-knob > span { white-space: normal; line-height: 1.15; font-size: 12px; max-width: 100%; }
+  #pp-body .pprow.has-knob i { text-align: center; }
+}
+.knob-cell { display: inline-flex; flex-direction: column; align-items: center; gap: 1px; margin-right: var(--s-2); vertical-align: top; }
+.knob-cap { font-family: var(--font-body); font-size: 10.5px; color: var(--faint); letter-spacing: normal; text-transform: none; }
+@media (max-width: 860px) { .knob-cell .knob { width: 44px; height: 44px; } }

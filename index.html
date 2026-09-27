@@ -12248,6 +12248,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         input.type = "range";
         input.min = fl.min; input.max = fl.max; input.step = fl.step;
         input.value = pget(patch, fl.k);
+        input.dataset.k = fl.k;             /* which patch field: the knob over it carries it */
         try {
           input.dataset.def = fl.def === undefined ? pget(defaultPatch(), fl.k) : fl.def;
         } catch (e) { /* none */ }
@@ -14561,6 +14562,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 })();
 </script>
 <script src="web/listener.js"></script>
+<script src="web/knobs.js"></script>
+<script src="web/patch.js"></script>
 <!-- Machinery, not a control. Android Chrome keeps a backgrounded page's audio alive only while
      the page owns an active media session, and a WebAudio graph alone never creates one — which
      is why a walk used to need the screen held on for its whole length. This element is 0.25s
