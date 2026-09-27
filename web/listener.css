@@ -334,3 +334,9 @@ header, #panel, #patchbar, #pacerbar, #readout, #markbar, #sheet, #layers-btn { 
 #ls .ls-setacct .actions { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-2); margin: 0; }
 #ls .ls-setacct #setter-reveal { background: none; border: 0; color: var(--dim); padding: 0; text-align: left; }
 #ls-pub #saved { margin: var(--s-1) 0 0; color: var(--faint); font-size: var(--t-xs); line-height: 1.4; }
+/* the setter card, one part at a time (no scroll bar) */
+#ls-cardtabs { display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid var(--hairline); border-radius: 10px; overflow: hidden; }
+#ls #ls-cardtabs button { min-height: 44px; border: 0; border-radius: 0; background: none; color: var(--dim); font-size: var(--t-sm); }
+#ls #ls-cardtabs button + button { border-left: 1px solid var(--hairline); }
+#ls #ls-cardtabs button[aria-selected="true"] { background: var(--raised); color: var(--ink); }
+#ls .ls-setcard .ls-ct-off { display: none !important; }

@@ -76,6 +76,18 @@ try {
     check(p("fits with the setter card"), (await fits()) === 0, await fits());
     await shot(vp + "-setter-point-card");
 
+    /* Kerem, 2026-09-27: no scroll bar on the setter card - a switch (Point · Sound · Where), not a scrollbar */
+    const noScroll = () => ev("(function(){ var h = document.getElementById('ls-holder'), p = document.getElementById('ls-panel'); return { holder: h.scrollHeight - h.clientHeight, panel: p.scrollHeight - p.clientHeight }; })()");
+    check(p("the point card has Point · Sound · Where"), (await ev("[].map.call(document.querySelectorAll('#ls-cardtabs button'), function (b) { return b.textContent; }).join(' ')")) === "Point Sound Where", await text("#ls-cardtabs"));
+    for (const tab of ["main", "sound", "where"]) {
+      await tapEl(`#ls-cardtabs [data-ct='${tab}']`); await sleep(300);
+      const sc = await noScroll();
+      check(p("point card, " + tab + ": no scroll bar"), sc.holder <= 0 && sc.panel <= 0, sc);
+      check(p("point card, " + tab + ": Delete is always there"), await shown("#ls-card #f-delete"), null);
+      await shot(vp + "-setter-card-" + tab);
+    }
+    await tapEl("#ls-cardtabs [data-ct='main']");
+
     /* S4: the whole card is reachable, and every one of its controls is a real target */
     const reach = JSON.parse(await ev(`JSON.stringify((function(){ var h = document.getElementById('ls-holder'); h.scrollTop = h.scrollHeight; var d = document.querySelector('#ls-card #f-delete').getBoundingClientRect(), hb = h.getBoundingClientRect();
       var small = [].filter.call(document.querySelectorAll('#ls-card #card button'), function (b) { var r = b.getBoundingClientRect(); return b.offsetParent && r.height < 43.5; }).map(function (b) { return b.id || b.textContent.trim(); });
@@ -101,6 +113,9 @@ try {
     await shot(vp + "-setter-drawing");
     await tapEl("#ls-draw-done"); await sleep(1200);
     check(p("Done makes the route"), (await ev("fsListen.setterCount()")) === all0 + 1, await ev("fsListen.setterCount()"));
+    const rsc = await ev("(function(){ var h = document.getElementById('ls-holder'), p = document.getElementById('ls-panel'); return { holder: h.scrollHeight - h.clientHeight, panel: p.scrollHeight - p.clientHeight }; })()");
+    check(p("the route card fits with no scroll bar"), rsc.holder <= 0 && rsc.panel <= 0, rsc);
+    await shot(vp + "-setter-route-card");
     check(p("…and opens its card with Patch"), await ev("!!document.querySelector('#ls-card #card') && !document.querySelector('#ls-card #f-patch').hidden"), await text("#ls-panel"));
     await tapEl("#ls-card #f-delete"); await sleep(800);
 
