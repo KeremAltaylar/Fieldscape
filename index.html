@@ -11309,6 +11309,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var g = c.getContext("2d");
     if (!g) { return; }
     if (!cells.w || !cells.h) { cellsResize(); }
+    /* laid out at zero size (its slot hidden): nothing to draw, and a negative radius would throw */
+    if (!cells.w || !cells.h) { return; }
     g.setTransform(cells.dpr, 0, 0, cells.dpr, 0, 0);
     g.clearRect(0, 0, cells.w, cells.h);
 
@@ -13828,7 +13830,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       state: function () {
         var pos = pacer && pacer.pos, n = pos ? nearby(pos) : { rows: [], nearest: null, any: false };
         var sounding = !!((core && core.on) || (bed && bed.on));
-        return { signedIn: setter.signedIn, place: $("#place-name").textContent,
+        /* the park underfoot (worldMove's placeAt), as the apps show it; null outside every park */
+        var park = pacer && pacer.placeId ? places.filter(function (f) { return f.properties.id === pacer.placeId; })[0] : null;
+        return { signedIn: setter.signedIn, place: park ? park.properties.name : null,
                  sound: sounding, starting: !sounding && wantSound,
                  gps: { on: gps.on, held: gps.held, acc: gps.acc === undefined ? null : gps.acc },
                  core: (core && core.state) || null, live: (core && core.on && core.live) || null,

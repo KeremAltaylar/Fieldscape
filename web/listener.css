@@ -6,3 +6,105 @@ body.listener header, body.listener #panel, body.listener #patchbar, body.listen
 body.listener #readout, body.listener #markbar, body.listener #sheet, body.listener #layers-btn { display: none !important; }
 body.listener #app { grid-template-columns: 1fr; grid-template-rows: 1fr; padding: 0; }
 body.listener #map { grid-row: 1; grid-column: 1; border: 0; }
+
+/* ---- the frame ---- */
+#ls { display: none; }
+body.listener #ls {
+  display: block; position: absolute; inset: 0; z-index: 7; pointer-events: none;
+  font-family: var(--font-body); color: var(--ink);
+}
+#ls > * { pointer-events: auto; }
+/* the site's own button and heading styles are the setter's instrument face (mono, spaced
+   capitals, accent when pressed); the listener's are the apps' */
+#ls button {
+  font: inherit; font-family: var(--font-body); letter-spacing: normal; text-transform: none;
+  color: var(--ink); cursor: pointer; transition: background var(--d-fast) var(--ease), color var(--d-fast) var(--ease);
+}
+#ls button:hover { color: var(--ink); background: var(--raised); }
+#ls button[aria-pressed="true"] { color: var(--ink); background: var(--raised); border-color: var(--hairline); }
+#ls h2 { text-transform: none; letter-spacing: normal; }
+/* the map's own controls move below the top bar */
+body.listener .maplibregl-ctrl-top-right { top: calc(48px + var(--s-3) * 2); }
+#ls button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* the top bar: the place picker, then Layers and Account */
+#ls-top {
+  position: absolute; top: calc(var(--s-3) + env(safe-area-inset-top)); left: var(--s-4); right: var(--s-4);
+  display: flex; align-items: center; gap: var(--s-2); pointer-events: none;
+}
+#ls-top > * { pointer-events: auto; }
+.ls-gap { flex: 1; }
+#ls-place, .ls-round {
+  height: 48px; border: 1px solid var(--hairline);
+  background: color-mix(in oklch, var(--panel) 94%, transparent);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+}
+#ls-place {
+  display: flex; align-items: center; gap: var(--s-2); min-width: 0; max-width: 70%;
+  padding: 0 var(--s-4); border-radius: 999px;
+  font-family: var(--font-display); font-size: var(--t-md); font-weight: 600;
+}
+#ls-place-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ls-caret { color: var(--dim); font-family: var(--font-body); font-size: var(--t-sm); }
+.ls-round { width: 48px; border-radius: 50%; display: grid; place-items: center; padding: 0; }
+.ls-round svg { width: 20px; height: 20px; fill: none; stroke: var(--ink); stroke-width: 1.6; stroke-linejoin: round; stroke-linecap: round; }
+
+/* the panel: across the foot of the map on a phone, hugging its content */
+#ls-panel {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  display: flex; flex-direction: column; gap: var(--s-3);
+  padding: 0 var(--s-4) calc(var(--s-5) + env(safe-area-inset-bottom));
+  background: var(--panel); border-top: 1px solid var(--hairline); border-radius: 20px 20px 0 0;
+}
+#ls #ls-grip { height: 44px; margin-bottom: calc(-1 * var(--s-2)); padding: 0; border: 0; background: none; display: grid; place-items: center; }
+#ls-grip span { width: 38px; height: 4px; border-radius: 2px; background: var(--hairline); }
+#ls-walk { display: flex; flex-direction: column; gap: var(--s-3); }
+#ls-walk[hidden], #ls-bar[hidden] { display: none; }
+
+.ls-head, .ls-routeline, #ls-bar { display: flex; align-items: center; gap: var(--s-3); }
+.ls-title { flex: 1; min-width: 0; margin: 0; color: var(--ink); font-family: var(--font-display); font-size: var(--t-md); font-weight: 600; line-height: 1.2;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ls-note { flex: 1; margin: 0; color: var(--dim); font-size: var(--t-sm); line-height: 1.4; }
+.ls-note b { color: var(--ink); font-weight: 400; }
+.ls-mono, .ls-dist, .ls-chip { font-family: var(--font-mono); }
+.ls-chip {
+  flex: none; padding: 3px var(--s-2); border: 1px solid var(--hairline); border-radius: 4px;
+  font-size: var(--t-xs); letter-spacing: var(--track-meta); color: var(--dim);
+}
+.ls-btn {
+  flex: none; min-width: 64px; min-height: 44px; padding: 0 var(--s-3);
+  border: 1px solid var(--hairline); border-radius: 10px; background: var(--raised);
+  font-size: var(--t-sm); font-weight: 500;
+}
+#ls .ls-toggle[aria-pressed="false"] { background: none; color: var(--dim); }
+.ls-wide { width: 100%; }
+
+.ls-rows > .ls-row + .ls-row { border-top: 1px solid var(--hairline); }
+.ls-row { display: flex; flex-direction: column; gap: var(--s-1); padding: var(--s-2) 0; min-height: 44px; justify-content: center; }
+.ls-rowline { display: flex; align-items: center; gap: var(--s-2); }
+.ls-lamp { flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--lamp); }
+.ls-name { flex: 1; min-width: 0; font-size: var(--t-base); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ls-dist { font-size: var(--t-sm); color: var(--dim); }
+.ls-level { height: 5px; border-radius: 3px; background: var(--raised); overflow: hidden; }
+.ls-level i { display: block; height: 100%; border-radius: 3px; background: var(--accent); transition: width var(--d-fast) var(--ease); }
+.ls-level i.ls-quiet { background: color-mix(in oklch, var(--faint) 60%, transparent); }
+
+.ls-bartext { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; min-height: 44px; justify-content: center; }
+.ls-bartext .ls-note { flex: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* the morph cells: on the map just above the panel, riding with it (bottom set in listener.js) */
+#ls-cells { position: absolute; left: var(--s-4); width: 136px; height: 136px; }
+#ls-cells[hidden] { display: none; }
+#ls-cells #cells { position: static; width: 100%; height: 100%; }
+
+/* a computer: the panel floats over the map's left edge, under the place picker */
+@media (min-width: 861px) {
+  #ls-panel {
+    left: var(--s-4); right: auto; bottom: auto; top: calc(48px + var(--s-3) * 2);
+    width: 380px; max-height: calc(100% - 48px - 240px - var(--s-3) * 2 - var(--s-4) * 2);
+    padding-bottom: var(--s-4); border: 1px solid var(--hairline); border-radius: 16px;
+    box-shadow: 0 14px 36px rgba(0, 0, 0, 0.45);
+  }
+  #ls-cells { bottom: var(--s-4); width: 240px; height: 240px; }
+}
+@media (prefers-reduced-motion: reduce) { #ls * { transition: none !important; } }

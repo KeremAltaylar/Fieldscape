@@ -36,7 +36,7 @@ try {
 
     /* Task 3: the gate and the bridge */
     check(p("signed out is the listener"), await ev("document.body.classList.contains('listener')"), false);
-    check(p("bridge reads the place"), await ev("typeof fsListen === 'object' && typeof fsListen.state().place === 'string'"), false);
+    check(p("bridge reads the place"), await ev("typeof fsListen === 'object' && 'place' in fsListen.state()"), false);
     check(p("old header hidden"), await ev("getComputedStyle(document.querySelector('header')).display === 'none'"), false);
     await ev("fsListen._gate(true)"); await sleep(300);
     check(p("signed in: setter surface back"), await ev("!document.body.classList.contains('listener') && getComputedStyle(document.getElementById('panel')).display !== 'none'"), false);
@@ -50,7 +50,7 @@ try {
     await shot(vp + "-first");
     await ev("document.querySelector('#ls-sound').click()");
     for (let i = 0; i < 30 && !(await ev("!!(window.__fa.coreLive && __fa.coreLive.n > 0)")); i++) { await ev("__fa.walkTo(29.038879, 41.00771)"); await sleep(400); }
-    await sleep(2500);
+    await sleep(5000);                                    /* past the first bar (3.3 s at 72 bpm): the chord is -1 before it */
     const walkText = await ev("document.querySelector('#ls-walk').textContent");
     check(p("route line with the chord"), /Route .*chord \d+ of 16/.test(walkText), walkText);
     check(p("Sound turned to Stop"), /Stop/.test(await ev("document.querySelector('#ls-sound').textContent")), null);
