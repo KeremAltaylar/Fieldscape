@@ -4,6 +4,10 @@
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <algorithm>
+#include <chrono>
+#include <cstring>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -330,6 +334,189 @@ int main() {
         for (int b = 0; b < (int)(2.0 * SR / B); b++) { if (b % 40 == 0) fs_engine_step(e, 29.101, 41.1); fs_engine_process(e, B); }
         assert(fs_engine_route(e) == 1);                                            /* r2, added live, plays (piece index 1) */
         fs_engine_destroy(e);
+    }
+    {   /* Fieldscape's own stretch shaping (docs/superpowers/specs/2026-09-27-own-stretch-shaping-design.md) */
+        auto pidx = [](fs_device *d, const char *id) {
+            for (int i = 0; i < fs_param_count(d); i++) if (!std::strcmp(fs_param_info(d, i)->id, id)) return i;
+            return -1;
+        };
+        const double TAU = 6.283185307179586;
+        /* Goertzel power at f over x */
+        auto power = [&](const std::vector<float> &x, double f) {
+            double w = TAU * f / SR, c = 2 * std::cos(w), s1 = 0, s2 = 0;
+            for (float v : x) { double s0 = v + c * s1 - s2; s2 = s1; s1 = s0; }
+            return (s1 * s1 + s2 * s2 - c * s1 * s2) / (double)x.size();
+        };
+        auto rmsdb = [](const std::vector<float> &x) { double s = 0; for (float v : x) s += (double)v * v; return 10 * std::log10(s / x.size() + 1e-20); };
+        /* play a device for `secs`, keep the left channel of the last `keep` seconds */
+        auto run = [&](fs_device *d, double secs, double keep, std::vector<float> *all = nullptr) {
+            std::vector<float> o; long total = (long)(secs * SR / B), from = total - (long)(keep * SR / B);
+            for (long k = 0; k < total; k++) {
+                fs_process(d, B);
+                if (all) all->insert(all->end(), fs_out(d, 0), fs_out(d, 0) + B);
+                if (k >= from) o.insert(o.end(), fs_out(d, 0), fs_out(d, 0) + B);
+            }
+            return o;
+        };
+        auto make = [&](const std::vector<float> &src) {
+            fs_device *d = fs_create("stretch"); fs_prepare(d, SR, B);
+            const float *s[1] = { src.data() }; fs_set_source(d, 1, (int)src.size(), s);
+            return d;
+        };
+        const int n = 48000 * 3;
+
+        /* 1: every new control at zero - the stretch exactly as it was (checksum captured before the stage existed) */
+        {
+            std::vector<float> l(n), r(n); unsigned s = 11;
+            for (int i = 0; i < n; i++) { s = s * 1664525u + 1013904223u; l[i] = 0.3f * std::sin(0.0576f * i) + ((int)(s >> 16) - 32768) / 327680.0f; r[i] = l[(i * 7) % n]; }
+            const float *src[2] = { l.data(), r.data() };
+            uint64_t h = 1469598103934665603ULL;
+            for (float stretch : { 0.0f, 0.4f }) {
+                fs_device *d = fs_create("stretch"); fs_prepare(d, SR, B); fs_set_source(d, 2, n, src);
+                fs_set_param(d, 0, stretch); fs_set_param(d, 3, stretch > 0 ? 0.3f : 0.0f);
+                for (int k = 0; k < 48000 * 5 / B; k++) { fs_process(d, B); for (int c = 0; c < 2; c++) { const float *o = fs_out(d, c); for (int i = 0; i < B; i++) { uint32_t u; std::memcpy(&u, &o[i], 4); h = (h ^ u) * 1099511628211ULL; } } }
+                fs_destroy(d);
+            }
+            std::printf("shape 1: all zero, checksum %llu (the stretch before the stage: 9279134860882250983)\n", (unsigned long long)h);
+            assert(h == 9279134860882250983ULL);
+        }
+        std::vector<float> sine(n), noise(n);
+        { unsigned s = 3; double b0 = 0, b1 = 0, b2 = 0;
+          for (int i = 0; i < n; i++) {
+              sine[i] = 0.3f * (float)std::sin(TAU * 440 * i / SR);
+              s = s * 1664525u + 1013904223u; double w = ((int)(s >> 16) - 32768) / 32768.0;
+              b0 = 0.99765 * b0 + w * 0.0990460; b1 = 0.96300 * b1 + w * 0.2965164; b2 = 0.57000 * b2 + w * 1.0526913;
+              noise[i] = (float)(0.1 * (b0 + b1 + b2 + w * 0.1848));             /* pink (Kellet) */
+          } }
+
+        /* 2: transpose +12 moves 440 Hz to 880 Hz */
+        {
+            fs_device *d = make(sine);
+            assert(pidx(d, "transpose") >= 0);
+            fs_set_param(d, pidx(d, "transpose"), 12);
+            std::vector<float> o = run(d, 4, 2);
+            double p440 = power(o, 440), p880 = power(o, 880);
+            std::printf("shape 2: transpose +12: 880 Hz %.2e vs 440 Hz %.2e\n", p880, p440);
+            assert(p880 > 20 * p440);
+            fs_destroy(d);
+        }
+
+        /* the chord's partials across the octaves, and the points half a semitone off them */
+        auto on_off = [&](const std::vector<float> &o, std::initializer_list<int> pcs) {
+            double on = 0, off = 0;
+            for (int pc : pcs) for (int oct = 3; oct <= 6; oct++) {
+                double f = 440 * std::pow(2.0, (pc + 12 * (oct + 1) - 69) / 12.0);
+                on += power(o, f); off += power(o, f * std::pow(2.0, 0.5 / 12));
+            }
+            return on / (off + 1e-30);
+        };
+        auto set_chord = [&](fs_device *d, std::initializer_list<int> midi) {
+            int i = 0; for (int m : midi) fs_set_param(d, pidx(d, (std::string("chord") + char('0' + i++)).c_str()), (float)m);
+            for (; i < 5; i++) fs_set_param(d, pidx(d, (std::string("chord") + char('0' + i)).c_str()), -1);
+            fs_set_param(d, pidx(d, "root"), (float)*midi.begin());
+        };
+
+        /* 3: tune pulls pink noise onto the chord (D F A) */
+        double dry_ratio, wet_ratio, dry_db, wet_db;
+        {
+            fs_device *d = make(noise); std::vector<float> o = run(d, 4, 2);
+            dry_ratio = on_off(o, { 2, 5, 9 }); dry_db = rmsdb(o); fs_destroy(d);
+        }
+        {
+            fs_device *d = make(noise);
+            assert(pidx(d, "tune") >= 0 && pidx(d, "chord0") >= 0);
+            set_chord(d, { 62, 65, 69 });
+            fs_set_param(d, pidx(d, "tune"), 1); fs_set_param(d, pidx(d, "focus"), 0.1f);
+            fs_set_param(d, pidx(d, "partials"), 6);     /* the 11th overtone of D sits 51 cents above G: the measure's own off point */
+            std::vector<float> o = run(d, 4, 2);
+            double before = 0; for (size_t i = 1; i < o.size(); i++) before = std::fmax(before, std::fabs(o[i] - o[i - 1]));
+            wet_ratio = on_off(o, { 2, 5, 9 }); wet_db = rmsdb(o);
+            std::printf("shape 3: tune 1 on pink noise: on/off the chord %.1f (dry %.1f), level %.1f dB (dry %.1f)\n", wet_ratio, dry_ratio, wet_db, dry_db);
+            assert(wet_ratio > 20 && dry_ratio < 3);
+            assert(std::fabs(wet_db - dry_db) < 1.0);                                    /* 6: A-18, a timbre not a level */
+            /* 4: a chord change glides, with no click */
+            set_chord(d, { 67, 71, 74 }); fs_set_param(d, pidx(d, "glide"), 1);
+            std::vector<float> all; std::vector<float> o2 = run(d, 4, 1.5, &all);
+            double jump = 0; for (size_t i = 1; i < all.size(); i++) jump = std::fmax(jump, std::fabs(all[i] - all[i - 1]));
+            double g_ratio = on_off(o2, { 7, 11, 2 });
+            std::printf("shape 4: to G B D over a 1 s glide: on/off the new chord %.1f, largest step %.3f (the noise's own before: %.3f)\n", g_ratio, jump, before);
+            assert(g_ratio > 20 && jump < 1.5 * before);                             /* no click beyond what the sound itself does */
+            fs_destroy(d);
+        }
+
+        /* 5: layers add the chord's intervals above the recording (root D: F +3, A +7) */
+        {
+            fs_device *d = make(sine);
+            set_chord(d, { 62, 65, 69 });
+            fs_set_param(d, pidx(d, "layers"), 2); fs_set_param(d, pidx(d, "harmony"), 1);
+            std::vector<float> o = run(d, 4, 2);
+            double p0 = power(o, 440), p3 = power(o, 440 * std::pow(2.0, 3 / 12.0)), p7 = power(o, 440 * std::pow(2.0, 7 / 12.0)), px = power(o, 440 * std::pow(2.0, 5 / 12.0));
+            std::printf("shape 5: layers 2: +3 st %.2e, +7 st %.2e, off (+5) %.2e, the recording %.2e\n", p3, p7, px, p0);
+            assert(p3 > 20 * px && p7 > 20 * px);
+            fs_destroy(d);
+        }
+
+        /* 6b: tune, layers and blur all at 1 keep the level */
+        {
+            fs_device *d = make(noise);
+            set_chord(d, { 62, 65, 69 });
+            for (const char *k : { "tune", "blur" }) fs_set_param(d, pidx(d, k), 1);
+            fs_set_param(d, pidx(d, "layers"), 4); fs_set_param(d, pidx(d, "harmony"), 1);
+            double db = rmsdb(run(d, 4, 2));
+            std::printf("shape 6: tune + layers 4 + blur, level %.1f dB (dry %.1f)\n", db, dry_db);
+            assert(std::fabs(db - dry_db) < 1.0);
+            fs_destroy(d);
+        }
+
+        /* 7: a region plays only its part (300 Hz, then 900 Hz; region = the first half) */
+        {
+            std::vector<float> two(n);
+            for (int i = 0; i < n; i++) two[i] = 0.3f * (float)std::sin(TAU * (i < n / 2 ? 300 : 900) * i / SR);
+            fs_device *d = make(two);
+            assert(pidx(d, "end") >= 0);
+            fs_set_param(d, pidx(d, "start"), 0); fs_set_param(d, pidx(d, "end"), 0.5f);
+            std::vector<float> o = run(d, 8, 5);
+            double p3 = power(o, 300), p9 = power(o, 900);
+            std::printf("shape 7: region 0-0.5: 300 Hz %.2e, 900 Hz %.2e\n", p3, p9);
+            assert(p3 > 50 * p9);
+            fs_destroy(d);
+        }
+
+        /* 8: drift changes the sound, not its level */
+        {
+            fs_device *a = make(noise), *b = make(noise);
+            fs_set_param(b, pidx(b, "drift"), 1);
+            std::vector<float> oa = run(a, 4, 2), ob = run(b, 4, 2);
+            double diff = 0; for (size_t i = 0; i < oa.size(); i++) diff += std::fabs(oa[i] - ob[i]);
+            std::printf("shape 8: drift 1: differs by %.1f, level %.1f dB vs %.1f\n", diff, rmsdb(ob), rmsdb(oa));
+            assert(diff > 1 && std::fabs(rmsdb(ob) - rmsdb(oa)) < 1.0);
+            fs_destroy(a); fs_destroy(b);
+        }
+
+        /* 9: everything on at the longest window, a chord change mid-way: still inside one 128-sample
+           callback's budget (2.67 ms at 48 kHz; the stretch's own check holds 1.33 ms) */
+        {
+            fs_device *d = make(noise);
+            fs_set_param(d, 1, 2.0f);                                          /* window 2 s */
+            set_chord(d, { 62, 65, 69, 72, 76 });
+            for (const char *k : { "tune", "blur", "drift" }) fs_set_param(d, pidx(d, k), 1);
+            fs_set_param(d, pidx(d, "layers"), 4); fs_set_param(d, pidx(d, "harmony"), 1);
+            fs_set_param(d, pidx(d, "partials"), 24); fs_set_param(d, pidx(d, "transpose"), 5);
+            std::vector<double> ms;
+            for (int k = 0; k < (int)(12.0 * SR / B); k++) {
+                if (k == (int)(6.0 * SR / B)) set_chord(d, { 67, 71, 74, 77 });
+                auto t0 = std::chrono::steady_clock::now();
+                fs_process(d, B);
+                ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+            }
+            fs_stats_t st{}; fs_stats(d, &st);
+            std::sort(ms.begin(), ms.end());
+            const double p999 = ms[(size_t)(ms.size() * 0.999)], worst = ms.back();
+            /* a frame finished late is an audible failure; one slow callback on a desktop is the OS */
+            std::printf("shape 9: everything on, window 2 s, a chord change: late frames %d, 99.9%% of callbacks within %.3f ms (budget 1.33), worst %.3f ms (a callback is 2.67)\n", st.late_frames, p999, worst);
+            assert(st.late_frames == 0 && p999 < 1.33 && worst < 2.67);
+            fs_destroy(d);
+        }
     }
     std::printf("core ok\n");
     return 0;

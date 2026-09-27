@@ -44,10 +44,18 @@ static int window_size(int n0) {
    file decodes to). */
 struct Source { const float *ch[2] = { nullptr, nullptr }; const int16_t *s16[2] = { nullptr, nullptr }; int len = 0; };
 
-/* What the device hands a voice at each frame. */
-struct Controls { double log_s; bool freeze; float onset, width; };
+/* What the device hands a voice at each frame. The second line is Fieldscape's own shaping
+   (docs/superpowers/specs/2026-09-27-own-stretch-shaping-design.md): on the magnitudes only, after
+   the stretch has made them and before the random phases - so with all of it at zero (`shaping`
+   false, drift 0, the whole recording) the stretch is exactly what it was, bit for bit. */
+struct Controls {
+    double log_s; bool freeze; float onset, width;
+    bool shaping; double transpose; float tune, focus, partials, layers, harmony, glide, drift, blur, start, end;
+    float chord[5], root;
+};
 
-enum Stage { S_WIN, S_TWID, S_GAIN, S_READ, S_FWD, S_MAG, S_ONSET, S_PHASE, S_INV, S_OUT, S_FINISH };
+enum Stage { S_WIN, S_TWID, S_GAIN, S_READ, S_FWD, S_MAG, S_ONSET, S_BINC, S_COMB, S_SH_IN, S_SH_T, S_SH_L, S_SH_NORM, S_PHASE, S_INV, S_OUT, S_FINISH };
+static const int CENTS = 1200;        /* the tune comb: one octave at 1-cent steps */
 static const int BANDS = 32;
 
 struct Voice {
@@ -68,6 +76,17 @@ struct Voice {
     float bands[BANDS], old_bands[BANDS];
     float width = 0, theta = 1;
     bool freeze = false;
+    /* shaping */
+    Controls cc{};
+    std::vector<float> shp[2], sm[2], pre[2], tt[2], binc, table;
+    double e0[2] = { 0, 0 }, e1[2] = { 0, 0 }, sh_T = 1, ratio[4]; int nr = 0; float sh_g[2] = { 1, 1 };
+    double log2k[25];
+    double gnote[5] = { -1, -1, -1, -1, -1 }, groot = -1;   /* the chord as it glides (MIDI) */
+    bool have_sm = false;
+    long long comb_key = -1, table_key = -1;
+    double drift_off = 0, drift_v = 0;
+    int region0 = 0, region1 = 0;
+    bool binc_ready = false;          /* each bin's pitch in cents, built as a stage (48 000 log2 at a 2 s window) */
 
     struct Step { int stage, pass, count, weight; };
     Step plan[160];
@@ -80,7 +99,12 @@ struct Voice {
         fft.reserve(nmax);
         for (auto *v : { &win, &ar, &ai, &br, &bi }) v->assign(nmax, 0.0f);
         hc.assign(nmax / 2, 0.0f);
+        binc.assign(nmax / 2 + 1, 0.0f);
+        for (int k = 1; k <= 24; k++) log2k[k] = 1200.0 * std::log2((double)k);
+        table.assign(CENTS, 0.0f);
         for (int c = 0; c < 2; c++) {
+            shp[c].assign(nmax / 2 + 1, 0.0f); sm[c].assign(nmax / 2 + 1, 0.0f);
+            pre[c].assign(nmax / 2 + 1, 0.0f); tt[c].assign(nmax / 2 + 1, 0.0f);
             mag[c].assign(nmax / 2 + 1, 0.0f); prev[c].assign(nmax / 2 + 1, 0.0f);
             tail[c].assign(nmax / 2, 0.0f); hop[0][c].assign(nmax / 2, 0.0f); hop[1][c].assign(nmax / 2, 0.0f);
         }
@@ -96,8 +120,10 @@ struct Voice {
             std::fill(hop[0][k].begin(), hop[0][k].end(), 0.0f);
         }
         cur = 0; play = 0; frames = 0; wraps = 0;
+        cc = c; set_region(src ? src->len : 0);
         onset_on = false; have_mag = false; get_next = true; tau = 0; credit = 0;
         std::memset(bands, 0, sizeof bands);
+        have_sm = false; table_key = -1; drift_off = 0; drift_v = 0; binc_ready = false;
         setup = true;
         begin_job(c);
     }
@@ -113,6 +139,8 @@ struct Voice {
         if (setup) { add(S_WIN, 0, N, 8); add(S_TWID, 0, N, 8); add(S_GAIN, 0, 1, 2 * N); setup = false; }
         log_s += (c.log_s - log_s) * (1.0 - std::exp(-H / (0.1 * sr)));   /* 100 ms per-frame smoothing */
         freeze = c.freeze; width = c.width; theta = 1.0f - c.onset;
+        cc = c;
+        glide_chord();
         bool want = c.onset > 0;
         if (want && !onset_on) { tau = 0; credit = 0; get_next = true; }
         onset_on = want;
@@ -125,10 +153,43 @@ struct Voice {
             std::memset(bands, 0, sizeof bands);
             if (onset_on) add(S_ONSET, 0, 1, 64);
         }
+        if (c.shaping) {
+            if (c.tune > 0 && !binc_ready) add(S_BINC, 0, N / 2 + 1, 60);
+            if (c.tune > 0 && comb_key != table_key) add(S_COMB, 0, CENTS, 40 + 25 * (int)std::lround(c.partials < 1 ? 1 : c.partials > 24 ? 24 : c.partials));
+            /* split per bin like the FFT, so no callback carries a whole spectrum (measured: 7.8 ms in one) */
+            const int M = N / 2 + 1, L = (int)std::lround(c.layers < 0 ? 0 : c.layers > 4 ? 4 : c.layers);
+            /* weights per bin, both channels (measured against the FFT's 3 x radix per butterfly) */
+            add(S_SH_IN, 0, M, 10);
+            add(S_SH_T, 0, M, 16);
+            add(S_SH_L, 0, M, 30 + 24 * L);
+            add(S_SH_NORM, 0, M, 5);
+        }
         add(S_PHASE, 0, N / 2 + 1, 20);
         for (int p = 0; p < fft.passes; p++) add(S_INV, p, fft.butterflies(p), 3 * fft.radix[p]);
         add(S_OUT, 0, H, 6);
         add(S_FINISH, 0, 1, 1);
+    }
+
+    /* The chord's pitches move toward the target, in semitones, once a frame: `glide` is the time to
+       arrive (within 1 %, so to the cent), not a time constant. A voice with none yet takes it at once. */
+    void glide_chord() {
+        const double rate = 1.0 - std::exp(-5.0 * H / ((cc.glide > 0.05 ? cc.glide : 0.05) * sr));
+        for (int i = 0; i < 5; i++) {
+            const double t = cc.chord[i];
+            if (t < 0) { gnote[i] = -1; continue; }
+            gnote[i] = gnote[i] < 0 ? t : gnote[i] + (t - gnote[i]) * rate;
+        }
+        groot = cc.root < 0 ? (gnote[0] >= 0 ? gnote[0] : 62) : (groot < 0 ? cc.root : groot + (cc.root - groot) * rate);
+        /* what the comb depends on, to 1 cent: rebuilt only when it would change */
+        long long k = (long long)std::lround(cc.focus * 1000) * 31 + (long long)std::lround(cc.partials);
+        for (double g : gnote) k = k * 131071 + (g < 0 ? 7 : std::lround(g * 100));
+        comb_key = k;
+    }
+    /* A magnitude spectrum read at bin j / r (linear between bins): moved in pitch by r. */
+    static float at(const float *m, double x, int M) {
+        if (x < 0 || x >= M - 1) return 0;
+        int i = (int)x; float f = (float)(x - i);
+        return m[i] + (m[i + 1] - m[i]) * f;
     }
 
     /* Result buffers after the forward or inverse passes. */
@@ -170,13 +231,18 @@ struct Voice {
                 std::fill(ai.begin() + a, ai.begin() + b, 0.0f);
                 break;
             }
-            long long idx = ((long long)pos + a) % len;
+            /* the region [region0, region1): the whole recording unless the setter chose a part (the
+               recording can arrive after the voice started, so it is measured at every read) */
+            set_region(len);
+            const long long r0 = region0, rl = region1 - region0;
+            long long idx = r0 + ((((long long)(pos + drift_off) - r0 + a) % rl) + rl) % rl;
+            const long long r1 = region1;
             if (src->s16[0]) {
                 const int16_t *x0 = src->s16[0], *x1 = src->s16[1];
                 for (int k = a; k < b; k++) {
                     ar[k] = (x0[idx] * (1.0f / 32768.0f)) * win[k];
                     ai[k] = (x1[idx] * (1.0f / 32768.0f)) * win[k];
-                    if (++idx == len) idx = 0;
+                    if (++idx == r1) idx = r0;
                 }
                 break;
             }
@@ -184,7 +250,7 @@ struct Voice {
             for (int k = a; k < b; k++) {
                 ar[k] = x0[idx] * win[k];
                 ai[k] = x1[idx] * win[k];
-                if (++idx == len) idx = 0;
+                if (++idx == r1) idx = r0;
             }
             break;
         }
@@ -217,12 +283,97 @@ struct Voice {
             if (m > theta) { tau = 1; credit += 1; }
             break;
         }
+        case S_BINC:
+            /* each bin's pitch within the octave in cents (0 = C), for the comb; spread like the FFT */
+            for (int j = a; j < b; j++) {
+                const double f = (double)j * sr / N;
+                binc[j] = f < 40 ? -1.0f : (float)std::fmod(1200.0 * std::log2(f / 440.0) + 900.0 + 1200.0 * 64, 1200.0);
+            }
+            if (b == N / 2 + 1) binc_ready = true;
+            break;
+        case S_COMB: {
+            /* The tune comb over one octave: a peak at each chord note and at its overtones (folded into
+               the octave, 1/sqrt(k) each), as wide as focus says - pure at 0, breathy at 1. */
+            const double w = 3.0 + std::pow(cc.focus, 1.5) * 80.0;
+            const int P = (int)std::lround(cc.partials < 1 ? 1 : cc.partials > 24 ? 24 : cc.partials);
+            for (int c = a; c < b; c++) {
+                double v = 0;
+                for (int i = 0; i < 5; i++) {
+                    if (gnote[i] < 0) continue;
+                    const double pc = std::fmod(gnote[i] * 100.0, 1200.0);
+                    for (int k = 1; k <= P; k++) {
+                        double d = std::fabs(std::fmod(c - pc - log2k[k] + 1200.0 * 64, 1200.0));
+                        if (d > 600) d = 1200 - d;
+                        if (d < 4 * w) v += std::exp(-0.5 * (d / w) * (d / w)) / std::sqrt((double)k);
+                    }
+                }
+                table[c] = (float)(v > 1 ? 1 : v);
+            }
+            if (b == CENTS) table_key = comb_key;
+            break;
+        }
+        case S_SH_IN:
+            /* the stretch's magnitudes for this frame (onset-interpolated as the phase stage would), and their energy */
+            if (a == 0) {
+                e0[0] = e0[1] = e1[0] = e1[1] = 0;
+                sh_T = std::pow(2.0, cc.transpose / 12.0);
+                const int L = (int)std::lround(cc.layers < 0 ? 0 : cc.layers > 4 ? 4 : cc.layers);
+                nr = 0;
+                for (int i = 0; i < 5 && nr < L; i++) {
+                    if (gnote[i] < 0) continue;
+                    const double iv = std::fmod(gnote[i] - groot + 1200.0, 12.0);
+                    if (iv < 0.25 || iv > 11.75) continue;                   /* the root is the recording itself */
+                    ratio[nr++] = std::pow(2.0, iv / 12.0);
+                }
+                for (double f : { 0.5, 2.0, 0.25 }) if (nr < L) ratio[nr++] = f;   /* octaves when the chord has too few */
+                if (cc.harmony <= 0) nr = 0;
+            }
+            for (int ch = 0; ch < 2; ch++) for (int j = a; j < b; j++) {
+                float A = mag[ch][j];
+                if (onset_on) A = prev[ch][j] + (A - prev[ch][j]) * (float)tau;
+                pre[ch][j] = A; e0[ch] += (double)A * A;
+            }
+            break;
+        case S_SH_T: {
+            /* transpose: the spectrum read at j / T */
+            const int M = N / 2 + 1;
+            const bool move = std::fabs(sh_T - 1) > 1e-6;
+            for (int ch = 0; ch < 2; ch++) for (int j = a; j < b; j++) tt[ch][j] = move ? at(pre[ch].data(), j / sh_T, M) : pre[ch][j];
+            break;
+        }
+        case S_SH_L: {
+            /* layers (copies at the chord's intervals), then tune (the comb), then blur (smear in time) */
+            const int M = N / 2 + 1;
+            const float blur_k = 1.0f - cc.blur * 0.92f;
+            for (int ch = 0; ch < 2; ch++) for (int j = a; j < b; j++) {
+                float x = tt[ch][j];
+                if (nr) {
+                    float l = 0;
+                    for (int r = 0; r < nr; r++) l += at(tt[ch].data(), j / ratio[r], M);
+                    x = x * (1 - cc.harmony) + l / nr * cc.harmony;
+                }
+                if (cc.tune > 0) {
+                    const float bc = binc[j];
+                    x *= (1 - cc.tune) + cc.tune * (bc < 0 ? 0.0f : table[(int)bc % CENTS]);
+                }
+                if (cc.blur > 0) { sm[ch][j] = have_sm ? sm[ch][j] + (x - sm[ch][j]) * blur_k : x; x = sm[ch][j]; }
+                shp[ch][j] = x; e1[ch] += (double)x * x;
+            }
+            break;
+        }
+        case S_SH_NORM:
+            /* the frame's energy back to the stretch's own (A-18: these are timbre, not level) */
+            if (a == 0) for (int ch = 0; ch < 2; ch++) sh_g[ch] = e1[ch] > 1e-30 ? (float)std::sqrt(e0[ch] / e1[ch]) : 0.0f;
+            for (int ch = 0; ch < 2; ch++) for (int j = a; j < b; j++) shp[ch][j] *= sh_g[ch];
+            if (b == N / 2 + 1) have_sm = cc.blur > 0;
+            break;
         case S_PHASE:
             /* Width: every bin gets a shared phase; each channel adds its own offset in
                [-pi, pi) scaled by width. Magnitudes are untouched at any width, so level is too. */
             for (int j = a; j < b; j++) {
                 float A0 = mag[0][j], A1 = mag[1][j];
-                if (onset_on) { const float t = (float)tau; A0 = prev[0][j] + (A0 - prev[0][j]) * t; A1 = prev[1][j] + (A1 - prev[1][j]) * t; }
+                if (cc.shaping) { A0 = shp[0][j]; A1 = shp[1][j]; }
+                else if (onset_on) { const float t = (float)tau; A0 = prev[0][j] + (A0 - prev[0][j]) * t; A1 = prev[1][j] + (A1 - prev[1][j]) * t; }
                 float ps = TWO_PI * rng.uniform();
                 float p0 = ps + width * TWO_PI * (rng.uniform() - 0.5f);
                 float p1 = ps + width * TWO_PI * (rng.uniform() - 0.5f);
@@ -269,11 +420,35 @@ struct Voice {
                 }
                 if (tau >= 1) { tau = std::fmod(tau, 1.0); get_next = true; }
             }
+            /* drift: the read position wanders round where it should be, smoothly, up to 2 s. No
+               random draw at all while it is off, so the phases stay what they were. */
+            if (cc.drift > 0) {
+                drift_v = drift_v * 0.92 + (rng.uniform() - 0.5) * 0.16;
+                const double lim = 2.0 * sr * cc.drift;
+                drift_off += drift_v * cc.drift * 0.35 * sr * H / sr;
+                if (drift_off > lim) { drift_off = lim; drift_v = -std::fabs(drift_v); }
+                if (drift_off < -lim) { drift_off = -lim; drift_v = std::fabs(drift_v); }
+            } else if (drift_off != 0) {
+                drift_off *= 0.9;
+                if (std::fabs(drift_off) < 1) drift_off = 0;
+            }
             const int len = src ? src->len : 0;
-            if (len && pos >= len) { wraps += (int)(pos / len); pos = std::fmod(pos, (double)len); }
+            set_region(len);
+            if (len && pos >= region1) { wraps += (int)((pos - region0) / (region1 - region0)); pos = region0 + std::fmod(pos - region0, (double)(region1 - region0)); }
+            else if (len && pos < region0) pos = region0;
             break;
         }
         }
+    }
+
+    /* The part of the recording the stretch reads: at least one window long, the whole of it by default. */
+    void set_region(int len) {
+        if (!len) { region0 = 0; region1 = 1; return; }
+        double s0 = cc.start < 0 ? 0 : cc.start > 1 ? 1 : cc.start, s1 = cc.end < 0 ? 0 : cc.end > 1 ? 1 : cc.end;
+        if (s1 < s0) std::swap(s0, s1);
+        int r0 = (int)std::floor(s0 * len), r1 = (int)std::ceil(s1 * len);
+        if (r1 - r0 < N) { r1 = r0 + N; if (r1 > len) { r1 = len; r0 = len - N > 0 ? len - N : 0; } }
+        region0 = r0; region1 = r1 > r0 ? r1 : r0 + 1;
     }
 
     /* Advance the current job until `target` weighted units are done. */
@@ -314,8 +489,29 @@ static const fs_param STRETCH_PARAMS[] = {
     { "width", "Width", "", 0.0f, 1.0f, 1.0f },
     { "shape", "Window shape", "", 0.0f, 1.0f, 0.0f },
     { "seed", "Seed", "", 0.0f, 16777216.0f, 1.0f },
+    /* Fieldscape's own shaping: all dry by default (A-8) */
+    { "transpose", "Transpose", "st", -12.0f, 12.0f, 0.0f },
+    { "tune", "Tune", "", 0.0f, 1.0f, 0.0f },
+    { "focus", "Focus", "", 0.0f, 1.0f, 0.5f },
+    { "partials", "Partials", "", 1.0f, 24.0f, 8.0f },
+    { "layers", "Layers", "", 0.0f, 4.0f, 0.0f },
+    { "harmony", "Harmony", "", 0.0f, 1.0f, 0.5f },
+    { "glide", "Glide", "s", 0.5f, 10.0f, 2.0f },
+    { "drift", "Drift", "", 0.0f, 1.0f, 0.0f },
+    { "blur", "Blur", "", 0.0f, 1.0f, 0.0f },
+    { "start", "Region start", "", 0.0f, 1.0f, 0.0f },
+    { "end", "Region end", "", 0.0f, 1.0f, 1.0f },
+    /* the chord the tune and the layers follow (MIDI notes; -1 none), set by the host from the route */
+    { "chord0", "Chord note 1", "", -1.0f, 127.0f, -1.0f },
+    { "chord1", "Chord note 2", "", -1.0f, 127.0f, -1.0f },
+    { "chord2", "Chord note 3", "", -1.0f, 127.0f, -1.0f },
+    { "chord3", "Chord note 4", "", -1.0f, 127.0f, -1.0f },
+    { "chord4", "Chord note 5", "", -1.0f, 127.0f, -1.0f },
+    { "root", "Chord root", "", -1.0f, 127.0f, -1.0f },
 };
-enum { P_STRETCH, P_WINDOW, P_FREEZE, P_ONSET, P_WIDTH, P_SHAPE, P_SEED, P_COUNT };
+enum { P_STRETCH, P_WINDOW, P_FREEZE, P_ONSET, P_WIDTH, P_SHAPE, P_SEED,
+       P_TRANSPOSE, P_TUNE, P_FOCUS, P_PARTIALS, P_LAYERS, P_HARMONY, P_GLIDE, P_DRIFT, P_BLUR, P_START, P_END,
+       P_CHORD0, P_ROOT = P_CHORD0 + 5, P_COUNT };
 
 struct Stretch : Device {
     float value[P_COUNT];
@@ -334,8 +530,21 @@ struct Stretch : Device {
     const fs_param *params(int &n) override { n = P_COUNT; return STRETCH_PARAMS; }
     void set_param(int i, float x) override { value[i] = x; }
 
-    Controls controls() const {
-        return { value[P_STRETCH] * std::log(1024.0), value[P_FREEZE] >= 0.5f, value[P_ONSET], value[P_WIDTH] };
+    /* the last chord the host gave; off every route the tune keeps it (Dm9 before any) */
+    float last_chord[5] = { 62, 65, 69, 72, 76 }, last_root = 62;
+    Controls controls() {
+        Controls c{};
+        c.log_s = value[P_STRETCH] * std::log(1024.0); c.freeze = value[P_FREEZE] >= 0.5f; c.onset = value[P_ONSET]; c.width = value[P_WIDTH];
+        c.transpose = value[P_TRANSPOSE]; c.tune = value[P_TUNE]; c.focus = value[P_FOCUS]; c.partials = value[P_PARTIALS];
+        c.layers = value[P_LAYERS]; c.harmony = value[P_HARMONY]; c.glide = value[P_GLIDE]; c.drift = value[P_DRIFT];
+        c.blur = value[P_BLUR]; c.start = value[P_START]; c.end = value[P_END];
+        bool any = false;
+        for (int i = 0; i < 5; i++) any |= value[P_CHORD0 + i] >= 0;
+        if (any) { for (int i = 0; i < 5; i++) last_chord[i] = value[P_CHORD0 + i]; last_root = value[P_ROOT] >= 0 ? value[P_ROOT] : value[P_CHORD0]; }
+        for (int i = 0; i < 5; i++) c.chord[i] = last_chord[i];
+        c.root = last_root;
+        c.shaping = std::fabs(c.transpose) > 1e-4 || c.tune > 0 || (c.layers >= 0.5f && c.harmony > 0) || c.blur > 0;
+        return c;
     }
     int target_n() {
         if (value[P_WINDOW] != cached_window) {
