@@ -74,6 +74,7 @@ struct fs_engine {
     std::string loads, state;
     std::vector<std::string> rhythm_names;
     std::string route_name;
+    std::string solo;                 /* Listen: that point alone ("" none) */
     double now() const { return (double)frames / sr; }
 };
 
@@ -99,6 +100,7 @@ fs_engine *fs_engine_create(float sr, int max_block) {
     e->piece = fs_create("piece");
     fs_prepare(e->piece, sr, max_block);
     fs_mix_add(e->mix, e->piece, sr, 1);
+    fs_mix_set_ramp(e->mix, SLOTS, 350);                     /* Listen rests the piece without a click */
     return e;
 }
 
@@ -208,9 +210,19 @@ const char *fs_engine_step(fs_engine *e, double lon, double lat) {
     /* the soundscape points (updateBed + ensureVoice) */
     size_t np = e->points.size();
     std::vector<double> d(np), rad(np); std::vector<unsigned char> el(np); std::vector<int> picked(std::max<size_t>(np, 1));
-    for (size_t i = 0; i < np; i++) { d[i] = fs_geo_distance(lon, lat, e->points[i].lon, e->points[i].lat); rad[i] = e->points[i].radius; el[i] = e->points[i].sounds; }
+    /* Listen: the soloed point is heard as if stood on (dp), and nothing else is picked; d stays the real distance */
+    int sp = -1, sb = -1;
+    for (size_t i = 0; i < e->points.size() && !e->solo.empty(); i++) if (e->points[i].id == e->solo && e->points[i].sounds) sp = (int)i;
+    for (size_t i = 0; i < e->beats.size() && !e->solo.empty(); i++) if (e->beats[i].id == e->solo) sb = (int)i;
+    bool soloing = sp >= 0 || sb >= 0;
+    fs_mix_set_gain(e->mix, SLOTS, sp >= 0 ? 0 : 1);
+    std::vector<double> dp(np);
+    for (size_t i = 0; i < np; i++) {
+        d[i] = fs_geo_distance(lon, lat, e->points[i].lon, e->points[i].lat); rad[i] = e->points[i].radius;
+        el[i] = e->points[i].sounds && (!soloing || (int)i == sp); dp[i] = (int)i == sp ? 0 : d[i];
+    }
     int voices = std::min(SLOTS, fs_piece_bed_voices(e->piece));
-    int k = fs_pick_voices(d.data(), rad.data(), el.data(), (int)np, voices, 0, picked.data());
+    int k = fs_pick_voices(dp.data(), rad.data(), el.data(), (int)np, voices, 0, picked.data());
     std::map<std::string, int> want;
     for (int i = 0; i < k; i++) want[e->points[picked[i]].id] = picked[i];
     /* a point that leaves goes idle: faded out, its recording kept VOICE_RELEASE (45 s) in case the
@@ -242,9 +254,9 @@ const char *fs_engine_step(fs_engine *e, double lon, double lat) {
             if (!p.path.empty()) e->loads += "S " + std::to_string(s) + " " + p.id + " " + p.path + "\n";
         }
         Slot &sl = e->slot[s];
-        sl.earned = (float)fs_point_gain(d[picked[i]], p.radius, p.gain);
+        sl.earned = (float)fs_point_gain(dp[picked[i]], p.radius, p.gain);
         fs_mix_set_gain(e->mix, s, sl.loaded ? sl.earned : 0);
-        fs_mix_set_lowpass(e->mix, s, (float)(300 + (p.brightest - 300) * fs_point_proximity(d[picked[i]], p.radius)), 350);
+        fs_mix_set_lowpass(e->mix, s, (float)(300 + (p.brightest - 300) * fs_point_proximity(dp[picked[i]], p.radius)), 350);
     }
     /* zones and the recordings' character */
     std::vector<double> cd, cr, cc, co;
@@ -258,7 +270,10 @@ const char *fs_engine_step(fs_engine *e, double lon, double lat) {
     /* rhythm points (updateRhythms) */
     size_t nb = e->beats.size();
     std::vector<double> bd(nb), br(nb); std::vector<unsigned char> bel(nb, 1); std::vector<int> bp(std::max<size_t>(nb, 1));
-    for (size_t i = 0; i < nb; i++) { bd[i] = fs_geo_distance(lon, lat, e->beats[i].lon, e->beats[i].lat); br[i] = e->beats[i].radius; }
+    for (size_t i = 0; i < nb; i++) {
+        bd[i] = (int)i == sb ? 0 : fs_geo_distance(lon, lat, e->beats[i].lon, e->beats[i].lat); br[i] = e->beats[i].radius;
+        bel[i] = !soloing || (int)i == sb;
+    }
     int kb = fs_pick_voices(bd.data(), br.data(), bel.data(), (int)nb, std::min(FS_MAX_VOICES, std::max(fs_piece_bed_voices(e->piece), 1)), 1, bp.data());
     std::map<std::string, bool> bwant;
     for (int i = 0; i < kb; i++) bwant[e->beats[bp[i]].id] = true;
@@ -278,6 +293,7 @@ const char *fs_engine_step(fs_engine *e, double lon, double lat) {
         }
         fs_piece_rhythm_gain(e->piece, e->handle[b.id], (float)fs_point_gain(bd[bp[i]], b.radius, b.gain));
     }
+    fs_piece_solo(e->piece, sb >= 0 && e->handle.count(e->beats[sb].id) ? e->handle[e->beats[sb].id] : -1);
     /* what the screen shows */
     /* the route underfoot (its sound crossfades in over 1.5 s), named only within the leash */
     e->route_name = r >= 0 && r < (int)e->route_names.size() && proj.dist <= FS_GPS_LEASH ? e->route_names[r] : "";
@@ -286,7 +302,7 @@ const char *fs_engine_step(fs_engine *e, double lon, double lat) {
         const Point &p = e->points[picked[i]];
         bool loaded = false;
         for (auto &sl : e->slot) if (sl.id == p.id && sl.active) loaded = sl.loaded;
-        char b[96]; std::snprintf(b, sizeof b, ",\"level\":%.4f,\"dist\":%.1f,\"loaded\":%s}", fs_point_gain(d[picked[i]], p.radius, 1), d[picked[i]], loaded ? "true" : "false");
+        char b[96]; std::snprintf(b, sizeof b, ",\"level\":%.4f,\"dist\":%.1f,\"loaded\":%s}", fs_point_gain(dp[picked[i]], p.radius, 1), d[picked[i]], loaded ? "true" : "false");
         rows += (rows.empty() ? "" : ",") + std::string("{\"id\":") + esc(p.id) + ",\"name\":" + esc(p.name) + b;
     }
     std::string rh, bl;
@@ -328,6 +344,7 @@ void fs_engine_source(fs_engine *e, int kind, int index, int sub, const char *id
 void fs_engine_process(fs_engine *e, int frames) { fs_mix_process(e->mix, frames); e->frames += frames; }
 float *fs_engine_out(fs_engine *e, int ch) { return fs_mix_out(e->mix, ch); }
 const char *fs_engine_state(fs_engine *e) { return e->state.c_str(); }
+void fs_engine_solo(fs_engine *e, const char *id) { e->solo = id ? id : ""; }
 int fs_engine_route(fs_engine *e) { return e->route_name.empty() ? -1 : fs_piece_route(e->piece); }
 int fs_engine_chord(fs_engine *e, int *count, char *label, int size) {
     if (e->route_name.empty()) { if (count) *count = 0; if (label && size) label[0] = 0; return -1; }

@@ -50,7 +50,9 @@ try {
     await shot(vp + "-first");
     await ev("document.querySelector('#ls-sound').click()");
     for (let i = 0; i < 30 && !(await ev("!!(window.__fa.coreLive && __fa.coreLive.n > 0)")); i++) { await ev("__fa.walkTo(29.038879, 41.00771)"); await sleep(400); }
-    await sleep(5000);                                    /* past the first bar (3.3 s at 72 bpm): the chord is -1 before it */
+    /* the chord is -1 until the first bar lands (3.3 s at 72 bpm), later when the page is busy */
+    for (let i = 0; i < 40 && !/chord \d+ of 16/.test(await ev("document.querySelector('#ls-walk').textContent")); i++) await sleep(250);
+    await sleep(600);
     const walkText = await ev("document.querySelector('#ls-walk').textContent");
     check(p("route line with the chord"), /Route .*chord \d+ of 16/.test(walkText), walkText);
     await ev("window.__lsBtn = document.querySelector('#ls-sound')"); await sleep(1500);
@@ -70,6 +72,94 @@ try {
     await ev("__fa.walkTo(29.09, 41.05)"); await sleep(2500);
     const far = await ev("document.querySelector('#ls-walk').textContent");
     check(p("far from routes: no route line"), !/Route /.test(far), far);
+    /* ---- W2/W3: everything a listener does, with real mouse events ---- */
+    const click = async (x, y) => {
+      await s.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
+      await s.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
+    };
+    const clickEl = async (sel) => {
+      const r = JSON.parse(await ev(`JSON.stringify((function(){var e=document.querySelector(${JSON.stringify(sel)});if(!e)return null;var b=e.getBoundingClientRect();return {x:b.x+b.width/2,y:b.y+b.height/2};})())`));
+      if (!r) return false; await click(r.x, r.y); await sleep(500); return true;
+    };
+    const text = (sel) => ev(`(document.querySelector(${JSON.stringify(sel)})||{}).textContent||""`);
+    await ev("__fa.walkTo(29.038879, 41.00771)"); await sleep(1500);
+
+    /* Places: the routes, and a route opens its card */
+    check(p("place picker opens Places"), await clickEl("#ls-place") && /Routes/.test(await text("#ls-sheet")), await text("#ls-sheet"));
+    check(p("Places lists the Koşuyolu route"), /Koşuyolu Parkı/.test(await text("#ls-sheet .ls-routes")), await text("#ls-sheet"));
+    await clickEl("#ls-sheet .ls-routes button"); await sleep(1200);
+    check(p("a route opens its card with 16 chords"), await ev("document.querySelectorAll('#ls-card .ls-chord').length") === 16, await text("#ls-card"));
+    check(p("route card: Show whole route"), /Show whole route/.test(await text("#ls-card")), await text("#ls-card"));
+    check(p("fits with a route card"), await ev("document.documentElement.scrollHeight - innerHeight === 0"), await ev("document.documentElement.scrollHeight - innerHeight"));
+    await shot(vp + "-route-card");
+    await clickEl("#ls-card .ls-close"); await sleep(500);
+    check(p("closing a card returns to the walk"), await ev("!document.querySelector('#ls-card')"), await text("#ls-panel"));
+    if (await ev("!document.querySelector('#ls-bar').hidden")) { await clickEl("#ls-grip"); }
+
+    /* Layers: base map, zones */
+    check(p("Layers opens"), await clickEl("#ls-layers") && /Satellite/.test(await text("#ls-sheet")), await text("#ls-sheet"));
+    await shot(vp + "-layers");
+    await clickEl("#ls-sheet [data-ls-base='topo']");
+    check(p("Topo switches the base map"), await ev("fsListen.layers().base") === "topo", await ev("fsListen.layers()"));
+    await clickEl("#ls-sheet [data-ls-layer='zones']");
+    check(p("zones switch off"), await ev("fsListen.layers().zones") === false, await ev("fsListen.layers()"));
+    await clickEl("#ls-sheet [data-ls-layer='zones']"); await clickEl("#ls-sheet [data-ls-base='sat']");
+    await clickEl("#ls-sheet .ls-close");
+
+    /* Account: the setter's door */
+    check(p("Account opens with setter sign-in"), await clickEl("#ls-account") && /Setter sign-in/.test(await text("#ls-sheet")), await text("#ls-sheet"));
+    await clickEl("#ls-sheet .ls-close");
+
+    /* a point on the map opens its card; Listen solos it */
+    await ev("fsListen.frame(fsListen.state().rows[0].id)"); await sleep(1200);
+    const pt = JSON.parse(await ev("JSON.stringify((function(){var id=fsListen.state().rows[0].id,q=fsListen.point(id),c=__fa.map.project([q.lon,q.lat]),r=__fa.map.getContainer().getBoundingClientRect();return {id:id,name:q.name,x:c.x+r.x,y:c.y+r.y};})())"));
+    await click(pt.x, pt.y); await sleep(800);
+    check(p("clicking a point opens its card"), (await text("#ls-card .ls-cardtitle")) === pt.name, await text("#ls-card"));
+    await shot(vp + "-point-card");
+    check(p("point card has Listen"), await clickEl("#ls-card .ls-listen"), null);
+    await sleep(1500);
+    check(p("Listen solos the point"), await ev("fsListen.listening()") === pt.id && /Stop listening/.test(await text("#ls-card .ls-listen")), await ev("fsListen.listening()"));
+    const soloLevel = await ev(`(function(){var s=fsListen.state();var r=(s.core.rows||[]).concat(s.core.beats||[]).filter(function(x){return x.id===${JSON.stringify(pt.id)}})[0];return r?r.level:null;})()`);
+    check(p("the soloed point plays at full level"), soloLevel === 1, soloLevel);
+    await clickEl("#ls-card .ls-listen");
+    await clickEl("#ls-card .ls-play");
+    for (let i = 0; i < 30 && !(await ev("!!(fsListen.playing() && !fsListen.playing().paused && fsListen.playing().pos > 0)")); i++) await sleep(300);
+    check(p("the card plays the original recording"), await ev("!!(fsListen.playing() && fsListen.playing().pos > 0)"), await ev("JSON.stringify(fsListen.playing())"));
+    check(p("the player shows its clock"), /\d:\d\d \/ \d+:\d\d/.test(await text("#ls-card .ls-pos")), await text("#ls-card .ls-pos"));
+    await clickEl("#ls-card .ls-play");
+    check(p("the play button pauses it"), await ev("!!(fsListen.playing() && fsListen.playing().paused)"), await ev("JSON.stringify(fsListen.playing())"));
+    check(p("Stop listening lets go"), (await ev("fsListen.listening()")) === null, await ev("fsListen.listening()"));
+    await clickEl("#ls-card .ls-close"); await sleep(400);
+    if (await ev("!document.querySelector('#ls-bar').hidden")) { await clickEl("#ls-grip"); }
+
+    /* the walker: press and hold anywhere moves it (and opens no card); dragging its dot moves it */
+    const w0 = await ev("JSON.stringify(fsListen.walker())");
+    const box = JSON.parse(await ev("JSON.stringify(__fa.map.getContainer().getBoundingClientRect())"));
+    /* a spot well away from the walker's dot: pressing the dot itself is a drag, not a hold */
+    const d0 = JSON.parse(await ev("JSON.stringify((function(){var b=document.querySelector('.pacer').getBoundingClientRect();return {x:b.x+b.width/2,y:b.y+b.height/2};})())"));
+    let hx = box.x + box.width * 0.72, hy = box.y + box.height * 0.3;
+    if (Math.hypot(hx - d0.x, hy - d0.y) < 150) { hx = box.x + box.width * 0.3; hy = box.y + box.height * 0.25; }
+    /* a phone is touched, a computer is clicked: each with its own events */
+    const press = async (x, y) => mobile ? s.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] })
+                                         : s.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
+    const moveTo = async (x, y) => mobile ? s.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y }] })
+                                          : s.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "left", buttons: 1 });
+    const release = async (x, y) => mobile ? s.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] })
+                                           : s.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
+    await press(hx, hy); await sleep(800); await release(hx, hy);
+    await sleep(600);
+    const w1 = await ev("JSON.stringify(fsListen.walker())");
+    check(p("press and hold moves the walker"), w1 !== w0, [w0, w1]);
+    check(p("press and hold opens no card"), await ev("!document.querySelector('#ls-card')"), await text("#ls-card"));
+    const dot = JSON.parse(await ev("JSON.stringify((function(){var b=document.querySelector('.pacer').getBoundingClientRect();return {x:b.x+b.width/2,y:b.y+b.height/2};})())"));
+    await press(dot.x, dot.y);
+    for (let k = 1; k <= 8; k++) { await moveTo(dot.x - 10 * k, dot.y + 5 * k); await sleep(30); }
+    await release(dot.x - 80, dot.y + 40);
+    await sleep(500);
+    check(p("dragging the dot moves the walker"), (await ev("JSON.stringify(fsListen.walker())")) !== w1, null);
+    await ev("fsListen.moveTo(29.03, 41.2)"); await sleep(1800);
+    const inView = await ev("(function(){var p=__fa.map.project(fsListen.walker()),c=__fa.map.getContainer();return p.x>0&&p.y>0&&p.x<c.clientWidth&&p.y<c.clientHeight;})()");
+    check(p("the map follows the walker off screen"), inView, null);
     check(p("no page errors"), errors.length === 0, errors);
     errors.length = 0;
   }

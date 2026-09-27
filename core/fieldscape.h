@@ -197,6 +197,9 @@ const char *fs_engine_state(fs_engine *e);
 int fs_engine_morphs(fs_engine *e, double *out, int max, double *clock, int *root, int *shown);
 int fs_engine_chord(fs_engine *e, int *count, char *label, int size);
 int fs_engine_route(fs_engine *e);
+/* Listen: that point (stretch or rhythm) alone at its full level from any distance, the route's synths and every
+   other point resting; "" lets go. The next fs_engine_step applies it. */
+void fs_engine_solo(fs_engine *e, const char *id);
 
 /* Whole-recording resampling at load (core/resample.cpp): windowed sinc, 16-bit in and out. */
 long long fs_resample_length(long long frames, double from_rate, double to_rate);

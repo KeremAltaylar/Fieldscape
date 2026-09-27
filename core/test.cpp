@@ -275,6 +275,29 @@ int main() {
         assert(fs_engine_morphs(e, o, 24, &clock, &root, &shown) == -1);   /* 8 km away: nothing playing */
         fs_engine_destroy(e);
     }
+    {   /* Listen (fs_engine_solo): one point alone at its full level from any distance */
+        fs_engine *e = fs_engine_create(SR, B);
+        fs_engine_features(e, "{\"type\":\"FeatureCollection\",\"features\":["
+            "{\"type\":\"Feature\",\"geometry\":{\"type\":\"Point\",\"coordinates\":[29.02,41.0]},"
+            "\"properties\":{\"id\":\"s1\",\"kind\":\"point\",\"name\":\"S\",\"has_audio\":true,\"storage_path\":\"s1.webm\"}},"
+            "{\"type\":\"Feature\",\"geometry\":{\"type\":\"Point\",\"coordinates\":[29.03,41.0]},"
+            "\"properties\":{\"id\":\"g1\",\"kind\":\"point\",\"name\":\"G\",\"has_audio\":true,\"audio_mode\":\"grains\",\"storage_path\":\"g1.webm\"}}]}");
+        std::string need = fs_engine_step(e, 29.0, 41.0), st = fs_engine_state(e);
+        assert(need.empty() && st.find("\"s1\"") == std::string::npos);            /* 1.7 km: out of reach */
+        fs_engine_solo(e, "s1");
+        need = fs_engine_step(e, 29.0, 41.0); st = fs_engine_state(e);
+        std::printf("solo s1: %s | %s\n", need.c_str(), st.c_str());
+        assert(need.find(" s1 s1.webm") != std::string::npos && st.find("\"id\":\"s1\",\"name\":\"S\",\"level\":1.0000") != std::string::npos);
+        fs_engine_solo(e, "g1");
+        need = fs_engine_step(e, 29.0, 41.0); st = fs_engine_state(e);
+        std::printf("solo g1: %s | %s\n", need.c_str(), st.c_str());
+        assert(need.find("R ") == 0 && need.find(" g1 g1.webm") != std::string::npos);
+        assert(st.find("{\"id\":\"g1\",\"level\":1.0000") != std::string::npos && st.find("\"rows\":[]") != std::string::npos);
+        fs_engine_solo(e, "");
+        fs_engine_step(e, 29.0, 41.0); st = fs_engine_state(e);
+        assert(st.find("\"rows\":[]") != std::string::npos && st.find("\"beats\":[]") != std::string::npos);
+        fs_engine_destroy(e);
+    }
     std::printf("core ok\n");
     return 0;
 }

@@ -4084,6 +4084,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     renderDetail();
     renderList();
     renderLabels();
+    if (window.fsListen) { fsListen._selected(id); }
     var f = id ? feature(id) : null;
     var routeId = (f && f.properties.kind === "route") ? f.properties.id : null;
     /* Compare the URL itself, not the id: a tourStep() walk selects a different point on
@@ -4123,6 +4124,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   /* ---------- Interaction ---------- */
   map.on("click", function (e) {
+    if (window.fsListen && fsListen._eatClick()) { return; }   /* the end of a press-and-hold */
     if (isMobile()) { openSheet(false); }   /* touching the map means you want the map */
     var c = [ +e.lngLat.lng.toFixed(6), +e.lngLat.lat.toFixed(6) ];
 
@@ -13847,8 +13849,156 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       cellsOn: function () { return cells.on; },
       cellsResize: function () { if (cells.on) { cellsResize(); } },
       _changed: changed,
-      _gate: function (on) { setter.signedIn = on; applyModeGating(); }
+      _gate: function (on) { setter.signedIn = on; applyModeGating(); },
+
+      /* ---- the sheets and cards ---- */
+      /* a tap on the map, or on a row, selects; the shell opens the card */
+      onSelect: function (fn) { selSubs.push(fn); },
+      select: function (id) { setSelected(id || null, true); },
+      _selected: function (id) { selSubs.forEach(function (f) { try { f(id); } catch (e) { console.error(e); } }); },
+      /* a press-and-hold on the map moves the walker; the click that ends it must not also select */
+      _eatClick: function () { var e = eat; eat = false; return e; },
+      point: function (id) {
+        var f = feature(id);
+        if (!f || f.geometry.type !== "Point") { return null; }
+        var q = f.properties, a = q.audio || {};
+        var mode = q.audio_mode === "hits" ? "rhythm" : q.audio_mode === "grains" ? "grains" : q.has_audio ? "stretch" : "silent";
+        return { id: id, name: label(f), note: q.note || "", mode: mode, lon: f.geometry.coordinates[0], lat: f.geometry.coordinates[1],
+                 dist: pacer && pacer.pos ? segment(pacer.pos, f.geometry.coordinates) : null,
+                 peaks: a.peaks || null, duration: a.duration_s || 0,
+                 recorded: a.recorded_at ? fmtWhen(a.recorded_at) : (q.created_at ? fmtWhen(q.created_at) : ""),
+                 path: q.storage_path || null, images: (q.images || []).length,
+                 hits: mode === "rhythm" ? HIT_SLOTS.map(function (k, i) {
+                   var h = q.hits && q.hits[k];
+                   return h && h.storage_path ? { slot: k, name: ["Low", "Mid", "High", "Random"][i], path: h.storage_path } : null;
+                 }).filter(Boolean) : [] };
+      },
+      route: function (id) {
+        var f = feature(id);
+        if (!f || f.properties.kind !== "route") { return null; }
+        var pt = patchOf(f), prog = [];
+        for (var i = 0; i < pt.prog.length; i++) {
+          prog.push({ pc: ((chordRoot(pt, i) % 12) + 12) % 12, label: chordLabel(pt, i).replace(" (V/)", "") });
+        }
+        var live = core && core.on && core.live, playing = !!(core && core.state && core.state.route === label(f));
+        return { id: id, name: label(f), note: f.properties.note || "", metres: routeMetrics(f).total,
+                 key: NOTE_NAMES[((pt.key % 12) + 12) % 12], tempo: Math.round(pt.tempo), sections: pt.sect.n, prog: prog,
+                 at: playing && live && live.chord.step >= 0 ? live.chord.step : -1 };
+      },
+      colour: function (pc) { return rootColour(pc); },
+      routes: function () {
+        return visible().filter(function (f) { return f.properties.kind === "route"; })
+          .map(function (f) { return { id: f.properties.id, name: label(f), metres: routeMetrics(f).total }; });
+      },
+      parks: function () {
+        var held = {};
+        visible().forEach(function (f) {
+          var k = f.properties.place;
+          if (k) { held[k] = held[k] || { points: 0, routes: 0 }; held[k][f.properties.kind === "route" ? "routes" : "points"]++; }
+        });
+        return places.map(function (p) { return { id: p.properties.id, name: p.properties.name, held: held[p.properties.id] || null }; });
+      },
+      /* frame a feature or a park; the map flies there */
+      frame: function (id) {
+        var f = feature(id) || places.filter(function (p) { return p.properties.id === id; })[0];
+        if (!f) { return; }
+        if (f.geometry.type === "Point") { map.easeTo({ center: f.geometry.coordinates, zoom: Math.max(map.getZoom(), 16), duration: 600 }); return; }
+        var b = new maplibregl.LngLatBounds();
+        (function walk(c) { if (typeof c[0] === "number") { b.extend(c); } else { c.forEach(walk); } })(f.geometry.coordinates);
+        map.fitBounds(b, { padding: { top: 80, bottom: innerWidth > 860 ? 60 : 320, left: innerWidth > 860 ? 420 : 30, right: 40 }, duration: 700, maxZoom: 17 });
+      },
+      fitAll: function () { $("#fit-forest").click(); },
+      layers: function () {
+        var on = function (id) { return !!map.getLayer(id) && map.getLayoutProperty(id, "visibility") !== "none"; };
+        var base = document.querySelector("[data-base][aria-pressed='true']");
+        return { base: base ? base.dataset.base : "sat", boundary: on("forest-line"), zones: on("zone-fill"), sections: on("sector-fill") };
+      },
+      setBase: function (name) { var b = document.querySelector("[data-base='" + name + "']"); if (b) { b.click(); } changed(); },
+      setBoundary: function (v) { setForest(v ? "frame" : "off"); changed(); },
+      setLayer: function (which, v) {
+        (which === "zones" ? ["zone-fill", "zone-line"] : ["sector-fill", "sector-line"]).forEach(function (id) {
+          if (map.getLayer(id)) { map.setLayoutProperty(id, "visibility", v ? "visible" : "none"); }
+        });
+        changed();
+      },
+      /* Listen: that point alone, from anywhere (fs_engine_solo); null lets go. The core engine only. */
+      canListen: function () { return !!CORE; },
+      listen: function (id) {
+        soloId = id || null;
+        if (core && core.node) { core.node.port.postMessage({ type: "solo", id: soloId || "" }); coreMove(); }
+        changed();
+      },
+      listening: function () { return soloId; },
+      /* the card's player: a recording as it was made; the walk rests while it plays */
+      play: function (key, path) {
+        if (raw.key === key && raw.el) {
+          if (raw.el.paused) { raw.el.play(); coreRamp(0, 0.4); } else { raw.el.pause(); coreRamp(1, 0.4); }
+          changed();
+          return;
+        }
+        stopRaw();
+        raw.key = key; raw.loading = true; changed();
+        audioBlob(key, path).then(function (blob) {
+          if (raw.key !== key) { return; }
+          raw.loading = false;
+          if (!blob) { raw = { key: null }; changed(); return; }
+          raw.url = URL.createObjectURL(blob);
+          raw.el = new Audio(raw.url);
+          raw.el.addEventListener("timeupdate", changed);
+          raw.el.addEventListener("loadedmetadata", changed);
+          raw.el.addEventListener("ended", function () { stopRaw(); changed(); });
+          coreRamp(0, 0.4);
+          raw.el.play().catch(function () { stopRaw(); changed(); });
+          changed();
+        });
+      },
+      playing: function () {
+        return raw.key ? { key: raw.key, loading: !!raw.loading, paused: !raw.el || raw.el.paused,
+                           pos: raw.el ? raw.el.currentTime : 0, dur: raw.el && isFinite(raw.el.duration) ? raw.el.duration : 0 } : null;
+      },
+      stopPlaying: function () { stopRaw(); changed(); },
+      photos: function (id) {
+        var f = feature(id);
+        return Promise.all(((f && f.properties.images) || []).map(function (img) {
+          return audioBlob(photoKey(id, img.key), img.storage_path || null).then(function (b) { return b ? URL.createObjectURL(b) : null; });
+        })).then(function (urls) { return urls.filter(Boolean); });
+      },
+      /* the walker, placed by hand: a press-and-hold anywhere, or a drag of its dot */
+      moveTo: function (lon, lat) {
+        if (gps.on) { gpsSet(false); }
+        worldMove([+lon.toFixed(6), +lat.toFixed(6)]);
+        changed();
+      },
+      moveToScreen: function (x, y) { var ll = map.unproject([x, y]); eat = true; setTimeout(function () { eat = false; }, 600); fsListen.moveTo(ll.lng, ll.lat); },
+      walker: function () { return pacer && pacer.pos ? pacer.pos.slice() : null; },
+      /* keep the walker on screen: the map follows when it would leave the view */
+      follow: function () {
+        if (!pacer || !pacer.pos || map.isMoving()) { return; }
+        var p = map.project(pacer.pos), el = map.getContainer(), pad = 48, wide = innerWidth > 860;
+        var panel = document.getElementById("ls-panel"), left = wide ? 420 : pad;
+        var bottom = wide ? pad : Math.min(el.clientHeight * 0.6, (panel ? panel.offsetHeight : 0) + pad);
+        if (p.x < left || p.y < 80 || p.x > el.clientWidth - pad || p.y > el.clientHeight - bottom) {
+          map.easeTo({ center: pacer.pos, duration: 700, padding: { left: wide ? left - pad : 0, bottom: wide ? 0 : bottom - pad, top: 0, right: 0 } });
+        }
+      },
+      /* the setter's door: the page's own magic-link sign-in */
+      signIn: function (email) { $("#setter-email").value = email; $("#setter-send").click(); setTimeout(changed, 800); },
+      signInNote: function () { return $("#setter-who").textContent; },
+      /* the card's waveform, drawn as the setter's card draws it */
+      wave: function (c, peaks) {
+        var w = c.clientWidth || 300, h = c.clientHeight || 44, r = window.devicePixelRatio || 1;
+        c.width = w * r; c.height = h * r;
+        var g = c.getContext("2d"); g.setTransform(r, 0, 0, r, 0, 0); g.clearRect(0, 0, w, h);
+        if (peaks && peaks.length) { paintWave(g, peaks, w, h); }
+      }
     };
+    var selSubs = [], eat = false, soloId = null, raw = { key: null };
+    function stopRaw() {
+      if (raw.el) { raw.el.pause(); raw.el.removeAttribute("src"); }
+      if (raw.url) { URL.revokeObjectURL(raw.url); }
+      if (raw.key && !raw.loading) { coreRamp(1, 0.4); }
+      raw = { key: null };
+    }
   })();
 
   /* ---------- Mobile chrome ---------- */
