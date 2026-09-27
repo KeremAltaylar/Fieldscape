@@ -192,6 +192,11 @@ void fs_engine_source(fs_engine *e, int kind, int index, int sub, const char *id
 void fs_engine_process(fs_engine *e, int frames);
 float *fs_engine_out(fs_engine *e, int channel);
 const char *fs_engine_state(fs_engine *e);
+/* live reads for the screen, ~30 times a second: the piece's morph cells (fs_piece_morphs), the chord
+   and the route playing (-1: none) */
+int fs_engine_morphs(fs_engine *e, double *out, int max, double *clock, int *root, int *shown);
+int fs_engine_chord(fs_engine *e, int *count, char *label, int size);
+int fs_engine_route(fs_engine *e);
 
 /* Whole-recording resampling at load (core/resample.cpp): windowed sinc, 16-bit in and out. */
 long long fs_resample_length(long long frames, double from_rate, double to_rate);

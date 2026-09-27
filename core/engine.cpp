@@ -324,5 +324,14 @@ void fs_engine_source(fs_engine *e, int kind, int index, int sub, const char *id
 void fs_engine_process(fs_engine *e, int frames) { fs_mix_process(e->mix, frames); e->frames += frames; }
 float *fs_engine_out(fs_engine *e, int ch) { return fs_mix_out(e->mix, ch); }
 const char *fs_engine_state(fs_engine *e) { return e->state.c_str(); }
+int fs_engine_route(fs_engine *e) { return e->route_name.empty() ? -1 : fs_piece_route(e->piece); }
+int fs_engine_chord(fs_engine *e, int *count, char *label, int size) {
+    if (e->route_name.empty()) { if (count) *count = 0; if (label && size) label[0] = 0; return -1; }
+    return fs_piece_chord(e->piece, count, label, size);
+}
+int fs_engine_morphs(fs_engine *e, double *out, int max, double *clock, int *root, int *shown) {
+    if (e->route_name.empty()) { if (clock) *clock = 0; if (root) *root = 0; if (shown) *shown = 0; return -1; }
+    return fs_piece_morphs(e->piece, out, max, clock, root, shown);
+}
 
 }

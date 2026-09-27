@@ -258,6 +258,23 @@ int main() {
         assert(n == 1 && shown == 0 && o[0] == 3 && o[1] == 2 && std::fabs(o[4] - ramp) < 1e-9);
         fs_destroy(pc);
     }
+    {   /* the engine's live reads: morphs, chord and route of the piece it drives */
+        fs_engine *e = fs_engine_create(SR, B);
+        fs_engine_features(e, "{\"type\":\"FeatureCollection\",\"features\":[{\"type\":\"Feature\","
+            "\"geometry\":{\"type\":\"LineString\",\"coordinates\":[[29.0,41.0],[29.002,41.0]]},"
+            "\"properties\":{\"id\":\"r1\",\"kind\":\"route\",\"name\":\"R\",\"patch\":{}}}]}");
+        double o[7 * 24], clock = 0; int root = -1, shown = -1, count = 0; char label[32];
+        assert(fs_engine_route(e) == -1 && fs_engine_chord(e, &count, label, 32) == -1);
+        for (int b = 0; b < (int)(4.0 * SR / B); b++) { if (b % 40 == 0) fs_engine_step(e, 29.001, 41.0); fs_engine_process(e, B); }
+        int n = fs_engine_morphs(e, o, 24, &clock, &root, &shown);
+        int ch = fs_engine_chord(e, &count, label, 32);
+        std::printf("engine live: route %d, chord %d of %d %s, %d morphs at %.2f s\n", fs_engine_route(e), ch, count, label, n, clock);
+        assert(fs_engine_route(e) == 0 && ch >= 0 && count == 16 && label[0] && n == 6 && clock > 3);
+        for (int b = 0; b < (int)(2.0 * SR / B); b++) { if (b % 40 == 0) fs_engine_step(e, 29.1, 41.1); fs_engine_process(e, B); }
+        assert(fs_engine_route(e) == -1 && fs_engine_chord(e, &count, label, 32) == -1);
+        assert(fs_engine_morphs(e, o, 24, &clock, &root, &shown) == -1);   /* 8 km away: nothing playing */
+        fs_engine_destroy(e);
+    }
     std::printf("core ok\n");
     return 0;
 }
