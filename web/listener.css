@@ -261,3 +261,52 @@ header, #panel, #patchbar, #pacerbar, #readout, #markbar, #sheet, #layers-btn { 
 .knob-cell { display: inline-flex; flex-direction: column; align-items: center; gap: 1px; margin-right: var(--s-2); vertical-align: top; }
 .knob-cap { font-family: var(--font-body); font-size: 10.5px; color: var(--faint); letter-spacing: normal; text-transform: none; }
 @media (max-width: 860px) { .knob-cell .knob { width: 44px; height: 44px; } }
+
+/* ---- S3: a point's sound panel (Stretch · Rhythm · Grains), and both panels' own buttons ---- */
+#rhythmpanel { background: var(--ground); }
+#rhythmpanel .viewerbar { display: flex; align-items: center; gap: var(--s-3); padding: var(--s-3) var(--s-4); border-bottom: 1px solid var(--hairline); background: var(--panel); }
+#rp-title { font-family: var(--font-display) !important; font-size: var(--t-md) !important; font-weight: 600; letter-spacing: normal !important;
+            text-transform: none !important; color: var(--ink) !important; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+#rhythmpanel .viewerbar button { flex: none; min-height: 44px; padding: 0 var(--s-3); border: 1px solid var(--hairline); border-radius: 10px; background: var(--raised);
+  color: var(--ink); font-family: var(--font-body); font-size: var(--t-sm); letter-spacing: normal; text-transform: none; }
+#rhythmpanel .viewerbar #rp-reset { background: none; color: var(--dim); }
+/* the panels' own buttons speak the body face, not the instrument's mono capitals */
+#pp-body button, #rp-body button { font-family: var(--font-body); letter-spacing: normal; text-transform: none; font-size: 12.5px; border-radius: 6px; }
+#pp-body .pprow button, #rp-body .pprow button { min-height: 26px; }
+.pptabs { border: 1px solid var(--hairline) !important; border-radius: 10px; overflow: hidden; }
+#rp-body .pptabs button { min-height: 40px; border-radius: 0; background: none; color: var(--dim); font-size: var(--t-sm); }
+#rp-body .pptabs button[aria-selected="true"] { background: var(--raised); color: var(--ink); border-color: var(--hairline); }
+
+/* the tabbed sound panel (the page tabs it below 1000 px): knobs as 44 px cells, three to a row */
+@media (max-width: 999px) {
+  #rp-body :has(> .pprow.has-knob) { display: flex; flex-wrap: wrap; align-items: flex-start; }
+  #rp-body :has(> .pprow.has-knob) > :not(.pprow.has-knob) { flex: 0 0 100%; }
+  #rp-body .pprow.has-knob { flex: 0 0 33.333%; box-sizing: border-box; display: grid; grid-template-columns: 1fr; justify-items: center;
+    gap: 2px; padding: var(--s-1) 2px; margin: 0; text-align: center; }
+  #rp-body .pprow.has-knob .knob { order: -1; width: 44px; height: 44px; }
+  #rp-body .pprow.has-knob > span { white-space: normal; line-height: 1.15; font-size: 12px; max-width: 100%; }
+  #rp-body .pprow.has-knob i { text-align: center; }
+}
+/* one line under the knob: name, then value — three lines per cell ran the Rhythm and Ratios tabs
+   past the phone's height (measured +41 to +109 px) */
+@media (max-width: 999px) {
+  #rp-body .pprow.has-knob { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "k k" "n v"; justify-items: stretch; column-gap: 4px; row-gap: 1px; }
+  #rp-body .pprow.has-knob .knob { grid-area: k; justify-self: center; }
+  #rp-body .pprow.has-knob > span { grid-area: n; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 11.5px; }
+  #rp-body .pprow.has-knob i { grid-area: v; text-align: right; font-size: 10.5px; }
+}
+@media (max-width: 999px) {
+  #rp-body :has(> .pprow.has-knob) { flex-direction: row !important; }
+  #rp-body .hitcard { display: block; }
+  #rp-body .pxratio > .pprow.has-knob { flex-basis: 50%; }
+  /* the name and its value read as one caption, centred under the knob */
+  #rp-body .pprow.has-knob { grid-template-columns: auto auto; justify-content: center; column-gap: 5px; padding-left: 4px; padding-right: 4px; }
+  #rp-body .pprow.has-knob > span { max-width: 4.6rem; }
+}
+@media (max-width: 999px) {
+  /* Ratios: eight ratio-and-level pairs, two pairs to a line */
+  #rp-body .pxmod:has(> .pxratio) { display: flex; flex-wrap: wrap; flex-direction: row !important; }
+  #rp-body .pxmod:has(> .pxratio) > :not(.pxratio) { flex: 0 0 100%; }
+  #rp-body .pxratio { flex: 0 0 50% !important; display: flex !important; flex-direction: row !important; box-sizing: border-box; }
+  #rp-body .pxratio > .pprow.has-knob { flex: 0 0 50% !important; }
+}
