@@ -677,7 +677,9 @@ input[type="text"]:focus-visible, input[type="email"]:focus-visible, textarea:fo
   font-family: var(--font-mono); font-size: var(--t-xs);
   letter-spacing: var(--track-eyebrow); text-transform: uppercase; color: var(--faint);
 }
-#f-note { min-height: 2.5rem; }
+/* grows with its text rather than scrolling (Kerem, 2026-09-27: no scroll bars on the card); a very
+   long note still scrolls past 8 lines */
+#f-note { min-height: 2.5rem; max-height: 12rem; resize: none; overflow-y: hidden; }
 
 /* ---- Photos ----
    One photo at a time across the card's full width, swiped sideways. A fixed height keeps the
@@ -13576,6 +13578,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     $("#f-name").value = f.properties.name || "";
     $("#f-name").placeholder = label(f);
     $("#f-note").value = f.properties.note || "";
+    noteFit();
 
     var head = f.properties.kind === "point"
       ? f.geometry.coordinates[1].toFixed(6) + ", " + f.geometry.coordinates[0].toFixed(6)
@@ -13691,7 +13694,16 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     claimEdit(f);
     f.properties.name = this.value; commit();
   });
+  /* the note grows with its text, up to its max-height (then, and only then, it scrolls) */
+  function noteFit() {
+    var t = $("#f-note");
+    if (!t.offsetParent) { t.style.height = ""; return; }   /* measured when shown; never another card's height */
+    t.style.height = "auto"; t.style.height = t.scrollHeight + 2 + "px";
+    t.style.overflowY = t.scrollHeight > t.clientHeight + 1 ? "auto" : "hidden";
+  }
+  window.fsNoteFit = noteFit;
   $("#f-note").addEventListener("input", function () {
+    noteFit();
     var f = feature(selected); if (!f) { return; }
     claimEdit(f);
     f.properties.note = this.value; save();

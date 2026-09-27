@@ -98,8 +98,10 @@
   function showPart() {
     var c = $$("#card"), tabs = $$("#ls-cardtabs");
     if (!c || !tabs) { return; }
+    if (!tabs.querySelector("[data-ct='" + cardTab + "']")) { cardTab = "main"; }   /* a route has no Photos */
     [].forEach.call(tabs.children, function (b) { b.setAttribute("aria-selected", String(b.dataset.ct === cardTab)); });
     [].forEach.call(c.children, function (el) { el.classList.toggle("ls-ct-off", !!el.dataset.ct && el.dataset.ct !== cardTab); });
+    if (window.fsNoteFit) { fsNoteFit(); }
   }
   function setterChanged(on) {
     setter = on;
@@ -388,12 +390,13 @@
       /* No scroll bar (Kerem, 2026-09-27): the card is taller than the panel, so a switch shows one part
          at a time, and the action row (Sound / Patch, Zoom to, Delete) stays under every part */
       var isRoute = !L.point(view.setter);
-      var parts = [["main", isRoute ? "Route" : "Point"], ["sound", "Sound"], ["where", "Where"]];
+      var parts = [["main", isRoute ? "Route" : "Point"]].concat(isRoute ? [] : [["photos", "Photos"]], [["sound", "Sound"], ["where", "Where"]]);
       var tabs = h("div", { id: "ls-cardtabs", role: "tablist", "aria-label": "Card" }, parts.map(function (t) {
         return h("button", { type: "button", role: "tab", "data-ct": t[0], text: t[1], on: { click: function () { cardTab = t[0]; showPart(); } } });
       }));
       box.insertBefore(tabs, card);
-      var PART = { main: [".cardhead", "#f-note", "#g-type", "#f-tags", "#g-photos"], sound: [".rec", ".mixrow"],
+      /* Photos on their own part (Kerem, 2026-09-27): with a note and photos the Point part scrolled again */
+      var PART = { main: [".cardhead", "#f-note", "#g-type", "#f-tags"], photos: ["#g-photos"], sound: [".rec", ".mixrow"],
                    where: ["#f-meta", ".chips:not(.mixrow)", "#f-walk-note"] };
       [].forEach.call($$("#card").children, function (el) {
         el.dataset.ct = "";

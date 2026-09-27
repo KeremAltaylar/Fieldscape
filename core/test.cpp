@@ -302,6 +302,17 @@ int main() {
         assert(st.find("\"rows\":[]") != std::string::npos && st.find("\"beats\":[]") != std::string::npos);
         fs_engine_destroy(e);
     }
+    {   /* a setter's unpublished point: its recording is on this device, not yet on the server (no storage_path).
+           It must still be asked for - it sat on "Preparing" forever (Kerem, 2026-09-27). */
+        fs_engine *e = fs_engine_create(SR, B);
+        fs_engine_features(e, "{\"type\":\"FeatureCollection\",\"features\":["
+            "{\"type\":\"Feature\",\"geometry\":{\"type\":\"Point\",\"coordinates\":[29.0001,41.0]},"
+            "\"properties\":{\"id\":\"n1\",\"kind\":\"point\",\"name\":\"N\",\"has_audio\":true}}]}");
+        std::string need = fs_engine_step(e, 29.0, 41.0);
+        std::printf("unpublished: %s\n", need.c_str());
+        assert(need.find(" n1") != std::string::npos);
+        fs_engine_destroy(e);
+    }
     {   /* live edits (fs_engine_upsert / fs_engine_remove): a setter's change reaches the sound without a reload */
         fs_engine *e = fs_engine_create(SR, B);
         const char *route = "{\"type\":\"Feature\",\"geometry\":{\"type\":\"LineString\",\"coordinates\":[[29.0,41.0],[29.002,41.0]]},"

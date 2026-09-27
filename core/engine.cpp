@@ -370,7 +370,8 @@ const char *fs_engine_step(fs_engine *e, double lon, double lat) {
             for (int k = 0; k < 12; k++) if (e->shape_param[k] >= 0) fs_set_param(sl.dev, e->shape_param[k], p.shape[k]);
             for (int k = 0; k < 5; k++) if (e->chord_param[k] >= 0) fs_set_param(sl.dev, e->chord_param[k], e->chord[k]);
             if (e->chord_param[5] >= 0) fs_set_param(sl.dev, e->chord_param[5], e->chord_root);
-            if (!p.path.empty()) e->loads += "S " + std::to_string(s) + " " + p.id + " " + p.path + "\n";
+            /* no path yet: a setter's unpublished point, its recording on this device (the page finds it by id) */
+            if (p.sounds) e->loads += "S " + std::to_string(s) + " " + p.id + " " + p.path + "\n";
         }
         Slot &sl = e->slot[s];
         sl.earned = (float)fs_point_gain(dp[picked[i]], p.radius, p.gain);

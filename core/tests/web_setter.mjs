@@ -78,15 +78,60 @@ try {
 
     /* Kerem, 2026-09-27: no scroll bar on the setter card - a switch (Point · Sound · Where), not a scrollbar */
     const noScroll = () => ev("(function(){ var h = document.getElementById('ls-holder'), p = document.getElementById('ls-panel'); return { holder: h.scrollHeight - h.clientHeight, panel: p.scrollHeight - p.clientHeight }; })()");
-    check(p("the point card has Point · Sound · Where"), (await ev("[].map.call(document.querySelectorAll('#ls-cardtabs button'), function (b) { return b.textContent; }).join(' ')")) === "Point Sound Where", await text("#ls-cardtabs"));
-    for (const tab of ["main", "sound", "where"]) {
+    check(p("the point card has Point · Photos · Sound · Where"), (await ev("[].map.call(document.querySelectorAll('#ls-cardtabs button'), function (b) { return b.textContent; }).join(' ')")) === "Point Photos Sound Where", await text("#ls-cardtabs"));
+    for (const tab of ["main", "photos", "sound", "where"]) {
       await tapEl(`#ls-cardtabs [data-ct='${tab}']`); await sleep(300);
       const sc = await noScroll();
       check(p("point card, " + tab + ": no scroll bar"), sc.holder <= 0 && sc.panel <= 0, sc);
       check(p("point card, " + tab + ": Delete is always there"), await shown("#ls-card #f-delete"), null);
       await shot(vp + "-setter-card-" + tab);
     }
+    /* Kerem, 2026-09-27: with a recording attached the card grew scroll bars again. Attach one (3 s of
+       noise, as a file picked in the page's own input) and measure every tab again. */
+    await ev(`(function(){ var sr = 22050, n = sr * 3, b = new ArrayBuffer(44 + n * 2), v = new DataView(b);
+      function s(o, t) { for (var i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); }
+      s(0, "RIFF"); v.setUint32(4, 36 + n * 2, true); s(8, "WAVEfmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+      v.setUint32(24, sr, true); v.setUint32(28, sr * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); s(36, "data"); v.setUint32(40, n * 2, true);
+      for (var i = 0; i < n; i++) v.setInt16(44 + i * 2, (Math.random() * 2 - 1) * 8000, true);
+      var dt = new DataTransfer(); dt.items.add(new File([b], "noise.wav", { type: "audio/wav" }));
+      var inp = document.getElementById("rec-file"); inp.files = dt.files; inp.dispatchEvent(new Event("change")); })()`);
+    await sleep(3000);
+    check(p("a recording attached to the new point"), await ev(`!!(fsListen.point(fsListen.selected())||{}).has_audio || !!(__fa.features().filter(function(f){return f.properties.id===fsListen.selected();})[0]||{properties:{}}).properties.has_audio`), null);
+    /* a card as a setter fills it: a note of several lines and two photos */
+    await ev(`(function(){ var t = document.getElementById("f-note"); t.value = "Wind in the oaks above the stream.\\nA woodpecker, far off.\\nThe path bends here toward the water, and the sound opens.\\nBest at dusk."; t.dispatchEvent(new Event("input")); })()`);
+    await ev(`(function(){ var dt = new DataTransfer(); for (var k = 0; k < 2; k++) { var c = document.createElement("canvas"); c.width = 400; c.height = 300; var g = c.getContext("2d"); g.fillStyle = k ? "#385" : "#835"; g.fillRect(0, 0, 400, 300);
+      var bin = atob(c.toDataURL("image/png").split(",")[1]), u = new Uint8Array(bin.length); for (var i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); dt.items.add(new File([u], "p" + k + ".png", { type: "image/png" })); }
+      var inp = document.getElementById("photo-file"); inp.files = dt.files; inp.dispatchEvent(new Event("change")); })()`);
+    await sleep(2500);
+    /* any box inside the card that scrolls - the card itself, a note, a photo strip, a meta line */
+    const inner = () => ev(`JSON.stringify([].filter.call(document.querySelectorAll("#ls-holder, #ls-holder *, #ls-panel"), function (e) {
+      if (!e.offsetParent && e.id !== "ls-panel") return false; var cs = getComputedStyle(e);
+      var y = /(auto|scroll)/.test(cs.overflowY) && e.scrollHeight - e.clientHeight > 1, x = /(auto|scroll)/.test(cs.overflowX) && e.scrollWidth - e.clientWidth > 1;
+      return (y || x) && !e.classList.contains("photos"); }).map(function (e) { return (e.id || e.tagName + "." + e.className) + " " + (e.scrollHeight - e.clientHeight) + "/" + (e.scrollWidth - e.clientWidth); }))`);
+    for (const tab of ["main", "photos", "sound", "where"]) {
+      await tapEl(`#ls-cardtabs [data-ct='${tab}']`); await sleep(300);
+      const sc = await noScroll(), sb = JSON.parse(await inner());
+      check(p("with a recording, point card, " + tab + ": no scroll bar"), sc.holder <= 0 && sc.panel <= 0, sc);
+      check(p("with a recording, point card, " + tab + ": nothing inside it scrolls"), sb.length === 0, sb);
+      await shot(vp + "-setter-card-audio-" + tab);
+    }
     await tapEl("#ls-cardtabs [data-ct='main']");
+
+    /* Kerem, 2026-09-27: the new point, unpublished, stretched - walked into with Sound on, it sat on
+       "Preparing". Its recording is only on this device; the engine never asked for it. */
+    {
+      const nid = await ev("fsListen.selected()");
+      const c = JSON.parse(await ev(`JSON.stringify(__fa.features().filter(function (f) { return f.properties.id === ${JSON.stringify(nid)}; })[0].geometry.coordinates)`));
+      await ev("document.getElementById('patch-play').click()");
+      let row = null;
+      for (let i = 0; i < 40; i++) {
+        await ev(`fsListen.moveTo(${c[0]}, ${c[1]})`); await sleep(400);
+        row = JSON.parse(await ev(`JSON.stringify(((window.__fa.core || {}).rows || []).filter(function (r) { return r.id === ${JSON.stringify(nid)}; })[0] || null)`));
+        if (row && row.loaded) break;
+      }
+      check(p("walked into, the unpublished point's recording loads and sounds"), !!(row && row.loaded), row);
+      await ev("document.getElementById('patch-play').click()"); await sleep(600);
+    }
 
     /* S4: the whole card is reachable, and every one of its controls is a real target */
     const reach = JSON.parse(await ev(`JSON.stringify((function(){ var h = document.getElementById('ls-holder'); h.scrollTop = h.scrollHeight; var d = document.querySelector('#ls-card #f-delete').getBoundingClientRect(), hb = h.getBoundingClientRect();
