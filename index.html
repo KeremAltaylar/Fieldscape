@@ -8306,9 +8306,41 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function coreMove() {
     if (!core || !core.node || !core.on || !pacer || !pacer.world) { return; }
     core.node.port.postMessage({ type: "walk", lon: pacer.pos[0], lat: pacer.pos[1] });
+    prefetchNear(pacer.pos);
+  }
+  /* Approaching a point fetches its recording before the walker reaches it, so the first entrance
+     plays at once instead of waiting on a download (Kerem, 2026-09-27: "smooth is better"). Within
+     PREFETCH_M of a point's own circle, nearest first, one download at a time; audioBlob keeps it
+     in the device's store, where the engine's request finds it. Once per device, as before - but
+     it can fetch a recording that is walked past and never entered, which costs download budget. */
+  var PREFETCH_M = 150, prefetch = { busy: false, done: {} };
+  window.__fa.prefetched = [];
+  function prefetchNear(pos) {
+    if (prefetch.busy || !pos) { return; }
+    var todo = [];
+    visible().forEach(function (f) {
+      var q = f.properties, g = f.geometry;
+      if (!g || g.type !== "Point") { return; }
+      var d = segment(pos, g.coordinates), r = (q.sound && q.sound.radius) || 140;
+      if (d > r + PREFETCH_M) { return; }
+      if (q.audio_mode === "hits") {
+        HIT_SLOTS.forEach(function (k) { var h = q.hits && q.hits[k]; if (h && h.storage_path) { todo.push({ d: d, id: q.id, key: q.id + "#" + k, path: h.storage_path }); } });
+      } else if (q.has_audio && q.storage_path) { todo.push({ d: d, id: q.id, key: q.id, path: q.storage_path }); }
+    });
+    var next = todo.filter(function (x) { return !prefetch.done[x.key]; }).sort(function (a, b) { return a.d - b.d; })[0];
+    if (!next) { return; }
+    prefetch.busy = true;
+    audioBlob(next.key, next.path).then(function () {
+      prefetch.done[next.key] = true;
+      if (window.__fa.prefetched.indexOf(next.id) < 0) { window.__fa.prefetched.push(next.id); }
+    }, function () { prefetch.done[next.key] = true; }).then(function () {
+      prefetch.busy = false;
+      if (pacer && pacer.pos) { prefetchNear(pacer.pos); }
+    });
   }
   /* test hook: the walker, moved as a marker drag or a GPS fix would move it */
   window.__fa.walkTo = function (lon, lat) { if (pacer && pacer.world) { worldMove([lon, lat]); } };
+  window.__fa.features = function () { return visible(); };
   function coreMessage(ev) {
     var m = ev.data, dec = new TextDecoder();
     if (m.type === "need") {
@@ -8322,13 +8354,24 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         audioBlob(key, path).then(function (blob) {
           if (!blob) { throw new Error("no audio for " + key); }
           return blob.arrayBuffer();
-        }).then(function (ab) { return core.ctx.decodeAudioData(ab); }).then(function (buf) {
-          var c = Math.min(2, buf.numberOfChannels), n = buf.length, pcm = new Int16Array(n * c);
-          for (var k = 0; k < c; k++) {
-            var d = buf.getChannelData(k);
-            for (var i = 0; i < n; i++) { var s = d[i]; pcm[i * c + k] = s < -1 ? -32768 : (s > 1 ? 32767 : Math.round(s * 32767)); }
-          }
-          core.node.port.postMessage({ type: "source", kind: kind, index: index, sub: sub, id: id, channels: c, pcm: pcm }, [pcm.buffer]);
+        }).then(function (ab) {
+          /* Downloads run side by side; decodes run one at a time, in the order asked (nearest
+             first). Walking into three 6-minute recordings decoded all three at once: ~4.4 s of
+             CPU before any of them sounded, and a spike the walk could hear. One at a time, the
+             nearest sounds after one decode. */
+          var run = function () {
+            return core.ctx.decodeAudioData(ab).then(function (buf) {
+              var c = Math.min(2, buf.numberOfChannels), n = buf.length, pcm = new Int16Array(n * c);
+              for (var k = 0; k < c; k++) {
+                var d = buf.getChannelData(k);
+                for (var i = 0; i < n; i++) { var s = d[i]; pcm[i * c + k] = s < -1 ? -32768 : (s > 1 ? 32767 : Math.round(s * 32767)); }
+              }
+              core.node.port.postMessage({ type: "source", kind: kind, index: index, sub: sub, id: id, channels: c, pcm: pcm }, [pcm.buffer]);
+            });
+          };
+          var next = (core.decodes || Promise.resolve()).then(run);
+          core.decodes = next.catch(function () {});
+          return next;
         }).catch(function (e) { console.warn("core: " + (e && e.message)); })
           .then(function () { delete core.pending[line]; });
       });

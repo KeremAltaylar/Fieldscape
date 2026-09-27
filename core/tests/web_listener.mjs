@@ -72,6 +72,19 @@ try {
     await ev("__fa.walkTo(29.09, 41.05)"); await sleep(2500);
     const far = await ev("document.querySelector('#ls-walk').textContent");
     check(p("far from routes: no route line"), !/Route /.test(far), far);
+    /* prefetch: approaching a point fetches its recording before you reach it, so the first
+       entrance does not wait on a download (Kerem, 2026-09-27: "smooth is better") */
+    if (vp === "phone") {
+      const near = JSON.parse(await ev(`JSON.stringify((function(){
+        var f = __fa.features().filter(function(f){ return f.geometry.type === "Point" && f.properties.has_audio && f.properties.audio_mode !== "hits"; })[0];
+        var r = (f.properties.sound && f.properties.sound.radius) || 140, c = f.geometry.coordinates;
+        return { id: f.properties.id, lon: c[0], lat: c[1] - (r + 80) / 111320 }; })())`));
+      await ev(`__fa.walkTo(${near.lon}, ${near.lat})`);
+      for (let i = 0; i < 40 && !(await ev(`(__fa.prefetched || []).indexOf(${JSON.stringify(near.id)}) >= 0`)); i++) await sleep(300);
+      check(p("approaching a point fetches its recording first"), await ev(`(__fa.prefetched || []).indexOf(${JSON.stringify(near.id)}) >= 0`), await ev("JSON.stringify(__fa.prefetched)"));
+      check(p("…without playing it before you arrive"), !(await ev(`(fsListen.state().core.rows || []).some(function(r){ return r.id === ${JSON.stringify(near.id)}; })`)), null);
+    }
+
     /* ---- W2/W3: everything a listener does, with real mouse events ---- */
     const click = async (x, y) => {
       await s.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
