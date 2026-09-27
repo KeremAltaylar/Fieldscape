@@ -144,6 +144,24 @@ try {
     check(p("Places for setters has the world switch"), await ev("!!document.querySelector('#ls-sheet #world-switch')"), await text("#ls-sheet"));
     await tapEl("#ls-sheet .ls-close");
 
+    /* place mode (the setter walks one route): the new engine plays it - it was silent there since 5.3 */
+    if (!mobile) {
+      const rt = JSON.parse(await ev("JSON.stringify((function(){ var f = __fa.features().filter(function (f) { return f.properties.kind === 'route' && /Koşuyolu/.test(f.properties.name); })[0]; return { id: f.properties.id, place: f.properties.place }; })())"));
+      const rid = rt.id;
+      await ev("document.getElementById('world-switch').click(), 0"); await sleep(1500);
+      await ev(`__fa.goPlace(${JSON.stringify(rt.place)})`); await sleep(1500);
+      await ev(`fsListen.select(${JSON.stringify(rid)}), 0`); await sleep(800);
+      await ev("document.getElementById('f-walk').click(), 0"); await sleep(600);
+      await ev("fsListen.sound()");
+      let heard = null;
+      for (let i = 0; i < 30 && !heard; i++) { await sleep(400); heard = await ev("__fa.core && __fa.core.route"); }
+      check(p("place mode: walking a route plays it on the engine"), /Koşuyolu/.test(heard || ""), heard);
+      await ev("document.getElementById('f-walk').click(), 0"); await sleep(300);
+      await ev("fsListen.sound()"); await sleep(400);
+      await ev("document.getElementById('world-switch').click(), 0"); await sleep(1200);
+      await ev("fsListen.select(null), 0"); await sleep(400);
+    }
+
     /* sign out with a card open: the listener's card, no setter controls left behind */
     const pid = await ev("__fa.features().filter(function(f){ return f.geometry.type === 'Point'; })[0].properties.id");
     await ev(`fsListen.select(${JSON.stringify(pid)}), 0`); await sleep(800);

@@ -7392,6 +7392,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     pacer.t = Math.max(0, Math.min(1, t));
     pacer.pos = pointAlong(pacer.m, pacer.t);
     pacer.marker.setLngLat(pacer.pos);
+    coreMove();
     pacerCheckZones();
     sectorUpdate();
     updateBed();
@@ -8334,7 +8335,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   }
   window.__fa.coreSync = coreSync;
   function coreMove() {
-    if (!core || !core.node || !core.on || !pacer || !pacer.world) { return; }
+    /* open world and place mode alike: the engine picks the route from where the walker is, and in
+       place mode the walker is on the route it walks (place mode was silent on the core until now) */
+    if (!core || !core.node || !core.on || !pacer || !pacer.pos) { return; }
     core.node.port.postMessage({ type: "walk", lon: pacer.pos[0], lat: pacer.pos[1] });
     prefetchNear(pacer.pos);
   }
@@ -8371,6 +8374,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   /* test hook: the walker, moved as a marker drag or a GPS fix would move it */
   window.__fa.walkTo = function (lon, lat) { if (pacer && pacer.world) { worldMove([lon, lat]); } };
   window.__fa.features = function () { return visible(); };
+  /* test hook: go to a park, as picking it in the place list does */
+  window.__fa.goPlace = function (id) { var p = places.filter(function (x) { return x.properties.id === id; })[0]; return p ? setPlace(p).then(function () { return true; }) : false; };
   function coreMessage(ev) {
     var m = ev.data, dec = new TextDecoder();
     if (m.type === "need") {
