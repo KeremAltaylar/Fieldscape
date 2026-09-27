@@ -53,6 +53,8 @@ try {
     await sleep(5000);                                    /* past the first bar (3.3 s at 72 bpm): the chord is -1 before it */
     const walkText = await ev("document.querySelector('#ls-walk').textContent");
     check(p("route line with the chord"), /Route .*chord \d+ of 16/.test(walkText), walkText);
+    await ev("window.__lsBtn = document.querySelector('#ls-sound')"); await sleep(1500);
+    check(p("buttons survive live updates (a tap is not lost)"), await ev("document.querySelector('#ls-sound') === window.__lsBtn"), false);
     check(p("Sound turned to Stop"), /Stop/.test(await ev("document.querySelector('#ls-sound').textContent")), null);
     check(p("cells shown for the route"), await ev("!document.querySelector('#ls-cells').hidden"), false);
     check(p("fits while hearing"), await ev("document.documentElement.scrollHeight - innerHeight === 0"), await ev("document.documentElement.scrollHeight - innerHeight"));

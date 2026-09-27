@@ -110,7 +110,16 @@
     return [h("div", { class: "ls-bartext" }, [h("h2", { class: "ls-title", text: st.place || "Fieldscape" }),
                                                chord ? h("p", { class: "ls-note", text: chord }) : null]), soundButton(st)];
   }
-  function replace(el, kids) { while (el.firstChild) { el.removeChild(el.firstChild); } kids.forEach(function (k) { if (k) { el.appendChild(k); } }); }
+  /* Live data arrives ~30 times a second; rebuilding on each would replace a button between the
+     finger going down and coming up, and the tap would be lost. Swapped only when what it shows
+     changes (the handlers read nothing stale: they act through L alone). */
+  function replace(el, kids) {
+    var next = document.createElement("div");
+    kids.forEach(function (k) { if (k) { next.appendChild(k); } });
+    if (next.innerHTML === el.innerHTML) { return; }
+    while (el.firstChild) { el.removeChild(el.firstChild); }
+    while (next.firstChild) { el.appendChild(next.firstChild); }
+  }
 
   function render() {
     var st = L.state();
