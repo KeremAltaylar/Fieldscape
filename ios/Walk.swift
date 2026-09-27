@@ -140,6 +140,14 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
         loc.delegate = self
         loc.desiredAccuracy = kCLLocationAccuracyBest
         loc.distanceFilter = 2
+        /* Screen-off walking (Kerem, 2026-09-27): the walk's own sound keeps the app running in the
+           background, and with it the fixes (ios/background_walk_test.sh) - but iOS may still pause
+           them by itself when it decides the walker stopped, which would freeze the walk at a bench.
+           A walk is a continuous activity on foot: never auto-pause, and say so with the blue pill. */
+        loc.activityType = .fitness
+        loc.pausesLocationUpdatesAutomatically = false
+        loc.allowsBackgroundLocationUpdates = true
+        loc.showsBackgroundLocationIndicator = true
         /* 5.8: keep walking with the screen locked (UIBackgroundModes audio + location); the blue
            status-bar pill tells the walker the app is still listening to where they are. */
         loc.allowsBackgroundLocationUpdates = true

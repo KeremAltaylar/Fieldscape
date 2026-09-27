@@ -69,6 +69,7 @@ class MainActivity : ComponentActivity() {
     private val main = android.os.Handler(android.os.Looper.getMainLooper())
     private fun setSound(on: Boolean) {
         soundOn = on
+        WalkService.update(this, on)
         main.removeCallbacksAndMessages(null)
         if (on) { if (paused == null) Core.resume(); Core.master(1f, 2f) }
         else { Core.master(0f, 1.5f); main.postDelayed({ if (!soundOn) Core.pause() }, 1600) }
@@ -82,6 +83,9 @@ class MainActivity : ComponentActivity() {
             AudioManager.AUDIOFOCUS_LOSS, AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> { Core.pause(); if (paused == null) paused = "Another sound took over (a call or another app)." }
             AudioManager.AUDIOFOCUS_GAIN -> if (paused?.startsWith("Another") == true) { paused = null; Core.resume() }
         }
+    }
+    private val toggle = object : BroadcastReceiver() {
+        override fun onReceive(c: Context, i: Intent) { setSound(!soundOn) }
     }
     private val noisy = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) { Core.pause(); paused = "Headphones were unplugged." }
@@ -102,6 +106,8 @@ class MainActivity : ComponentActivity() {
             .setOnAudioFocusChangeListener(onFocus).build()
         getSystemService(AudioManager::class.java).requestAudioFocus(focus)
         registerReceiver(noisy, IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY), RECEIVER_EXPORTED)
+        /* the walk notification's Pause / Play (WalkService) */
+        registerReceiver(toggle, IntentFilter(WalkService.ACTION_TOGGLE), RECEIVER_NOT_EXPORTED)
         Thread {
             runCatching { Supa.published() }
                 .onSuccess { f -> runOnUiThread { features = f; walk.start(f); locate() } }

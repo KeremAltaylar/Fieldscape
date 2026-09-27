@@ -4,12 +4,13 @@
 // recording (stretch.wav) on slot 0 with the sliders, as before. Controls are generated from the
 // device's own parameter list.
 import AVFoundation
+import MediaPlayer
 import SwiftUI
 import os
 
 /* The test number of this build (docs/TESTS.md): shown first in the developer line, so Kerem can
    see which build he is testing. Bump it with every build handed over. */
-let TEST_BUILD = 9
+let TEST_BUILD = 10
 
 final class Core: ObservableObject {
     struct Param: Identifiable { let id: Int; let key, name, unit: String; let min, max: Float }
@@ -40,6 +41,7 @@ final class Core: ObservableObject {
     private var fadeTimer: Timer?
     func setSound(_ on: Bool) {
         soundOn = on
+        nowPlaying()
         fadeTimer?.invalidate()
         let mixer = engine.mainMixerNode
         if on { if paused == nil { restart() } }
@@ -52,6 +54,21 @@ final class Core: ObservableObject {
         }
     }
     private var bufferMs = 0.0
+    /* Screen-off walking: the lock screen's and Control Centre's play / pause are the Sound / Stop
+       button, so a walk is stopped and started without unlocking the phone. Once, from the view. */
+    func lockScreen() {
+        let rc = MPRemoteCommandCenter.shared()
+        rc.playCommand.addTarget { [weak self] _ in self?.setSound(true); return .success }
+        rc.pauseCommand.addTarget { [weak self] _ in self?.setSound(false); return .success }
+        rc.togglePlayPauseCommand.addTarget { [weak self] _ in guard let self else { return .commandFailed }; self.setSound(!self.soundOn); return .success }
+        nowPlaying()
+    }
+    /* what the lock screen shows: the walk, playing or paused */
+    func nowPlaying() {
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = [MPMediaItemPropertyTitle: "Fieldscape", MPMediaItemPropertyArtist: "Your walk",
+            MPNowPlayingInfoPropertyIsLiveStream: true, MPNowPlayingInfoPropertyPlaybackRate: soundOn ? 1.0 : 0.0]
+        MPNowPlayingInfoCenter.default().playbackState = soundOn ? .playing : .paused
+    }
 
     /* Recordings reach the audio thread through `pending`, taken with a try-lock inside the
        render callback (it never waits); buffers it replaced come back through `retired` and are
@@ -366,6 +383,7 @@ struct ContentView: View {
         .onChange(of: sheet) { _ in if sheet != .walk { collapsed = false } }
         .preferredColorScheme(.dark)
         .task {
+            core.lockScreen()
             do {
                 let f = try await Supa.published()
                 features = f
