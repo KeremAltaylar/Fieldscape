@@ -310,3 +310,27 @@ header, #panel, #patchbar, #pacerbar, #readout, #markbar, #sheet, #layers-btn { 
   #rp-body .pxratio { flex: 0 0 50% !important; display: flex !important; flex-direction: row !important; box-sizing: border-box; }
   #rp-body .pxratio > .pprow.has-knob { flex: 0 0 50% !important; }
 }
+
+/* ---- S4: the sweep ---- */
+/* the setter card: every control a 44 px target, the chips as pills, published lit when on */
+#ls .ls-setcard #card button { min-height: 44px; border-radius: 10px; padding-left: var(--s-3); padding-right: var(--s-3); }
+#ls .ls-setcard #card .iconpick button { padding: 0; }
+#ls .ls-setcard #card .recmode { border-radius: 10px; }
+#ls .ls-setcard #card .recmode button { border-radius: 0; }
+#ls .ls-setcard .chips { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); }
+#ls .ls-setcard #f-published[aria-pressed="true"] { background: var(--accent); color: var(--sunk); border-color: var(--accent); }
+#ls .ls-setcard .actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: var(--s-2); }
+#ls .ls-setcard #f-delete { color: var(--ink); }
+#ls .ls-setcard #rec-play { min-width: 44px; padding: 0; }
+/* the map's toast, for everyone: the frame's face instead of the instrument's */
+#toast { font-family: var(--font-body) !important; font-size: var(--t-sm) !important; letter-spacing: normal !important; text-transform: none !important;
+  color: var(--ink) !important; background: var(--panel) !important; border: 1px solid var(--hairline) !important; border-radius: 10px !important;
+  padding: var(--s-2) var(--s-3) !important; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35); top: calc(48px + var(--s-3) * 2 + env(safe-area-inset-top)) !important; }
+/* the patch's on / off: a small pill, lit when on */
+#pp-body .pprow button[aria-pressed], #rp-body .pprow button[aria-pressed] { border-radius: 999px; }
+#pp-body .pprow button[aria-pressed="true"], #rp-body .pprow button[aria-pressed="true"] { background: color-mix(in oklch, var(--accent) 28%, var(--raised)); color: var(--ink); border-color: var(--accent); }
+/* the setter's Account: its moved buttons as the frame's, 44 px */
+#ls .ls-setacct button { min-height: 44px; border-radius: 10px; padding: 0 var(--s-3); border: 1px solid var(--hairline); background: var(--raised); color: var(--ink); }
+#ls .ls-setacct .actions { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-2); margin: 0; }
+#ls .ls-setacct #setter-reveal { background: none; border: 0; color: var(--dim); padding: 0; text-align: left; }
+#ls-pub #saved { margin: var(--s-1) 0 0; color: var(--faint); font-size: var(--t-xs); line-height: 1.4; }

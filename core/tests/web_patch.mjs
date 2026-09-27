@@ -33,7 +33,7 @@ try {
     for (let i = 0; i < 100 && !(await ev("!!(window.__fa && __fa.walkTo && window.fsListen && document.body.classList.contains('world'))")); i++) await sleep(300);
     await sleep(3000);
     const p = (n) => vp + ": " + n;
-    const box = async (sel) => JSON.parse(await ev(`JSON.stringify((function(){var e=document.querySelector(${JSON.stringify(sel)});if(!e)return null;var b=e.getBoundingClientRect();return {x:b.x+b.width/2,y:b.y+b.height/2,w:b.width,h:b.height};})())`));
+    const box = async (sel) => JSON.parse(await ev(`JSON.stringify((function(){var e=document.querySelector(${JSON.stringify(sel)});if(!e)return null;e.scrollIntoView({block:"nearest"});var b=e.getBoundingClientRect();return {x:b.x+b.width/2,y:b.y+b.height/2,w:b.width,h:b.height};})())`));
     const down = (x, y) => mobile ? s.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] }) : s.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
     const moveTo = (x, y) => mobile ? s.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y }] }) : s.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "left", buttons: 1 });
     const up = (x, y) => mobile ? s.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] }) : s.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });

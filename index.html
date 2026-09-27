@@ -2694,6 +2694,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     SETTER_ONLY.forEach(function (sel) {
       document.querySelectorAll(sel).forEach(function (el) { el.hidden = !show; });
     });
+    /* the blanket unhide above showed "Undo delete (0)": the trash decides that one */
+    if (typeof renderTrash === "function") { renderTrash(); }
     /* Signing out of a park walk has to move that walk into open world, and signing back in has
        to hand the setter whatever they had chosen. The comparison is against what the app is
        actually showing (applyWorld owns body.world), not against a second worldOn() call —

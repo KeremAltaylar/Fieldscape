@@ -67,6 +67,10 @@
   var viewer = h("div", { id: "ls-photos", hidden: true, role: "dialog", "aria-label": "Photos" });
   var root = h("div", { id: "ls" }, [top, cellsSlot, panel, viewer]);
   document.getElementById("map").appendChild(root);
+  /* the setter card's photo viewer is a dialog that lived in the retired sidebar, where a hidden
+     ancestor kept it from ever showing: it moves to the body, once */
+  var pv = document.getElementById("photo-view");
+  if (pv) { document.body.appendChild(pv); }
   cellsSlot.appendChild(L.cells());
 
   /* ---- the setter: the page's own blocks, moved in with every handler they have ---- */
@@ -93,7 +97,7 @@
   var setter = false, lastMode = "select";
   function setterChanged(on) {
     setter = on;
-    if (on) { move($$("#mode-section .modes"), tools); move($$("#mode-icons"), tools); move($$("#publishbar"), pub); }
+    if (on) { move($$("#mode-section .modes"), tools); move($$("#mode-icons"), tools); move($$("#publishbar"), pub); move($$("#saved"), pub); }
     else { view = null; holder.textContent = ""; sendHome(false); }
     tools.hidden = pub.hidden = !on;
     document.getElementById("ls-archive").hidden = !on;

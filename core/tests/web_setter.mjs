@@ -55,6 +55,13 @@ try {
     check(p("signed in: the old header and sidebar are not shown"), !(await shown("header")) && !(await shown("#panel")), null);
     check(p("the mode bar: Select · Point · Route"), /Select[\s\S]*Point[\s\S]*Route/.test(await text("#ls-tools")), await text("#ls-tools"));
     check(p("fits signed in"), (await fits()) === 0, await fits());
+    /* the card's photo viewer is a dialog; it must not be trapped under the retired sidebar */
+    const pv = await ev("(function(){ var d = document.getElementById('photo-view'); d.showModal(); var r = d.getBoundingClientRect(); d.close(); return r.width > 0 && r.height > 0; })()");
+    check(p("a photo opened from the card shows"), pv, null);
+    await tapEl("#ls-account");
+    check(p("Undo delete shows exactly when there is something to undo"), await ev("(function(){ var u = document.querySelector('#ls-sheet #undo'); if (!u) return false; var n = +((u.textContent.match(/\\((\\d+)\\)/) || [0, 0])[1]); return !!u.offsetParent === n > 0; })()"), await text("#ls-sheet #undo"));
+    check(p("Account's own buttons are 44 px targets"), await ev("[].every.call(document.querySelectorAll('#ls-sheet .ls-setacct button'), function (b) { return !b.offsetParent || b.getBoundingClientRect().height >= 43.5; })"), await ev("[].map.call(document.querySelectorAll('#ls-sheet .ls-setacct button'), function (b) { return Math.round(b.getBoundingClientRect().height); })"));
+    await tapEl("#ls-sheet .ls-close");
     await shot(vp + "-setter");
 
     /* Task 2: drawing */
@@ -68,6 +75,13 @@ try {
     check(p("…and opens its card"), await ev("!!document.querySelector('#ls-card #card')"), await text("#ls-panel"));
     check(p("fits with the setter card"), (await fits()) === 0, await fits());
     await shot(vp + "-setter-point-card");
+
+    /* S4: the whole card is reachable, and every one of its controls is a real target */
+    const reach = JSON.parse(await ev(`JSON.stringify((function(){ var h = document.getElementById('ls-holder'); h.scrollTop = h.scrollHeight; var d = document.querySelector('#ls-card #f-delete').getBoundingClientRect(), hb = h.getBoundingClientRect();
+      var small = [].filter.call(document.querySelectorAll('#ls-card #card button'), function (b) { var r = b.getBoundingClientRect(); return b.offsetParent && r.height < 43.5; }).map(function (b) { return b.id || b.textContent.trim(); });
+      return { deleteInside: d.bottom <= hb.bottom + 0.5 && d.top >= hb.top - 0.5, small: small }; })())`));
+    check(p("scrolled to its end, the card shows its last row whole"), reach.deleteInside, reach);
+    check(p("every button on the card is at least 44 px tall"), reach.small.length === 0, reach.small);
 
     /* Task 3: the card edits the feature through the page's own inputs */
     const id = await ev("fsListen.selected()");
@@ -105,6 +119,7 @@ try {
     check(p("an archive row opens its card"), await ev("!!document.querySelector('#ls-card #card')"), await text("#ls-panel"));
     await tapEl("#ls-card .ls-close"); await sleep(400);
     if (await ev("!document.querySelector('#ls-bar').hidden")) { await tapEl("#ls-grip"); }
+    check(p("the page's status line (saves, import errors) shows under Publish"), await shown("#ls-pub #saved"), await text("#ls-pub"));
     check(p("the Publish bar is in the panel"), await shown("#ls-panel #publishbar") && /pending|Publish/.test(await text("#ls-panel #publishbar")), await text("#ls-panel"));
     await tapEl("#ls-account");
     check(p("Account shows who is signed in and Sign out"), await ev("!!document.querySelector('#ls-sheet #setter-out')"), await text("#ls-sheet"));
