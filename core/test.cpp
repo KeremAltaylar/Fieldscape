@@ -298,6 +298,39 @@ int main() {
         assert(st.find("\"rows\":[]") != std::string::npos && st.find("\"beats\":[]") != std::string::npos);
         fs_engine_destroy(e);
     }
+    {   /* live edits (fs_engine_upsert / fs_engine_remove): a setter's change reaches the sound without a reload */
+        fs_engine *e = fs_engine_create(SR, B);
+        const char *route = "{\"type\":\"Feature\",\"geometry\":{\"type\":\"LineString\",\"coordinates\":[[29.0,41.0],[29.002,41.0]]},"
+                            "\"properties\":{\"id\":\"r1\",\"kind\":\"route\",\"name\":\"R\",\"patch\":%s}}";
+        char buf[1024];
+        std::snprintf(buf, sizeof buf, route, "{}");
+        fs_engine_upsert(e, buf);
+        fs_engine_upsert(e, "{\"type\":\"Feature\",\"geometry\":{\"type\":\"Point\",\"coordinates\":[29.02,41.0]},"
+            "\"properties\":{\"id\":\"s1\",\"kind\":\"point\",\"name\":\"S\",\"has_audio\":true,\"storage_path\":\"s1.webm\",\"sound\":{\"radius\":140}}}");
+        double o[7 * 24], clock = 0; int root = 0, shown = 0;
+        auto walk = [&](double secs) { std::string need; for (int b = 0; b < (int)(secs * SR / B); b++) { if (b % 40 == 0) need += fs_engine_step(e, 29.001, 41.0); fs_engine_process(e, B); } return need; };
+        std::string need = walk(3);
+        int n0 = fs_engine_morphs(e, o, 24, &clock, &root, &shown);
+        assert(n0 == 6 && need.find(" s1 ") == std::string::npos);                 /* default morphs; s1 1.7 km away */
+        std::snprintf(buf, sizeof buf, route, "{\"version\":12,\"prog\":[{\"r\":0,\"q\":\"m7\"}],\"morph\":{\"on\":false,\"list\":[]}}");
+        fs_engine_upsert(e, buf);                                                   /* the setter switches Morphs off */
+        walk(0.5);
+        int n1 = fs_engine_morphs(e, o, 24, &clock, &root, &shown);
+        fs_engine_upsert(e, "{\"type\":\"Feature\",\"geometry\":{\"type\":\"Point\",\"coordinates\":[29.02,41.0]},"
+            "\"properties\":{\"id\":\"s1\",\"kind\":\"point\",\"name\":\"S\",\"has_audio\":true,\"storage_path\":\"s1.webm\",\"sound\":{\"radius\":3000}}}");
+        need = walk(0.5);                                                           /* ...and gives s1 a 3 km reach */
+        std::printf("live edits: morphs %d -> %d, s1 asked for after its radius grew: %s\n", n0, n1, need.find(" s1 s1.webm") != std::string::npos ? "yes" : "no");
+        assert(n1 == 0 && need.find(" s1 s1.webm") != std::string::npos);
+        fs_engine_remove(e, "s1"); walk(0.5);
+        assert(std::string(fs_engine_state(e)).find("\"s1\"") == std::string::npos);  /* deleted: gone from what plays */
+        fs_engine_upsert(e, "{\"type\":\"Feature\",\"geometry\":{\"type\":\"LineString\",\"coordinates\":[[29.1,41.1],[29.102,41.1]]},"
+            "\"properties\":{\"id\":\"r2\",\"kind\":\"route\",\"name\":\"R2\",\"patch\":{}}}");
+        fs_engine_remove(e, "r1"); walk(0.5);
+        assert(fs_engine_route(e) == -1);                                           /* r1 deleted: standing on its line plays nothing */
+        for (int b = 0; b < (int)(2.0 * SR / B); b++) { if (b % 40 == 0) fs_engine_step(e, 29.101, 41.1); fs_engine_process(e, B); }
+        assert(fs_engine_route(e) == 1);                                            /* r2, added live, plays (piece index 1) */
+        fs_engine_destroy(e);
+    }
     std::printf("core ok\n");
     return 0;
 }

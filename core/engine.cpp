@@ -44,7 +44,7 @@ struct Point {                        /* a soundscape recording: a stretch voice
     float stretch, window_s, grit, freeze, onset;
     bool sounds;
 };
-struct Spot { std::string icon; double lon, lat, radius, zoneR, centroid, onsets; bool audio, plain; fs_zone_state zone{}; };
+struct Spot { std::string icon; double lon, lat, radius, zoneR, centroid, onsets; bool audio, plain; fs_zone_state zone{}; std::string id; };
 struct Beat { std::string id, name; double lon, lat, radius, gain; bool grains; std::string json; std::vector<std::string> paths; };
 struct Park { std::string name; std::vector<std::vector<double>> rings; double area; };
 struct Slot {
@@ -66,6 +66,7 @@ struct fs_engine {
     Slot slot[SLOTS];
     std::vector<Point> points;
     std::vector<fs_route *> routes; std::vector<std::string> route_names;
+    std::vector<std::string> route_ids; std::vector<char> route_alive;   /* a deleted route stays, dead: its index is the piece's */
     std::vector<Spot> spots; std::vector<Beat> beats; std::vector<Park> parks;
     std::map<std::string, int> handle;
     fs_sections *sections = nullptr;
@@ -114,47 +115,124 @@ void fs_engine_destroy(fs_engine *e) {
     delete e;
 }
 
+/* A point's recording leaves: its slot fades out (the mix's 350 ms ramp) and is never matched again. */
+static void retire_point(fs_engine *e, const std::string &id) {
+    for (int s = 0; s < SLOTS; s++) {
+        Slot &sl = e->slot[s];
+        if (sl.id != id) continue;
+        fs_mix_set_gain(e->mix, s, 0);
+        sl.active = false; sl.released_at = e->now(); sl.id = "~" + id;   /* freed with the idle ones */
+    }
+}
+static void drop_beat(fs_engine *e, const std::string &id) {
+    auto it = e->handle.find(id);
+    if (it != e->handle.end()) { fs_piece_rhythm_remove(e->piece, it->second); e->handle.erase(it); }
+}
+
+/* One feature, new or changed (a setter's edit): what it changed is heard at the next step, and a
+   recording that did not change keeps playing - its slot takes the new settings in place. */
+static void upsert_one(fs_engine *e, const Json *f) {
+    auto find_id = [](const auto &v, const std::string &k) { for (size_t i = 0; i < v.size(); i++) if (v[i].id == k) return (int)i; return -1; };
+    const Json *g = f ? f->get("geometry") : nullptr, *p = f ? f->get("properties") : nullptr;
+    if (!g || !p) return;
+    std::string type = g->s("type", ""), id = p->s("id", "");
+    const Json *c = g->get("coordinates");
+    if (type == "LineString" && p->s("kind", "") == "route") {
+        int idx = -1;
+        for (size_t i = 0; i < e->route_ids.size(); i++) if (e->route_ids[i] == id) idx = (int)i;
+        fs_route *r = nullptr;
+        if (c && c->size()) {
+            std::vector<double> flat;
+            for (size_t k = 0; k < c->size(); k++) { flat.push_back(c->at(k)->at(0)->num); flat.push_back(c->at(k)->at(1)->num); }
+            r = fs_route_create(flat.data(), (int)c->size());
+            if (r && fs_route_length(r) <= 0) { fs_route_destroy(r); r = nullptr; }
+        }
+        std::string patch = dump(p->get("patch"));
+        if (idx >= 0) {
+            if (!r) { e->route_alive[idx] = 0; return; }
+            fs_route_destroy(e->routes[idx]);
+            e->routes[idx] = r; e->route_names[idx] = p->s("name", "Route"); e->route_alive[idx] = 1;
+            fs_piece_set_route(e->piece, idx, patch.c_str());
+            return;
+        }
+        if (!r) return;
+        if (fs_piece_add_route(e->piece, patch.c_str()) < 0) { fs_route_destroy(r); return; }
+        e->routes.push_back(r); e->route_names.push_back(p->s("name", "Route"));
+        e->route_ids.push_back(id); e->route_alive.push_back(1);
+        return;
+    }
+    if (type != "Point" || !c || c->size() < 2) return;
+    const Json *q = p->get("sound"), *a = p->get("audio"), *hits = p->get("hits"), *px = q ? q->get("px") : nullptr;
+    std::string mode = p->s("audio_mode", ""), name = p->s("name", "Unnamed point");
+    std::vector<std::string> slots;
+    bool has_hits = false;
+    for (const char *k : { "low", "mid", "high", "rand" }) {
+        const Json *h = hits ? hits->get(k) : nullptr;
+        std::string path = h ? h->s("storage_path", "") : "";
+        has_hits |= !path.empty(); slots.push_back(path);
+    }
+    bool audio = p->flag("has_audio", false);
+    double lon = c->at(0)->num, lat = c->at(1)->num, radius = q ? q->n("radius", 140) : 140, gain = q ? q->n("gain", 0.9) : 0.9;
+    double centroid = a ? a->n("centroid_hz", 2000) : 2000;
+    double fft = px ? std::max(0.0, std::min(1.0, px->n("fft", 0.7))) : 0.7;
+    Point P{ id, name, p->s("storage_path", ""), lon, lat, radius, gain,
+        std::max(600.0, std::min(14000.0, (centroid > 0 ? centroid : 2000) * 2.2)),
+        (float)(q ? q->n("stretch", 0) : 0), (float)(std::pow(2.0, std::round(7 + 10 * fft)) / e->sr),   /* pxBufsize */
+        (float)(q ? q->n("grit", 0) : 0), (float)(px && px->flag("freeze", false) ? 1 : 0), (float)(px ? px->n("onset", 0) : 0),
+        audio && mode != "hits" && mode != "grains" };
+    Spot S{ p->s("icon", ""), lon, lat, radius, q ? q->n("zoneR", 25) : 25, a ? a->n("centroid_hz", 0) : 0,
+            a ? a->n("onset_rate", -1) : -1, audio, !audio && !has_hits && mode != "hits" && mode != "grains" };
+    S.id = id;
+
+    int pi = find_id(e->points, id);
+    if (pi < 0) e->points.push_back(P);
+    else {
+        bool keep = e->points[pi].path == P.path && P.sounds && e->points[pi].sounds;
+        e->points[pi] = P;
+        if (!keep) retire_point(e, id);
+        else for (int s = 0; s < SLOTS; s++) if (e->slot[s].id == id) {       /* same recording: new settings, no reload */
+            fs_set_param(e->slot[s].dev, 0, P.stretch); fs_set_param(e->slot[s].dev, 1, P.window_s);
+            fs_set_param(e->slot[s].dev, 2, P.freeze); fs_set_param(e->slot[s].dev, 3, P.onset);
+            fs_mix_set_grit(e->mix, s, P.grit);
+        }
+    }
+    int si = find_id(e->spots, id);
+    if (si < 0) e->spots.push_back(S); else { S.zone = e->spots[si].zone; e->spots[si] = S; }
+
+    bool beat = (mode == "hits" && has_hits) || (mode == "grains" && audio);
+    Beat Bt{ id, name, lon, lat, radius, gain, mode == "grains", dump(p->get("rhythm")),
+             mode == "grains" ? std::vector<std::string>{ p->s("storage_path", "") } : slots };
+    int bi = find_id(e->beats, id);
+    if (!beat) { if (bi >= 0) { drop_beat(e, id); e->beats.erase(e->beats.begin() + bi); } return; }
+    if (bi < 0) { e->beats.push_back(Bt); return; }
+    const Beat &old = e->beats[bi];
+    if (old.paths != Bt.paths || old.grains != Bt.grains) drop_beat(e, id);        /* other recordings: reload */
+    else if (old.json != Bt.json && e->handle.count(id)) fs_piece_rhythm_config(e->piece, e->handle[id], Bt.json.c_str());
+    e->beats[bi] = Bt;
+}
+
 /* The published features (a FeatureCollection; properties carry id and kind). */
 void fs_engine_features(fs_engine *e, const char *geojson) {
     Json fc = Json::parse(geojson);
     const Json *fs = fc.get("features");
-    for (size_t i = 0; fs && i < fs->size(); i++) {
-        const Json *f = fs->at(i), *g = f->get("geometry"), *p = f->get("properties");
-        if (!g || !p) continue;
-        std::string type = g->s("type", "");
-        const Json *c = g->get("coordinates");
-        if (type == "LineString" && p->s("kind", "") == "route" && c && c->size()) {
-            std::vector<double> flat;
-            for (size_t k = 0; k < c->size(); k++) { flat.push_back(c->at(k)->at(0)->num); flat.push_back(c->at(k)->at(1)->num); }
-            fs_route *r = fs_route_create(flat.data(), (int)c->size());
-            if (!r || fs_route_length(r) <= 0) { if (r) fs_route_destroy(r); continue; }
-            e->routes.push_back(r); e->route_names.push_back(p->s("name", "Route"));
-            fs_piece_add_route(e->piece, dump(p->get("patch")).c_str());
-        } else if (type == "Point" && c && c->size() >= 2) {
-            const Json *q = p->get("sound"), *a = p->get("audio"), *hits = p->get("hits"), *px = q ? q->get("px") : nullptr;
-            std::string mode = p->s("audio_mode", ""), id = p->s("id", ""), name = p->s("name", "Unnamed point");
-            std::vector<std::string> slots;
-            bool has_hits = false;
-            for (const char *k : { "low", "mid", "high", "rand" }) {
-                const Json *h = hits ? hits->get(k) : nullptr;
-                std::string path = h ? h->s("storage_path", "") : "";
-                has_hits |= !path.empty(); slots.push_back(path);
-            }
-            bool audio = p->flag("has_audio", false);
-            double lon = c->at(0)->num, lat = c->at(1)->num, radius = q ? q->n("radius", 140) : 140, gain = q ? q->n("gain", 0.9) : 0.9;
-            double centroid = a ? a->n("centroid_hz", 2000) : 2000;
-            double fft = px ? std::max(0.0, std::min(1.0, px->n("fft", 0.7))) : 0.7;
-            e->points.push_back(Point{ id, name, p->s("storage_path", ""), lon, lat, radius, gain,
-                std::max(600.0, std::min(14000.0, (centroid > 0 ? centroid : 2000) * 2.2)),
-                (float)(q ? q->n("stretch", 0) : 0), (float)(std::pow(2.0, std::round(7 + 10 * fft)) / e->sr),   /* pxBufsize */
-                (float)(q ? q->n("grit", 0) : 0), (float)(px && px->flag("freeze", false) ? 1 : 0), (float)(px ? px->n("onset", 0) : 0),
-                audio && mode != "hits" && mode != "grains" });
-            e->spots.push_back({ p->s("icon", ""), lon, lat, radius, q ? q->n("zoneR", 25) : 25, a ? a->n("centroid_hz", 0) : 0,
-                                 a ? a->n("onset_rate", -1) : -1, audio, !audio && !has_hits && mode != "hits" && mode != "grains" });
-            if (mode == "hits" && has_hits) e->beats.push_back({ id, name, lon, lat, radius, gain, false, dump(p->get("rhythm")), slots });
-            else if (mode == "grains" && audio) e->beats.push_back({ id, name, lon, lat, radius, gain, true, dump(p->get("rhythm")), { p->s("storage_path", "") } });
-        }
-    }
+    for (size_t i = 0; fs && i < fs->size(); i++) upsert_one(e, fs->at(i));
+}
+/* A setter's edit: one feature, new or changed ... */
+void fs_engine_upsert(fs_engine *e, const char *feature_json) {
+    Json f = Json::parse(feature_json);
+    upsert_one(e, &f);
+}
+/* ... or deleted. A route stays in the piece, dead, so every other route keeps its index. */
+void fs_engine_remove(fs_engine *e, const char *id_c) {
+    std::string id = id_c ? id_c : "";
+    auto find_id = [](const auto &v, const std::string &k) { for (size_t i = 0; i < v.size(); i++) if (v[i].id == k) return (int)i; return -1; };
+    for (size_t i = 0; i < e->route_ids.size(); i++) if (e->route_ids[i] == id) e->route_alive[i] = 0;
+    int pi = find_id(e->points, id);
+    if (pi >= 0) { retire_point(e, id); e->points.erase(e->points.begin() + pi); }
+    int si = find_id(e->spots, id);
+    if (si >= 0) e->spots.erase(e->spots.begin() + si);
+    int bi = find_id(e->beats, id);
+    if (bi >= 0) { drop_beat(e, id); e->beats.erase(e->beats.begin() + bi); }
 }
 
 /* The places (places.geojson): placeAt, and the sections of the one underfoot. */
@@ -201,7 +279,11 @@ const char *fs_engine_step(fs_engine *e, double lon, double lat) {
     }
     /* the route */
     fs_projection proj{};
-    int r = fs_nearest_route(e->routes.data(), (int)e->routes.size(), lon, lat, fs_piece_route(e->piece), fs_sections_hold(e->sections), &proj);
+    /* the living routes only: a deleted one keeps its place in the piece, so indices map back */
+    std::vector<const fs_route *> live; std::vector<int> back; int cur = -1, playing = fs_piece_route(e->piece);
+    for (size_t i = 0; i < e->routes.size(); i++) if (e->route_alive[i]) { if ((int)i == playing) cur = (int)live.size(); live.push_back(e->routes[i]); back.push_back((int)i); }
+    int lr = fs_nearest_route(live.data(), (int)live.size(), lon, lat, cur, fs_sections_hold(e->sections), &proj);
+    int r = lr >= 0 ? back[lr] : -1;
     fs_piece_walk(e->piece, r, proj.t, r >= 0 ? proj.dist : INFINITY);
     if (e->sections) {
         int cur = fs_piece_sector_now(e->piece), next = fs_sections_step(e->sections, cur, lon, lat);

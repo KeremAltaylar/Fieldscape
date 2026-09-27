@@ -45,6 +45,20 @@ try {
     await tapAt(await box("#ls-card #f-patch")); await sleep(900);
     check(p("Patch opens the route's panel"), await ev("!document.getElementById('patchpanel').hidden"), null);
 
+    /* a setter's edit reaches the sound, with no reload: Morphs off in the panel, and the engine plays none */
+    if (!mobile) {
+      await ev("fsListen.sound()");
+      for (let i = 0; i < 25 && !(await ev("!!(window.__fa.coreLive && __fa.coreLive.n > 0)")); i++) { await ev("__fa.walkTo(29.038879, 41.00771)"); await sleep(400); }
+      const before = await ev("__fa.coreLive.n");
+      await ev("(function(){ var r = [].filter.call(document.querySelectorAll('#pp-body .pprow'), function (x) { return /^morphs$/i.test(((x.querySelector('span') || {}).textContent || '').trim()); })[0]; r.querySelector('button').click(); return 0; })()");
+      let after = before;
+      for (let i = 0; i < 20 && after !== 0; i++) { await sleep(150); after = await ev("__fa.coreLive.n"); }
+      check(p("an edit in the panel reaches the engine (Morphs off: none play)"), before > 0 && after === 0, [before, after]);
+      await ev("(function(){ var r = [].filter.call(document.querySelectorAll('#pp-body .pprow'), function (x) { return /^morphs$/i.test(((x.querySelector('span') || {}).textContent || '').trim()); })[0]; r.querySelector('button').click(); return 0; })()");
+      await sleep(1500);
+      check(p("…and back on, they play again"), (await ev("__fa.coreLive.n")) > 0, await ev("__fa.coreLive.n"));
+    }
+
     /* Task 1: knobs */
     const counts = JSON.parse(await ev("JSON.stringify({ ranges: document.querySelectorAll('#pp-body input[type=range]').length, knobs: document.querySelectorAll('#pp-body .knob').length })"));
     check(p("every slider is a knob"), counts.ranges > 20 && counts.knobs === counts.ranges, counts);

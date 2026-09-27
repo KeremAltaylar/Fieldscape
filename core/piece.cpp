@@ -517,6 +517,7 @@ struct Inbox {
     std::vector<short *> trash;       /* buffers the audio thread let go of */
     bool freed[FS_MAX_VOICES] = {};
     std::vector<Patch> routes;        /* registered, read by the audio thread only under the lock */
+    bool route_dirty[64] = {};        /* a setter changed this route's patch (fs_piece_set_route) */
     /* written back by the audio thread: pacer.routeId, its patch's sect.n and bed voices, sect.idx */
     int taken = -1, sect_n = 7, bed_voices = 4, sector_back = -1;
     int chord = -1, nprog = 0; char chord_label[24] = "";   /* the chord playing, for the screen */
@@ -1159,6 +1160,11 @@ struct Piece : Device {
     void take_inbox(double now) {
         if (!mu.try_lock()) return;
         while (routes.size() < in.routes.size()) routes.push_back(in.routes[routes.size()]);
+        for (size_t i = 0; i < routes.size() && i < 64; i++) if (in.route_dirty[i]) {
+            in.route_dirty[i] = false;
+            routes[i] = in.routes[i];
+            if ((int)i == route) { patch = routes[i]; apply_patch(now); }   /* heard at once */
+        }
         if (in.walk) { in.walk = false; walk(in.route, in.t, in.dist, now); }
         if (in.sector) { in.sector = false; sector = in.sector_v; }
         if (in.character) { in.character = false; centroid = in.centroid; onsets = in.onsets; }
@@ -1178,6 +1184,9 @@ struct Piece : Device {
                 for (auto &g : R.gv) g.on = false;
                 init_hits(R, false);
                 for (auto &hs : R.hit) { for (auto &pv : hs.pv) pv.on = false; hs.gp_on = false; for (auto &g : hs.gs) g.on = false; }
+            } else if (op.op == 3 && R.used && !R.dying) {
+                R.cfg = op.cfg; R.fx_ready = false;
+                R.gain.p.linearRampTo(rhythm_level(R, h), 0.35, now);
             } else if (op.op == 2 && R.used && !R.dying) {
                 R.dying = true; R.free_at = now + 0.4;
                 R.gain.p.linearRampTo(0, 0.25, now);
@@ -1387,6 +1396,27 @@ int fs_piece_add_route(fs_device *d, const char *patch_json) {
     return (int)p->in.routes.size() - 1;
 }
 
+/* A setter changed route i's patch: it replaces the registered one, and is heard at once if that route plays. */
+void fs_piece_set_route(fs_device *d, int i, const char *patch_json) {
+    Piece *p = P(d); if (!p) return;
+    Json j = Json::parse(patch_json);
+    Patch pt; patch_of(&j, pt);                  /* as fs_piece_add_route reads it */
+    std::lock_guard<std::mutex> g(p->mu); sweep(p);
+    if (i < 0 || i >= (int)p->in.routes.size() || i >= 64) return;
+    p->need_all(pt);
+    p->in.routes[i] = pt; p->in.route_dirty[i] = true;
+}
+/* A rhythm point's pattern changed: the voice keeps its place and its recordings. */
+void fs_piece_rhythm_config(fs_device *d, int h, const char *rhythm_json) {
+    Piece *p = P(d); if (!p || h < 0 || h >= FS_MAX_VOICES) return;
+    Json j = Json::parse(rhythm_json);
+    std::lock_guard<std::mutex> g(p->mu); sweep(p);
+    if (!p->busy[h]) return;
+    auto &op = p->in.r[h];
+    if (op.op == 1) { rhythm_of(j.kind == Json::OBJ ? &j : nullptr, op.cfg, p->main_rnd); return; }   /* not taken yet: its add carries it */
+    rhythm_of(j.kind == Json::OBJ ? &j : nullptr, op.cfg, p->main_rnd);
+    op.op = 3;
+}
 void fs_piece_walk(fs_device *d, int route, double t, double dist) {
     Piece *p = P(d); if (!p) return;
     std::lock_guard<std::mutex> g(p->mu); sweep(p);

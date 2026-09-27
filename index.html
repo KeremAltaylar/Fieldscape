@@ -2568,6 +2568,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   }
 
   function save() {
+    if (typeof coreSyncSoon === "function") { coreSyncSoon(); }
     try {
       var toStore = { type: fc.type,
         features: fc.features.filter(function (f) { return !f.properties._remote; }) };
@@ -8287,6 +8288,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var enc = new TextEncoder();
       node.port.postMessage({ type: "places", bytes: enc.encode(JSON.stringify({ type: "FeatureCollection", features: places })) });
       node.port.postMessage({ type: "features", bytes: enc.encode(JSON.stringify({ type: "FeatureCollection", features: visible() })) });
+      core.sent = {};
+      visible().forEach(function (f) { core.sent[f.properties.id] = JSON.stringify(f); });
       keepAwake(true);
       coreRamp(1, SOUND_FADE_IN);
       coreButton(true);
@@ -8311,6 +8314,25 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     $("#patch-play").setAttribute("aria-pressed", on ? "true" : "false");
   }
   /* worldMove's one line into the engine */
+  /* A setter's edits reach the sound (they did not, from 5.3 on: the engine was told the features once).
+     Only what changed goes - one feature at a time, never the whole archive on the audio thread - and a
+     step follows, so a walker standing still hears it too. Debounced: a knob drag is one sync. */
+  var coreSyncTimer = null;
+  function coreSyncSoon() { clearTimeout(coreSyncTimer); coreSyncTimer = setTimeout(coreSync, 120); }
+  function coreSync() {
+    if (!core || !core.node || !core.sent) { return; }
+    var enc = new TextEncoder(), now = {}, changed = false;
+    visible().forEach(function (f) {
+      var id = f.properties.id, s = JSON.stringify(f);
+      now[id] = true;
+      if (core.sent[id] !== s) { core.sent[id] = s; core.node.port.postMessage({ type: "upsert", bytes: enc.encode(s) }); changed = true; }
+    });
+    Object.keys(core.sent).forEach(function (id) {
+      if (!now[id]) { delete core.sent[id]; core.node.port.postMessage({ type: "remove", id: id }); changed = true; }
+    });
+    if (changed) { coreMove(); }
+  }
+  window.__fa.coreSync = coreSync;
   function coreMove() {
     if (!core || !core.node || !core.on || !pacer || !pacer.world) { return; }
     core.node.port.postMessage({ type: "walk", lon: pacer.pos[0], lat: pacer.pos[1] });

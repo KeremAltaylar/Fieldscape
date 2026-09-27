@@ -146,6 +146,7 @@ double fs_sections_hold(const fs_sections *s);                                  
    the route's own GPS leash inside. The hosts tell it where the walker is; they make no sound choices.
    Call these from one thread (not the audio thread); they never block the audio thread. */
 int fs_piece_add_route(fs_device *d, const char *patch_json);          /* a route's properties.patch -> its index */
+void fs_piece_set_route(fs_device *d, int route, const char *patch_json);  /* a setter's edit, heard at once if it plays */
 void fs_piece_walk(fs_device *d, int route, double t, double dist);     /* nearest route (-1 none), 0-1 along it, metres off it */
 int fs_piece_route(fs_device *d);                                       /* the route whose patch is playing (pacer.routeId) */
 int fs_piece_chord(fs_device *d, int *count, char *label, int label_size);
@@ -166,6 +167,7 @@ int fs_piece_rhythm_add(fs_device *d, const char *rhythm_json, int grains);
 void fs_piece_rhythm_gain(fs_device *d, int handle, float gain);
 void fs_piece_rhythm_source(fs_device *d, int handle, int slot, int channels, long long frames, short *interleaved);
 void fs_piece_rhythm_remove(fs_device *d, int handle);
+void fs_piece_rhythm_config(fs_device *d, int handle, const char *rhythm_json);   /* its pattern changed; voice and recordings stay */
 /* the morph cells: 7 doubles a cell (shape, voice, dest, seed, value, per second, phase) into out, at most max;
    the piece's clock, the chord root pc, and whether the patch shows them on load. -1: no route playing */
 int fs_piece_morphs(fs_device *d, double *out, int max, double *clock, int *root, int *shown);
@@ -187,6 +189,9 @@ fs_engine *fs_engine_create(float sample_rate, int max_block);
 void fs_engine_destroy(fs_engine *e);
 void fs_engine_features(fs_engine *e, const char *geojson);
 void fs_engine_places(fs_engine *e, const char *geojson);
+/* a setter's edit, heard at the next step: one feature new or changed (a Feature), or deleted by id */
+void fs_engine_upsert(fs_engine *e, const char *feature_json);
+void fs_engine_remove(fs_engine *e, const char *id);
 const char *fs_engine_step(fs_engine *e, double lon, double lat);
 void fs_engine_source(fs_engine *e, int kind, int index, int sub, const char *id, int channels, long long frames, short *interleaved);
 void fs_engine_process(fs_engine *e, int frames);
