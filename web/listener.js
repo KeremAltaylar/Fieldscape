@@ -275,7 +275,7 @@
     }
     if (setter) {
       return [sheetTitle("Account"), h("p", { class: "ls-eyebrow", text: "Offline" }), offNote, off,
-              h("p", { class: "ls-fine", text: "Recordings © their authors · map imagery © Esri, © OpenStreetMap contributors, © OpenTopoMap" })];
+              h("p", { class: "ls-fine" }, [h("a", { href: "privacy.html", text: "Privacy" }), " · Fieldscape © Kerem Altaylar · recordings © their authors · map imagery © Esri, © OpenStreetMap contributors, © OpenTopoMap"])];
     }
     return [sheetTitle("Account"),
       note(["Fieldscape is for listening: walk, and the recordings around you play. Setters place points, record and shape the sound."]),
@@ -283,7 +283,7 @@
       h("div", { class: "ls-routeline" }, [email, btn("Send link", {}, function () { if (email.value) { L.signIn(email.value); said.textContent = "A sign-in link is on its way to " + email.value + "."; } })]),
       said,
       h("p", { class: "ls-eyebrow", text: "Offline" }), offNote, off,
-      h("p", { class: "ls-fine", text: "Recordings © their authors · map imagery © Esri, © OpenStreetMap contributors, © OpenTopoMap" })];
+      h("p", { class: "ls-fine" }, [h("a", { href: "privacy.html", text: "Privacy" }), " · Fieldscape © Kerem Altaylar · recordings © their authors · map imagery © Esri, © OpenStreetMap contributors, © OpenTopoMap"])];
   }
 
   /* ---- the cards ---- */

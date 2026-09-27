@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fieldscape · Privacy</title>
+<meta name="description" content="What Fieldscape does with your location, your sign-in and what you publish.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600&family=Newsreader:opsz,wght@6..72,400;6..72,500&family=Courier+Prime&display=swap" rel="stylesheet">
+<style>
+  /* Design System/Tokens.md, as index.html's :root */
+  :root { --sunk: #0d1310; --ground: #19211d; --panel: #222b27; --hairline: #36403b; --ink: #e3e7e4; --dim: #b3b9b4; --faint: #9ca49d; --accent: #bbceb5;
+          --font-display: "Cormorant Garamond", Georgia, serif; --font-body: "Newsreader", Georgia, serif; --font-mono: "Courier Prime", ui-monospace, monospace; }
+  html { background: var(--ground); }
+  body { margin: 0; color: var(--dim); font-family: var(--font-body); font-size: 17px; line-height: 1.55; -webkit-font-smoothing: antialiased; }
+  main { max-width: 38rem; margin: 0 auto; padding: 48px 16px 64px; }
+  h1 { margin: 0 0 4px; color: var(--ink); font-family: var(--font-display); font-weight: 600; font-size: 40px; line-height: 1.1; }
+  h2 { margin: 36px 0 8px; color: var(--ink); font-family: var(--font-display); font-weight: 600; font-size: 24px; }
+  p, li { margin: 0 0 12px; }
+  ul { padding-left: 1.2em; }
+  b { color: var(--ink); font-weight: 500; }
+  a { color: var(--accent); }
+  .meta { font-family: var(--font-mono); font-size: 12.5px; letter-spacing: 0.08em; color: var(--faint); text-transform: uppercase; }
+  .back { display: inline-block; margin-top: 40px; }
+</style>
+</head>
+<body>
+<main>
+  <p class="meta">Fieldscape · Privacy · 27 September 2026</p>
+  <h1>Your location stays with you</h1>
+  <p>Fieldscape plays the field recordings placed around you as you walk. This page says, plainly, what that takes and where anything goes. It covers the website (keremaltaylar.github.io/Fieldscape) and the Fieldscape apps for iPhone and Android.</p>
+
+  <h2>Your location</h2>
+  <p>When you let Fieldscape use your location, it is used <b>on your device only</b>: to work out which recordings are near you and how loud each should be. It is <b>not sent</b> to Fieldscape or to anyone else, not stored on a server, and not shared.</p>
+  <p>To play a recording, your device downloads it. The server that holds the recordings sees that a recording was fetched, as any web server does, which says roughly which part of which park you are listening to. Fieldscape keeps no record of it beyond the storage provider's ordinary logs.</p>
+  <p>On a phone the walk can keep playing with the screen locked; your location is then still used on the device only. iPhone shows a blue location indicator while it does, and Android shows a notification you can pause the walk from.</p>
+
+  <h2>No accounts for listeners, no tracking</h2>
+  <p>Listening needs no account. Fieldscape uses <b>no analytics, no advertising and no tracking cookies</b>. Recordings you have heard are kept in your browser or app so they play offline next time; that stays on your device and you can clear it at any time (your browser's site data, or by removing the app).</p>
+
+  <h2>Setters</h2>
+  <p>People who place and publish recordings (setters) sign in with an email address. It is used only to sign you in and to record who published what; it is stored by the sign-in provider and never shown publicly.</p>
+  <p>What a setter publishes — recordings, photos, names, notes and where they are — is public, for anyone walking to hear. Photos are re-encoded before upload, so the location a phone camera writes into a photo is not kept. A point marked <b>sensitive</b> (a nest, a den, a rare species) is published at a fuzzed position, not its true one.</p>
+
+  <h2>Who handles data</h2>
+  <ul>
+    <li><b>Supabase</b> stores the published archive (recordings, photos, points and routes) and setters' sign-in.</li>
+    <li><b>Map imagery and maps</b> come from Esri, OpenStreetMap and OpenTopoMap: your device asks them for the map tiles of the area on screen.</li>
+    <li>On the website, <b>Google Fonts</b> serves the typefaces and <b>unpkg</b> serves the map and archive libraries.</li>
+  </ul>
+  <p>Each receives what any website or app request carries (such as your IP address) and handles it under its own privacy terms. Fieldscape sends none of them your location.</p>
+
+  <h2>Questions, or to have something removed</h2>
+  <p>Write to <a href="mailto:CONTACT_EMAIL" id="contact">CONTACT_EMAIL</a>. A setter's recordings and photos can be removed on request, and a setter account deleted.</p>
+
+  <p class="meta">Fieldscape © 2026 Kerem Altaylar · All rights reserved · Recordings © their authors</p>
+  <a class="back" href="./">Back to Fieldscape</a>
+</main>
+</body>
+</html>

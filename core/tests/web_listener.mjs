@@ -130,6 +130,7 @@ try {
 
     /* Account: the setter's door, and offline (the old sidebar's Download map, for listeners too) */
     check(p("Account opens with setter sign-in"), await clickEl("#ls-account") && /Setter sign-in/.test(await text("#ls-sheet")), await text("#ls-sheet"));
+    check(p("Account links the privacy page"), await ev("!!document.querySelector('#ls-sheet a[href=\"privacy.html\"]')"), await text("#ls-sheet"));
     check(p("Account offers the park underfoot for offline"), /Download Koşuyolu Parkı/.test(await text("#ls-sheet .ls-offline")), await text("#ls-sheet"));
     await clickEl("#ls-sheet .ls-offline"); await sleep(3000);
     check(p("offline sizes it first (tap again to confirm)"), /Confirm .* tap again/i.test(await text("#ls-sheet .ls-offline")), await text("#ls-sheet .ls-offline"));

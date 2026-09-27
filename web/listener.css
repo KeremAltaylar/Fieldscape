@@ -340,3 +340,4 @@ header, #panel, #patchbar, #pacerbar, #readout, #markbar, #sheet, #layers-btn { 
 #ls #ls-cardtabs button + button { border-left: 1px solid var(--hairline); }
 #ls #ls-cardtabs button[aria-selected="true"] { background: var(--raised); color: var(--ink); }
 #ls .ls-setcard .ls-ct-off { display: none !important; }
+#ls .ls-fine a { color: var(--accent); }
