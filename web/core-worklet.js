@@ -86,6 +86,9 @@ class FieldscapeEngine extends AudioWorkletProcessor {
     mem = x.memory;
     if (x._initialize) { x._initialize(); }
     this.e = x.fs_engine_create(sampleRate, 128);
+    /* the screen's live reads (fs_engine_morphs / _chord / _route), ~30 times a second */
+    this.liveEvery = Math.max(1, Math.round(sampleRate / 128 / 30)); this.liveN = 0;
+    this.morphs = x.malloc(7 * 24 * 8); this.nums = x.malloc(24); this.label = x.malloc(32);
     this.port.onmessage = (ev) => {
       const m = ev.data;
       try {
@@ -107,6 +110,17 @@ class FieldscapeEngine extends AudioWorkletProcessor {
       } catch (err) { this.port.postMessage({ type: "error", message: String(err && err.stack || err) }); }
     };
   }
+  /* nums: clock (f64) at 0, root at 8, shown at 12, chord count at 16 (i32) */
+  live() {
+    const x = this.x, p = this.nums;
+    const n = x.fs_engine_morphs(this.e, this.morphs, 24, p, p + 8, p + 12);
+    const step = x.fs_engine_chord(this.e, p + 16, this.label, 32);
+    const v = new DataView(x.memory.buffer, p, 24);
+    const m = new Float64Array(7 * Math.max(0, n));
+    m.set(new Float64Array(x.memory.buffer, this.morphs, m.length));
+    this.port.postMessage({ type: "live", n, clock: v.getFloat64(0, true), root: v.getInt32(8, true), shown: v.getInt32(12, true),
+      route: x.fs_engine_route(this.e), chord: { step, count: v.getInt32(16, true), label: this.cstr(this.label) }, morphs: m }, [m.buffer]);
+  }
   bytes(u8) {      /* a NUL-terminated copy in wasm memory; free it after the call */
     const p = this.x.malloc(u8.length + 1);
     const v = new Uint8Array(this.x.memory.buffer, p, u8.length + 1);
@@ -124,6 +138,7 @@ class FieldscapeEngine extends AudioWorkletProcessor {
     for (let c = 0; c < out.length; c++) {
       out[c].set(new Float32Array(x.memory.buffer, x.fs_engine_out(this.e, Math.min(c, 1)), n));
     }
+    if (++this.liveN >= this.liveEvery) { this.liveN = 0; this.live(); }
     return true;
   }
 }

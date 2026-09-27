@@ -8323,6 +8323,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       $("#patch-info").textContent = st.rows.length + " voice" + (st.rows.length === 1 ? "" : "s") +
         (st.route ? " · " + st.route : "") + (st.rhythms.length ? " · " + st.rhythms.join(", ") : "");
       window.__fa.core = st;     /* measurable, as __fa.bed is: core/tests/web_core.mjs reads it */
+    } else if (m.type === "live") {
+      /* the engine's own morphs, chord and route (fs_engine_morphs & co), ~30 times a second */
+      m.t = performance.now();
+      m.chord.label = dec.decode(m.chord.label);
+      core.live = m;
+      window.__fa.coreLive = m;
     } else if (m.type === "error") {
       console.error("core engine: " + m.message);
     }
@@ -11144,6 +11150,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     return (t / Math.max(4, m.period || 60)) + (m.phase || 0);
   }
   function morphSeed(m) {
+    if (m.seed !== undefined) { return m.seed; }
     return (m.id || "m").charCodeAt(m.id ? m.id.length - 1 : 0) || 7;
   }
   function morphValue(m, t) {
@@ -11158,10 +11165,30 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      breathe before you press Sound — drawing from a wall clock is not scheduling. */
   var MORPH_T0 = (typeof performance !== "undefined" ? performance.now() : Date.now()) / 1000;
   function morphClock() {
+    /* on the core, the engine's clock: its morphs are what the voices take */
+    if (CORE && core && core.on && core.live) { return core.live.clock + (performance.now() - core.live.t) / 1000; }
     if (bed && bed.on && bed.Tone) { return bed.Tone.Transport.seconds; }
     return (typeof performance !== "undefined" ? performance.now() : Date.now()) / 1000 - MORPH_T0;
   }
 
+  var MORPH_SHAPES = ["drift", "breath", "pulse", "ramp", "tide"];
+  var MORPH_DESTS = ["voice.cutoff", "sect.cutoff", "sect.index", "voice.gain", "voice.index", "voice.harm", "voice.drive",
+    "voice.warp", "sect.harm", "sect.drive", "sect.warp", "v3.cutoff", "v3.harm", "v3.index", "v3.drive", "v3.warp"];
+  /* On the core the cells draw the engine's morphs (fs_engine_morphs), not the patch's list run on
+     the page's own clock - since the core became the default (2026-09-26) that clock was wall time,
+     so the cells had stopped showing what was heard. null on the Tone engine: the patch's list. */
+  function liveMorphs() {
+    var L = CORE && core && core.on && core.live;
+    if (!L) { return null; }
+    var out = [];
+    for (var i = 0; i < Math.max(0, L.n); i++) {
+      var b = 7 * i;
+      out.push({ id: "e" + i, on: true, shape: MORPH_SHAPES[L.morphs[b]] || "drift", dest: MORPH_DESTS[L.morphs[b + 2]] || "voice.cutoff",
+                 seed: L.morphs[b + 3], v: L.morphs[b + 4], dv: L.morphs[b + 5], ph: L.morphs[b + 6] });
+    }
+    return out;
+  }
+  window.liveCellsForTest = liveMorphs;
   function morphList() {
     if (!pacer || !pacer.patch.morph || !pacer.patch.morph.on) { return []; }
     return pacer.patch.morph.list || [];
@@ -11282,7 +11309,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        stopped meaning anything, which is the one thing this display exists to show. */
     var rGauge = R * 0.93, Rf = R * 0.82, rSeat = Rf * 0.52;
 
-    var pc = (pacer && harmony.chord !== null) ? chordRoot(pacer.patch, harmony.chord)
+    var live = liveMorphs();
+    var pc = live ? core.live.root : (pacer && harmony.chord !== null) ? chordRoot(pacer.patch, harmony.chord)
            : (pacer ? pacer.patch.key : 0);
 
     /* The chord, tinted into the disc itself. The progression stays visible without
@@ -11295,7 +11323,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     g.fillStyle = vg;
     g.beginPath(); g.arc(cx, cy, R, 0, 6.2832); g.fill();
 
-    var all = morphList(), list = [];
+    var all = live || morphList(), list = [];
     for (var z = 0; z < all.length; z++) { if (all[z].on) { list.push(all[z]); } }
 
     /* Empty (C-5). A blank disc reads as broken; an empty track reads as idle. */
@@ -11312,7 +11340,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       g.fillStyle = "rgba(190,205,192,0.85)";
       g.font = "400 12px 'Courier Prime', ui-monospace, monospace";
       g.textAlign = "center"; g.textBaseline = "middle";
-      g.fillText("no morphs", cx, cy);
+      g.fillText(live && core.live.n < 0 ? "no route" : "no morphs", cx, cy);
       return;
     }
 
@@ -11321,8 +11349,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
     for (var i = 0; i < n; i++) {
       var m = list[i];
-      var v = morphValue(m, t);
-      var dv = (v - morphValue(m, t - 0.6)) / 0.6;
+      var v = live ? m.v : morphValue(m, t);
+      var dv = live ? m.dv : (v - morphValue(m, t - 0.6)) / 0.6;
       var seat = -Math.PI / 2 + (i + 0.5) * span;
       var p = {
         m: m, v: v, dv: dv, i: i,
@@ -11341,7 +11369,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       /* A wrap in the unwrapped phase is a real edge in the generator, so pulse takes its
          shockwave and ramp its snap from the same instant the audio does. */
       var mem = cellMem(m.id);
-      var ph = morphPhase(m, t); ph = ph - Math.floor(ph);
+      var ph = live ? m.ph : morphPhase(m, t); ph = ph - Math.floor(ph);
       if (mem.lastP !== null && ph < mem.lastP) {
         if (m.shape === "ramp") { mem.flash = 1; }
         if (m.shape === "pulse") { mem.waves.push({ born: t }); }
@@ -11411,7 +11439,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       g.stroke();
 
       if (sh === "tide") {
-        var u = morphPhase(e.m, t);
+        var u = live ? e.m.ph : morphPhase(e.m, t);
         var b1 = Math.sin(6.2832 * u), b2 = Math.sin(6.2832 * u * 1.6180339887);
         g.lineWidth = 1;
         g.strokeStyle = hexA(e.hue, 0.20 + 0.30 * e.v);
@@ -11428,7 +11456,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           g.beginPath(); g.arc(e.x, e.y, e.r + Rf * 0.30 * age, 0, 6.2832); g.stroke();
         }
       } else if (sh === "ramp") {
-        var pr = morphPhase(e.m, t); pr = pr - Math.floor(pr);
+        var pr = live ? e.m.ph : morphPhase(e.m, t); pr = pr - Math.floor(pr);
         g.fillStyle = hexA(e.hue, 0.16 + 0.16 * e.v);
         g.beginPath(); g.moveTo(e.x, e.y);
         g.arc(e.x, e.y, e.r * 0.82, -Math.PI / 2, -Math.PI / 2 + 6.2832 * pr);

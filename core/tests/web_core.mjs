@@ -43,6 +43,21 @@ try {
       rows.push(st); const j = JSON.parse(st); console.log(`t=${k}s level ${j.lvl === null ? "-" : j.lvl.toFixed(1)} dB · route ${j.c && j.c.route} · ${j.c ? j.c.rows.map((r) => r.name + (r.loaded ? "" : " (loading)")).join(", ") : ""} · rhythm ${j.c ? j.c.rhythms.join(", ") : ""}`);
     }
   }
+  /* W1: the engine's live reads reach the page, and the cells draw them */
+  await ev(`__fa.walkTo(${lon0}, ${lat0})`); await sleep(2500);
+  const L = JSON.parse(await ev("JSON.stringify(window.__fa.coreLive ? { n: __fa.coreLive.n, clock: __fa.coreLive.clock, chord: __fa.coreLive.chord } : null)"));
+  console.log("live:", JSON.stringify(L));
+  if (!L || L.n < 1 || !(L.clock > 0) || !L.chord || L.chord.count !== 16) { console.error("FAIL live data"); process.exitCode = 1; }
+  else {
+    const c1 = await ev("__fa.coreLive.clock"); await sleep(1000); const c2 = await ev("__fa.coreLive.clock");
+    if (!(c2 - c1 > 0.8 && c2 - c1 < 1.2)) { console.error("FAIL live clock advances", c1, c2); process.exitCode = 1; }
+    const same = await ev("(function () { var m = liveCellsForTest(); return !!m && m.length === __fa.coreLive.n && m[0].v === __fa.coreLive.morphs[4]; })()");
+    if (!same) { console.error("FAIL cells read the engine"); process.exitCode = 1; }
+    await ev("__fa.walkTo(29.09, 41.05)"); await sleep(2500);            /* ~6 km from any route */
+    const none = await ev("__fa.coreLive.n");
+    if (none !== -1) { console.error("FAIL no route: n", none); process.exitCode = 1; }
+  }
   console.log("errors:", errors.length ? errors : "none");
+  if (errors.length) process.exitCode = 1;
   s.close();
 } finally { process.kill(ch.pid); await sleep(500); try { rmSync(dir, { recursive: true, force: true }); } catch {} }
