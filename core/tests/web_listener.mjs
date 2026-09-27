@@ -39,7 +39,8 @@ try {
     check(p("bridge reads the place"), await ev("typeof fsListen === 'object' && 'place' in fsListen.state()"), false);
     check(p("old header hidden"), await ev("getComputedStyle(document.querySelector('header')).display === 'none'"), false);
     await ev("fsListen._gate(true)"); await sleep(300);
-    check(p("signed in: setter surface back"), await ev("!document.body.classList.contains('listener') && getComputedStyle(document.getElementById('panel')).display !== 'none'"), false);
+    /* the old sidebar retired with setter S1: signed in, the same frame gains the setter's tools */
+    check(p("signed in: the setter's tools appear"), await ev("!document.body.classList.contains('listener') && !document.getElementById('ls-tools').hidden"), false);
     await ev("fsListen._gate(false)"); await sleep(300);
     check(p("signed out again: listener"), await ev("document.body.classList.contains('listener')"), false);
 

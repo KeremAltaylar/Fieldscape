@@ -1,15 +1,14 @@
 /* The listener's frame on the website (web/listener.js): the apps' views over the same map. Only
    the :root tokens from index.html (Design System/Tokens.md). body.listener = signed out. */
 
-/* the setter's chrome gives way: the map takes the window */
-body.listener header, body.listener #panel, body.listener #patchbar, body.listener #pacerbar,
-body.listener #readout, body.listener #markbar, body.listener #sheet, body.listener #layers-btn { display: none !important; }
-body.listener #app { grid-template-columns: 1fr; grid-template-rows: 1fr; padding: 0; }
-body.listener #map { grid-row: 1; grid-column: 1; border: 0; }
+/* the page's old chrome gives way, for listeners and setters alike: the map takes the window, and
+   the setter's blocks the frame needs are moved into it (web/listener.js) */
+header, #panel, #patchbar, #pacerbar, #readout, #markbar, #sheet, #layers-btn { display: none !important; }
+#app { grid-template-columns: 1fr !important; grid-template-rows: 1fr !important; padding: 0 !important; }
+#map { grid-row: 1 !important; grid-column: 1 !important; border: 0 !important; }
 
 /* ---- the frame ---- */
-#ls { display: none; }
-body.listener #ls {
+#ls {
   display: block; position: absolute; inset: 0; z-index: 7; pointer-events: none;
   font-family: var(--font-body); color: var(--ink);
 }
@@ -24,7 +23,7 @@ body.listener #ls {
 #ls button[aria-pressed="true"] { color: var(--ink); background: var(--raised); border-color: var(--hairline); }
 #ls h2 { text-transform: none; letter-spacing: normal; }
 /* the map's own controls move below the top bar */
-body.listener .maplibregl-ctrl-top-right { top: calc(48px + var(--s-3) * 2); }
+.maplibregl-ctrl-top-right { top: calc(48px + var(--s-3) * 2); }
 #ls button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* the top bar: the place picker, then Layers and Account */
@@ -191,3 +190,24 @@ body.listener .maplibregl-ctrl-top-right { top: calc(48px + var(--s-3) * 2); }
 @media (min-width: 861px) {
   #ls-panel.ls-tall { max-height: calc(100% - 48px - var(--s-3) * 2 - var(--s-4)); }
 }
+
+/* ---- the setter (S1): the page's own blocks, moved into the frame ---- */
+#ls-tools { display: flex; flex-direction: column; gap: var(--s-2); }
+#ls-tools[hidden], #ls-pub[hidden] { display: none; }
+#ls-tools .modes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0; margin: 0; border: 1px solid var(--hairline); border-radius: 10px; overflow: hidden; }
+#ls #ls-tools .modes button { min-height: 44px; border: 0; border-radius: 0; background: none; color: var(--dim); font-size: var(--t-sm); }
+#ls #ls-tools .modes button + button { border-left: 1px solid var(--hairline); }
+#ls #ls-tools .modes button[aria-pressed="true"] { background: var(--raised); color: var(--ink); }
+#ls-tools .iconpick[hidden] { display: none; }
+#ls-pub { border-top: 1px solid var(--hairline); padding-top: var(--s-3); }
+#ls-pub #publishbar { display: flex; align-items: center; gap: var(--s-3); margin: 0; }
+#ls #publishbar #publish-btn:not([disabled]) { background: var(--accent); color: var(--sunk); border-color: var(--accent); }
+#ls .ls-primary { background: var(--accent); color: var(--sunk); border-color: var(--accent); }
+.ls-setcard #card { display: flex; flex-direction: column; gap: var(--s-3); }
+#ls .ls-setcard #f-name {
+  width: 100%; box-sizing: border-box; padding: var(--s-1) 0; background: none; border: 0; border-bottom: 1px solid var(--hairline);
+  color: var(--ink); font-family: var(--font-display); font-size: var(--t-lg); font-weight: 600; letter-spacing: normal; text-transform: none;
+}
+#ls .ls-setcard #f-name:focus-visible { outline: none; border-bottom-color: var(--accent); }
+#ls .ls-setcard textarea, #ls .ls-setcard input[type="text"] { font-size: 16px; }   /* iOS: no zoom into a field */
+.ls-setacct, .ls-setplaces { display: flex; flex-direction: column; gap: var(--s-2); }

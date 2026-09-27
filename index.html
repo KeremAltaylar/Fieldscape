@@ -4040,6 +4040,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     mode = next;
     draft = [];
     updateDraft();
+    if (window.fsListen) { fsListen._changed(); }
     document.querySelectorAll("[data-mode]").forEach(function (b) {
       b.setAttribute("aria-pressed", String(b.dataset.mode === next));
     });
@@ -4107,6 +4108,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   }
 
   function updateDraft() {
+    if (window.fsListen) { fsListen._changed(); }
     var feats = [];
     if (draft.length) {
       draft.forEach(function (c) { feats.push({ type: "Feature", properties: {}, geometry: { type: "Point", coordinates: c } }); });
@@ -14042,6 +14044,18 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       /* the setter's door: the page's own magic-link sign-in */
       signIn: function (email) { $("#setter-email").value = email; $("#setter-send").click(); setTimeout(changed, 800); },
       signInNote: function () { return $("#setter-who").textContent; },
+      /* ---- the setter (S1): the page's own blocks move into the frame; these are what has no element ---- */
+      mode: function () { return mode; },
+      renderArchive: function () { renderList(); },
+      selected: function () { return selected; },
+      setterCount: function () { return visible().length; },
+      draftCount: function () { return draft.length; },
+      undoVertex: function () { if (draft.length) { draft.pop(); updateDraft(); } },
+      /* Done: the route, or nothing when there is no line to make (fewer than two vertices) */
+      finishDraft: function () {
+        if (draft.filter(function (c, i) { var q = draft[i - 1]; return !q || c[0] !== q[0] || c[1] !== q[1]; }).length >= 2) { finishRoute(); }
+        else { draft = []; updateDraft(); }
+      },
       /* the card's waveform, drawn as the setter's card draws it */
       wave: function (c, peaks) {
         var w = c.clientWidth || 300, h = c.clientHeight || 44, r = window.devicePixelRatio || 1;

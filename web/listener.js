@@ -35,7 +35,8 @@
   var ICON = { layers: "M12 3 2 8.5 12 14l10-5.5L12 3Zm-10 9.5L12 18l10-5.5M2 16.5 12 22l10-5.5",
                person: "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-7.5 8.5c.8-3.6 3.9-5.5 7.5-5.5s6.7 1.9 7.5 5.5",
                close: "M6 6l12 12M18 6 6 18", photo: "M4 7h3l2-2h6l2 2h3v12H4zM12 17a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z",
-               play: "M8 5v14l11-7z", pause: "M7 5h4v14H7zM13 5h4v14h-4z" };
+               play: "M8 5v14l11-7z", pause: "M7 5h4v14H7zM13 5h4v14h-4z",
+               list: "M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01" };
   function round(name, label, onClick, attrs) {
     attrs = attrs || {};
     attrs.type = "button"; attrs.class = "ls-round " + (attrs.class || ""); attrs["aria-label"] = label; attrs.on = { click: onClick };
@@ -54,31 +55,66 @@
     h("button", { id: "ls-place", type: "button", "aria-label": "Places", on: { click: function () { toggleView("places"); } } },
       [placeName, h("span", { class: "ls-caret", text: "▾" })]),
     h("span", { class: "ls-gap" }),
+    round("list", "Archive", function () { toggleView("archive"); }, { id: "ls-archive", hidden: true }),
     round("layers", "Layers", function () { toggleView("layers"); }, { id: "ls-layers" }),
     round("person", "Account", function () { toggleView("account"); }, { id: "ls-account" })]);
   var cellsSlot = h("div", { id: "ls-cells", hidden: true });
   var grip = h("button", { id: "ls-grip", type: "button", "aria-label": "Hide the panel", on: { click: function () { folded = !folded; render(); } } }, [h("span")]);
   var walk = h("div", { id: "ls-walk" }), bar = h("div", { id: "ls-bar", hidden: true }), holder = h("div", { id: "ls-holder" });
-  var panel = h("section", { id: "ls-panel", "aria-label": "Walk" }, [grip, walk, holder, bar]);
+  /* the setter's: the drawing modes under the grip, the publish bar at the foot (both moved in) */
+  var tools = h("div", { id: "ls-tools", hidden: true }), pub = h("div", { id: "ls-pub", hidden: true });
+  var panel = h("section", { id: "ls-panel", "aria-label": "Walk" }, [grip, tools, walk, holder, bar, pub]);
   var viewer = h("div", { id: "ls-photos", hidden: true, role: "dialog", "aria-label": "Photos" });
   var root = h("div", { id: "ls" }, [top, cellsSlot, panel, viewer]);
   document.getElementById("map").appendChild(root);
   cellsSlot.appendChild(L.cells());
 
-  /* what the panel holds: null = the walk, or "places" / "layers" / "account" / {point} / {route} */
+  /* ---- the setter: the page's own blocks, moved in with every handler they have ---- */
+  var homes = [];          /* [{ el, parent, next, hidden, view }] */
+  /* show: unhide it while it is here (the card, the archive list); otherwise the page keeps
+     deciding (the icon picker shows in Point mode only, Undo delete only when there is one) */
+  function move(el, into, forView, show) {
+    if (!el) { return; }
+    if (!homes.some(function (x) { return x.el === el; })) {
+      homes.push({ el: el, parent: el.parentNode, next: el.nextSibling, hidden: el.hidden, view: !!forView, show: !!show });
+    }
+    if (show) { el.hidden = false; }
+    into.appendChild(el);
+  }
+  function sendHome(onlyViews) {
+    homes = homes.filter(function (x) {
+      if (onlyViews && !x.view) { return true; }
+      x.parent.insertBefore(x.el, x.next && x.next.parentNode === x.parent ? x.next : null);
+      if (x.show) { x.el.hidden = x.hidden; }
+      return false;
+    });
+  }
+  function $$(sel) { return document.querySelector(sel); }
+  var setter = false, lastMode = "select";
+  function setterChanged(on) {
+    setter = on;
+    if (on) { move($$("#mode-section .modes"), tools); move($$("#mode-icons"), tools); move($$("#publishbar"), pub); }
+    else { view = null; holder.textContent = ""; sendHome(false); }
+    tools.hidden = pub.hidden = !on;
+    document.getElementById("ls-archive").hidden = !on;
+  }
+
+  /* what the panel holds: null = the walk, or "places" / "layers" / "account" / "archive" / {point} / {route} / {setter} */
   var view = null, folded = false, lastRoute = null;
   function toggleView(v) { if (view === v) { closeView(); } else { openView(v); } }
-  function openView(v) { view = v; folded = false; buildView(); render(); }
+  function openView(v) { sendHome(true); view = v; folded = false; buildView(); render(); }
   /* a card's close: it pops off and the panel folds down with it (the apps' closeCard) */
   function closeView() {
     var card = view && typeof view === "object";
     view = null;
-    if (card) { L.stopPlaying(); L.select(null); folded = true; }
+    sendHome(true);
     holder.textContent = "";
+    if (card) { L.stopPlaying(); L.select(null); folded = true; }
     render();
   }
   L.onSelect(function (id) {
-    if (!id) { if (view && typeof view === "object") { view = null; holder.textContent = ""; render(); } return; }
+    if (!id) { if (view && typeof view === "object") { sendHome(true); view = null; holder.textContent = ""; render(); } return; }
+    if (setter) { if (!(view && view.setter === id)) { openView({ setter: id }); } return; }
     if (L.point(id)) { openView({ point: id }); } else if (L.route(id)) { openView({ route: id }); }
   });
 
@@ -106,6 +142,14 @@
   }
   function renderWalk(st) {
     var kids = [h("div", { class: "ls-head" }, [h("h2", { class: "ls-title", text: st.place || "Fieldscape" }), soundButton(st), gpsChip(st)])];
+    if (setter && L.mode() === "point") { kids.push(note([ink("Tap the map to place a point."), " Its card opens, to name it and give it a sound."])); }
+    if (setter && L.mode() === "route") {
+      var nv = L.draftCount();
+      kids.push(h("div", { class: "ls-routeline ls-drawing" }, [
+        note([ink("Drawing a route · "), nv ? nv + " point" + (nv > 1 ? "s" : "") : "tap the map for its first point"]),
+        btn("Undo", { id: "ls-draw-undo", disabled: !nv }, function () { L.undoVertex(); }),
+        btn("Done", { id: "ls-draw-done", class: "ls-primary" }, function () { L.finishDraft(); })]));
+    }
     var route = st.core && st.core.route, rh = (st.core && st.core.rhythms) || [];
     var solo = L.listening(), sp = solo && L.point(solo);
     /* soloed, the route and the other points rest: the panel names who is playing instead */
@@ -172,6 +216,13 @@
     return [sheetTitle("Places"), search, list];
   }
 
+  /* ---- Archive (setters): the page's own list, filter and sort ---- */
+  function buildArchive() {
+    var box = h("div", { class: "ls-scroll ls-archive" });
+    setTimeout(function () { move($$("#pane-list"), box, true, true); L.renderArchive(); }, 0);
+    return [sheetTitle("Archive"), box];
+  }
+
   /* ---- Layers ---- */
   function buildLayers() {
     var s = L.layers();
@@ -211,6 +262,10 @@
       if (st.note) { offNote.textContent = st.note; }
       off.disabled = st.busy;
       setTimeout(tick, 400);
+    }
+    if (setter) {
+      return [sheetTitle("Account"), h("p", { class: "ls-eyebrow", text: "Offline" }), offNote, off,
+              h("p", { class: "ls-fine", text: "Recordings © their authors · map imagery © Esri, © OpenStreetMap contributors, © OpenTopoMap" })];
     }
     return [sheetTitle("Account"),
       note(["Fieldscape is for listening: walk, and the recordings around you play. Setters place points, record and shape the sound."]),
@@ -310,12 +365,36 @@
   function buildView() {
     holder.textContent = "";
     if (!view) { return; }
-    var kids = view === "places" ? buildPlaces() : view === "layers" ? buildLayers() : view === "account" ? buildAccount() : [];
+    var kids = view === "places" ? buildPlaces() : view === "layers" ? buildLayers() : view === "account" ? buildAccount() :
+               view === "archive" ? buildArchive() : [];
     var box = h("div", { id: typeof view === "object" ? "ls-card" : "ls-sheet", class: typeof view === "object" ? "ls-card" : "ls-sheet" }, kids);
     holder.appendChild(box);
+    /* the setter's card is the page's own, every field and handler as it was */
+    if (view.setter) {
+      box.appendChild(h("div", { class: "ls-cardhead" }, [round("close", "Close", closeView, { class: "ls-close" }), h("span", { class: "ls-gap" })]));
+      var card = h("div", { class: "ls-setcard" });
+      box.appendChild(card);
+      move($$("#card"), card, true, true);
+    }
+    if (setter && view === "account") {
+      var more = h("div", { class: "ls-setacct" });
+      box.insertBefore(more, box.children[1]);
+      move($$("#setter"), more, true); move($$("#storage > .actions"), more, true); move($$("#undo"), more, true); move($$("#audit"), more, true);
+    }
+    if (setter && view === "places") {
+      var world = h("div", { class: "ls-setplaces" });
+      box.insertBefore(world, box.children[1]);
+      move($$(".worldrow"), world, true); move($$("#place-list-label"), world, true); move($$("#place-list"), world, true);
+    }
   }
   function render() {
     var st = L.state();
+    if (!!st.signedIn !== setter) { setterChanged(!!st.signedIn); }
+    /* choosing Point or Route opens the panel: its instructions, Undo and Done live there */
+    var m = setter ? L.mode() : "select";
+    if (m !== lastMode) { lastMode = m; if (m !== "select" && view && typeof view !== "object") { view = null; sendHome(true); holder.textContent = ""; } }
+    if (m !== "select") { folded = false; }
+    grip.hidden = m !== "select";
     placeName.textContent = st.place || "Open world";
     var card = view && typeof view === "object";
     walk.hidden = folded || !!view; holder.hidden = folded || !view; bar.hidden = !folded;
@@ -323,7 +402,7 @@
     grip.setAttribute("aria-label", folded ? "Show the panel" : "Hide the panel");
     if (folded) { replace(bar, renderBar(st)); }
     else if (!view) { replace(walk, renderWalk(st)); }
-    else if (card) {
+    else if (card && !view.setter) {
       var box = holder.firstChild;
       if (box && replace(box, view.point ? renderPoint(view.point) : renderRoute(view.route))) {
         [].forEach.call(box.querySelectorAll("canvas[data-peaks]"), function (c) { L.wave(c, (L.point(c.getAttribute("data-peaks")) || {}).peaks); });
@@ -366,7 +445,7 @@
       if (navigator.vibrate) { navigator.vibrate(12); }
     }
     canvas.addEventListener("pointerdown", function (e) {
-      if (!document.body.classList.contains("listener") || !e.isPrimary || e.target.closest(".maplibregl-marker")) { return; }
+      if ((setter && L.mode() !== "select") || !e.isPrimary || e.target.closest(".maplibregl-marker")) { return; }
       x0 = e.clientX; y0 = e.clientY; t0 = performance.now(); cancel();
       t = setTimeout(hold, HOLD);
     });
@@ -374,7 +453,7 @@
     /* a busy page can run the timer late: a release after HOLD still counts as the hold it was */
     canvas.addEventListener("pointerup", function () { if (t && performance.now() - t0 >= HOLD) { hold(); } else { cancel(); } });
     ["pointercancel", "pointerleave"].forEach(function (n) { canvas.addEventListener(n, cancel); });
-    canvas.addEventListener("contextmenu", function (e) { if (document.body.classList.contains("listener")) { e.preventDefault(); } });
+    canvas.addEventListener("contextmenu", function (e) { e.preventDefault(); });
   })();
 
   L.onChange(render);
