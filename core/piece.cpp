@@ -522,6 +522,7 @@ struct Inbox {
     int taken = -1, sect_n = 7, bed_voices = 4, sector_back = -1;
     int chord = -1, nprog = 0; char chord_label[24] = "";   /* the chord playing, for the screen */
     double clock = 0; int root = 0;   /* the piece's seconds and the chord root's pc, for the cells */
+    int chord_n = -1; float chord_notes[5] = { 0 }, chord_root_midi = 0;   /* the chord's notes, for the stretch's tune and layers */
 };
 
 /* chordRoot / chordQuality of a patch's step */
@@ -1219,6 +1220,12 @@ struct Piece : Device {
         in.taken = route; in.sect_n = patch.sect.n; in.bed_voices = patch.bed_on ? patch.bed_voices : 0;
         in.chord = H.chord; in.nprog = patch.nprog;
         in.clock = now; in.root = pc12(H.chord >= 0 ? chord_root(H.chord) : patch.key);
+        if (H.chord >= 0) {
+            int q = chord_quality(H.chord), r = chord_root(H.chord);
+            int n = q >= 0 ? CHORDS[q].n : 4; if (n > 5) n = 5;
+            for (int i = 0; i < n; i++) in.chord_notes[i] = (float)(r + (q >= 0 ? CHORDS[q].iv[i] : (i == 0 ? 0 : i == 1 ? 3 : i == 2 ? 7 : 10)));
+            in.chord_n = n; in.chord_root_midi = (float)r;
+        } else in.chord_n = -1;
         if (H.chord >= 0) {                /* chordLabel: root name + quality, as the web writes it */
             int q = chord_quality(H.chord);
             std::snprintf(in.chord_label, sizeof in.chord_label, "%s%s", NOTE[pc(chord_root(H.chord))], q >= 0 ? CHORDS[q].name : "m7");
@@ -1552,6 +1559,15 @@ int fs_piece_morphs(fs_device *d, double *out, int max, double *clock, int *root
         o[6] = t / std::max(4.0, m.period ? m.period : 60) + m.phase;
     }
     return n;
+}
+/* The chord playing, as MIDI notes (root first, at most 5), for the stretch's tune and layers; -1 before any. */
+int fs_piece_chord_notes(fs_device *d, float *notes, float *root) {
+    Piece *p = P(d); if (!p) return -1;
+    std::lock_guard<std::mutex> g(p->mu);
+    if (p->in.chord_n < 0) return -1;
+    for (int i = 0; i < p->in.chord_n; i++) notes[i] = p->in.chord_notes[i];
+    if (root) *root = p->in.chord_root_midi;
+    return p->in.chord_n;
 }
 void fs_piece_solo(fs_device *d, int h) {
     Piece *p = P(d); if (!p) return;

@@ -6171,7 +6171,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         { title: "Point", nodes: point },
         { title: "Stretch", span: 3, nodes: [soundEmpty("No recording attached yet.",
           "This point is set to Stretch. Attach a recording on its card, and it plays through " +
-          "the PaulXStretch engine as the ambient bed heard while walking near it.")] }
+          "Fieldscape's stretch engine as the ambient bed heard while walking near it.")] }
       ], 4);
       return;
     }
@@ -6233,16 +6233,18 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var heading = function (t, hint) { return ppHeading(t, hint); };
     var R = function (spec, obj) { return buildPxRow(spec, obj, commitLive); };
 
+    /* Fieldscape's own shaping (docs/superpowers/specs/2026-09-27-own-stretch-shaping-design.md), in
+       properties.sound.shape and read by the core's stretch. All dry by default (A-8). */
+    if (!q.shape) { q.shape = {}; }
+    var sh = q.shape, SHD = { transpose: 0, tune: 0, focus: 0.5, partials: 8, layers: 0, harmony: 0.5, glide: 2,
+                              drift: 0, blur: 0, width: 1, start: 0, end: 1 };
+    Object.keys(SHD).forEach(function (k) { if (sh[k] === undefined) { sh[k] = SHD[k]; } });
     var colStretch = [
-      heading("Stretch", "Always heard through the PaulXStretch engine. Stretch ×1 plays at the " +
-        "recording's own speed with randomised phase; the spectrum chain and ratios act on every " +
-        "frame; extras are Fieldscape's own."),
+      heading("Time", "The stretch itself, and the part of the recording it reads."),
       R({ label: "stretch", k: "stretch", min: 0, max: 1, step: 0.005, def: 0,
         fmt: function (v) { return fx.x(Math.pow(1024, v)); },
-        hint: "×1 plays at the recording's own speed; ×1024 is PaulXStretch's maximum" }, q),
-      /* Capped at 0.9 (hop 65536, a 2.7 s window) where the plugin goes to 1.0: measured in
-         Chrome, hop 131072 with a stereo recording overran the 2.67 ms render quantum in 93 of
-         10464 quanta; at 0.9 it was 5. */
+        hint: "×1 plays at the recording's own speed; ×1024 is the longest" }, q),
+      /* Capped at 0.9 (hop 65536, a 2.7 s window): measured in Chrome, larger overran the render quantum. */
       R({ label: "fft size", k: "fft", min: 0, max: 0.9, step: 0.01, def: 0.7,
         fmt: function (v) { return String(pxBufsize(v)); },
         hint: "the hop in samples; each frame is twice this — larger is smoother and slower to react" }, x),
@@ -6250,85 +6252,38 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         hint: "lets attacks through: a detected transient jumps ahead, and the time is paid back after" }, x),
       buildPxToggle("freeze", x, "freeze", commitLive),
       R({ label: "start", k: "start", min: 0, max: 1, step: 0.001, def: 0, fmt: fx.pct,
-        hint: "where in the recording the loop begins" }, x),
+        hint: "where in the recording the stretched part begins" }, sh),
       R({ label: "end", k: "end", min: 0, max: 1, step: 0.001, def: 1, fmt: fx.pct,
-        hint: "where in the recording the loop ends" }, x),
-      R({ label: "loop xfade", k: "xfade", min: 0, max: 1, step: 0.001, def: 0.01, fmt: fx.sec,
-        hint: "how long the end of the loop fades into its start" }, x)
+        hint: "where it ends; the part loops" }, sh)
     ];
-    var extrasHeading = heading("Extras", "Fieldscape's own, on top of the PaulXStretch engine");
-    var colExtras = [
-      extrasHeading,
-      R({ label: "warp", k: "warp", min: 0, max: 1, step: 0.02, def: 0, fmt: fx.two,
-        hint: "Fieldscape's own: the whole spectrum drifts slowly, up to ±300 Hz" }, q),
-      R({ label: "morph", k: "morph", min: 0, max: 1, step: 0.02, def: 0, fmt: fx.two,
-        hint: "Fieldscape's own: reads through the recording faster than the stretch alone" }, q),
-      R({ label: "field", k: "field", min: 0, max: 1, step: 0.02, def: 0, fmt: fx.two,
-        hint: "Fieldscape's own: each frame is taken from a wandering position around the true one" }, q),
+    var colHarmony = [
+      heading("Pitch & harmony", "On the chord playing on the route in reach; off a route, the last one heard."),
+      R({ label: "transpose", k: "transpose", min: -12, max: 12, step: 1, def: 0,
+        fmt: function (v) { return (v > 0 ? "+" : "") + Math.round(v) + " st"; }, hint: "the whole point up or down" }, sh),
+      R({ label: "tune", k: "tune", min: 0, max: 1, step: 0.01, def: 0, fmt: fx.two,
+        hint: "pulls the sound onto the chord's notes: wind hums the chord" }, sh),
+      R({ label: "focus", k: "focus", min: 0, max: 1, step: 0.01, def: 0.5, fmt: fx.two,
+        hint: "how pure the notes are: 0 bell-like, 1 breathy" }, sh),
+      R({ label: "partials", k: "partials", min: 1, max: 24, step: 1, def: 8, fmt: fx.int,
+        hint: "overtones per note: few is dark and pure, many is bright and rich" }, sh),
+      R({ label: "layers", k: "layers", min: 0, max: 4, step: 1, def: 0, fmt: fx.int,
+        hint: "copies of the sound at the chord's intervals" }, sh),
+      R({ label: "harmony", k: "harmony", min: 0, max: 1, step: 0.01, def: 0.5, fmt: fx.two,
+        hint: "the recording ↔ its layers" }, sh),
+      R({ label: "glide", k: "glide", min: 0.5, max: 10, step: 0.1, def: 2, fmt: fx.sec,
+        hint: "how long the notes take to reach a new chord" }, sh)
+    ];
+    var colSpace = [
+      heading("Movement & space", "The sound breathing, blurring and spreading."),
+      R({ label: "drift", k: "drift", min: 0, max: 1, step: 0.01, def: 0, fmt: fx.two,
+        hint: "the reading position wanders slowly, up to two seconds" }, sh),
+      R({ label: "blur", k: "blur", min: 0, max: 1, step: 0.01, def: 0, fmt: fx.two,
+        hint: "smears the sound over time: sharp events dissolve into a haze" }, sh),
+      R({ label: "width", k: "width", min: 0, max: 1, step: 0.01, def: 1, fmt: fx.two,
+        hint: "stereo spread" }, sh),
       R({ label: "grit", k: "grit", min: 0, max: 1, step: 0.02, def: 0, fmt: fx.two,
-        hint: "Fieldscape's own: bitcrush and drive on the stretched signal" }, q)
+        hint: "bitcrush and drive on the stretched sound" }, q)
     ];
-
-    var colSpectrum = [
-      heading("Spectrum", "Applied in order: harmonics → tonal/noise → frequency → pitch → " +
-        "ratios → spread → filter → compressor. A module's dot is its power switch."),
-      buildPxModule("Harmonics", x.harmonics, [
-        R({ label: "count", k: "n", min: 1, max: 100, step: 1, def: 10, fmt: fx.int }, x.harmonics),
-        R({ label: "base", k: "freq", min: 1, max: 5000, def: 128, log: true, fmt: fx.hz }, x.harmonics),
-        R({ label: "bandwidth", k: "bw", min: 0.1, max: 200, step: 0.01, def: 25,
-          fmt: function (v) { return v.toFixed(1) + " ¢"; } }, x.harmonics),
-        buildPxToggle("gaussian", x.harmonics, "gauss", commitLive)
-      ], commitLive),
-      buildPxModule("Tonal vs noise", x.tonal, [
-        R({ label: "bandwidth", k: "bw", min: 0.74, max: 1, step: 0.001, def: 0.74, fmt: fx.two }, x.tonal),
-        R({ label: "preserve", k: "preserve", min: -1, max: 1, step: 0.001, def: 0.5, fmt: fx.two,
-          hint: "above 0 keeps the tones, below 0 keeps the noise" }, x.tonal)
-      ], commitLive),
-      buildPxModule("Frequency shift", x.fshift, [
-        R({ label: "shift", k: "hz", min: -1000, max: 1000, step: 1, def: 0, fmt: fx.hz }, x.fshift)
-      ], commitLive),
-      buildPxModule("Pitch shift", x.pitch, [
-        R({ label: "pitch", k: "st", min: -24, max: 24, step: 0.1, def: 0, fmt: fx.st }, x.pitch)
-      ], commitLive),
-      buildPxModule("Spread", x.spread, [
-        R({ label: "spread", k: "bw", min: 0, max: 1, step: 0.001, def: 0, fmt: fx.two }, x.spread)
-      ], commitLive)
-    ];
-    /* Filter and Compressor sit with the ratios for height, not for order: the whole chain in
-       one column scrolled. The Spectrum heading's tooltip gives the real order. */
-    var colTail = [
-      buildPxModule("Filter", x.filter, [
-        R({ label: "low", k: "low", min: 20, max: 20000, def: 20, log: true, fmt: fx.hz }, x.filter),
-        R({ label: "high", k: "high", min: 20, max: 20000, def: 20000, log: true, fmt: fx.hz }, x.filter),
-        buildPxToggle("stop band", x.filter, "stop", commitLive)
-      ], commitLive),
-      buildPxModule("Compressor", x.compress, [
-        R({ label: "amount", k: "power", min: 0, max: 1, step: 0.001, def: 0, fmt: fx.two }, x.compress)
-      ], commitLive)
-    ];
-
-    var RATIO_DEF = [0.25, 0.5, 1, 2, 3, 4, 1.5, 1 / 1.5];
-    var ratioRows = x.ratios.r.map(function (_, i) {
-      var row = document.createElement("div");
-      row.className = "pxratio";
-      row.appendChild(R({ label: String(i + 1), min: 0.125, max: 8, def: RATIO_DEF[i], log: true,
-        get: function (o) { return o.r[i]; }, set: function (o, v) { o.r[i] = v; },
-        fmt: function (v) { return "×" + v.toFixed(2); } }, x.ratios));
-      row.appendChild(R({ label: "lvl", min: 0, max: 1, step: 0.001, def: i === 2 ? 1 : 0,
-        get: function (o) { return o.l[i]; }, set: function (o, v) { o.l[i] = v; }, fmt: fx.two }, x.ratios));
-      return row;
-    });
-    var colRatios = [
-      buildPxModule("Ratios", x.ratios, ratioRows, commitLive)
-    ].concat(colTail, [
-      buildPxModule("Binaural beats", x.binaural, [
-        R({ label: "power", k: "power", min: 0, max: 1, step: 0.01, def: 0.5, fmt: fx.two,
-          hint: "how much the two channels are mixed before the beat is applied" }, x.binaural),
-        R({ label: "beat", k: "hz", min: 0.05, max: 50, def: 4, log: true,
-          fmt: function (v) { return v.toFixed(2) + " Hz"; } }, x.binaural),
-        buildPxSelect("mode", x.binaural, "mode", ["left-right", "right-left", "symmetric"], commitLive)
-      ], commitLive)
-    ]);
 
     /* One screen, always (C-8): four columns where there is room, tabs where there is not.
        Measured at 501x695 with three tabs, every tab still scrolled (23/53/100 px), so tabbed
@@ -6340,15 +6295,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (tabbed && innerHeight < 500) { wave.classList.add("short"); mhead.hidden = true; }
     soundColumns(body, "soundscape", tabbed ? [
       { title: "Point", nodes: point, split: 0 },
-      { title: "Stretch", nodes: colStretch.concat(colExtras), split: colStretch.length },
-      { title: "Spectrum", nodes: colSpectrum, split: 3 },
-      { title: "Ratios", nodes: [colRatios[0]], split: 0 },
-      { title: "Output", nodes: colRatios.slice(1), split: 2 }
+      { title: "Time", nodes: colStretch, split: 0 },
+      { title: "Harmony", nodes: colHarmony, split: 0 },
+      { title: "Space", nodes: colSpace, split: 0 }
     ] : [
-      { title: "Point", nodes: point.concat(colExtras) },
-      { title: "Stretch", nodes: colStretch },
-      { title: "Spectrum", nodes: colSpectrum },
-      { title: "Ratios", nodes: colRatios }
+      { title: "Point", nodes: point },
+      { title: "Time", nodes: colStretch },
+      { title: "Harmony", nodes: colHarmony },
+      { title: "Space", nodes: colSpace }
     ]);
 
     /* Drawn last, once wave is already laid out inside the (already visible) #rp-body —
@@ -6388,7 +6342,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       ctx.fillRect(0, h / 2, w, 1);
     }
     /* Outside the play range is dimmed: what is not looped is still shown, but set back. */
-    var x0 = Math.min(q.px.start, q.px.end) * w, x1 = Math.max(q.px.start, q.px.end) * w;
+    var rg = q.shape || { start: 0, end: 1 };
+    var x0 = Math.min(rg.start, rg.end) * w, x1 = Math.max(rg.start, rg.end) * w;
     ctx.fillStyle = "rgba(10,14,12,0.62)";
     ctx.fillRect(0, 0, x0, h);
     ctx.fillRect(x1, 0, w - x1, h);

@@ -368,9 +368,9 @@ test("every grit-chain node is disposed, each in its own guarded segment", () =>
   assert.match(src, /v\.grit\.input,\s*v\.grit\.crush,\s*v\.grit\.shape,\s*v\.grit\.blend/);
 });
 
-test("renderSoundscapePanel exposes warp, morph, field and grit alongside stretch", () => {
+test("renderSoundscapePanel exposes stretch, grit and Fieldscape's own shaping", () => {
   const src = slice("function renderSoundscapePanel(f, q, commitQ, body)", "\n  }\n");
-  ["stretch", "warp", "morph", "field", "grit"].forEach((k) => {
+  ["stretch", "grit", "tune", "drift", "blur"].forEach((k) => {
     assert.match(src, new RegExp('k:\\s*"' + k + '"'));
   });
 });

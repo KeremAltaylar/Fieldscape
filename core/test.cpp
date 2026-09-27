@@ -518,6 +518,46 @@ int main() {
             fs_destroy(d);
         }
     }
+    {   /* the engine hands a point its shaping and the route's chord: tune puts pink noise on Dm9 */
+        auto walk_ratio = [&](float tune) {
+            fs_engine *e = fs_engine_create(SR, B);
+            fs_engine_upsert(e, "{\"type\":\"Feature\",\"geometry\":{\"type\":\"LineString\",\"coordinates\":[[29.0,41.0],[29.002,41.0]]},"
+                "\"properties\":{\"id\":\"r1\",\"kind\":\"route\",\"name\":\"R\",\"patch\":{\"version\":12,\"key\":50,\"prog\":[{\"r\":0,\"q\":\"m9\"}],"
+                "\"voice\":{\"on\":false},\"sect\":{\"on\":false},\"v3\":{\"on\":false},\"zones\":{\"on\":false},\"morph\":{\"on\":false,\"list\":[]}}}}");
+            char pt[512];
+            std::snprintf(pt, sizeof pt, "{\"type\":\"Feature\",\"geometry\":{\"type\":\"Point\",\"coordinates\":[29.001,41.0]},"
+                "\"properties\":{\"id\":\"s1\",\"kind\":\"point\",\"name\":\"S\",\"has_audio\":true,\"storage_path\":\"s1.webm\","
+                "\"sound\":{\"radius\":200,\"shape\":{\"tune\":%g,\"focus\":0.1,\"partials\":6}}}}", tune);
+            fs_engine_upsert(e, pt);
+            const int n = 48000 * 4;
+            short *pcm = fs_alloc_i16(n);
+            { unsigned s = 9; double b0 = 0, b1 = 0, b2 = 0;
+              for (int i = 0; i < n; i++) { s = s * 1664525u + 1013904223u; double w = ((int)(s >> 16) - 32768) / 32768.0;
+                b0 = 0.99765 * b0 + w * 0.0990460; b1 = 0.96300 * b1 + w * 0.2965164; b2 = 0.57000 * b2 + w * 1.0526913;
+                pcm[i] = (short)(3000 * (b0 + b1 + b2 + w * 0.1848)); } }
+            std::string need = fs_engine_step(e, 29.001, 41.0);
+            size_t at = need.find("S "); assert(at != std::string::npos);
+            fs_engine_source(e, 'S', need[at + 2] - '0', 0, "s1", 1, n, pcm);
+            std::vector<float> o;
+            for (int b = 0; b < (int)(10.0 * SR / B); b++) {
+                if (b % 40 == 0) fs_engine_step(e, 29.001, 41.0);
+                fs_engine_process(e, B);
+                if (b > (int)(7.0 * SR / B)) o.insert(o.end(), fs_engine_out(e, 0), fs_engine_out(e, 0) + B);
+            }
+            fs_engine_destroy(e);
+            const double TAU = 6.283185307179586;
+            auto power = [&](double f) { double w = TAU * f / SR, c = 2 * std::cos(w), s1 = 0, s2 = 0; for (float v : o) { double s0 = v + c * s1 - s2; s2 = s1; s1 = s0; } return (s1 * s1 + s2 * s2 - c * s1 * s2) / o.size(); };
+            double on = 0, off = 0;
+            for (int pc : { 2, 5, 9, 0, 4 }) for (int oct = 3; oct <= 6; oct++) {
+                double f = 440 * std::pow(2.0, (pc + 12 * (oct + 1) - 69) / 12.0);
+                on += power(f); off += power(f * std::pow(2.0, 0.5 / 12));
+            }
+            return on / (off + 1e-30);
+        };
+        double dry = walk_ratio(0), wet = walk_ratio(1);
+        std::printf("engine shaping: a walk past a pink-noise point, on/off Dm9 - tune 0: %.1f, tune 1: %.1f\n", dry, wet);
+        assert(dry < 3 && wet > 10);
+    }
     std::printf("core ok\n");
     return 0;
 }

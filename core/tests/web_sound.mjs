@@ -50,6 +50,12 @@ try {
       await ev(`fsListen.select(${JSON.stringify(id)}), 0`); await sleep(900);
       await tapAt(await box("#ls-card #f-rhythm")); await sleep(1200);
       check(p(kind + ": the card opens its sound panel"), await ev("!document.getElementById('rhythmpanel').hidden"), null);
+      if (kind === "stretch") {
+        const txt = await ev("document.getElementById('rp-body').textContent");
+        check(p("stretch: Fieldscape's own controls (tune, layers, drift, blur), none of Paul's modules"),
+              /tune/.test(txt) && /layers/.test(txt) && /drift/.test(txt) && /blur/.test(txt) && !/Binaural|Compressor|Harmonics/.test(txt), txt.slice(0, 200));
+        if (mobile) { check(p("stretch: the phone tabs are Point · Time · Harmony · Space"), (await ev("[].map.call(document.querySelectorAll('#rp-body .pptabs button'), function (b) { return b.textContent; }).join(' ')")) === "Point Time Harmony Space", await ev("(document.querySelector('#rp-body .pptabs')||{}).textContent")); }
+      }
       const c = JSON.parse(await ev("JSON.stringify({ ranges: document.querySelectorAll('#rp-body input[type=range]').length, knobs: document.querySelectorAll('#rp-body .knob').length, bare: [].filter.call(document.querySelectorAll('#rp-body input[type=range]'), function (r) { return r.offsetWidth > 2; }).length })"));
       check(p(kind + ": every slider is a knob, none shown beside it"), c.ranges > 0 && c.knobs === c.ranges && c.bare === 0, c);
       /* a real drag on the first knob on screen moves its slider */

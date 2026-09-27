@@ -13,22 +13,28 @@ function src(name) {
   return html.slice(from + 1, i);
 }
 
-test("the panel has its sections and every PaulXStretch control", () => {
+/* 2026-09-27: PaulXStretch's modules (none of which the core engine ever read) gave way to
+   Fieldscape's own shaping - Kerem: pitch & harmony, movement & space, a region. */
+test("the panel has Fieldscape's own sections and controls, and none of Paul's modules", () => {
   const p = src("renderSoundscapePanel");
-  ["Stretch", "Spectrum", "Extras"].forEach((h) => assert.match(p, new RegExp('heading\\("' + h + '"[,)]')));
-  ["Harmonics", "Tonal vs noise", "Frequency shift", "Pitch shift", "Ratios", "Spread", "Filter",
-   "Compressor", "Binaural beats"].forEach((m) => assert.match(p, new RegExp('buildPxModule\\("' + m + '"'), m));
-  ["stretch", "fft", "onset", "start", "end", "xfade", "warp", "morph", "field", "grit"]
-    .forEach((k) => assert.match(p, new RegExp('k: "' + k + '"'), k));
+  ["Time", "Pitch & harmony", "Movement & space"].forEach((h) => assert.match(p, new RegExp('heading\\("' + h + '"[,)]'), h));
+  ["stretch", "fft", "onset", "start", "end", "transpose", "tune", "focus", "partials", "layers", "harmony", "glide",
+   "drift", "blur", "width", "grit"].forEach((k) => assert.match(p, new RegExp('k: "' + k + '"'), k));
   assert.match(p, /buildPxToggle\("freeze"/);
-  assert.match(p, /buildPxToggle\("gaussian"/);
-  assert.match(p, /buildPxToggle\("stop band"/);
-  assert.match(p, /buildPxSelect\("mode"/);
+  assert.doesNotMatch(p, /buildPxModule\(/, "no PaulXStretch module is left in the panel");
+  ["warp", "morph", "field", "xfade"].forEach((k) => assert.doesNotMatch(p, new RegExp('k: "' + k + '"'), k));
+});
+
+test("the shaping is stored in properties.sound.shape, dry by default (A-8)", () => {
+  const p = src("renderSoundscapePanel");
+  assert.match(p, /if \(!q\.shape\) \{ q\.shape = \{\}; \}/);
+  assert.match(p, /transpose: 0, tune: 0, focus: 0\.5, partials: 8, layers: 0, harmony: 0\.5, glide: 2,/);
+  assert.match(p, /drift: 0, blur: 0, width: 1, start: 0, end: 1/);
 });
 
 test("readouts are in real units", () => {
   const p = src("renderSoundscapePanel");
-  [/Hz"/, /" st"/, /" ¢"/, /"×"/, /" %"/, /" s"/].forEach((re) => assert.match(p, re));
+  [/" st"/, /fx\.x\(/, /fx\.pct/, /fx\.sec/].forEach((re) => assert.match(p, re));
 });
 
 test("a module heading is a real toggle bound to .on, and an off module dims", () => {
@@ -60,7 +66,7 @@ test("narrow or short screens get tabs, not a scrolling panel", () => {
   assert.match(cols, /twoUp = tabbed && innerWidth >= 700/);
   assert.match(p, /var tabbed = soundTabbed\(\);/);
   assert.match(p, /soundColumns\(body, "soundscape", tabbed \?/);
-  ["Point", "Stretch", "Spectrum", "Ratios", "Output"].forEach((t) => assert.match(p, new RegExp('title: "' + t + '"')));
+  ["Point", "Time", "Harmony", "Space"].forEach((t) => assert.match(p, new RegExp('title: "' + t + '"')));
   assert.match(p, /innerHeight < 500\) \{ wave\.classList\.add\("short"\); mhead\.hidden = true; \}/);
   for (const panel of ["renderRhythmPanel", "renderGrainPanel"]) {
     assert.match(src(panel), /soundColumns\(body,/, panel + " uses the same frame");
@@ -75,10 +81,11 @@ test("every drag updates the caption first, whether or not a voice is playing, t
   assert.match(live, /pxParams\(q, v\)/);
 });
 
-test("the copy names the engine it is", () => {
-  assert.match(src("renderSoundscapePanel"), /PaulXStretch engine/);
+test("the copy names the engine it is: Fieldscape's own, not PaulXStretch", () => {
+  assert.match(src("renderSoundscapePanel"), /Fieldscape's stretch engine/);
+  assert.doesNotMatch(src("renderSoundscapePanel"), /PaulXStretch engine/);
 });
 
 test("the waveform dims what lies outside the play range", () => {
-  assert.match(src("soundscapeWaveDraw"), /q\.px\.start/);
+  assert.match(src("soundscapeWaveDraw"), /var rg = q\.shape \|\| \{ start: 0, end: 1 \};/);
 });
