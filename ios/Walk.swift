@@ -52,6 +52,8 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
        route and step that is - the map lights that chord's stretch of the route */
     @Published var chord: String? = nil
     @Published var playingRoute = -1
+    /* the morph cells shown (the Cells button); each route opens them as its patch says (morph.cells), as the web does */
+    @Published var cells = false
     @Published var chordStep = -1
     /* the routes a setter published (the Routes sheet and the route cards), every point's card, and
        everything, framed */
@@ -245,7 +247,12 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
         let c = (i >= 0 && route != nil) ? "chord \(i + 1) of \(count), " + String(cString: buf) : nil
         if c != chord { chord = c }
         let r = route != nil ? Int(fs_piece_route(core.piece)) : -1, k = r >= 0 ? Int(i) : -1
-        if r != playingRoute { playingRoute = r }
+        if r != playingRoute {
+            playingRoute = r
+            var clock = 0.0, root: Int32 = 0, shown: Int32 = 0
+            if r >= 0 { _ = fs_piece_morphs(core.piece, nil, 0, &clock, &root, &shown) }
+            cells = shown != 0
+        }
         if k != chordStep { chordStep = k }
     }
 

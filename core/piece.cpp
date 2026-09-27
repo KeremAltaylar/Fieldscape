@@ -161,7 +161,7 @@ struct Patch {
     Chord prog[64]; int nprog = 0;
     bool bed_on = true; int bed_voices = 4;
     VoiceCfg voice; FxCfg fx, fx2, fx3; V3Cfg v3; RfxCfg rfx; SectCfg sect;
-    bool zones_on = true, morph_on = true;
+    bool zones_on = true, morph_on = true, morph_cells = true;   /* morph.cells: the cells shown when it loads */
     Morph morph[24]; int nmorph = 0;
     Sector sectors[32]; int nsectors = 0;
 };
@@ -230,7 +230,7 @@ static void patch_of(const Json *p, Patch &P) {
     const Json *m = p ? p->get("morph") : nullptr;
     P.nmorph = 0;
     if (m) {
-        P.morph_on = m->flag("on", true);
+        P.morph_on = m->flag("on", true); P.morph_cells = m->flag("cells", false);
         const Json *list = m->get("list");
         for (size_t i = 0; list && i < list->size() && P.nmorph < 24; i++) {
             const Json *e = list->at(i);
@@ -241,7 +241,7 @@ static void patch_of(const Json *p, Patch &P) {
         }
     }
     if (!m || (version < 11 && P.nmorph == 0)) {
-        P.morph_on = true; P.nmorph = 0;
+        P.morph_on = true; P.morph_cells = true; P.nmorph = 0;
         for (auto &d : MORPHS) P.morph[P.nmorph++] = Morph{ true, shape_of(d.shape), dest_of(d.dest), seed_of(d.id), d.period, d.depth, d.bias, d.phase };
     }
     const Json *sec = p ? p->get("sectors") : nullptr;
@@ -520,6 +520,7 @@ struct Inbox {
     /* written back by the audio thread: pacer.routeId, its patch's sect.n and bed voices, sect.idx */
     int taken = -1, sect_n = 7, bed_voices = 4, sector_back = -1;
     int chord = -1, nprog = 0; char chord_label[24] = "";   /* the chord playing, for the screen */
+    double clock = 0; int root = 0;   /* the piece's seconds and the chord root's pc, for the cells */
 };
 
 /* chordRoot / chordQuality of a patch's step */
@@ -1208,6 +1209,7 @@ struct Piece : Device {
         my_trash.resize(kept);
         in.taken = route; in.sect_n = patch.sect.n; in.bed_voices = patch.bed_on ? patch.bed_voices : 0;
         in.chord = H.chord; in.nprog = patch.nprog;
+        in.clock = now; in.root = pc12(H.chord >= 0 ? chord_root(H.chord) : patch.key);
         if (H.chord >= 0) {                /* chordLabel: root name + quality, as the web writes it */
             int q = chord_quality(H.chord);
             std::snprintf(in.chord_label, sizeof in.chord_label, "%s%s", NOTE[pc(chord_root(H.chord))], q >= 0 ? CHORDS[q].name : "m7");
@@ -1490,6 +1492,36 @@ void fs_piece_rhythm_source(fs_device *d, int h, int slot, int channels, long lo
     if (op.src_set[slot] && op.src[slot].data) std::free(op.src[slot].data);
     op.src[slot] = Src{ interleaved, channels < 1 ? 1 : channels, frames };
     op.src_set[slot] = true;
+}
+/* The morph cells (the web's cellsDraw): the playing route's morphs that are on, at the piece's clock -
+   the same numbers the voices take. 7 doubles a cell: shape (0 drift 1 breath 2 pulse 3 ramp 4 tide), voice
+   (0 voice, 1 sect, 2 v3: the hue offset), dest (cells aimed at one gather), seed, value 0-1, its rate of
+   change per second (breath's lean), phase unwrapped (pulse/ramp events, tide's beat). */
+int fs_piece_morphs(fs_device *d, double *out, int max, double *clock, int *root, int *shown) {
+    Piece *p = P(d); if (!p) return -1;
+    std::lock_guard<std::mutex> g(p->mu);
+    if (clock) *clock = p->in.clock;
+    if (root) *root = p->in.root;
+    if (p->in.taken < 0 || p->in.taken >= (int)p->in.routes.size()) { if (shown) *shown = 0; return -1; }
+    const Patch &pt = p->in.routes[p->in.taken];
+    if (shown) *shown = pt.morph_cells;
+    if (!pt.morph_on) return 0;
+    double t = p->in.clock;
+    auto value = [](const Morph &m, double at) {
+        double v = m.bias + m.depth * Piece::morph_shape(m.shape, at / std::max(4.0, m.period ? m.period : 60) + m.phase, m.seed);
+        return v < 0 ? 0 : v > 1 ? 1 : v;
+    };
+    int n = 0;
+    for (int i = 0; i < pt.nmorph && n < max; i++) {
+        const Morph &m = pt.morph[i];
+        if (!m.on) continue;
+        const char *k = m.dest >= 0 ? DEST_KEYS[m.dest] : "";
+        double *o = out + 7 * n++;
+        o[0] = m.shape; o[1] = !std::strncmp(k, "sect.", 5) ? 1 : !std::strncmp(k, "v3.", 3) ? 2 : 0; o[2] = m.dest; o[3] = m.seed;
+        o[4] = value(m, t); o[5] = (o[4] - value(m, t - 0.6)) / 0.6;
+        o[6] = t / std::max(4.0, m.period ? m.period : 60) + m.phase;
+    }
+    return n;
 }
 void fs_piece_solo(fs_device *d, int h) {
     Piece *p = P(d); if (!p) return;

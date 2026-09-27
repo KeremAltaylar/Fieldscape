@@ -233,6 +233,31 @@ int main() {
         assert(open > 1e-7 && soloed < open * 1e-6 && back > open * 0.05);
         fs_destroy(pc);
     }
+    {   /* the morph cells: the playing route's morphs at the piece's clock, by the web's morphValue */
+        fs_device *pc = fs_create("piece");
+        fs_prepare(pc, SR, B);
+        fs_piece_add_route(pc, "{}");
+        fs_piece_add_route(pc, "{\"version\":12,\"prog\":[{\"r\":0,\"q\":\"m7\"}],\"morph\":{\"on\":true,\"cells\":false,\"list\":["
+            "{\"id\":\"a\",\"on\":true,\"shape\":\"ramp\",\"period\":10,\"depth\":1,\"bias\":0,\"phase\":0.25,\"dest\":\"v3.cutoff\"},"
+            "{\"id\":\"b\",\"on\":false,\"shape\":\"drift\",\"dest\":\"voice.cutoff\"}]}}");
+        const double TAU = 6.283185307179586;
+        double o[7 * 24], clock = 0; int root = -1, shown = -1;
+        assert(fs_piece_morphs(pc, o, 24, &clock, &root, &shown) == -1);        /* nothing playing yet */
+        for (int b = 0; b < (int)(3.0 * SR / B); b++) { fs_piece_walk(pc, 0, 0.3, 0); fs_process(pc, B); }
+        int n = fs_piece_morphs(pc, o, 24, &clock, &root, &shown);
+        double u = clock / 660, tide = 0.08 + 0.85 * (0.5 + (std::sin(TAU * u) + std::sin(TAU * u * 1.6180339887)) / 4);
+        std::printf("morph cells: %d, clock %.2f s, root %d, m1 %.4f (web %.4f)\n", n, clock, root, o[4], tide);
+        assert(n == 6 && shown == 1 && clock > 2.5 && root >= 0 && root < 12);
+        assert(o[0] == 4 && o[1] == 0 && std::fabs(o[4] - tide) < 1e-9);       /* m1: tide on voice.cutoff */
+        assert(o[7 * 3 + 1] == 1 && o[7 * 4 + 1] == 1);                        /* m4, m5 drive the second voice */
+        for (int i = 0; i < n; i++) assert(o[7 * i + 4] >= 0 && o[7 * i + 4] <= 1);
+        for (int b = 0; b < (int)(3.0 * SR / B); b++) { fs_piece_walk(pc, 1, 0.3, 0); fs_process(pc, B); }
+        n = fs_piece_morphs(pc, o, 24, &clock, &root, &shown);
+        double ramp = clock / 10 + 0.25; ramp -= std::floor(ramp);
+        std::printf("morph cells, own patch: %d, shown %d, ramp %.4f (web %.4f)\n", n, shown, o[4], ramp);
+        assert(n == 1 && shown == 0 && o[0] == 3 && o[1] == 2 && std::fabs(o[4] - ramp) < 1e-9);
+        fs_destroy(pc);
+    }
     std::printf("core ok\n");
     return 0;
 }

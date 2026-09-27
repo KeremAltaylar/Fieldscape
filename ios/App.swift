@@ -9,7 +9,7 @@ import os
 
 /* The test number of this build (docs/TESTS.md): shown first in the developer line, so Kerem can
    see which build he is testing. Bump it with every build handed over. */
-let TEST_BUILD = 8
+let TEST_BUILD = 9
 
 final class Core: ObservableObject {
     struct Param: Identifiable { let id: Int; let key, name, unit: String; let min, max: Float }
@@ -320,6 +320,11 @@ struct ContentView: View {
             T.ground.ignoresSafeArea()
             if let f = features { MapView(features: f, walk: walk, map: map, sheet: $sheet, collapsed: $collapsed).ignoresSafeArea() }
             else { Text(failed ?? "Loading the map…").font(T.body(T.sm)).foregroundStyle(T.dim).frame(maxHeight: .infinity) }
+            VStack(alignment: .leading, spacing: T.s3) {
+            /* the morph cells sit on the map just above the panel, and ride up and down with it */
+            if walk.cells && walk.playingRoute >= 0 && sheet == .walk {
+                CellsView(core: core, route: walk.playingRoute).padding(.leading, T.s4).transition(.opacity)
+            }
             VStack(alignment: .leading, spacing: collapsed ? T.s2 : T.s5) {
                 /* the grip folds the panel away and brings it back */
                 Button { withAnimation(.easeOut(duration: 0.2)) { collapsed.toggle() } } label: {
@@ -353,6 +358,8 @@ struct ContentView: View {
             .animation(.easeOut(duration: 0.2), value: sheet)
             /* leaving a point's card stops its player (Listen stays until let go: it is the walk's state) */
             .onChange(of: sheet) { s in if case .point(let id) = s, walk.rawId?.hasPrefix(id) == true { return }; if walk.rawId != nil { walk.stopRaw() } }
+            }
+            .animation(.easeOut(duration: 0.18), value: walk.cells)
         }
         .overlay(alignment: .top) { if features != nil { TopBar(walk: walk, sheet: $sheet).padding(.top, T.s2) } }
         .overlay { if let id = photos { PhotoViewer(walk: walk, id: id) { photos = nil }.transition(.opacity) } }

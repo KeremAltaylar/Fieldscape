@@ -43,6 +43,16 @@ final class WalkByHandTests: XCTestCase {
         sleep(4)                                    /* the first chord lights its segment */
         shot(app, "walk")
 
+        /* Cells (Test 9): the morph cells over the map, on and off; the route opens them as its patch says */
+        let cells = app.buttons["Morph cells"]
+        XCTAssertTrue(cells.waitForExistence(timeout: 3), "a playing route offers Cells")
+        let was = cells.isSelected
+        cells.tap(); sleep(3)
+        XCTAssertNotEqual(cells.isSelected, was, "Cells toggles")
+        shot(app, was ? "cells off" : "cells on")
+        cells.tap(); sleep(3)
+        shot(app, was ? "cells on" : "cells off")
+
         /* the nearest point in the panel opens its card; Listen solos it; the recording plays */
         let point = app.buttons.containing(NSPredicate(format: "label BEGINSWITH 'Stretch'")).firstMatch
         XCTAssertTrue(point.waitForExistence(timeout: 5), "the panel lists the nearest points")

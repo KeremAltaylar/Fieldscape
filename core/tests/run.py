@@ -39,7 +39,7 @@ def build():
     devices = [os.path.join("core", "devices", f) for f in os.listdir(os.path.join(ROOT, "core", "devices")) if f.endswith(".cpp")]
     targets = {
         "core_test": ["core/core.cpp", "core/mix.cpp", "core/place.cpp", "core/webm.cpp", "core/sections.cpp", "core/resample.cpp", "core/piece.cpp", *devices, "core/test.cpp"],
-        "stretch_test": ["core/core.cpp", "core/mix.cpp", "core/place.cpp", "core/webm.cpp", "core/sections.cpp", "core/resample.cpp", "core/piece.cpp", "core/devices/test_devices.cpp", "core/tests/stretch_test.cpp"],
+        "stretch_test": ["core/core.cpp", "core/mix.cpp", "core/place.cpp", "core/webm.cpp", "core/sections.cpp", "core/resample.cpp", "core/piece.cpp", "core/devices/test_devices.cpp", "core/devices/play.cpp", "core/tests/stretch_test.cpp"],
     }
     exe = {}
     for name, srcs in targets.items():

@@ -58,8 +58,22 @@ struct WalkPanel: View {
     @ViewBuilder private var hearing: some View {
         /* the route's own sound and the rhythm points in reach (the piece) */
         if walk.route != nil || !walk.rhythms.isEmpty {
-            note((walk.route.map { Text("Route ") + Text($0).foregroundColor(T.ink) + Text(walk.chord.map { " · " + $0 } ?? "") } ?? Text(""))
-                 + (walk.rhythms.isEmpty ? Text("") : Text(walk.route == nil ? "Rhythm " : " · rhythm ") + Text(walk.rhythms.joined(separator: ", ")).foregroundColor(T.ink)))
+            HStack(spacing: T.s2) {
+                note((walk.route.map { Text("Route ") + Text($0).foregroundColor(T.ink) + Text(walk.chord.map { " · " + $0 } ?? "") } ?? Text(""))
+                     + (walk.rhythms.isEmpty ? Text("") : Text(walk.route == nil ? "Rhythm " : " · rhythm ") + Text(walk.rhythms.joined(separator: ", ")).foregroundColor(T.ink)))
+                if walk.route != nil {
+                    Spacer(minLength: T.s2)
+                    /* the morph cells over the map: one cell per morph, breathing on its own clock */
+                    Button { withAnimation(.easeOut(duration: 0.18)) { walk.cells.toggle() } } label: {
+                        Text("Cells").font(T.body(T.sm, .medium)).foregroundStyle(walk.cells ? T.ink : T.dim)
+                            .padding(.horizontal, T.s3).frame(minHeight: T.target)
+                            .background(walk.cells ? T.raised : .clear, in: RoundedRectangle(cornerRadius: 10))
+                            .overlay(RoundedRectangle(cornerRadius: 10).stroke(T.hairline))
+                    }
+                    .accessibilityLabel("Morph cells")
+                    .accessibilityAddTraits(walk.cells ? .isSelected : [])
+                }
+            }
         }
         if let s = walk.solo, let q = walk.pointInfo[s] {
             HStack(spacing: T.s2) {

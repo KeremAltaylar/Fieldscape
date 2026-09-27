@@ -182,7 +182,7 @@ struct AccountSheet: View {
         VStack(alignment: .leading, spacing: T.s3) {
             SheetTitle(title: "Account") { sheet = .walk }
             eyebrow("Setter")
-            Text("Signing in as a setter comes in a coming test: placing points, recording and shaping the sound.")
+            Text("The app is for listening. Setters place points, record and shape the sound on the Fieldscape website.")
                 .font(T.body(T.sm)).foregroundStyle(T.dim).fixedSize(horizontal: false, vertical: true)
             eyebrow("About")
             Text("Fieldscape · Test \(TEST_BUILD) · recordings © their authors · map imagery © Esri, © OpenStreetMap contributors, © OpenTopoMap")

@@ -49,6 +49,8 @@ object Core {
     @JvmStatic external fun pieceRouteInfo(i: Int): String
     @JvmStatic external fun piecePlayingRoute(): Int
     @JvmStatic external fun pieceChordStep(): Int
+    /** the morph cells: [clock, root pc, shown on load, count (-1 no route), then 7 a cell] (fs_piece_morphs) */
+    @JvmStatic external fun pieceMorphs(): DoubleArray
     /** Listen on a rhythm or grains point (its id; "" lets go); applied at the next pieceStep. */
     @JvmStatic external fun pieceSolo(id: String)
     /** The point card's player (core/devices/play.cpp): load with loadInterleaved(SLOTS, ...). */

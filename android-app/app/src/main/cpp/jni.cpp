@@ -535,6 +535,16 @@ JNIEXPORT jstring JNICALL FN(pieceRouteInfo)(JNIEnv *env, jclass, jint i) {
 /* The route playing (-1 none, or off every route) and the chord step it is on (-1 before the first bar). */
 JNIEXPORT jint JNICALL FN(piecePlayingRoute)(JNIEnv *, jclass) { return W && !W->route_name.empty() ? fs_piece_route(E->piece) : -1; }
 JNIEXPORT jint JNICALL FN(pieceChordStep)(JNIEnv *, jclass) { return W && !W->route_name.empty() ? fs_piece_chord(E->piece, nullptr, nullptr, 0) : -1; }
+/* The morph cells (fs_piece_morphs): [clock, chord root pc, shown on load, count, then 7 a cell]; count -1: no route. */
+JNIEXPORT jdoubleArray JNICALL FN(pieceMorphs)(JNIEnv *env, jclass) {
+    double o[4 + 7 * 24] = { 0, 0, 0, -1 }; int root = 0, shown = 0, n = -1;
+    if (E && W && !W->route_name.empty()) n = fs_piece_morphs(E->piece, o + 4, 24, &o[0], &root, &shown);
+    o[1] = root; o[2] = shown; o[3] = n;
+    int len = 4 + 7 * (n > 0 ? n : 0);
+    jdoubleArray a = env->NewDoubleArray(len);
+    env->SetDoubleArrayRegion(a, 0, len, o);
+    return a;
+}
 /* Listen on a rhythm or grains point: its id, or "" to let go; the next pieceStep applies it. */
 JNIEXPORT void JNICALL FN(pieceSolo)(JNIEnv *env, jclass, jstring id) { if (W) W->solo = jstr(env, id); }
 JNIEXPORT jstring JNICALL FN(pieceRoute)(JNIEnv *env, jclass) { return env->NewStringUTF(W ? W->route_name.c_str() : ""); }

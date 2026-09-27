@@ -18,6 +18,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -28,6 +29,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.SpanStyle
@@ -126,7 +128,10 @@ class MainActivity : ComponentActivity() {
         Box(Modifier.fillMaxSize().background(T.ground)) {
             features?.let { Map(it) } ?: Text(failed ?: "Loading the map…", Modifier.align(Alignment.Center), color = T.dim,
                                               style = TextStyle(fontFamily = T.body, fontSize = T.sm))
-            Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+            Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(T.s3)) {
+            /* the morph cells sit on the map just above the panel, and ride up and down with it */
+            if (walk.cells && walk.playingRoute >= 0 && sheet == Sheet.Walk) Box(Modifier.padding(start = T.s4)) { CellsView(walk.playingRoute) }
+            Column(Modifier.fillMaxWidth()
                 .clip(RoundedCornerShape(topStart = 20.dp_, topEnd = 20.dp_)).background(T.panel)
                 .navigationBarsPadding().padding(start = T.s4, end = T.s4, bottom = T.s5),
                 verticalArrangement = Arrangement.spacedBy(T.s3)) {
@@ -157,6 +162,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 }
+            }
             }
             if (features != null) TopBar(walk) { open(it) }
             photos?.let { PhotoViewer(walk, it) { photos = null } }
@@ -227,14 +233,23 @@ class MainActivity : ComponentActivity() {
     private fun Hearing() {
         val rows = walk.rows
         /* the route's own sound and the rhythm points in reach (the piece) */
-        if (walk.route != null || walk.rhythms.isNotEmpty()) Text(buildAnnotatedString {
-            walk.route?.let { append("Route "); withStyle(SpanStyle(color = T.ink)) { append(it) } }
-            walk.chord?.let { append(" · $it") }
-            if (walk.rhythms.isNotEmpty()) {
-                append(if (walk.route == null) "Rhythm " else " · rhythm ")
-                withStyle(SpanStyle(color = T.ink)) { append(walk.rhythms) }
+        if (walk.route != null || walk.rhythms.isNotEmpty()) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(T.s2)) {
+            Text(buildAnnotatedString {
+                walk.route?.let { append("Route "); withStyle(SpanStyle(color = T.ink)) { append(it) } }
+                walk.chord?.let { append(" · $it") }
+                if (walk.rhythms.isNotEmpty()) {
+                    append(if (walk.route == null) "Rhythm " else " · rhythm ")
+                    withStyle(SpanStyle(color = T.ink)) { append(walk.rhythms) }
+                }
+            }, Modifier.weight(1f), color = T.dim, style = TextStyle(fontFamily = T.body, fontSize = T.sm))
+            /* the morph cells over the map: one cell per morph, breathing on its own clock */
+            if (walk.route != null) Box(Modifier.heightIn(min = T.target).clip(RoundedCornerShape(10.dp_))
+                .background(if (walk.cells) T.raised else Color.Transparent).border(1.dp_, T.hairline, RoundedCornerShape(10.dp_))
+                .semantics { contentDescription = "Morph cells" }.toggleable(walk.cells) { walk.cells = it }
+                .padding(horizontal = T.s3), contentAlignment = Alignment.Center) {
+                Text("Cells", color = if (walk.cells) T.ink else T.dim, style = TextStyle(fontFamily = T.body, fontSize = T.sm))
             }
-        }, color = T.dim, style = TextStyle(fontFamily = T.body, fontSize = T.sm))
+        }
         walk.solo?.let { walk.pointInfo[it] }?.let { q ->
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(T.s2)) {
                 Text(buildAnnotatedString { append("Listening to "); withStyle(SpanStyle(color = T.ink)) { append(q.name) }; append(" alone.") },

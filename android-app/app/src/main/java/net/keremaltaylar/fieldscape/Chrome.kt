@@ -179,7 +179,7 @@ fun AccountSheet(onSheet: (Sheet) -> Unit, engineLine: String) {
     Column(verticalArrangement = Arrangement.spacedBy(T.s3)) {
         SheetTitle("Account") { onSheet(Sheet.Walk) }
         Eyebrow("Setter")
-        Text("Signing in as a setter comes in a coming test: placing points, recording and shaping the sound.",
+        Text("The app is for listening. Setters place points, record and shape the sound on the Fieldscape website.",
             color = T.dim, style = TextStyle(fontFamily = T.body, fontSize = T.sm))
         Eyebrow("About")
         Text("Fieldscape · Test $TEST_BUILD · recordings © their authors · map imagery © Esri, © OpenStreetMap contributors, © OpenTopoMap",
@@ -190,5 +190,5 @@ fun AccountSheet(onSheet: (Sheet) -> Unit, engineLine: String) {
 }
 
 /** The test number of this build (docs/TESTS.md), shown in Account. */
-const val TEST_BUILD = 8
+const val TEST_BUILD = 9
 

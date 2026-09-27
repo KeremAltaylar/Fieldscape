@@ -22,6 +22,7 @@ targets:
       - RouteSound.swift
       - Chrome.swift
       - Cards.swift
+      - Cells.swift
       - path: ../places.geojson
         buildPhase: resources
       - path: Fonts

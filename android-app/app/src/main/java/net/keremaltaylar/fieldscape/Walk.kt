@@ -52,6 +52,8 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
     var chord by mutableStateOf<String?>(null)
     var playingRoute by mutableStateOf(-1)
     var chordStep by mutableStateOf(-1)
+    /** the morph cells shown (the Cells button); each route opens them as its patch says (morph.cells), as the web does */
+    var cells by mutableStateOf(false)
     /** What a point's card shows (its feature's properties). mode: stretch, rhythm, grains or silent. */
     data class PointInfo(val id: String, val name: String, val note: String, val mode: String, val lon: Double, val lat: Double,
                          val peaks: DoubleArray, val duration: Double, val recorded: String?, val path: String?, val sounds: Boolean,
@@ -201,7 +203,8 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
         if (all.isNotEmpty()) allBounds = doubleArrayOf(all.minOf { it[0] }, all.minOf { it[1] }, all.maxOf { it[0] }, all.maxOf { it[1] })
         main.post(object : Runnable { override fun run() {
             val c = Core.pieceChord().ifEmpty { null }; if (c != chord) chord = c
-            val r = Core.piecePlayingRoute(); if (r != playingRoute) playingRoute = r
+            val r = Core.piecePlayingRoute()
+            if (r != playingRoute) { playingRoute = r; cells = r >= 0 && Core.pieceMorphs()[2] != 0.0 }
             val k = if (r >= 0) Core.pieceChordStep() else -1; if (k != chordStep) chordStep = k
             main.postDelayed(this, 500)
         } })
