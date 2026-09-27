@@ -16,7 +16,8 @@
    plays offline like the Tone one; the bump replaces installed shells that lack them. */
 /* v5: the listener shell (web/listener.js, web/listener.css) joins it. */
 /* v6: knobs and the patch tabs (web/knobs.js, web/patch.js). */
-var SHELL = "fieldarc-shell-v6";
+/* v7: the GPL PaulXStretch port leaves the shell. */
+var SHELL = "fieldarc-shell-v7";
 var TILES = "fieldarc-tiles-v1";
 
 var SHELL_FILES = [
@@ -28,7 +29,6 @@ var SHELL_FILES = [
   "./places.geojson",
   "./src/pending.mjs",
   "./src/shrink.mjs",
-  "./src/paulx-worklet.js",
   "./web/core.wasm",
   "./web/core-worklet.js",
   "./web/listener.js",

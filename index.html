@@ -8254,13 +8254,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      choice is made inside it. Open world only for now; place-mode walks and the setter panels
      still run on Tone. The default since 2026-09-26 (Kerem: "lets go"); ?core=0 falls back to
      the Tone engine (remembered), ?core brings the core back. */
-  var CORE = (function () {
-    var m = /[?&]core(=([^&]*))?/.exec(location.search);
-    try {
-      if (m) { localStorage.setItem("fs.core", m[2] === "0" ? "0" : "1"); }
-      return localStorage.getItem("fs.core") !== "0";
-    } catch (e) { return !(m && m[2] === "0"); }
-  })();
+  /* The core is the only engine now. The Tone fallback (?core=0) ran its stretch voices on a port of
+     PaulXStretch, which is GPL; Fieldscape is all rights reserved (Kerem, 2026-09-27), so the port is
+     gone and so is the switch that reached it. */
+  var CORE = true;
   var core = null;
   function coreStart() {
     if (core && core.node) {
@@ -10282,16 +10279,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     g.blend.fade.rampTo(amt, 0.2);
   }
 
-  /* The PaulXStretch port lives in its own module (src/paulx-worklet.js), registered through
-     Tone's context — the graph the node joins. Cached because registerProcessor throws on a
-     second registration of the same name. */
-  var paulstretchModulePromise = null;
-  function loadPaulstretchModule(ctx) {
-    if (!paulstretchModulePromise) {
-      paulstretchModulePromise = ctx.addAudioWorkletModule("src/paulx-worklet.js");
-    }
-    return paulstretchModulePromise;
-  }
+  /* The PaulXStretch port (GPL) is gone with the Tone engine it served: every walk runs on the core. */
+  function loadPaulstretchModule() { return Promise.reject(new Error("the Tone stretch engine was removed")); }
 
   /* A slow, musical tick (A-1: the Transport, never a UI callback) that keeps each soundscape
      voice's worklet parameters current. Warp's slow wobble is a random walk kept here, in Hz,

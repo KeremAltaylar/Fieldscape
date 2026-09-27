@@ -82,13 +82,6 @@ test("fft is linear: scaling the input scales the transform by the same factor",
   }
 });
 
-test("loadPaulstretchModule registers the module only once", () => {
-  const src = slice("function loadPaulstretchModule(ctx)", "\n  }\n");
-  assert.match(src, /if\s*\(!paulstretchModulePromise\)/,
-    "must cache the promise — addModule/registerProcessor for the same name a second " +
-    "time throws on some browsers, and every voice's ensureVoice call reaches this");
-});
-
 test("ensureVoice builds the worklet through Tone's own context, never by splicing a native node behind it", () => {
   /* Measured 2026-09-18 in Chrome with Tone 15.5.42: a native AudioWorkletNode connected into
      a Tone.Gain's private _nativeAudioNode reached that gain (-20 dBFS) and went no further —

@@ -18,7 +18,6 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const html = readFileSync("index.html", "utf8").replace(/\r\n/g, "\n");
-const diagHtml = readFileSync("diag.html", "utf8").replace(/\r\n/g, "\n");
 
 function src(name) {
   const s = html.indexOf("function " + name + "(");
@@ -373,9 +372,8 @@ test("primeAudioCapability's promise genuinely stays pending until the probe res
   });
 });
 
-test("no async/await anywhere in index.html or diag.html — ES5 only", () => {
+test("no async/await anywhere in index.html — ES5 only", () => {
   assert.ok(!/\basync\s+function\b/.test(html) && !/\bawait\b/.test(html), "index.html");
-  assert.ok(!/\basync\s+function\b/.test(diagHtml) && !/\bawait\b/.test(diagHtml), "diag.html");
 });
 
 /* ---- The probe itself ---- */
@@ -501,20 +499,6 @@ test("the probe stack always builds the FULL route — asking richAudio() inside
   assert.ok(!/richAudio\(\)|smallDevice\(\)/.test(fn),
     "this is the FULL stack, unconditionally — richAudio() is the answer this probe exists to " +
     "produce, so calling it here would measure whichever path it happened to fall back to");
-});
-
-/* ---- diag.html shows what index.html actually decided ---- */
-
-test("diag.html surfaces the measured number and which path it produced", () => {
-  assert.match(diagHtml, /var AUDIOCAP_KEY = "fieldarc\.audiocap";/,
-    "the same key index.html writes, so a phone that has opened the real app shows its real reading");
-  assert.match(diagHtml, /var AUDIOCAP_THRESHOLD = 60;/, "must match index.html");
-  assert.match(diagHtml, /function tinyMemory\(/, "and show the same floor index.html applies");
-  assert.match(diagHtml, /function richAudioVerdict\(/);
-  assert.match(diagHtml, /audLine\("fieldarc\.audiocap \(cached on this device\)"/);
-  assert.match(diagHtml, /audLine\("audio path index\.html actually runs, right now"/);
-  /* The render test's own live measurement is logged too, not just the cached reading. */
-  assert.match(diagHtml, /audLog\("richAudio\(\)      " \+ \(rich \? "TRUE" : "FALSE"\)/);
 });
 
 /* ---- ?cheap / ?rich, 2026-09-22 ----

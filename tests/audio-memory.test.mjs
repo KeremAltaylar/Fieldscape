@@ -62,19 +62,6 @@ test("the worklet is handed an Int16 source, and no second float copy is made", 
     "and the buffers are transferred, not structured-cloned");
 });
 
-test("the engine scales an Int16 source back to ±1 and leaves a float source alone", () => {
-  const worklet = readFileSync("src/paulx-worklet.js", "utf8").replace(/\r\n/g, "\n");
-  const ctor = worklet.slice(worklet.indexOf("function PxReader(data, sr)"),
-                             worklet.indexOf("PxReader.prototype.setRange"));
-  assert.match(ctor, /data instanceof Int16Array\) \? 1 \/ 32768 : 1/,
-    "the scale comes from the array type, so a caller cannot get it wrong");
-  const next = worklet.slice(worklet.indexOf("PxReader.prototype.next"),
-                             worklet.indexOf("PxReader.prototype.read"));
-  assert.match(next, /d\[p\] \* this\.scale/);
-  assert.match(next, /d\[this\.s0 \+ \(p - z\)\] \* this\.scale \* t/,
-    "the loop crossfade reads through the same scale, or its tail would be 32768x too loud");
-});
-
 /* A phone cannot hold four of these at once; the tab is killed and the archive looks emptied. */
 test("the voice budget lowers the patch's number on an unmeasured small device, never raises it", () => {
   /* The "can this device pay?" question moved into richAudio() on 2026-09-22 (task 8) — it
