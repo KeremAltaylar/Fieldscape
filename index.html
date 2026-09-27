@@ -4092,7 +4092,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        those id changes produce the exact same URL. Pushing on every id change turned a
        30-point walk into 30 near-identical history entries; pushing only when the URL
        actually differs fixes that without touching tourStep itself. */
-    var newUrl = place ? urlForSelection(place.properties.id, routeId) : null;
+    /* A route's address names the park it belongs to. In open world `place` is whatever park the
+       picker last held, not the route's, and a link built from it opened on the wrong park with
+       no card (the boot path only selects a route of the park it names). */
+    var linkPlace = (routeId && f.properties.place) || (place && place.properties.id);
+    var newUrl = linkPlace ? urlForSelection(linkPlace, routeId) : null;
     if (newUrl && newUrl !== location.pathname) {
       history.pushState(null, "", newUrl);
     }
@@ -13945,6 +13949,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       frame: function (id) {
         var f = feature(id) || places.filter(function (p) { return p.properties.id === id; })[0];
         if (!f) { return; }
+        if (!feature(id)) { chosenPark = f; }
         if (f.geometry.type === "Point") { map.easeTo({ center: f.geometry.coordinates, zoom: Math.max(map.getZoom(), 16), duration: 600 }); return; }
         var b = new maplibregl.LngLatBounds();
         (function walk(c) { if (typeof c[0] === "number") { b.extend(c); } else { c.forEach(walk); } })(f.geometry.coordinates);
@@ -14024,6 +14029,16 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           map.easeTo({ center: pacer.pos, duration: 700, padding: { left: wide ? left - pad : 0, bottom: wide ? 0 : bottom - pad, top: 0, right: 0 } });
         }
       },
+      /* Offline: the page's own Download map, aimed at the park underfoot or the last one chosen in
+         Places - in open world `place` otherwise stays whatever the old picker last held */
+      offlinePark: function () { var p = offlineTarget(); return p ? p.properties.name : null; },
+      offline: function () {
+        var p = offlineTarget();
+        if (!p) { return; }
+        if (place !== p) { place = p; offlineArmed = null; $("#offline").textContent = "Download map"; }
+        $("#offline").click();
+      },
+      offlineState: function () { return { label: $("#offline").textContent, note: $("#saved").textContent, busy: $("#offline").disabled }; },
       /* the setter's door: the page's own magic-link sign-in */
       signIn: function (email) { $("#setter-email").value = email; $("#setter-send").click(); setTimeout(changed, 800); },
       signInNote: function () { return $("#setter-who").textContent; },
@@ -14035,7 +14050,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         if (peaks && peaks.length) { paintWave(g, peaks, w, h); }
       }
     };
-    var selSubs = [], eat = false, soloId = null, raw = { key: null };
+    var selSubs = [], eat = false, soloId = null, raw = { key: null }, chosenPark = null;
+    function offlineTarget() {
+      var here = pacer && pacer.placeId ? places.filter(function (p) { return p.properties.id === pacer.placeId; })[0] : null;
+      return here || chosenPark;
+    }
     function stopRaw() {
       if (raw.el) { raw.el.pause(); raw.el.removeAttribute("src"); }
       if (raw.url) { URL.revokeObjectURL(raw.url); }

@@ -107,7 +107,9 @@
   function renderWalk(st) {
     var kids = [h("div", { class: "ls-head" }, [h("h2", { class: "ls-title", text: st.place || "Fieldscape" }), soundButton(st), gpsChip(st)])];
     var route = st.core && st.core.route, rh = (st.core && st.core.rhythms) || [];
-    if (route || rh.length) {
+    var solo = L.listening(), sp = solo && L.point(solo);
+    /* soloed, the route and the other points rest: the panel names who is playing instead */
+    if ((route || rh.length) && !sp) {
       var line = [], chord = chordText(st);
       if (route) { line.push("Route ", ink(route)); if (chord) { line.push(" · " + chord); } }
       if (rh.length) { line.push(route ? " · rhythm " : "Rhythm ", ink(rh.join(", "))); }
@@ -115,7 +117,6 @@
                                  function () { L.cellsSet(!L.cellsOn()); render(); }) : null;
       kids.push(h("div", { class: "ls-routeline" }, [note(line), cellsBtn]));
     }
-    var solo = L.listening(), sp = solo && L.point(solo);
     if (sp) {
       kids.push(h("div", { class: "ls-routeline" }, [note(["Listening to ", ink(sp.name), " alone."]),
         btn("Everything", { "aria-label": "Listen to everything again" }, function () { L.listen(null); })]));
@@ -195,12 +196,28 @@
   /* ---- Account: the build line, and the setter's quiet door ---- */
   function buildAccount() {
     var email = h("input", { type: "email", class: "ls-search", placeholder: "you@example.com", autocomplete: "email", "aria-label": "Setter email" });
-    var said = note([L.signInNote()]);
+    var said = note([""]);          /* filled once a link is sent: the page's own line is setter wording */
+    /* Offline: the park's recordings and map tiles on this device, so a walk plays with no signal
+       (the page's own Download map: it sizes first, then a second tap fetches) */
+    var park = L.offlinePark();
+    var off = btn(park ? "Download " + park : "Download for offline", { class: "ls-wide ls-offline", disabled: !park },
+                  function () { L.offline(); tick(); });
+    var offNote = note([park ? "Its recordings and map tiles, kept on this device, so the walk plays with no signal." :
+                               "Walk into a park, or choose one in Places, to keep it for offline."]);
+    function tick() {
+      if (!off.isConnected) { return; }
+      var st = L.offlineState();
+      if (st.label && st.label !== "Download map") { off.textContent = st.label; }
+      if (st.note) { offNote.textContent = st.note; }
+      off.disabled = st.busy;
+      setTimeout(tick, 400);
+    }
     return [sheetTitle("Account"),
       note(["Fieldscape is for listening: walk, and the recordings around you play. Setters place points, record and shape the sound."]),
       h("p", { class: "ls-eyebrow", text: "Setter sign-in" }),
       h("div", { class: "ls-routeline" }, [email, btn("Send link", {}, function () { if (email.value) { L.signIn(email.value); said.textContent = "A sign-in link is on its way to " + email.value + "."; } })]),
       said,
+      h("p", { class: "ls-eyebrow", text: "Offline" }), offNote, off,
       h("p", { class: "ls-fine", text: "Recordings © their authors · map imagery © Esri, © OpenStreetMap contributors, © OpenTopoMap" })];
   }
 
@@ -319,8 +336,11 @@
       }); }
     }
     /* each route opens its cells as its setter saved them (morph.cells), as the apps and the web do */
-    var route = st.live && st.live.n >= 0 ? st.live.route : null;
-    if (route !== lastRoute) { lastRoute = route; if (route !== null) { L.cellsSet(!!st.live.shown); } }
+    /* read only while the engine runs: a Sound off and on is not a new route, and must not undo the
+       listener's own Cells choice */
+    var route = st.live ? (st.live.n >= 0 ? st.live.route : null) : lastRoute;
+    if (st.live && route !== lastRoute) { lastRoute = route; if (route !== null) { L.cellsSet(!!st.live.shown); } }
+    if (!st.live) { route = null; }
     var show = route !== null && L.cellsOn() && !view;
     if (cellsSlot.hidden === show) { cellsSlot.hidden = !show; if (show) { requestAnimationFrame(L.cellsResize); } }
     place();

@@ -63,6 +63,12 @@ try {
     await shot(vp + "-hearing");
     await ev("document.querySelector('#ls-cells-btn').click()"); await sleep(300);
     check(p("Cells button hides them"), await ev("document.querySelector('#ls-cells').hidden && document.querySelector('#ls-cells-btn').getAttribute('aria-pressed') === 'false'"), false);
+    /* a listener's own Cells choice survives Sound off and on */
+    await ev("document.querySelector('#ls-sound').click()"); await sleep(1500);
+    await ev("document.querySelector('#ls-sound').click()");
+    for (let i = 0; i < 30 && !(await ev("!!(window.__fa.coreLive && __fa.coreLive.n > 0 && fsListen.state().live)")); i++) { await ev("__fa.walkTo(29.038879, 41.00771)"); await sleep(300); }
+    await sleep(1200);
+    check(p("Cells stay off across Sound off and on"), await ev("document.querySelector('#ls-cells').hidden && document.querySelector('#ls-cells-btn').getAttribute('aria-pressed') === 'false'"), await ev("document.querySelector('#ls-cells-btn') && document.querySelector('#ls-cells-btn').getAttribute('aria-pressed')"));
     await ev("document.querySelector('#ls-cells-btn').click()"); await sleep(300);
     await ev("document.querySelector('#ls-grip').click()"); await sleep(400);
     check(p("grip folds to the bar"), await ev("!document.querySelector('#ls-bar').hidden && document.querySelector('#ls-walk').hidden"), false);
@@ -102,6 +108,8 @@ try {
     check(p("Places lists the Koşuyolu route"), /Koşuyolu Parkı/.test(await text("#ls-sheet .ls-routes")), await text("#ls-sheet"));
     await clickEl("#ls-sheet .ls-routes button"); await sleep(1200);
     check(p("a route opens its card with 16 chords"), await ev("document.querySelectorAll('#ls-card .ls-chord').length") === 16, await text("#ls-card"));
+    const linkOk = await ev("(function(){ var parts = location.pathname.split('/').filter(Boolean); var rid = parts[parts.length - 1], f = __fa.features().filter(function (x) { return x.properties.id === rid; })[0]; return !!f && parts[parts.length - 2] === f.properties.place; })()");
+    check(p("a route's address names the park it is in (a shared link opens it)"), linkOk, await ev("location.pathname"));
     check(p("route card: Show whole route"), /Show whole route/.test(await text("#ls-card")), await text("#ls-card"));
     check(p("fits with a route card"), await ev("document.documentElement.scrollHeight - innerHeight === 0"), await ev("document.documentElement.scrollHeight - innerHeight"));
     await shot(vp + "-route-card");
@@ -119,8 +127,11 @@ try {
     await clickEl("#ls-sheet [data-ls-layer='zones']"); await clickEl("#ls-sheet [data-ls-base='sat']");
     await clickEl("#ls-sheet .ls-close");
 
-    /* Account: the setter's door */
+    /* Account: the setter's door, and offline (the old sidebar's Download map, for listeners too) */
     check(p("Account opens with setter sign-in"), await clickEl("#ls-account") && /Setter sign-in/.test(await text("#ls-sheet")), await text("#ls-sheet"));
+    check(p("Account offers the park underfoot for offline"), /Download Koşuyolu Parkı/.test(await text("#ls-sheet .ls-offline")), await text("#ls-sheet"));
+    await clickEl("#ls-sheet .ls-offline"); await sleep(3000);
+    check(p("offline sizes it first (tap again to confirm)"), /Confirm .* tap again/i.test(await text("#ls-sheet .ls-offline")), await text("#ls-sheet .ls-offline"));
     await clickEl("#ls-sheet .ls-close");
 
     /* a point on the map opens its card; Listen solos it */
@@ -144,6 +155,12 @@ try {
     check(p("Stop listening lets go"), (await ev("fsListen.listening()")) === null, await ev("fsListen.listening()"));
     await clickEl("#ls-card .ls-close"); await sleep(400);
     if (await ev("!document.querySelector('#ls-bar').hidden")) { await clickEl("#ls-grip"); }
+    /* soloed, the route is resting: the panel says who is playing, not the route */
+    await ev(`fsListen.listen(${JSON.stringify(pt.id)})`); await sleep(1200);
+    const soloWalk = await text("#ls-walk");
+    check(p("while soloed the panel drops the resting route"), /Listening to .* alone/.test(soloWalk) && !/Route /.test(soloWalk), soloWalk);
+    await clickEl("#ls-walk .ls-routeline .ls-btn"); await sleep(800);
+    check(p("Everything lets go from the panel"), (await ev("fsListen.listening()")) === null, await ev("fsListen.listening()"));
 
     /* the walker: press and hold anywhere moves it (and opens no card); dragging its dot moves it */
     const w0 = await ev("JSON.stringify(fsListen.walker())");
@@ -176,6 +193,12 @@ try {
     check(p("no page errors"), errors.length === 0, errors);
     errors.length = 0;
   }
+  /* a shared route link, as 404.html hands it on (?p=/<park>/<route>): open world, the route's card */
+  const r = JSON.parse(await ev("JSON.stringify((function(){ var f = __fa.features().filter(function(x){ return x.properties.kind === 'route' && /Koşuyolu/.test(x.properties.name); })[0]; return { id: f.properties.id, place: f.properties.place, name: f.properties.name }; })())"));
+  await s.send("Page.navigate", { url: URL.replace(/\/$/, "") + "/?p=/" + r.place + "/" + r.id });
+  for (let i = 0; i < 60 && !(await ev("!!document.querySelector('#ls-card .ls-cardtitle')")); i++) await sleep(300);
+  check("a shared route link opens its card", (await ev("(document.querySelector('#ls-card .ls-cardtitle')||{}).textContent")) === r.name, await ev("location.href"));
+  check("…in open world", await ev("document.body.classList.contains('world') && document.body.classList.contains('listener')"), null);
   s.close();
 } finally { process.kill(ch.pid); await sleep(500); try { rmSync(dir, { recursive: true, force: true }); } catch {} }
 console.log(failed ? failed + " FAILED" : "all passed");
