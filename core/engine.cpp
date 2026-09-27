@@ -289,10 +289,14 @@ const char *fs_engine_step(fs_engine *e, double lon, double lat) {
         char b[96]; std::snprintf(b, sizeof b, ",\"level\":%.4f,\"dist\":%.1f,\"loaded\":%s}", fs_point_gain(d[picked[i]], p.radius, 1), d[picked[i]], loaded ? "true" : "false");
         rows += (rows.empty() ? "" : ",") + std::string("{\"id\":") + esc(p.id) + ",\"name\":" + esc(p.name) + b;
     }
-    std::string rh;
+    std::string rh, bl;
     for (auto &n : e->rhythm_names) rh += (rh.empty() ? "" : ",") + esc(n);
+    for (int i = 0; i < kb; i++) {                /* the rhythm points' levels, for the panel's bars */
+        char g[64]; std::snprintf(g, sizeof g, ",\"level\":%.4f,\"dist\":%.1f}", fs_point_gain(bd[bp[i]], e->beats[bp[i]].radius, 1), bd[bp[i]]);
+        bl += (bl.empty() ? "" : ",") + std::string("{\"id\":") + esc(e->beats[bp[i]].id) + g;
+    }
     e->state = "{\"route\":" + esc(e->route_name) + ",\"place\":" + esc(e->park >= 0 ? e->parks[e->park].name : "") +
-               ",\"rows\":[" + rows + "],\"rhythms\":[" + rh + "]}";
+               ",\"rows\":[" + rows + "],\"rhythms\":[" + rh + "],\"beats\":[" + bl + "]}";
     return e->loads.c_str();
 }
 

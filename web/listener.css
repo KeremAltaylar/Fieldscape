@@ -1,0 +1,8 @@
+/* The listener's frame on the website (web/listener.js): the apps' views over the same map. Only
+   the :root tokens from index.html (Design System/Tokens.md). body.listener = signed out. */
+
+/* the setter's chrome gives way: the map takes the window */
+body.listener header, body.listener #panel, body.listener #patchbar, body.listener #pacerbar,
+body.listener #readout, body.listener #markbar, body.listener #sheet, body.listener #layers-btn { display: none !important; }
+body.listener #app { grid-template-columns: 1fr; grid-template-rows: 1fr; padding: 0; }
+body.listener #map { grid-row: 1; grid-column: 1; border: 0; }

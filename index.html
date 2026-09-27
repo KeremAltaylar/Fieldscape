@@ -1713,6 +1713,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   .maplibregl-ctrl-scale { display: none; }
 }
 </style>
+<link rel="stylesheet" href="web/listener.css">
 </head>
 <body>
 
@@ -2681,6 +2682,15 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
          the markup so a setter signing in on the same device gets it back without a reload. */
       ".rowdel", "#place-list", "#place-list-label", ".worldrow"];
     var show = setter.signedIn;
+    /* Signed out, the page is the listener's (web/listener.js): the whole chrome below gives way to
+       the apps' frame over the same map. */
+    if (document.body.classList.contains("listener") === show) {
+      document.body.classList.toggle("listener", !show);
+      /* gating first runs at boot, before the map and the cells exist */
+      if (typeof map !== "undefined" && map && map.resize) { map.resize(); }
+      if (typeof cells !== "undefined" && cells && cells.on) { cellsResize(); }
+    }
+    if (window.fsListen) { fsListen._changed(); }
     SETTER_ONLY.forEach(function (sel) {
       document.querySelectorAll(sel).forEach(function (el) { el.hidden = !show; });
     });
@@ -7306,6 +7316,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function gpsFix(pos) {
     if (!pacer) { return; }
     var acc = pos.coords.accuracy || 0;
+    gps.acc = acc;
+    if (window.fsListen) { fsListen._changed(); }
     showHere(pos);             /* you are drawn with your uncertainty either way */
     /* An imprecise fix says nothing about where you are, so it must not move the level either:
        the walk holds at whatever it was until a fix worth trusting arrives. */
@@ -8284,6 +8296,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     g.cancelScheduledValues(t); g.setValueAtTime(g.value, t); g.linearRampToValueAtTime(to, t + seconds);
   }
   function coreButton(on) {
+    if (window.fsListen) { fsListen._changed(); }
     $("#patch-play").textContent = on ? "Stop" : "Sound";
     $("#patch-play").setAttribute("aria-pressed", on ? "true" : "false");
   }
@@ -8320,6 +8333,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     } else if (m.type === "state") {
       var st = JSON.parse(dec.decode(m.bytes));
       core.state = st;
+      fsListen._changed();
       $("#patch-info").textContent = st.rows.length + " voice" + (st.rows.length === 1 ? "" : "s") +
         (st.route ? " · " + st.route : "") + (st.rhythms.length ? " · " + st.rhythms.join(", ") : "");
       window.__fa.core = st;     /* measurable, as __fa.bed is: core/tests/web_core.mjs reads it */
@@ -8329,6 +8343,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       m.chord.label = dec.decode(m.chord.label);
       core.live = m;
       window.__fa.coreLive = m;
+      fsListen._changed();
     } else if (m.type === "error") {
       console.error("core engine: " + m.message);
     }
@@ -13776,6 +13791,62 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   document.querySelectorAll("[data-mode]").forEach(function (b) {
     b.addEventListener("click", function () { setMode(b.dataset.mode); });
   });
+  /* ---------- Listener bridge ----------
+     What web/listener.js may read and do, and nothing more: the shell never reaches into the
+     page's own state, so the setter's redesign can later split the two pages along this line. */
+  (function () {
+    var subs = [], queued = false;
+    function changed() {
+      if (queued) { return; }
+      queued = true;
+      setTimeout(function () { queued = false; subs.forEach(function (f) { try { f(); } catch (e) { console.error(e); } }); }, 250);
+    }
+    var DIRS = ["north", "north-east", "east", "south-east", "south", "south-west", "west", "north-west"];
+    function direction(a, b) {
+      var r = Math.PI / 180, y = Math.sin((b[0] - a[0]) * r) * Math.cos(b[1] * r);
+      var x = Math.cos(a[1] * r) * Math.sin(b[1] * r) - Math.sin(a[1] * r) * Math.cos(b[1] * r) * Math.cos((b[0] - a[0]) * r);
+      return DIRS[Math.floor(((Math.atan2(y, x) / r + 360) % 360 + 22.5) / 45) % 8];
+    }
+    /* the two nearest published points of any kind (the apps' panel), with the engine's levels */
+    function nearby(pos) {
+      var st = (core && core.state) || { rows: [], beats: [] }, lv = {};
+      st.rows.forEach(function (r) { lv[r.id] = { level: r.level, loaded: r.loaded }; });
+      (st.beats || []).forEach(function (b) { lv[b.id] = { level: b.level, loaded: true }; });
+      var pts = visible().filter(function (f) { return f.geometry && f.geometry.type === "Point" && f.properties.audio; })
+        .map(function (f) { return { f: f, d: segment(pos, f.geometry.coordinates) }; })
+        .sort(function (a, b) { return a.d - b.d; });
+      return {
+        rows: pts.slice(0, 2).map(function (x) {
+          var l = lv[x.f.properties.id];
+          return { id: x.f.properties.id, name: label(x.f), dist: x.d, level: l ? l.level : 0, loaded: !l || l.loaded, sounding: !!l };
+        }),
+        nearest: pts.length ? { name: label(pts[0].f), dist: pts[0].d, dir: direction(pos, pts[0].f.geometry.coordinates) } : null,
+        any: pts.length > 0
+      };
+    }
+    window.fsListen = {
+      state: function () {
+        var pos = pacer && pacer.pos, n = pos ? nearby(pos) : { rows: [], nearest: null, any: false };
+        var sounding = !!((core && core.on) || (bed && bed.on));
+        return { signedIn: setter.signedIn, place: $("#place-name").textContent,
+                 sound: sounding, starting: !sounding && wantSound,
+                 gps: { on: gps.on, held: gps.held, acc: gps.acc === undefined ? null : gps.acc },
+                 core: (core && core.state) || null, live: (core && core.on && core.live) || null,
+                 rows: n.rows, nearest: n.nearest, anyPoints: n.any };
+      },
+      /* the page's own Sound button: the same path, the same in-flight state */
+      sound: function () { $("#patch-play").click(); changed(); },
+      useLocation: function () { gpsSet(true); changed(); },
+      onChange: function (fn) { subs.push(fn); },
+      cells: function () { return $("#cells"); },
+      cellsSet: function (on) { cellsSet(on); changed(); },
+      cellsOn: function () { return cells.on; },
+      cellsResize: function () { if (cells.on) { cellsResize(); } },
+      _changed: changed,
+      _gate: function (on) { setter.signedIn = on; applyModeGating(); }
+    };
+  })();
+
   /* ---------- Mobile chrome ---------- */
   function isMobile() { return matchMedia("(max-width: 900px), (max-height: 620px)").matches; }
 
@@ -14259,6 +14330,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   sizePeek();
 })();
 </script>
+<script src="web/listener.js"></script>
 <!-- Machinery, not a control. Android Chrome keeps a backgrounded page's audio alive only while
      the page owns an active media session, and a WebAudio graph alone never creates one — which
      is why a walk used to need the screen held on for its whole length. This element is 0.25s
