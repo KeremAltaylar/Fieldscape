@@ -383,7 +383,9 @@
     holder.appendChild(box);
     /* the setter's card is the page's own, every field and handler as it was */
     if (view.setter) {
-      box.appendChild(h("div", { class: "ls-cardhead" }, [round("close", "Close", closeView, { class: "ls-close" }), h("span", { class: "ls-gap" })]));
+      /* close and the part switch share one row (Kerem, 2026-09-28: a shorter window still scrolled) */
+      var head = h("div", { class: "ls-cardhead" }, [round("close", "Close", closeView, { class: "ls-close" })]);
+      box.appendChild(head);
       var card = h("div", { class: "ls-setcard" });
       box.appendChild(card);
       move($$("#card"), card, true, true);
@@ -394,7 +396,7 @@
       var tabs = h("div", { id: "ls-cardtabs", role: "tablist", "aria-label": "Card" }, parts.map(function (t) {
         return h("button", { type: "button", role: "tab", "data-ct": t[0], text: t[1], on: { click: function () { cardTab = t[0]; showPart(); } } });
       }));
-      box.insertBefore(tabs, card);
+      head.appendChild(tabs);
       /* Photos on their own part (Kerem, 2026-09-27): with a note and photos the Point part scrolled again */
       var PART = { main: [".cardhead", "#f-note", "#g-type", "#f-tags"], photos: ["#g-photos"], sound: [".rec", ".mixrow"],
                    where: ["#f-meta", ".chips:not(.mixrow)", "#f-walk-note"] };

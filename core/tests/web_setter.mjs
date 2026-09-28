@@ -30,7 +30,7 @@ try {
   const shown = (sel) => ev(`(function(){ var e = document.querySelector(${JSON.stringify(sel)}); return !!e && !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length); })()`);
   const fits = () => ev("document.documentElement.scrollHeight - innerHeight");
 
-  for (const [vp, w, h, mobile] of [["phone", 390, 844, true], ["desk", 1440, 900, false]]) {
+  for (const [vp, w, h, mobile] of [["phone", 390, 844, true], ["desk", 1440, 900, false], ["laptop", 1366, 660, false], ["smallphone", 375, 667, true]]) {
     await s.send("Emulation.setDeviceMetricsOverride", { width: w, height: h, deviceScaleFactor: mobile ? 2 : 1, mobile });
     await s.send("Emulation.setTouchEmulationEnabled", { enabled: mobile });
     await s.send("Page.navigate", { url: URL });
@@ -46,7 +46,7 @@ try {
       if (!r) return false; await tap(r.x, r.y); await sleep(500); return true;
     };
     /* an empty spot of map, clear of the panel, the top bar and any feature */
-    const mapSpot = async (fx, fy) => JSON.parse(await ev(`JSON.stringify((function(){ var b = __fa.map.getContainer().getBoundingClientRect(); return { x: b.x + b.width * ${fx}, y: b.y + b.height * ${fy} }; })())`));
+    const mapSpot = async (fx, fy) => JSON.parse(await ev(`JSON.stringify((function(){ var b = __fa.map.getContainer().getBoundingClientRect(); return { x: b.x + b.width * ${h < 700 && mobile ? 0.8 + (fx - 0.55) * 0.9 : fx}, y: b.y + b.height * ${fy} * ${h < 700 && mobile ? 0.6 : 1} }; })())`));
     await ev("__fa.map.jumpTo({ center: [29.02, 41.03], zoom: 15 }), 0"); await sleep(1500);
 
     /* Task 1: signed in, the frame stays and the setter's tools appear; the old chrome is gone */
@@ -112,6 +112,9 @@ try {
       await tapEl(`#ls-cardtabs [data-ct='${tab}']`); await sleep(300);
       const sc = await noScroll(), sb = JSON.parse(await inner());
       check(p("with a recording, point card, " + tab + ": no scroll bar"), sc.holder <= 0 && sc.panel <= 0, sc);
+      /* Kerem, 2026-09-28 (a shorter window): whatever the height, no bar is drawn */
+      const bar = await ev("(function(){ var h = document.getElementById('ls-holder'), p = document.getElementById('ls-panel'); var bw = function (e) { var c = getComputedStyle(e); return e.offsetWidth - e.clientWidth - parseFloat(c.borderLeftWidth) - parseFloat(c.borderRightWidth); }; return bw(h) + bw(p); })()");
+      check(p("with a recording, point card, " + tab + ": no scroll bar drawn"), bar === 0, bar);
       check(p("with a recording, point card, " + tab + ": nothing inside it scrolls"), sb.length === 0, sb);
       await shot(vp + "-setter-card-audio-" + tab);
     }

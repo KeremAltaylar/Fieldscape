@@ -187,6 +187,15 @@ header, #panel, #patchbar, #pacerbar, #readout, #markbar, #sheet, #layers-btn { 
 /* while a card or a sheet is open the cells rest, and the panel may use the height they held */
 #ls-panel { max-height: calc(100% - 48px - var(--s-3) * 3 - env(safe-area-inset-top)); }
 #ls-holder { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+/* never a scroll bar (Kerem, 2026-09-28): what fits, fits; in a window too short for it the rest is a
+   wheel or a swipe away, with no bar drawn */
+#ls-panel, #ls-holder { scrollbar-width: none; }
+/* while a card is open it has its own Type row and its tab names what it is: the new-point icons and
+   the kind label give their height to the card (both back when it closes) */
+#ls-panel:has(#ls-card) #ls-tools #mode-icons, #ls-card .cardhead .ckind { display: none; }
+/* a short window (a 1366x660 laptop): the panel's rows sit closer rather than the card being cut */
+@media (max-height: 720px) { #ls-panel, .ls-card { gap: var(--s-2); } }
+#ls-panel::-webkit-scrollbar, #ls-holder::-webkit-scrollbar { display: none; }
 @media (min-width: 861px) {
   #ls-panel.ls-tall { max-height: calc(100% - 48px - var(--s-3) * 2 - var(--s-4)); }
 }
@@ -335,7 +344,7 @@ header, #panel, #patchbar, #pacerbar, #readout, #markbar, #sheet, #layers-btn { 
 #ls .ls-setacct #setter-reveal { background: none; border: 0; color: var(--dim); padding: 0; text-align: left; }
 #ls-pub #saved { margin: var(--s-1) 0 0; color: var(--faint); font-size: var(--t-xs); line-height: 1.4; }
 /* the setter card, one part at a time (no scroll bar) */
-#ls-cardtabs { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; border: 1px solid var(--hairline); border-radius: 10px; overflow: hidden; }
+#ls-cardtabs { flex: 1; min-width: 0; display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; border: 1px solid var(--hairline); border-radius: 10px; overflow: hidden; }
 #ls #ls-cardtabs button { min-height: 44px; border: 0; border-radius: 0; background: none; color: var(--dim); font-size: var(--t-sm); }
 #ls #ls-cardtabs button + button { border-left: 1px solid var(--hairline); }
 #ls #ls-cardtabs button[aria-selected="true"] { background: var(--raised); color: var(--ink); }
