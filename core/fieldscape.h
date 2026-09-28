@@ -171,8 +171,13 @@ void fs_piece_rhythm_config(fs_device *d, int handle, const char *rhythm_json); 
 /* the morph cells: 7 doubles a cell (shape, voice, dest, seed, value, per second, phase) into out, at most max;
    the piece's clock, the chord root pc, and whether the patch shows them on load. -1: no route playing */
 int fs_piece_morphs(fs_device *d, double *out, int max, double *clock, int *root, int *shown);
-void fs_piece_solo(fs_device *d, int handle);
-int fs_piece_chord_notes(fs_device *d, float *notes5, float *root);   /* the chord playing, MIDI, root first; -1 none */   /* Listen on a rhythm point: it alone, the route and other points resting (-1: all) */
+void fs_piece_solo(fs_device *d, int handle);   /* Listen on a rhythm point: it alone, the route and other points resting (-1: all) */
+int fs_piece_chord_notes(fs_device *d, float *notes5, float *root);   /* the chord playing, MIDI, root first; -1 none */
+/* A stretch device's shaping from a point's properties.sound.shape (JSON text; NULL or "" = none, all
+   dry), and the piece's chord onto it (tune and layers follow the route; call it often - a chord
+   changes on the bar, not on a GPS fix). */
+void fs_stretch_shape(fs_device *stretch, const char *shape_json);
+void fs_stretch_chord(fs_device *stretch, fs_device *piece);
 short *fs_alloc_i16(size_t n);
 /* tests: replace the random stream, and hear every note the steps choose (role 0 bass, 1 top,
    2 sector, 3 third, 4 water zone, 5 zone) */

@@ -10,7 +10,7 @@ import os
 
 /* The test number of this build (docs/TESTS.md): shown first in the developer line, so Kerem can
    see which build he is testing. Bump it with every build handed over. */
-let TEST_BUILD = 10
+let TEST_BUILD = 11
 
 final class Core: ObservableObject {
     struct Param: Identifiable { let id: Int; let key, name, unit: String; let min, max: Float }
@@ -165,6 +165,12 @@ final class Core: ObservableObject {
         try? engine.start()
         observeSession()
         Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.refresh() }
+        /* the route's chord to the stretch voices (their tune and layers), as the web does 30 times a
+           second: a chord changes on the bar, so this cannot wait for a GPS fix */
+        Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            for v in self.voices { fs_stretch_chord(v, self.piece) }
+        }
         keepWarm()
     }
 
@@ -270,6 +276,7 @@ final class Core: ObservableObject {
     func lowpass(slot: Int, _ hz: Float) { fs_mix_set_lowpass(mix, Int32(slot), hz, 350) }   /* BED.fade */
     func grit(slot: Int, _ a: Float) { fs_mix_set_grit(mix, Int32(slot), a) }
     func param(slot: Int, _ i: Int, _ v: Float) { fs_set_param(voices[slot], Int32(i), v) }
+    func shape(slot: Int, _ json: String) { fs_stretch_shape(voices[slot], json) }
 
     /* Sound test: the sliders drive slot 0, which the walk leaves alone while the test is on. */
     func set(_ i: Int, _ v: Float) { values[i] = v; param(slot: 0, i, v) }

@@ -43,7 +43,7 @@ struct Point {                        /* a soundscape recording: a stretch voice
     double lon, lat, radius, gain, brightest;
     float stretch, window_s, grit, freeze, onset;
     bool sounds;
-    float shape[12];                  /* transpose tune focus partials layers harmony glide drift blur start end width (properties.sound.shape) */
+    std::string shape;                /* properties.sound.shape as JSON (fs_stretch_shape) */
 };
 struct Spot { std::string icon; double lon, lat, radius, zoneR, centroid, onsets; bool audio, plain; fs_zone_state zone{}; std::string id; };
 struct Beat { std::string id, name; double lon, lat, radius, gain; bool grains; std::string json; std::vector<std::string> paths; };
@@ -77,8 +77,6 @@ struct fs_engine {
     std::vector<std::string> rhythm_names;
     std::string route_name;
     std::string solo;                 /* Listen: that point alone ("" none) */
-    int shape_param[12]; int chord_param[6];   /* the stretch's shaping parameters, found by name once */
-    float chord[5] = { -1, -1, -1, -1, -1 }, chord_root = -1;
     double now() const { return (double)frames / sr; }
 };
 
@@ -100,13 +98,6 @@ fs_engine *fs_engine_create(float sr, int max_block) {
         fs_prepare(e->slot[i].dev, sr, max_block);
         fs_mix_add(e->mix, e->slot[i].dev, sr, 0);
         fs_mix_set_ramp(e->mix, i, 350);                     /* BED.fade */
-    }
-    {   /* the stretch's shaping parameters by name: the device's list may grow, the names hold */
-        static const char *const SH[12] = { "transpose", "tune", "focus", "partials", "layers", "harmony", "glide", "drift", "blur", "start", "end", "width" };
-        static const char *const CH[6] = { "chord0", "chord1", "chord2", "chord3", "chord4", "root" };
-        auto find = [&](const char *id) { for (int i = 0; i < fs_param_count(e->slot[0].dev); i++) if (!std::strcmp(fs_param_info(e->slot[0].dev, i)->id, id)) return i; return -1; };
-        for (int i = 0; i < 12; i++) e->shape_param[i] = find(SH[i]);
-        for (int i = 0; i < 6; i++) e->chord_param[i] = find(CH[i]);
     }
     e->piece = fs_create("piece");
     fs_prepare(e->piece, sr, max_block);
@@ -190,12 +181,7 @@ static void upsert_one(fs_engine *e, const Json *f) {
         (float)(q ? q->n("stretch", 0) : 0), (float)(std::pow(2.0, std::round(7 + 10 * fft)) / e->sr),   /* pxBufsize */
         (float)(q ? q->n("grit", 0) : 0), (float)(px && px->flag("freeze", false) ? 1 : 0), (float)(px ? px->n("onset", 0) : 0),
         audio && mode != "hits" && mode != "grains" };
-    {   /* Fieldscape's own shaping, dry by default (A-8) */
-        const Json *sh = q ? q->get("shape") : nullptr;
-        static const char *const K[12] = { "transpose", "tune", "focus", "partials", "layers", "harmony", "glide", "drift", "blur", "start", "end", "width" };
-        static const float D[12] = { 0, 0, 0.5f, 8, 0, 0.5f, 2, 0, 0, 0, 1, 1 };
-        for (int i = 0; i < 12; i++) P.shape[i] = sh ? (float)sh->n(K[i], D[i]) : D[i];
-    }
+    { const Json *sh = q ? q->get("shape") : nullptr; if (sh) P.shape = dump(sh); }   /* Fieldscape's own shaping */
     Spot S{ p->s("icon", ""), lon, lat, radius, q ? q->n("zoneR", 25) : 25, a ? a->n("centroid_hz", 0) : 0,
             a ? a->n("onset_rate", -1) : -1, audio, !audio && !has_hits && mode != "hits" && mode != "grains" };
     S.id = id;
@@ -210,7 +196,7 @@ static void upsert_one(fs_engine *e, const Json *f) {
             fs_set_param(e->slot[s].dev, 0, P.stretch); fs_set_param(e->slot[s].dev, 1, P.window_s);
             fs_set_param(e->slot[s].dev, 2, P.freeze); fs_set_param(e->slot[s].dev, 3, P.onset);
             fs_mix_set_grit(e->mix, s, P.grit);
-            for (int k = 0; k < 12; k++) if (e->shape_param[k] >= 0) fs_set_param(e->slot[s].dev, e->shape_param[k], P.shape[k]);
+            fs_stretch_shape(e->slot[s].dev, P.shape.c_str());
         }
     }
     int si = find_id(e->spots, id);
@@ -271,6 +257,9 @@ void fs_engine_places(fs_engine *e, const char *geojson) {
 
 /* One position (worldMove). Returns the recordings to fetch, one per line:
    "S <slot> <id> <path>" for a soundscape point, "R <handle> <slot> <id> <path>" for a rhythm point. */
+/* The chord playing, to every stretch slot: its tune and layers follow the route. */
+static void feed_chord(fs_engine *e) { for (int s = 0; s < SLOTS; s++) fs_stretch_chord(e->slot[s].dev, e->piece); }
+
 const char *fs_engine_step(fs_engine *e, double lon, double lat) {
     e->loads.clear();
     double now = e->now();
@@ -306,23 +295,7 @@ const char *fs_engine_step(fs_engine *e, double lon, double lat) {
         int cur = fs_piece_sector_now(e->piece), next = fs_sections_step(e->sections, cur, lon, lat);
         if (next != cur) fs_piece_sector(e->piece, next);
     }
-    {   /* the chord playing, to every stretch slot: its tune and layers follow the route (unchanged: nothing sent) */
-        float notes[5] = { -1, -1, -1, -1, -1 }, root = -1;
-        int nc = fs_piece_chord_notes(e->piece, notes, &root);
-        if (nc > 0) {
-            for (int k = nc; k < 5; k++) notes[k] = -1;
-            bool changed = root != e->chord_root;
-            for (int k = 0; k < 5; k++) changed |= notes[k] != e->chord[k];
-            if (changed) {
-                for (int k = 0; k < 5; k++) e->chord[k] = notes[k];
-                e->chord_root = root;
-                for (int sl = 0; sl < SLOTS; sl++) {
-                    for (int k = 0; k < 5; k++) if (e->chord_param[k] >= 0) fs_set_param(e->slot[sl].dev, e->chord_param[k], notes[k]);
-                    if (e->chord_param[5] >= 0) fs_set_param(e->slot[sl].dev, e->chord_param[5], root);
-                }
-            }
-        }
-    }
+    feed_chord(e);
     /* the soundscape points (updateBed + ensureVoice) */
     size_t np = e->points.size();
     std::vector<double> d(np), rad(np); std::vector<unsigned char> el(np); std::vector<int> picked(std::max<size_t>(np, 1));
@@ -367,9 +340,8 @@ const char *fs_engine_step(fs_engine *e, double lon, double lat) {
             fs_set_param(sl.dev, 0, p.stretch); fs_set_param(sl.dev, 1, p.window_s);
             fs_set_param(sl.dev, 2, p.freeze); fs_set_param(sl.dev, 3, p.onset);
             fs_mix_set_grit(e->mix, s, p.grit);
-            for (int k = 0; k < 12; k++) if (e->shape_param[k] >= 0) fs_set_param(sl.dev, e->shape_param[k], p.shape[k]);
-            for (int k = 0; k < 5; k++) if (e->chord_param[k] >= 0) fs_set_param(sl.dev, e->chord_param[k], e->chord[k]);
-            if (e->chord_param[5] >= 0) fs_set_param(sl.dev, e->chord_param[5], e->chord_root);
+            fs_stretch_shape(sl.dev, p.shape.c_str());
+            fs_stretch_chord(sl.dev, e->piece);
             /* no path yet: a setter's unpublished point, its recording on this device (the page finds it by id) */
             if (p.sounds) e->loads += "S " + std::to_string(s) + " " + p.id + " " + p.path + "\n";
         }
@@ -467,6 +439,7 @@ const char *fs_engine_state(fs_engine *e) { return e->state.c_str(); }
 void fs_engine_solo(fs_engine *e, const char *id) { e->solo = id ? id : ""; }
 int fs_engine_route(fs_engine *e) { return e->route_name.empty() ? -1 : fs_piece_route(e->piece); }
 int fs_engine_chord(fs_engine *e, int *count, char *label, int size) {
+    feed_chord(e);   /* the screen reads this 30 times a second: a walker standing still still hears the chord change */
     if (e->route_name.empty()) { if (count) *count = 0; if (label && size) label[0] = 0; return -1; }
     return fs_piece_chord(e->piece, count, label, size);
 }

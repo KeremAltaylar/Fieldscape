@@ -30,7 +30,9 @@ import kotlin.math.sin
  */
 class Walk(private val context: Context, private val engineRate: Double) : LocationListener {
     data class Point(val id: String, val name: String, val lon: Double, val lat: Double, val radius: Double, val gain: Double,
-                     val stretch: Float, val windowSamples: Double, val grit: Float, val freeze: Float, val onset: Float, val brightest: Double, val path: String?, val sounds: Boolean)
+                     val stretch: Float, val windowSamples: Double, val grit: Float, val freeze: Float, val onset: Float,
+                     val shape: String,   // properties.sound.shape as JSON, "" none (fs_stretch_shape)
+                     val brightest: Double, val path: String?, val sounds: Boolean)
     sealed interface Phase { data object Playing : Phase; data object Decoding : Phase; data class Downloading(val fraction: Double, val bytes: Long) : Phase }
     data class Row(val id: String, val name: String, val level: Double, val dist: Double, val phase: Phase)
     sealed interface Mode { data object Waiting : Mode; data object Denied : Mode; data class Live(val accuracy: Double) : Mode; data class Holding(val accuracy: Double) : Mode
@@ -162,6 +164,7 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
                   stretch = q.optDouble("stretch", 0.0).toFloat(),
                   grit = q.optDouble("grit", 0.0).toFloat(),
                   freeze = if (px.optBoolean("freeze", false)) 1f else 0f, onset = px.optDouble("onset", 0.0).toFloat(),
+                  shape = q.optJSONObject("shape")?.toString() ?: "",
                   windowSamples = 2.0.pow((7 + 10 * px.optDouble("fft", 0.7).coerceIn(0.0, 1.0)).roundToInt().toDouble()),  // pxBufsize
                   brightest = (if (centroid.isNaN()) 2000.0 else centroid).times(2.2).coerceIn(600.0, 14000.0),
                   path = p.optString("storage_path").ifEmpty { null },
@@ -289,6 +292,7 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
         Core.param(slot, 1, (p.windowSamples / engineRate).toFloat())
         Core.grit(slot, p.grit)
         Core.param(slot, 2, p.freeze); Core.param(slot, 3, p.onset)            // px.freeze, px.onset
+        Core.shape(slot, p.shape)
         val path = p.path ?: return
         Thread {
             try {
