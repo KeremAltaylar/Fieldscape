@@ -31,8 +31,8 @@ test("the origin check sits after IS_TILE and IS_ASSET have already claimed thei
     "cross-origin CDN and tile hosts those checks deliberately allow");
 });
 
-test("the shell cache was renamed to v7, so an installed app picks up the new file list", () => {
-  assert.match(sw, /var SHELL\s*=\s*"fieldarc-shell-v7"/,
+test("the shell cache was renamed to v10, so an installed app picks up the new file list", () => {
+  assert.match(sw, /var SHELL\s*=\s*"fieldarc-shell-v10"/,
     "renaming SHELL is what makes activate's cache-name cleanup evict a cache that " +
     "does not yet have the files added to SHELL_FILES (Task 5's icons, then the core)");
   assert.ok(sw.includes('"./web/core.wasm"') && sw.includes('"./web/core-worklet.js"'),

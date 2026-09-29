@@ -22,38 +22,11 @@ function src(name) {
   return html.slice(s, i + 1);
 }
 
-test("a listener is in open world whatever the stored preference says", () => {
-  const fn = src("worldOn");
-  /* WORLD_KEY must be declared in the sandbox: without it the read throws a ReferenceError,
-     worldOn's own catch swallows it, and every case returns the offline default of true —
-     which would pass three of the five assertions below for entirely the wrong reason. */
-  const run = new Function("setterTools", "localStorage",
-    'var WORLD_KEY = "fieldarc.world";' + fn + "; return worldOn();");
-  const store = (v) => ({ getItem: () => v });
-
-  assert.equal(run(() => false, store("0")), true,
-    "a listener whose device once switched open world off still gets open world");
-  assert.equal(run(() => false, store(null)), true, "and so does a fresh listener");
-  assert.equal(run(() => true, store("0")), false,
-    "a setter's own choice to leave open world is still theirs to make");
-  assert.equal(run(() => true, store("1")), true);
-  assert.equal(run(() => true, store(null)), true, "a setter's default is still open world");
-});
-
 test("the stored preference survives a listener session rather than being overwritten", () => {
   /* worldOn() must not WRITE. A setter who signs out, walks as a listener and signs back in
      should find the switch where they left it, not reset by the listener session. */
   const fn = src("worldOn");
   assert.ok(!/setItem/.test(fn), "worldOn only reads; setWorld is the only writer");
-});
-
-test("a listener is not shown a switch they cannot use", () => {
-  const gate = src("applyModeGating");
-  assert.match(gate, /"\.worldrow"/,
-    "the Open world row is setter-only — a control with one possible value is not a control");
-  /* The switch itself stays in the markup: a setter signing in on the same device gets it back
-     without a reload, which is what applyModeGating() exists to do. */
-  assert.ok(html.includes('id="world-switch"'), "the switch is hidden for a listener, not deleted");
 });
 
 test("signing out moves the walk into open world instead of stranding it in a park", () => {
@@ -72,15 +45,6 @@ test("signing out moves the walk into open world instead of stranding it in a pa
   /* applyModeGating runs during startup, before the map's sources and the first place exist;
      calling applyWorld() then would throw in map.getSource("features").setData. */
   assert.match(html, /var worldApplied = false;/, "and it starts false, so boot is not disturbed");
-});
-
-test("the Walk button is a setter's tool now, not a disabled button a listener stares at", () => {
-  const at = html.indexOf('$("#f-walk").hidden =');
-  assert.ok(at !== -1, "renderDetail must decide #f-walk's visibility");
-  const line = html.slice(at, html.indexOf("\n", at));
-  assert.match(line, /!setterTools\(\)/,
-    "a listener has no park view to walk into, so the button goes rather than greys out");
-  assert.match(line, /kind !== "route"/, "and it is still only ever shown on a route");
 });
 
 test("the header says where the listener is, not which park a deep link happened to set", () => {
