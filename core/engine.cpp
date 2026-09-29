@@ -46,7 +46,7 @@ struct Point {                        /* a soundscape recording: a stretch voice
     std::string shape;                /* properties.sound.shape as JSON (fs_stretch_shape) */
 };
 struct Spot { std::string icon; double lon, lat, radius, zoneR, centroid, onsets; bool audio, plain; fs_zone_state zone{}; std::string id; };
-struct Beat { std::string id, name; double lon, lat, radius, gain; bool grains; std::string json; std::vector<std::string> paths; };
+struct Beat { std::string id, name; double lon, lat, radius, gain; bool grains; std::string json; std::vector<std::string> paths; std::vector<char> have; };
 struct Park { std::string name; std::vector<std::vector<double>> rings; double area; };
 struct Slot {
     fs_device *dev = nullptr;
@@ -166,11 +166,13 @@ static void upsert_one(fs_engine *e, const Json *f) {
     const Json *q = p->get("sound"), *a = p->get("audio"), *hits = p->get("hits"), *px = q ? q->get("px") : nullptr;
     std::string mode = p->s("audio_mode", ""), name = p->s("name", "Unnamed point");
     std::vector<std::string> slots;
+    std::vector<char> have;
     bool has_hits = false;
     for (const char *k : { "low", "mid", "high", "rand" }) {
         const Json *h = hits ? hits->get(k) : nullptr;
-        std::string path = h ? h->s("storage_path", "") : "";
-        has_hits |= !path.empty(); slots.push_back(path);
+        /* a slot with a recording, on the server (storage_path) or only on this device (a setter's draft) */
+        bool on = h && h->kind == Json::OBJ;
+        has_hits |= on; slots.push_back(h ? h->s("storage_path", "") : ""); have.push_back(on);
     }
     bool audio = p->flag("has_audio", false);
     double lon = c->at(0)->num, lat = c->at(1)->num, radius = q ? q->n("radius", 140) : 140, gain = q ? q->n("gain", 0.9) : 0.9;
@@ -204,12 +206,13 @@ static void upsert_one(fs_engine *e, const Json *f) {
 
     bool beat = (mode == "hits" && has_hits) || (mode == "grains" && audio);
     Beat Bt{ id, name, lon, lat, radius, gain, mode == "grains", dump(p->get("rhythm")),
-             mode == "grains" ? std::vector<std::string>{ p->s("storage_path", "") } : slots };
+             mode == "grains" ? std::vector<std::string>{ p->s("storage_path", "") } : slots,
+             mode == "grains" ? std::vector<char>{ 1 } : have };
     int bi = find_id(e->beats, id);
     if (!beat) { if (bi >= 0) { drop_beat(e, id); e->beats.erase(e->beats.begin() + bi); } return; }
     if (bi < 0) { e->beats.push_back(Bt); return; }
     const Beat &old = e->beats[bi];
-    if (old.paths != Bt.paths || old.grains != Bt.grains) drop_beat(e, id);        /* other recordings: reload */
+    if (old.paths != Bt.paths || old.have != Bt.have || old.grains != Bt.grains) drop_beat(e, id);        /* other recordings: reload */
     else if (old.json != Bt.json && e->handle.count(id)) fs_piece_rhythm_config(e->piece, e->handle[id], Bt.json.c_str());
     e->beats[bi] = Bt;
 }
@@ -381,7 +384,8 @@ const char *fs_engine_step(fs_engine *e, double lon, double lat) {
             if (h < 0) continue;
             e->handle[b.id] = h;
             for (size_t s = 0; s < b.paths.size(); s++)
-                if (!b.paths[s].empty()) e->loads += "R " + std::to_string(h) + " " + std::to_string(s) + " " + b.id + " " + b.paths[s] + "\n";
+                /* no path yet: a setter's draft, its recording on this device (the page finds it by id) */
+                if (b.have[s]) e->loads += "R " + std::to_string(h) + " " + std::to_string(s) + " " + b.id + " " + b.paths[s] + "\n";
         }
         fs_piece_rhythm_gain(e->piece, e->handle[b.id], (float)fs_point_gain(bd[bp[i]], b.radius, b.gain));
     }

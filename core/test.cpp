@@ -313,6 +313,20 @@ int main() {
         assert(need.find(" n1") != std::string::npos);
         fs_engine_destroy(e);
     }
+    {   /* a setter's draft rhythm and grains points: recordings on this device only (no storage_path).
+           They were never asked for, so they stayed silent (Kerem, 2026-09-29). */
+        fs_engine *e = fs_engine_create(SR, B);
+        fs_engine_features(e, "{\"type\":\"FeatureCollection\",\"features\":["
+            "{\"type\":\"Feature\",\"geometry\":{\"type\":\"Point\",\"coordinates\":[29.0001,41.0]},"
+            "\"properties\":{\"id\":\"d1\",\"kind\":\"point\",\"audio_mode\":\"hits\",\"hits\":{\"low\":{\"name\":\"k.wav\"},\"mid\":null}}},"
+            "{\"type\":\"Feature\",\"geometry\":{\"type\":\"Point\",\"coordinates\":[29.0002,41.0]},"
+            "\"properties\":{\"id\":\"g1\",\"kind\":\"point\",\"audio_mode\":\"grains\",\"has_audio\":true}}]}");
+        std::string need = fs_engine_step(e, 29.0, 41.0);
+        std::printf("draft beats: %s\n", need.c_str());
+        assert(need.find(" 0 d1 ") != std::string::npos && need.find(" 1 d1 ") == std::string::npos);
+        assert(need.find(" g1 ") != std::string::npos);
+        fs_engine_destroy(e);
+    }
     {   /* live edits (fs_engine_upsert / fs_engine_remove): a setter's change reaches the sound without a reload */
         fs_engine *e = fs_engine_create(SR, B);
         const char *route = "{\"type\":\"Feature\",\"geometry\":{\"type\":\"LineString\",\"coordinates\":[[29.0,41.0],[29.002,41.0]]},"
