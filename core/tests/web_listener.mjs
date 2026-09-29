@@ -56,6 +56,8 @@ try {
     await sleep(600);
     const walkText = await ev("document.querySelector('#ls-walk').textContent");
     check(p("route line with the chord"), /Route .*chord \d+ of 16/.test(walkText), walkText);
+    const seg = JSON.parse(await ev("JSON.stringify((function(){ var f = __fa.map.getSource('progseg').serialize().data.features || []; return { n: f.length, active: f.filter(function (x) { return x.properties.active === 1; }).map(function (x) { return x.properties.step; }), step: __fa.coreLive.chord.step }; })())"));
+    check(p("the route's chord segments are drawn, the playing one lit"), seg.n === 16 && seg.active.length === 1 && seg.active[0] === seg.step, seg);
     await ev("window.__lsBtn = document.querySelector('#ls-sound')"); await sleep(1500);
     check(p("buttons survive live updates (a tap is not lost)"), await ev("document.querySelector('#ls-sound') === window.__lsBtn"), false);
     check(p("Sound turned to Stop"), /Stop/.test(await ev("document.querySelector('#ls-sound').textContent")), null);

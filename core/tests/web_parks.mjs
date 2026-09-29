@@ -44,5 +44,8 @@ try {
   check("setter on: switch pressed", await ev("document.querySelector('[data-ls-allparks]').getAttribute('aria-pressed')") === "true", null);
   check("setter on: every park listed", await rows() > listenerRows, [await rows(), listenerRows]);
   check("setter on: each park listed once (the page's own picker stays hidden)", await ev("!document.querySelector('#place-list').offsetParent"), null);
+  const pick = await ev("(function(){ var b = [].filter.call(document.querySelectorAll('.ls-parks .ls-item'), function (x) { return !/point|route/.test(x.textContent); })[0]; var n = b.querySelector('.ls-name').textContent; b.click(); return n; })()");
+  await sleep(900);
+  check("picking a park draws its border", await ev("(__fa.map.getSource('forest').serialize().data.features[0] || { properties: {} }).properties.name") === pick, pick);
 } finally { ch.kill(); }
 process.exit(failed ? 1 : 0);
