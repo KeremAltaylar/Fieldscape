@@ -13944,7 +13944,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       parks: function () {
         var held = {};
         visible().forEach(function (f) {
-          var k = f.properties.place;
+          /* an open-world point has no place; the park it stands in holds it (the apps' rule) */
+          var c = f.geometry.type === "Point" ? f.geometry.coordinates : f.geometry.coordinates[0];
+          var k = f.properties.place || (placeAt(c) || { properties: {} }).properties.id;
           if (k) { held[k] = held[k] || { points: 0, routes: 0 }; held[k][f.properties.kind === "route" ? "routes" : "points"]++; }
         });
         return places.map(function (p) { return { id: p.properties.id, name: p.properties.name, held: held[p.properties.id] || null }; });

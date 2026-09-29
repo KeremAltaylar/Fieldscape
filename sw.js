@@ -17,7 +17,8 @@
 /* v5: the listener shell (web/listener.js, web/listener.css) joins it. */
 /* v6: knobs and the patch tabs (web/knobs.js, web/patch.js). */
 /* v7: the GPL PaulXStretch port leaves the shell. */
-var SHELL = "fieldarc-shell-v7";
+/* v8: listener parks cut to the ones a setter set something in; the All parks switch. */
+var SHELL = "fieldarc-shell-v8";
 var TILES = "fieldarc-tiles-v1";
 
 var SHELL_FILES = [
