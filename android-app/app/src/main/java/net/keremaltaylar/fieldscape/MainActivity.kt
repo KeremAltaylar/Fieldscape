@@ -332,12 +332,18 @@ class MainActivity : ComponentActivity() {
         val chord = walk.chord                                        /* re-read the sections as the walker crosses them */
         val playing = walk.playingRoute; val step = walk.chordStep; val routes = walk.routeList
         val state = remember { object { var style: Style? = null; var map: org.maplibre.android.maps.MapLibreMap? = null; var centredAt: Pair<Double, Double>? = null
-                                        var framed = 0L; var zonesKey = ""; var sectionsKey = ""; var progKey = ""; var dragging = false } }
+                                        var framed = 0L; var zonesKey = ""; var sectionsKey = ""; var progKey = ""; var dragging = false
+                                        var heldUntil = 0L } }
         AndroidView(factory = { ctx ->
             MapView(ctx).apply {
                 onCreate(null); onStart(); onResume()
                 getMapAsync { map ->
                     state.map = map
+                    /* moved by hand: following waits (the iOS app's regionWillChange) */
+                    map.addOnCameraMoveStartedListener { why ->
+                        if (why == org.maplibre.android.maps.MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE)
+                            state.heldUntil = System.currentTimeMillis() + FOLLOW_HOLD_MS
+                    }
                     map.uiSettings.isLogoEnabled = false
                     map.uiSettings.attributionGravity = android.view.Gravity.TOP or android.view.Gravity.START
                     map.uiSettings.setAttributionTintColor(android.graphics.Color.rgb(0x9c, 0xa4, 0x9d))   // T.faint
@@ -396,7 +402,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
-        }, Modifier.fillMaxSize(), update = {
+        }, Modifier.fillMaxSize(), update = { view ->
             val style = state.style ?: return@AndroidView
             fun show(id: String, on: Boolean) { style.getLayer(id)?.setProperties(PropertyFactory.visibility(if (on) Property.VISIBLE else Property.NONE)) }
             show("base-osm", base == MapUi.Base.Map); show("base-topo", base == MapUi.Base.Topo); show("base-sat", base == MapUi.Base.Satellite)
@@ -440,6 +446,7 @@ class MainActivity : ComponentActivity() {
             }
             if (frame != null && frame.second != state.framed) {    // Places / Fit all: frame it, and keep the walker's re-centring quiet
                 state.framed = frame.second
+                state.heldUntil = System.currentTimeMillis() + FOLLOW_HOLD_MS
                 val (w, so, e, n) = frame.first.toList()
                 state.map?.animateCamera(CameraUpdateFactory.newLatLngBounds(LatLngBounds.Builder().include(LatLng(so, w)).include(LatLng(n, e)).build(), 120))
             }
@@ -451,6 +458,13 @@ class MainActivity : ComponentActivity() {
                 val c = state.centredAt
                 if (walk.mode != Walk.Mode.ByHand && (c == null || Core.geoDistance(c.first, c.second, lon, lat) > 1000))
                     state.map?.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(lat, lon), 15.5))
+                /* then it follows (the web's L.follow): the map moves only when you near the edge of what is in
+                   view, and holds still for a while after you move it or frame a place (Kerem, 2026-09-29) */
+                else if (walk.mode != Walk.Mode.ByHand && System.currentTimeMillis() >= state.heldUntil) state.map?.let { m ->
+                    val p = m.projection.toScreenLocation(LatLng(lat, lon)); val d = resources.displayMetrics.density
+                    if (p.x < 40 * d || p.y < 120 * d || p.x > view.width - 40 * d || p.y > view.height - 320 * d)
+                        m.animateCamera(CameraUpdateFactory.newLatLng(LatLng(lat, lon)))
+                }
                 if (walk.mode != Walk.Mode.ByHand) state.centredAt = lon to lat
             }
         })
@@ -571,3 +585,6 @@ class MainActivity : ComponentActivity() {
 /* dp for literal sizes that are drawings rather than tokens (the grip, a dot, a hairline). */
 private val Int.dp_ get() = androidx.compose.ui.unit.Dp(this.toFloat())
 private val Double.dp_ get() = androidx.compose.ui.unit.Dp(this.toFloat())
+
+/** how long following waits after the map is moved by hand or a place is framed */
+private const val FOLLOW_HOLD_MS = 15_000L

@@ -27,6 +27,9 @@ enum Supa {
     }
 }
 
+/* how long following waits after the map is moved by hand or a place is framed */
+let FOLLOW_HOLD: TimeInterval = 15
+
 /* Studio tokens (Design System/Tokens.md), as the web resolves them from OKLCH. */
 enum Ink {
     static let sunk = "#0d1310", ink = "#e3e7e4", lamp = "#bae6b1", accent = "#bbceb5"
@@ -112,6 +115,7 @@ struct MapView: UIViewRepresentable {
         func apply(_ m: MapState, _ w: Walk, on v: MLNMapView) {
             if let f = m.frame, f.id != framed {
                 framed = f.id
+                heldUntil = Date().addingTimeInterval(FOLLOW_HOLD)   /* a framed place stays framed while fixes arrive */
                 v.setVisibleCoordinateBounds(MLNCoordinateBounds(sw: f.sw, ne: f.ne), edgePadding: UIEdgeInsets(top: 120, left: 40, bottom: 320, right: 40), animated: true, completionHandler: nil)
             }
             guard let s = style else { return }
@@ -217,12 +221,22 @@ struct MapView: UIViewRepresentable {
             guard let b = bounds, !centred else { return }
             v.setVisibleCoordinateBounds(b, edgePadding: UIEdgeInsets(top: 80, left: 40, bottom: 140, right: 40), animated: false, completionHandler: nil)
         }
-        /* On a walk the map is about where you are: the first fix brings it to street level on you,
-           once; after that it is yours to pan. */
+        /* On a walk the map is about where you are: the first fix brings it to street level on you;
+           after that it follows (the web's L.follow), moving only when you near the edge of what is
+           in view, and holding still for a while after you move the map yourself (Kerem, 2026-09-29). */
+        private var heldUntil = Date.distantPast
         func mapView(_ v: MLNMapView, didUpdate u: MLNUserLocation?) {
-            guard !centred, let c = u?.location?.coordinate, CLLocationCoordinate2DIsValid(c) else { return }
-            centred = true
-            v.setCenter(c, zoomLevel: 15.5, animated: true)
+            guard let c = u?.location?.coordinate, CLLocationCoordinate2DIsValid(c) else { return }
+            if !centred { centred = true; v.setCenter(c, zoomLevel: 15.5, animated: true); return }
+            guard walk?.mode != .byHand, Date() >= heldUntil else { return }
+            /* the part of the map not under the top bar or the panel (the framing insets) */
+            let p = v.convert(c, toPointTo: v), safe = v.bounds.inset(by: UIEdgeInsets(top: 120, left: 40, bottom: 320, right: 40))
+            if !safe.contains(p) { v.setCenter(c, animated: true) }
+        }
+        func mapView(_ v: MLNMapView, regionWillChangeWith reason: MLNCameraChangeReason, animated: Bool) {
+            if !reason.isDisjoint(with: [.gesturePan, .gesturePinch, .gestureRotate, .gestureZoomIn, .gestureZoomOut, .gestureOneFingerZoom, .gestureTilt]) {
+                heldUntil = Date().addingTimeInterval(FOLLOW_HOLD)
+            }
         }
     }
 
