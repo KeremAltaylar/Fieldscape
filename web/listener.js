@@ -210,7 +210,7 @@
       var has = function (n) { return !q || n.toLocaleLowerCase("tr").indexOf(q) >= 0; };
       var routes = L.routes().filter(function (r) { return has(r.name); });
       /* Only the parks a setter set something in (Kerem, 2026-09-29); a setter's All parks switch
-         brings the rest of the city back, with the page's own park picker under it. */
+         brings the rest of the city back. */
       var all = setter && allParks();
       var parks = L.parks().filter(function (p) { return has(p.name) && (p.held || all); });
       list.textContent = "";
@@ -426,9 +426,10 @@
       move($$("#setter"), more, true); move($$("#storage > .actions"), more, true); move($$("#undo"), more, true); move($$("#audit"), more, true);
     }
     if (setter && view === "places") {
-      var world = h("div", { class: "ls-setplaces" + (allParks() ? "" : " ls-fewparks") });
+      var world = h("div", { class: "ls-setplaces" });
       box.insertBefore(world, box.children[1]);
-      move($$(".worldrow"), world, true); move($$("#place-list-label"), world, true); move($$("#place-list"), world, true);
+      /* the page's own park picker stays home: All parks lists the same parks below (Kerem, 2026-09-29) */
+      move($$(".worldrow"), world, true);
     }
   }
   function render() {

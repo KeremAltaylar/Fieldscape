@@ -43,6 +43,6 @@ try {
   await ev("document.querySelector('[data-ls-allparks]').click(), 0"); await sleep(600);
   check("setter on: switch pressed", await ev("document.querySelector('[data-ls-allparks]').getAttribute('aria-pressed')") === "true", null);
   check("setter on: every park listed", await rows() > listenerRows, [await rows(), listenerRows]);
-  check("setter on: the page's park picker shown", await ev("!!document.querySelector('#place-list').offsetParent"), null);
+  check("setter on: each park listed once (the page's own picker stays hidden)", await ev("!document.querySelector('#place-list').offsetParent"), null);
 } finally { ch.kill(); }
 process.exit(failed ? 1 : 0);
