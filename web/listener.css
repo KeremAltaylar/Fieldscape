@@ -220,7 +220,6 @@ header, #panel, #patchbar, #pacerbar, #readout, #markbar, #sheet, #layers-btn { 
 #ls .ls-setcard #f-name:focus-visible { outline: none; border-bottom-color: var(--accent); }
 #ls .ls-setcard textarea, #ls .ls-setcard input[type="text"] { font-size: 16px; }   /* iOS: no zoom into a field */
 .ls-setacct, .ls-setplaces { display: flex; flex-direction: column; gap: var(--s-2); }
-.ls-fewparks #place-list, .ls-fewparks #place-list-label { display: none !important; }
 
 /* ---- the sound panels (S2): the route patch, in the new look ---- */
 #patchpanel { background: var(--ground); }

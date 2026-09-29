@@ -18,7 +18,8 @@
 /* v6: knobs and the patch tabs (web/knobs.js, web/patch.js). */
 /* v7: the GPL PaulXStretch port leaves the shell. */
 /* v8: listener parks cut to the ones a setter set something in; the All parks switch. */
-var SHELL = "fieldarc-shell-v8";
+/* v9: the setter's Places lists each park once. */
+var SHELL = "fieldarc-shell-v9";
 var TILES = "fieldarc-tiles-v1";
 
 var SHELL_FILES = [
