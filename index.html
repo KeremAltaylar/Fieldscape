@@ -2931,8 +2931,18 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   function pendingDiff() {
     if (!window.FA_PENDING) { return { added: [], changed: [], removed: [] }; }
-    return window.FA_PENDING.diffManifest(loadManifest(),
-                                          window.FA_PENDING.manifestOf(authoredFeatures()));
+    var d = window.FA_PENDING.diffManifest(loadManifest(),
+                                           window.FA_PENDING.manifestOf(authoredFeatures()));
+    /* A merged (_remote) feature is never in the manifest, so deleting one never showed up in
+       `removed`: Kerem deleted a whole park published from another device and Publish stayed
+       at "nothing pending". The trash is the record of that delete; once sent it is marked. */
+    trash().forEach(function (e) {
+      var id = e.feature.properties.id;
+      if (e.feature.properties._remote && !e.sent && !feature(id) && d.removed.indexOf(id) < 0) {
+        d.removed.push(id);
+      }
+    });
+    return d;
   }
 
   function pendingCount() {
@@ -3212,6 +3222,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var pushed = rows.filter(sent);
       var recorded = saveManifest(window.FA_PENDING.recordPublished(loadManifest(), snapshot,
         pushed.map(function (r) { return r.id; }), d.removed));
+      setTrash(trash().map(function (e) {
+        if (d.removed.indexOf(e.feature.properties.id) >= 0) { e.sent = true; }
+        return e;
+      }));
       renderPending();
       /* Only when the manifest actually persisted: saveManifest has already said something
          more useful otherwise, and this line would erase it. */
@@ -4270,6 +4284,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var t = trash();
     if (!t.length) { return; }
     var e = t.pop();
+    /* Its removal already reached the server, so the undo has to publish it back. */
+    if (e.sent) { claimEdit(e.feature); }
     fc.features.push(e.feature);
     setTrash(t);
     commit();
