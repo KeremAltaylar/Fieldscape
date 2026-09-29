@@ -19,7 +19,8 @@
 /* v7: the GPL PaulXStretch port leaves the shell. */
 /* v8: listener parks cut to the ones a setter set something in; the All parks switch. */
 /* v9: the setter's Places lists each park once. */
-var SHELL = "fieldarc-shell-v9";
+/* v10: the Open world switch and Walk leave the page. */
+var SHELL = "fieldarc-shell-v10";
 var TILES = "fieldarc-tiles-v1";
 
 var SHELL_FILES = [

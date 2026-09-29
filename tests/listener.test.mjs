@@ -61,7 +61,6 @@ test("applyModeGating hides exactly the setter-only elements, and never the sign
   });
   assert.doesNotMatch(src, /["']#setter["']/,
     "the sign-in block must never be hidden — it is how a listener becomes a setter");
-  assert.doesNotMatch(src, /["']#f-walk["']/, "Walk stays — it is how a listener hears a route");
   assert.doesNotMatch(src, /["']#f-zoom["']/, "Zoom to stays — it is not an authoring tool");
   /* Reversed on this branch: Mark changes job rather than disappearing (spec, "The listener
      surface"), and GPS — the thing it was said to be redundant with — only exists once a route

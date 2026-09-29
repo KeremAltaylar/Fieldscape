@@ -413,7 +413,7 @@
       head.appendChild(tabs);
       /* Photos on their own part (Kerem, 2026-09-27): with a note and photos the Point part scrolled again */
       var PART = { main: [".cardhead", "#f-note", "#g-type", "#f-tags"], photos: ["#g-photos"], sound: [".rec", ".mixrow"],
-                   where: ["#f-meta", ".chips:not(.mixrow)", "#f-walk-note"] };
+                   where: ["#f-meta", ".chips:not(.mixrow)"] };
       [].forEach.call($$("#card").children, function (el) {
         el.dataset.ct = "";
         for (var k in PART) { if (PART[k].some(function (sel) { return el.matches(sel) || !!el.querySelector(sel); })) { el.dataset.ct = k; } }
@@ -424,12 +424,6 @@
       var more = h("div", { class: "ls-setacct" });
       box.insertBefore(more, box.children[1]);
       move($$("#setter"), more, true); move($$("#storage > .actions"), more, true); move($$("#undo"), more, true); move($$("#audit"), more, true);
-    }
-    if (setter && view === "places") {
-      var world = h("div", { class: "ls-setplaces" });
-      box.insertBefore(world, box.children[1]);
-      /* the page's own park picker stays home: All parks lists the same parks below (Kerem, 2026-09-29) */
-      move($$(".worldrow"), world, true);
     }
   }
   function render() {

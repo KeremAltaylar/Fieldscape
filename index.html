@@ -148,16 +148,11 @@ header {
   border-radius: 3px;
   box-shadow: 0 14px 36px rgba(0, 0, 0, 0.5);
 }
-.worldrow {
-  display: flex; align-items: center; gap: var(--s-3);
-  padding: var(--s-2) var(--s-3); border-bottom: 1px solid var(--bdr);
-}
-.worldrow .hint { margin: 0; }
 /* On a touch screen the picker is a list of thumb targets. Measured 2026-09-21 at 501 px: the
    Open world switch and every route row were 31 px tall, well under the platform minimum, on the
    surface this app is actually walked with. */
 @media (pointer: coarse) {
-  .worldrow button, #place-list .placerow, #route-list .placerow {
+  #place-list .placerow, #route-list .placerow {
     min-height: var(--tap);
   }
 }
@@ -1727,10 +1722,6 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         <span id="place-name">Belgrad Ormanı</span><span class="caret">▾</span>
       </button>
       <div id="place-menu" hidden>
-        <div class="worldrow">
-          <button type="button" id="world-switch" aria-pressed="true">Open world</button>
-          <span class="hint">all routes at once</span>
-        </div>
         <input type="text" id="place-search" placeholder="Search forests, korular and routes…" aria-label="Search places and routes">
         <p id="place-list-label" class="hint">Places</p>
         <ul id="place-list" role="listbox"></ul>
@@ -1865,9 +1856,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           title="Include this feature when the archive is published">published</button>
       </div>
 
-      <p class="hint" id="f-walk-note" hidden>This route is already live in Open world — turn the switch off to walk it alone.</p>
       <div class="actions">
-        <button type="button" class="ghost" id="f-walk" hidden>Walk</button>
         <button type="button" class="ghost" id="f-patch" hidden>Patch</button>
         <button type="button" class="ghost" id="f-rhythm" hidden>Rhythm</button>
         <button type="button" class="ghost" id="f-zoom">Zoom to</button>
@@ -2032,28 +2021,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      service worker's tile cache, which holds a forest's worth of downloaded map. */
   var STORE = "fieldarc.v1";
   var PLACE_KEY = "fieldarc.place";
-  /* Open world: every published route at once, and points that belong to no park. The default
-     on a device that has never chosen (Kerem, 2026-09-20: "default opening will be the open
-     world mode"); the choice is remembered after that. Same lowercase key family as the rest —
-     see STORE's note for why these never take the new name. */
-  var WORLD_KEY = "fieldarc.world";
-
-  /* Open world is how you listen; a park is how you author. A listener is in open world
-     always, whatever this device once stored — they do not know where a park boundary is, and
-     place mode snaps them onto a route line they are not standing on. A setter still chooses,
-     because authoring needs the line, the sections cut from the park's own boundary, and the
-     scrub along t.
-
-     This reads the stored value and never writes it (setWorld is the only writer), so a setter
-     who signs out, walks as a listener and signs back in finds the switch where they left it
-     rather than reset by the listener session. */
-  function worldOn() {
-    if (!setterTools()) { return true; }
-    try { return localStorage.getItem(WORLD_KEY) !== "0"; } catch (e) { return true; }
-  }
-  function setWorld(on) {
-    try { localStorage.setItem(WORLD_KEY, on ? "1" : "0"); } catch (e) { /* private mode */ }
-  }
+  /* Open world is the only mode (Kerem, 2026-09-29: "the design is already like it"): the
+     switch and the one-route Walk that lived with it are gone. Place mode's code stays behind
+     worldOn() for now; it never runs. */
+  function worldOn() { return true; }
   /* The anon key is public by design — it ships to every visitor and is what row-level
      security is written against. The service key and the database URL never appear here. */
   var FA_CONFIG = {
@@ -2680,10 +2651,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var SETTER_ONLY = ["#mode-section", ".modes", "#mode-icons", "#f-name", "#f-note", "#g-type", "#f-tags",
       ".recmode", "#rec-add", "#rec-remove", ".chips", "#f-delete", "#f-patch", "#f-rhythm",
       "#hitgrid", "#storage > .actions", "#undo", "#publishbar", "#audit", "#photo-add",
-      /* .worldrow: a listener is in open world always (see worldOn), so the switch has one
-         possible value — and a control with one possible value is not a control. It stays in
-         the markup so a setter signing in on the same device gets it back without a reload. */
-      ".rowdel", "#place-list", "#place-list-label", ".worldrow"];
+      ".rowdel", "#place-list", "#place-list-label"];
     var show = setter.signedIn;
     /* Signed out, the page is the listener's (web/listener.js): the whole chrome below gives way to
        the apps' frame over the same map. */
@@ -3909,7 +3877,6 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     /* The markup's aria-pressed="true" is only a default for a device that has never chosen;
        a device that turned Open world off must see the switch reflect that, the same way
        gpsSet() drives #gps-btn from the stored GPS_KEY rather than trusting the markup. */
-    $("#world-switch").setAttribute("aria-pressed", String(worldOn()));
     $("#place-search").value = "";
     renderPlaceList();
     fetchAllRoutes().then(function () {
@@ -3941,7 +3908,6 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function applyWorld() {
     var on = worldOn();
     worldApplied = true;
-    $("#world-switch").setAttribute("aria-pressed", String(on));
     document.body.classList.toggle("world", on);
     if (on) { fetchWorld(); }
     map.getSource("features").setData({ type: "FeatureCollection", features: visible() });
@@ -3982,12 +3948,6 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     renderPlaceList();
     renderList();
   }
-  $("#world-switch").addEventListener("click", function () {
-    var on = this.getAttribute("aria-pressed") !== "true";
-    setWorld(on);
-    this.setAttribute("aria-pressed", String(on));
-    applyWorld();
-  });
 
   map.on("load", function () {
     $("#loading").hidden = true;
@@ -13610,33 +13570,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     $("#f-published").setAttribute("aria-pressed", String(!!f.properties.published));
     renderMix();
 
-    /* Walking one route alone is authoring: it snaps the walker onto the line and scrubs t,
-       which is how a setter checks a route, not how anyone listens to one. A listener is in
-       open world always now, so this button could only ever be greyed out for them — so it
-       goes instead of greying. Picking a route in the list is their way in, and it focuses the
-       route without leaving the mode. */
-    $("#f-walk").hidden = f.properties.kind !== "route" || !setterTools();
     $("#f-patch").hidden = f.properties.kind !== "route";
     renderPhotos(f);
     renderAudioMode(f);
-    $("#f-walk").setAttribute("aria-pressed", String(!!pacer && pacer.f === f));
-    /* Walk is a no-op in open world (I2) — the world walker already follows whichever route is
-       nearest, and clicking a route in the list centres and selects it without leaving the mode.
-       Disabled rather than merely inert, so a listener does not tap a button that does nothing. */
-    $("#f-walk").disabled = worldOn();
-    $("#f-walk").title = worldOn()
-      ? "Open world already follows the nearest route — turn it off to walk one route alone"
-      : "";
-    /* The title attribute above is the only place that explained the disabled state, and a
-       title never appears on a phone — a greyed button with no visible reason. Say the same
-       thing where it can actually be read: a line by the button, shown only for the case it
-       applies to (a route selected, Open world on). */
-    if ($("#f-walk-note")) {
-      /* Only where there is a button to explain. A listener has no switch to turn off, so the
-         note would be telling them to do something they cannot do. */
-      $("#f-walk-note").hidden = !(worldOn() && f.properties.kind === "route" && setterTools());
-    }
-
     /* A point marked in open world belongs to open world, and that is the whole of it (Kerem,
        2026-09-21: "No need to attach to a park. So don't complicate it."). There is deliberately
        no affordance for moving one into a park afterwards — a park's own points already show in
@@ -13809,21 +13745,6 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     });
   });
 
-  /* I2: pacer.f is always null in a world walk, so `pacer && pacer.f === f` never matches one —
-     a first click fell through to pacerStart(f), which tears down the world walker and replaces
-     it with a place-mode route walk while the switch still read Open world, and a second click
-     then stopped THAT walk and left no walker running at all. Open world already follows
-     whichever route is nearest (and picking a route from the list centres and selects it without
-     leaving the mode — Task 12); Walk exists to choose place mode's one-route focus, which open
-     world has no room for. Made a no-op here instead, so the world walker it would otherwise
-     have to fight is not affected. */
-  $("#f-walk").addEventListener("click", function () {
-    if (worldOn()) { return; }
-    var f = feature(selected);
-    if (!f || f.properties.kind !== "route") { return; }
-    if (pacer && pacer.f === f) { pacerStop(); } else { pacerStart(f); }
-    this.setAttribute("aria-pressed", String(!!pacer));
-  });
 
   $("#f-patch").addEventListener("click", function () {
     if (!setterTools()) { return; }

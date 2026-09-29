@@ -25,16 +25,8 @@ test("open world is the default on a setter's device that has never chosen", () 
   assert.equal(load(null)(), true);
 });
 
-test("a setter's device that turned it off stays off", () => {
-  assert.equal(load("0")(), false);
-});
-
 test("a setter's device that turned it on stays on", () => {
   assert.equal(load("1")(), true);
-});
-
-test("the key joins the existing lowercase family", () => {
-  assert.match(html, /var WORLD_KEY = "fieldarc\.world";/);
 });
 
 test("the map carries its own frame on a desktop, and not on the phone layout", () => {
@@ -44,30 +36,6 @@ test("the map carries its own frame on a desktop, and not on the phone layout", 
   const phone = html.slice(html.indexOf("#map { grid-row: 2; grid-column: 1;"));
   assert.match(phone.slice(0, 400), /#map \{ grid-row: 2; grid-column: 1; border-right: 0; border-bottom: 0; \}/,
     "the phone layout keeps its edges, where the map meets the sheet");
-});
-
-test("the picker carries the switch, and a listener sees routes but no park list", () => {
-  /* assert.match(html, /Open world/) used to sit here as a second, separate assertion — it
-     cannot fail, because "Open world" also appears inside this very file's own comments (see
-     the design decisions table above), so the string is always present regardless of the
-     button's markup. Matched as one tag instead, so the button's own visible text is what is
-     actually checked. */
-  assert.match(html, /<button type="button" id="world-switch" aria-pressed="true">Open world<\/button>/);
-  const render = src("renderPlaceList");
-  assert.match(render, /if \(!setterTools\(\)\) \{ \$\("#place-list"\)\.hidden = true;/,
-    "a park list is a dead end for a listener");
-  const click = html.slice(html.indexOf('$("#world-switch").addEventListener'));
-  assert.match(click.slice(0, 400), /setWorld\(/);
-  assert.match(click.slice(0, 400), /applyWorld\(\)/);
-});
-
-test("the switch is synced from worldOn() every time the menu renders, not left at its markup default", () => {
-  /* A device that previously turned Open world off must see the switch reflect that on the
-     next open — the markup's aria-pressed="true" is only the never-chosen default, the same
-     way #gps-btn is driven from the stored GPS_KEY rather than trusted from markup. */
-  const open = src("openPlaceMenu");
-  assert.match(open, /\$\("#world-switch"\)\.setAttribute\("aria-pressed", String\(worldOn\(\)\)\)/,
-    "openPlaceMenu must re-read worldOn() and drive the switch from it, not just from the click handler");
 });
 
 test("in open world every shown feature is visible, in place mode only the open park's", () => {
@@ -144,22 +112,6 @@ test("C1: fetchWorld rebuilds worldRoutes once every park's routes are actually 
      rewrite could satisfy the assertions above while worldStart's own snapshot silently drifts
      from what fetchWorld later computes. */
   assert.match(src("worldStart"), /worldRoutes = computeWorldRoutes\(\)/);
-});
-
-test("I2: Walk is a no-op in open world — it must never replace the world walker with a route walk", () => {
-  /* pacer.f is null in a world walk, so `pacer && pacer.f === f` never matched: a first click on
-     Walk fell through to pacerStart(f), tearing down the world walker (and everything it was
-     doing — sections, zones, the synth crossfade) while the switch still read Open world; a
-     second click then called pacerStop() on that route walk and left no walker running at all. */
-  const click = html.slice(html.indexOf('$("#f-walk").addEventListener'), html.indexOf('$("#f-patch").addEventListener'));
-  const WORLD_GUARD = /if\s*\(worldOn\(\)\)\s*\{\s*return;\s*\}/;
-  assert.match(click, WORLD_GUARD,
-    "the click handler must return before ever touching pacerStart/pacerStop while open world is on");
-  const guardAt = click.search(WORLD_GUARD);
-  const pacerStartAt = click.search(/pacerStart\(f\)/);
-  assert.ok(guardAt !== -1 && pacerStartAt !== -1 && guardAt < pacerStartAt,
-    "the guard must come before pacerStart/pacerStop, not after — a guard placed after either " +
-    "call runs too late to prevent the walker swap");
 });
 
 test("applyWorld reasserts renderDetail() so an open card's #f-walk state cannot survive the toggle stale", () => {
@@ -324,4 +276,10 @@ test("I4: the movement gate assigns placeCheckedAt only when the check actually 
   assert.ok(hoistedTotal < totalFires,
     "the hoisted (buggy) gate must fire fewer times than the real one over the same steps — " +
     "if it does not, this test cannot tell the two apart");
+});
+
+test("open world is the only mode: no switch, no one-route Walk (Kerem, 2026-09-29)", () => {
+  assert.ok(!html.includes('id="world-switch"'), "the Open world switch is gone");
+  assert.ok(!html.includes('id="f-walk"'), "Walk lived only in place mode");
+  assert.match(html, /function worldOn\(\) \{ return true; \}/);
 });
