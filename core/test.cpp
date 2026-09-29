@@ -11,6 +11,25 @@
 #include <string>
 #include <vector>
 
+/* The resampler as it was before its kernel table (2026-09-29): every tap's sinc and window computed
+   per output sample. Kept here as the reference the table must match. */
+static void ref_resample(const short *in, long long frames, double from_rate, short *out, double to_rate) {
+    const int TAPS = 32; const double PI = 3.141592653589793;
+    const double step = from_rate / to_rate, fc = 0.95 * std::min(1.0, to_rate / from_rate);
+    const long long n_out = fs_resample_length(frames, from_rate, to_rate);
+    auto window = [&](double x) { double t = (x + TAPS) / (2.0 * TAPS); if (t < 0 || t > 1) return 0.0;
+        return 0.35875 - 0.48829 * std::cos(2 * PI * t) + 0.14128 * std::cos(4 * PI * t) - 0.01168 * std::cos(6 * PI * t); };
+    for (long long j = 0; j < n_out; j++) {
+        const double pos = j * step; const long long c = (long long)std::floor(pos); const double frac = pos - c;
+        double acc = 0, norm = 0;
+        for (int k = -TAPS + 1; k <= TAPS; k++) {
+            const double x = k - frac, arg = PI * fc * x, h = fc * (x == 0 ? 1.0 : std::sin(arg) / arg) * window(x);
+            norm += h; const long long idx = c + k; if (idx >= 0 && idx < frames) acc += h * in[idx];
+        }
+        double v = norm != 0 ? acc / norm : 0; v = v > 32767 ? 32767 : v < -32768 ? -32768 : v; out[j] = (short)std::lround(v);
+    }
+}
+
 int main() {
     const float SR = 48000;
     const int B = 128;
@@ -614,6 +633,30 @@ int main() {
         double none = app_ratio(""), tuned = app_ratio("{\"tune\":1,\"focus\":0.1,\"partials\":6}");
         std::printf("app shaping: pink noise, on/off C#m9 - no shape: %.1f, tune 1: %.1f\n", none, tuned);
         assert(none < 3 && tuned > 10);
+    }
+    {   /* resampling: the kernel table matches the per-sample reference within 1 LSB, and is far faster.
+           A 13.5-min 44.1 kHz MP3 took 64 s to resample on a Mac and minutes on a phone, and the app's
+           one-at-a-time decode queue held every point behind it (Kerem, 2026-09-29: "no sound from points"). */
+        const long long N = 44100 * 2;
+        std::vector<short> in(N);
+        uint32_t r = 7;
+        for (long long i = 0; i < N; i++) { r = r * 1664525u + 1013904223u; in[i] = (short)(9000 * std::sin(i * 0.031) + ((int)(r >> 17) - 16384) / 2); }
+        const double RATES[4][2] = { { 44100, 48000 }, { 48000, 44100 }, { 22050, 48000 }, { 32000, 48000 } };
+        for (const auto &rt : RATES) {
+            const long long m = fs_resample_length(N, rt[0], rt[1]);
+            std::vector<short> a(m), b(m);
+            auto t0 = std::chrono::steady_clock::now();
+            ref_resample(in.data(), N, rt[0], a.data(), rt[1]);
+            auto t1 = std::chrono::steady_clock::now();
+            fs_resample_i16(in.data(), N, rt[0], b.data(), rt[1]);
+            auto t2 = std::chrono::steady_clock::now();
+            int worst = 0;
+            for (long long j = 0; j < m; j++) worst = std::max(worst, std::abs(a[j] - b[j]));
+            const double ta = std::chrono::duration<double>(t1 - t0).count(), tb = std::chrono::duration<double>(t2 - t1).count();
+            std::printf("resample %.0f -> %.0f: max diff %d LSB, %.1fx faster\n", rt[0], rt[1], worst, ta / std::max(tb, 1e-9));
+            assert(worst <= 1);
+            assert(ta / std::max(tb, 1e-9) > 8);
+        }
     }
     std::printf("core ok\n");
     return 0;
