@@ -3710,6 +3710,22 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   /* The boundary half of setPlace, on its own because open world also needs it: the walker
      crossing into a park loads that park's frame without selecting the park. */
   function setPlaceFrame(p) {
+    var r = outlinePark(p), b = r.b, main = r.main, frame = r.frame;
+    /* The sectors are cut out of this ring, so changing place re-cuts them. Held open (the
+       closing duplicate dropped) because the clipper treats every polygon as closed. */
+    sect.frame = (frame.length > 2 && frame[0][0] === frame[frame.length - 1][0] &&
+                  frame[0][1] === frame[frame.length - 1][1]) ? frame.slice(0, -1) : frame;
+    if (pacer) { sectorGeometry(pacer.m, pacer.patch.sect.n); sect.idx = null; }
+    drawSectors();
+
+    window.__fa.frameStats = { place: p.properties.name, ringPoints: main.length,
+                               framePoints: frame.length };
+    return b;
+  }
+
+  /* Only the drawn boundary: a park picked from Places shows its border without taking the
+     sections from the park the walker is in (Kerem, 2026-09-29). */
+  function outlinePark(p) {
     map.getSource("forest").setData({ type: "FeatureCollection", features: [p] });
 
     var rings = [], b = new maplibregl.LngLatBounds();
@@ -3726,16 +3742,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       return { type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: coords } };
     };
     map.getSource("forest-outer").setData({ type: "FeatureCollection", features: [line(frame)] });
-    /* The sectors are cut out of this ring, so changing place re-cuts them. Held open (the
-       closing duplicate dropped) because the clipper treats every polygon as closed. */
-    sect.frame = (frame.length > 2 && frame[0][0] === frame[frame.length - 1][0] &&
-                  frame[0][1] === frame[frame.length - 1][1]) ? frame.slice(0, -1) : frame;
-    if (pacer) { sectorGeometry(pacer.m, pacer.patch.sect.n); sect.idx = null; }
-    drawSectors();
-
-    window.__fa.frameStats = { place: p.properties.name, ringPoints: main.length,
-                               framePoints: frame.length };
-    return b;
+    return { b: b, main: main, frame: frame };
   }
 
   function setPlace(p, initial) {
@@ -7514,7 +7521,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (near) {
       if (near.id !== pacer.routeId) { worldSwap(near); }
       pacer.t = near.t;
+      /* the chord segments were drawn only at walk start, when the routes may not be in yet */
+      var newRoute = pacer.m !== near.m;
       pacer.m = near.m;
+      if (newRoute) { drawProgSegments(); }
       pacer.routeDist = near.dist;
       /* While a swap is pending, pacer.routeId still names the route being left, not the one
          near.id just picked — worldSwap owns the fade until its timer lands. Once routeId has
@@ -8351,6 +8361,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       /* the engine's own morphs, chord and route (fs_engine_morphs & co), ~30 times a second */
       m.t = performance.now();
       m.chord.label = dec.decode(m.chord.label);
+      /* the engine's chord lights its segment beside the route (bedStep did this on Tone) */
+      if (m.chord.step !== harmony.chord) { harmony.chord = m.chord.step; drawProgSegments(); }
       core.live = m;
       window.__fa.coreLive = m;
       fsListen._changed();
@@ -13876,7 +13888,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       frame: function (id) {
         var f = feature(id) || places.filter(function (p) { return p.properties.id === id; })[0];
         if (!f) { return; }
-        if (!feature(id)) { chosenPark = f; }
+        if (!feature(id)) { chosenPark = f; outlinePark(f); }
         if (f.geometry.type === "Point") { map.easeTo({ center: f.geometry.coordinates, zoom: Math.max(map.getZoom(), 16), duration: 600 }); return; }
         var b = new maplibregl.LngLatBounds();
         (function walk(c) { if (typeof c[0] === "number") { b.extend(c); } else { c.forEach(walk); } })(f.geometry.coordinates);
