@@ -21,7 +21,8 @@
 /* v9: the setter's Places lists each park once. */
 /* v10: the Open world switch and Walk leave the page. */
 /* v11: chord segments in open world; a picked park draws its border. */
-var SHELL = "fieldarc-shell-v11";
+/* v12: the engine asks for a draft rhythm or grains point's recordings. */
+var SHELL = "fieldarc-shell-v12";
 var TILES = "fieldarc-tiles-v1";
 
 var SHELL_FILES = [
