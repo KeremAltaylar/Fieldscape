@@ -209,14 +209,22 @@
       var q = search.value.trim().toLocaleLowerCase("tr");
       var has = function (n) { return !q || n.toLocaleLowerCase("tr").indexOf(q) >= 0; };
       var routes = L.routes().filter(function (r) { return has(r.name); });
-      var parks = L.parks().filter(function (p) { return has(p.name) && (q || p.held); });
+      /* Only the parks a setter set something in (Kerem, 2026-09-29); a setter's All parks switch
+         brings the rest of the city back, with the page's own park picker under it. */
+      var all = setter && allParks();
+      var parks = L.parks().filter(function (p) { return has(p.name) && (p.held || all); });
       list.textContent = "";
+      if (setter) {
+        list.appendChild(h("button", { type: "button", class: "ls-item ls-switch", "data-ls-allparks": "", "aria-pressed": String(all),
+                                       on: { click: function () { allParks(!all); sendHome(true); buildView(); } } },
+                           [h("span", { class: "ls-name", text: "All parks" }), h("span", { class: "ls-knob" })]));
+      }
       list.appendChild(h("p", { class: "ls-eyebrow", text: "Routes" }));
       list.appendChild(h("div", { class: "ls-routes" }, routes.length ? routes.map(function (r) {
         return h("button", { type: "button", class: "ls-item", on: { click: function () { L.select(r.id); L.frame(r.id); } } },
                  [h("span", { class: "ls-name", text: r.name }), h("span", { class: "ls-dist", text: metres(r.metres) }), h("span", { class: "ls-chev", text: "›" })]);
       }) : [note([q ? "No route by that name." : "No routes are published yet."])]));
-      list.appendChild(h("p", { class: "ls-eyebrow", text: q ? "Parks" : "Parks with recordings" }));
+      list.appendChild(h("p", { class: "ls-eyebrow", text: all ? "Parks" : "Parks with recordings" }));
       list.appendChild(h("div", { class: "ls-parks" }, parks.slice(0, 40).map(function (p) {
         var what = p.held ? [p.held.points ? p.held.points + " point" + (p.held.points > 1 ? "s" : "") : "", p.held.routes ? p.held.routes + " route" + (p.held.routes > 1 ? "s" : "") : ""].filter(Boolean).join(" · ") : "";
         return h("button", { type: "button", class: "ls-item", on: { click: function () { closeView(); L.frame(p.id); } } },
@@ -226,6 +234,12 @@
     search.addEventListener("input", fill);
     fill();
     return [sheetTitle("Places"), search, list];
+  }
+
+  function allParks(on) {
+    try { if (on === undefined) { return localStorage.getItem("fs.allParks") === "1"; } localStorage.setItem("fs.allParks", on ? "1" : "0"); }
+    catch (e) { /* private window: the switch just stays off */ }
+    return false;
   }
 
   /* ---- Archive (setters): the page's own list, filter and sort ---- */
@@ -412,7 +426,7 @@
       move($$("#setter"), more, true); move($$("#storage > .actions"), more, true); move($$("#undo"), more, true); move($$("#audit"), more, true);
     }
     if (setter && view === "places") {
-      var world = h("div", { class: "ls-setplaces" });
+      var world = h("div", { class: "ls-setplaces" + (allParks() ? "" : " ls-fewparks") });
       box.insertBefore(world, box.children[1]);
       move($$(".worldrow"), world, true); move($$("#place-list-label"), world, true); move($$("#place-list"), world, true);
     }

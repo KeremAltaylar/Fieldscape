@@ -239,7 +239,7 @@ struct MapView: UIViewRepresentable {
                 "base-topo": ["type": "raster", "tileSize": 256, "maxzoom": 17, "attribution": "© OpenStreetMap contributors, SRTM · © OpenTopoMap (CC-BY-SA)",
                               "tiles": ["https://a.tile.opentopomap.org/{z}/{x}/{y}.png"]],
                 "features": ["type": "geojson", "data": features],
-                "parks": ["type": "geojson", "data": MapView.parks()],
+                "parks": ["type": "geojson", "data": MapView.parks(features)],
                 "zones": ["type": "geojson", "data": ["type": "FeatureCollection", "features": []]],
                 "sections": ["type": "geojson", "data": ["type": "FeatureCollection", "features": []]],
                 "progseg": ["type": "geojson", "data": ["type": "FeatureCollection", "features": []]]
@@ -297,10 +297,20 @@ struct MapView: UIViewRepresentable {
         return url
     }
 
-    /* the park boundaries (places.geojson, bundled) */
-    static func parks() -> Any {
+    /* the park boundaries (places.geojson, bundled), only the parks something is published in (Kerem,
+       2026-09-29): each point, and each route's start, lights the first park it falls in (placeAt) */
+    static func parks(_ features: [String: Any]) -> Any {
         guard let u = Bundle.main.url(forResource: "places", withExtension: "geojson"), let d = try? Data(contentsOf: u),
-              let j = try? JSONSerialization.jsonObject(with: d) else { return ["type": "FeatureCollection", "features": []] }
+              var j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return ["type": "FeatureCollection", "features": []] }
+        let all = (j["features"] as? [[String: Any]]) ?? []
+        let rings = all.map { p in (((p["geometry"] as? [String: Any])?["coordinates"] as? [[[[Double]]]]) ?? []).compactMap { $0.first?.flatMap { $0 } } }
+        var keep = Set<Int>()
+        for f in (features["features"] as? [[String: Any]]) ?? [] {
+            let c = (f["geometry"] as? [String: Any])?["coordinates"]
+            guard let a = (c as? [Double]) ?? (c as? [[Double]])?.first, a.count >= 2 else { continue }
+            if let i = rings.firstIndex(where: { rs in rs.contains { r in r.withUnsafeBufferPointer { fs_point_in_ring(a[0], a[1], $0.baseAddress, Int32(r.count / 2)) != 0 } } }) { keep.insert(i) }
+        }
+        j["features"] = keep.sorted().map { all[$0] }
         return j
     }
     /* a circle of r metres as a ring of 48 corners */

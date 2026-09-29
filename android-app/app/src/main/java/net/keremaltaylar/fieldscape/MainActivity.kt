@@ -38,6 +38,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import org.json.JSONArray
 import org.json.JSONObject
 import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraUpdateFactory
@@ -455,6 +456,28 @@ class MainActivity : ComponentActivity() {
         })
     }
 
+    /** places.geojson cut to the parks something is published in (Kerem, 2026-09-29): each point, and
+     *  each route's start, lights the first park it falls in (placeAt). */
+    private fun heldParks(fc: JSONObject): String {
+        val places = JSONObject(assets.open("places.geojson").bufferedReader().readText())
+        val ps = places.getJSONArray("features")
+        val rings = (0 until ps.length()).map { i ->
+            val polys = ps.getJSONObject(i).getJSONObject("geometry").getJSONArray("coordinates")
+            (0 until polys.length()).map { k -> val r = polys.getJSONArray(k).getJSONArray(0); DoubleArray(r.length() * 2) { m -> r.getJSONArray(m / 2).getDouble(m % 2) } }
+        }
+        val keep = sortedSetOf<Int>()
+        val fs = fc.getJSONArray("features")
+        for (i in 0 until fs.length()) {
+            val c = fs.getJSONObject(i).optJSONObject("geometry")?.optJSONArray("coordinates") ?: continue
+            val a = c.optJSONArray(0) ?: c
+            if (a.length() < 2) continue
+            val k = rings.indexOfFirst { rs -> rs.any { Core.pointInRing(a.getDouble(0), a.getDouble(1), it) } }
+            if (k >= 0) keep += k
+        }
+        places.put("features", JSONArray(keep.map { ps.get(it) }))
+        return places.toString()
+    }
+
     private fun styleJson(fc: JSONObject) = """
     {"version":8,"sources":{
       "base-sat":{"type":"raster","tileSize":256,"maxzoom":19,"attribution":"Imagery © Esri",
@@ -464,7 +487,7 @@ class MainActivity : ComponentActivity() {
       "base-topo":{"type":"raster","tileSize":256,"maxzoom":17,"attribution":"© OpenStreetMap contributors, SRTM · © OpenTopoMap (CC-BY-SA)",
                   "tiles":["https://a.tile.opentopomap.org/{z}/{x}/{y}.png"]},
       "features":{"type":"geojson","data":$fc},
-      "parks":{"type":"geojson","data":${assets.open("places.geojson").bufferedReader().readText()}},
+      "parks":{"type":"geojson","data":${heldParks(fc)}},
       "zones":{"type":"geojson","data":{"type":"FeatureCollection","features":[]}},
       "sections":{"type":"geojson","data":{"type":"FeatureCollection","features":[]}},
       "progseg":{"type":"geojson","data":{"type":"FeatureCollection","features":[]}},
