@@ -22,7 +22,8 @@
 /* v10: the Open world switch and Walk leave the page. */
 /* v11: chord segments in open world; a picked park draws its border. */
 /* v12: the engine asks for a draft rhythm or grains point's recordings. */
-var SHELL = "fieldarc-shell-v12";
+/* v13: the apps' branch merged: core.wasm with the stretch shaping and the route's chord. */
+var SHELL = "fieldarc-shell-v13";
 var TILES = "fieldarc-tiles-v1";
 
 var SHELL_FILES = [

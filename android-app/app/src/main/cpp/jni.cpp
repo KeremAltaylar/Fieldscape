@@ -165,6 +165,14 @@ JNIEXPORT jdouble JNICALL FN(start)(JNIEnv *, jclass) {
                 for (short *p : E->live[s]) if (p) for (int i = 0; i < E->live_frames[s]; i += 2048) sink = sink + p[i];
         }
     }).detach();
+    /* the route's chord to the stretch voices (their tune and layers), as the web does 30 times a
+       second: a chord changes on the bar, so this cannot wait for a GPS fix */
+    std::thread([] {
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            for (int s = 0; s < SLOTS; s++) fs_stretch_chord(E->voice[s], E->piece);
+        }
+    }).detach();
     /* the stream's health in logcat every 2 s (adb logcat -s fieldscape): dropouts are measured, not guessed */
     std::thread([] {
         for (;;) {
@@ -193,6 +201,11 @@ JNIEXPORT void JNICALL FN(gain)(JNIEnv *, jclass, jint slot, jfloat g) { fs_mix_
 JNIEXPORT void JNICALL FN(lowpass)(JNIEnv *, jclass, jint slot, jfloat hz) { fs_mix_set_lowpass(E->mix, slot, hz, 350); }
 JNIEXPORT void JNICALL FN(grit)(JNIEnv *, jclass, jint slot, jfloat a) { fs_mix_set_grit(E->mix, slot, a); }
 JNIEXPORT void JNICALL FN(param)(JNIEnv *, jclass, jint slot, jint i, jfloat v) { fs_set_param(E->voice[slot], i, v); }
+JNIEXPORT void JNICALL FN(shape)(JNIEnv *env, jclass, jint slot, jstring json) {
+    const char *s = env->GetStringUTFChars(json, nullptr);
+    fs_stretch_shape(E->voice[slot], s);
+    env->ReleaseStringUTFChars(json, s);
+}
 
 /* A decoded stereo recording (16-bit, engine rate) for a slot; copied into native memory. */
 JNIEXPORT void JNICALL FN(load)(JNIEnv *env, jclass, jint slot, jshortArray l, jshortArray r) {

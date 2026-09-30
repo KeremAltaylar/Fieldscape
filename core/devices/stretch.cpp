@@ -11,6 +11,7 @@
    crossfades to it; nothing allocates after prepare. */
 #include "../device.hpp"
 #include "fft.hpp"
+#include "../json.hpp"
 #include <cstdint>
 #include <cstring>
 
@@ -615,3 +616,25 @@ struct Stretch : Device {
 };
 
 Device *make_stretch() { return new Stretch(); }
+
+/* The host's side of the shaping, shared by the web engine and both apps' walks, so every platform
+   reads a point the same way. The shaping's own names (properties.sound.shape); anything missing
+   takes the parameter's default, which is dry (A-8). */
+static const char *const SHAPE_KEYS[] = { "transpose", "tune", "focus", "partials", "layers", "harmony", "glide", "drift", "blur", "start", "end", "width" };
+static int stretch_param(const char *id) { for (int i = 0; i < P_COUNT; i++) if (!std::strcmp(STRETCH_PARAMS[i].id, id)) return i; return -1; }
+
+extern "C" void fs_stretch_shape(fs_device *d, const char *shape_json) {
+    const Json sh = Json::parse(shape_json);
+    for (const char *k : SHAPE_KEYS) {
+        const int i = stretch_param(k);
+        fs_set_param(d, i, (float)sh.n(k, STRETCH_PARAMS[i].def));
+    }
+}
+extern "C" void fs_stretch_chord(fs_device *d, fs_device *piece) {
+    float notes[5] = { -1, -1, -1, -1, -1 }, root = -1;
+    const int n = fs_piece_chord_notes(piece, notes, &root);
+    if (n <= 0) return;                          /* no chord yet: the voices keep the last one */
+    for (int k = n; k < 5; k++) notes[k] = -1;
+    for (int k = 0; k < 5; k++) fs_set_param(d, P_CHORD0 + k, notes[k]);
+    fs_set_param(d, P_ROOT, root);
+}
