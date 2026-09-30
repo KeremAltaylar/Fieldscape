@@ -29,12 +29,13 @@
     routes = rows.map(function (r) { return { id: r.id, name: r.properties.name || "Route", patch: r.properties.patch || {} }; });
     $("#lab-route").innerHTML = routes.map(function (r) { return "<option value='" + r.id + "'>" + r.name.replace(/</g, "&lt;") + "</option>"; }).join("");
     setRoute(routes.length ? routes[0].id : null);
-  });
+  }).catch(function (e) { $("#lab-why").textContent = "Could not load the engine or the routes: " + (e && e.message || e); throw e; });
 
   function setRoute(id) {
     route = routes.filter(function (r) { return r.id === id; })[0] || null;
     var p = cstr(JSON.stringify(route ? route.patch : {}));
     prog = call(x.fs_harmony_progression, [p, tuning, 0]); x.free(p);
+    gate();
     $("#lab-step").innerHTML = prog.chords.map(function (c, i) { return "<option value='" + i + "'>" + (i + 1) + " · " + noteName(c.root).replace(/-?[0-9]+.*$/, "") + " " + c.label + "</option>"; }).join("");
   }
 
@@ -51,7 +52,7 @@
       analysis = call(x.fs_analyse, [p, BigInt(n), sr]); x.free(p);
       $("#lab-note").textContent = file.name + (b.length > n ? " — only the first 30 s analysed" : "") +
         (analysis.f0 > 0 ? "" : " — unpitched: it has no pitch to retune; the pitch-making synths come next (sub-project 2)");
-      show();
+      show(); gate();
       return analysis;
     }).catch(function (e) { $("#lab-note").textContent = "Could not read that file: " + (e && e.message || e); throw e; });
   }
@@ -112,7 +113,36 @@
     hz.forEach(function (h, i) { var r = rateFor(h); rates.push(r); gains.push(lvl); voice(r, kind === "scale" ? t + i * beat : t, kind === "scale" ? beat * 0.9 : beat * 4, lvl); });
     return { rates: rates, hz: hz, gains: gains };
   }
+  /* The play buttons only when there is something to play, and a line saying why not (Kerem,
+     2026-09-30: "I can not click to note scale chord progression buttons" - they looked ready and did
+     nothing before a file, or with a file that has no pitch). */
+  function gate() {
+    var why = !prog ? "Routes are still loading." : !analysis ? "Load a pitched recording first." :
+      !(analysis.f0 > 0) ? "This recording is unpitched: there is no pitch to retune yet. The pitch-making synths come next (sub-project 2)." : "";
+    document.querySelectorAll("[data-play]").forEach(function (b) { b.disabled = !!why; });
+    $("#lab-why").textContent = why;
+  }
+  var litTimer = null;
+  function light(kind) {
+    document.querySelectorAll("[data-play]").forEach(function (b) { b.setAttribute("aria-pressed", String(b.dataset.play === kind)); });
+    clearTimeout(litTimer);
+    if (kind && ctx) {
+      var end = last.reduce(function (m, v) { return Math.max(m, v.stopAt); }, 0);
+      litTimer = setTimeout(function () { light(null); }, Math.max(0, end - ctx.currentTime) * 1000);
+    }
+  }
+  /* An iPhone mutes web audio with its silent switch unless the page is a playback app: say so
+     (iOS 16.4+), and play a silent element inside the tap, as the site does on phones. */
+  var unlocked = false;
+  function unlock() {
+    if (unlocked) { return; }
+    unlocked = true;
+    try { if (navigator.audioSession) { navigator.audioSession.type = "playback"; } } catch (e) { /* older iOS */ }
+    var el = $("#lab-keep");
+    if (el) { try { var p = el.play(); if (p && p.catch) { p.catch(function () {}); } } catch (e) { /* declined */ } }
+  }
   function stop() {
+    light(null);
     var c = ctx; if (!c) { return; }
     var now = c.currentTime;
     playing.forEach(function (v) {
@@ -142,7 +172,9 @@
   $("#lab-route").addEventListener("change", function () { setRoute(this.value); });
   $("#lab-just").addEventListener("click", function () { tuning = 1; this.setAttribute("aria-pressed", "true"); $("#lab-equal").setAttribute("aria-pressed", "false"); setRoute(route && route.id); });
   $("#lab-equal").addEventListener("click", function () { tuning = 0; this.setAttribute("aria-pressed", "true"); $("#lab-just").setAttribute("aria-pressed", "false"); setRoute(route && route.id); });
-  document.querySelectorAll("[data-play]").forEach(function (b) { b.addEventListener("click", function () { play(b.dataset.play); }); });
+  document.querySelectorAll("[data-play]").forEach(function (b) {
+    b.addEventListener("click", function () { unlock(); var r = play(b.dataset.play); if (r && !r.silent) { light(b.dataset.play); } });
+  });
   $("#lab-stop").addEventListener("click", stop);
 
   window.fsLab = { ready: ready, load: load, get analysis() { return analysis; }, get routes() { return routes; }, setRoute: setRoute, play: play, stop: stop,

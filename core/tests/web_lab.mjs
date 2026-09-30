@@ -31,9 +31,16 @@ try {
   for (let i = 0; i < 60 && !(await ev("!!window.fsLab")); i++) await sleep(250);
   await ev("fsLab.ready");
   check("the bench loads its engine", await ev("!!fsLab.ready"), null);
+  /* Kerem, 2026-09-30: "I can not click to note scale chord progression buttons" - on a fresh page they
+     looked ready and did nothing. Now they are disabled until there is something to play, and say why. */
+  check("before a recording: the play buttons are disabled", await ev("[].every.call(document.querySelectorAll('[data-play]'), function (b) { return b.disabled; })"), null);
+  check("... and the page says what to do", /load a pitched recording/i.test(await ev("document.querySelector('#lab-why').textContent")), await ev("document.querySelector('#lab-why').textContent"));
   check("published routes are listed", (await ev("fsLab.routes.length")) >= 1, await ev("fsLab.routes.length"));
 
   const a = await ev(`fsLab.load(${WAV(146.83, 2, 44100)}).then(function (a) { return a; })`);
+  check("with a pitched recording the play buttons are enabled", await ev("[].every.call(document.querySelectorAll('[data-play]'), function (b) { return !b.disabled; })"), null);
+  const lit = await ev("(function(){ var b = document.querySelector(\"[data-play='chord']\"); b.click(); var on = b.getAttribute('aria-pressed'); fsLab.stop(); return [on, b.getAttribute('aria-pressed')]; })()");
+  check("the button playing is lit, and goes out on Stop", lit[0] === "true" && lit[1] === "false", lit);
   check("a 44.1 kHz stereo D3 is analysed as pitched, within 5 cents", a && a.verdict === "pitched" && Math.abs(1200 * Math.log2(a.f0 / 146.83)) < 5, a && [a.verdict, a.f0]);
   check("its pitch track is drawn", await ev("document.querySelector('#lab-track') && document.querySelector('#lab-track').dataset.points > 0"), null);
 
@@ -73,6 +80,7 @@ try {
   await ev(`fsLab.load(${NOISE}).then(function () { return 1; })`);
   const un = await ev("(function(){ var r = fsLab.play('chord'); return { r: r, note: document.querySelector('#lab-note').textContent }; })()");
   check("an unpitched recording says why it does not play yet", un.r && un.r.silent && /unpitched/i.test(un.note), un);
+  check("... and its play buttons are disabled, with the reason beside them", await ev("document.querySelector(\"[data-play='chord']\").disabled && /unpitched/i.test(document.querySelector('#lab-why').textContent)"), null);
   await ev(`fsLab.load(${WAV(220, 120, 22050)}).then(function () { return 1; })`);
   const kept = await ev("fsLab.bufferSeconds");
   check("a long recording keeps only the 30 s it analysed", kept > 29.9 && kept <= 30.01, kept);
