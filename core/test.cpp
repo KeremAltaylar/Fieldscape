@@ -2,6 +2,8 @@
 //   c++ -std=c++17 -O2 core/core.cpp core/mix.cpp core/place.cpp core/sections.cpp core/webm.cpp core/devices/*.cpp core/test.cpp -o fs_test && ./fs_test
 #include "fieldscape.h"
 #include "harmony.hpp"
+#include "devices/fft.hpp"
+#include "samplers.hpp"
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -51,6 +53,66 @@ static unsigned long long swap_walk_hash() {
     }
     fs_destroy(d);
     return note_hash(log);
+}
+
+/* sample harmony 2a: render a Resonator straight, and measure what it made */
+static std::vector<float> noise_src(double secs, float amp, uint32_t seed) {
+    std::vector<float> v((size_t)(secs * 48000));
+    for (auto &x : v) { seed = seed * 1664525u + 1013904223u; x = amp * (((int)(seed >> 8) - 8388608) / 8388608.0f); }
+    return v;
+}
+static std::vector<float> res_render(int body, int excite, double focus, double colour, double tune, double f, double secs,
+                                     const std::vector<float> &src, double att = 0.02, double rel = 0.6) {
+    sampler::Resonator r; r.init(48000);
+    r.body = body; r.excite = excite; r.focus = focus; r.colour = colour; r.tune = tune; r.att = att; r.rel = rel;
+    const float *p[1] = { src.data() }; r.set_source(1, (long long)src.size(), p);
+    r.attack(f, 0.0, 0.5); r.release(secs + 10);
+    std::vector<float> L((size_t)(secs * 48000), 0.0f), R(L.size(), 0.0f);
+    for (size_t i = 0; i < L.size(); i += 128) r.render(L.data() + i, R.data() + i, (int)std::min<size_t>(128, L.size() - i), i / 48000.0);
+    return L;
+}
+/* the strongest frequency within f x (1 +- span): a 65536-point Hann FFT of the last 1.37 s, log-parabola peak */
+static double peak_near(const std::vector<float> &x, double sr, double f, double span) {
+    const int N = 65536; FFT fft; fft.reserve(N); fft.plan(N); fft.twiddles(0, N);
+    std::vector<float> b(4 * N); float *ar = b.data(), *ai = ar + N, *br = ai + N, *bi = br + N;
+    size_t s0 = x.size() - N;
+    for (int i = 0; i < N; i++) { ar[i] = (float)(x[s0 + i] * (0.5 - 0.5 * std::cos(2 * 3.141592653589793 * i / N))); ai[i] = 0; }
+    for (int p = 0; p < fft.passes; p++) { if (p % 2 == 0) fft.pass(p, ar, ai, br, bi, 0, fft.butterflies(p)); else fft.pass(p, br, bi, ar, ai, 0, fft.butterflies(p)); }
+    const float *re = fft.passes % 2 ? br : ar, *im = fft.passes % 2 ? bi : ai;
+    auto mag = [&](int k) { return std::sqrt((double)re[k] * re[k] + (double)im[k] * im[k]) + 1e-20; };
+    int lo = std::max(2, (int)(f * (1 - span) * N / sr)), hi = std::min(N / 2 - 2, (int)(f * (1 + span) * N / sr) + 1), pk = lo;
+    for (int k = lo; k <= hi; k++) if (mag(k) > mag(pk)) pk = k;
+    double a = std::log(mag(pk - 1)), c = std::log(mag(pk)), d = std::log(mag(pk + 1)), den = a - 2 * c + d;
+    return (pk + (den != 0 ? 0.5 * (a - d) / den : 0)) * sr / N;
+}
+/* A bowed (noise-driven) resonance's centre: one spectrum of it wanders +-7 cents with the noise (measured
+   2026-09-30), so power spectra of 65536-point Hann windows are averaged over the last `secs` seconds
+   (half-overlapped), then the power-weighted mean frequency within 0.5% of the peak is taken. */
+static double centre_near(const std::vector<float> &x, double sr, double f, double secs) {
+    const int N = 65536; FFT fft; fft.reserve(N); fft.plan(N); fft.twiddles(0, N);
+    std::vector<float> b(4 * N); float *ar = b.data(), *ai = ar + N, *br = ai + N, *bi = br + N;
+    std::vector<double> pw(N / 2, 0.0);
+    size_t from = x.size() - (size_t)(secs * sr);
+    for (size_t s0 = from; s0 + N <= x.size(); s0 += N / 2) {
+        for (int i = 0; i < N; i++) { ar[i] = (float)(x[s0 + i] * (0.5 - 0.5 * std::cos(2 * 3.141592653589793 * i / N))); ai[i] = 0; }
+        for (int p = 0; p < fft.passes; p++) { if (p % 2 == 0) fft.pass(p, ar, ai, br, bi, 0, fft.butterflies(p)); else fft.pass(p, br, bi, ar, ai, 0, fft.butterflies(p)); }
+        const float *re = fft.passes % 2 ? br : ar, *im = fft.passes % 2 ? bi : ai;
+        for (int k = 0; k < N / 2; k++) pw[k] += (double)re[k] * re[k] + (double)im[k] * im[k];
+    }
+    int lo = (int)(f * 0.96 * N / sr), hi = (int)(f * 1.04 * N / sr) + 1, pk = lo;
+    for (int k = lo; k <= hi; k++) if (pw[k] > pw[pk]) pk = k;
+    int a = (int)std::floor(pk * 0.995), z = (int)std::ceil(pk * 1.005); if (z - a < 2) { a = pk - 1; z = pk + 1; }
+    double num = 0, den = 0; for (int k = a; k <= z; k++) { num += pw[k] * k; den += pw[k]; }
+    return num / den * sr / N;
+}
+/* the decay time: RMS in 20 ms windows, a line through the part 6-26 dB under the peak, extended to -60 dB */
+static double t60_of(const std::vector<float> &x) {
+    const int W = 960; std::vector<double> db;
+    for (size_t i = 0; i + W <= x.size(); i += W) { double e = 0; for (int k = 0; k < W; k++) e += (double)x[i + k] * x[i + k]; db.push_back(10 * std::log10(e / W + 1e-30)); }
+    size_t pk = std::max_element(db.begin(), db.end()) - db.begin(); double top = db[pk], sx = 0, sy = 0, sxx = 0, sxy = 0; int m = 0;
+    for (size_t i = pk; i < db.size(); i++) if (db[i] <= top - 6 && db[i] >= top - 26) { double t = i * 0.02; sx += t; sy += db[i]; sxx += t * t; sxy += t * db[i]; m++; }
+    double slope = (m * sxy - sx * sy) / (m * sxx - sx * sx);
+    return -60 / slope;
 }
 
 /* The resampler as it was before its kernel table (2026-09-29): every tap's sinc and window computed
@@ -896,6 +958,30 @@ int main() {
             assert(lb - la >= (long)(0.1 * SR3));
         }
 
+    }
+    {   /* 2a: the Resonator's String - its notes land within 3 cents, Focus is the ring time, Tune 0 is the raw recording */
+        const std::vector<float> wind = noise_src(12, 0.5f, 42);
+        const double F[7] = { 55, 110, 220, 440, 880, 1760, 3520 };
+        double worst = 0, worst_b = 0;
+        for (double f : F) {                                             /* plucked: the loop's tuning, exactly */
+            double got = peak_near(res_render(sampler::STRING, sampler::PLUCKED, 0.9, 0.5, 1, f, 3, wind), 48000, f, 0.04);
+            worst = std::max(worst, std::fabs(1200 * std::log2(got / f)));
+        }
+        /* bowed: the same loop fed continuously; averaged, 110 Hz up (at 55 Hz the resonance is narrower than the
+           measurement resolves - the plucked 55 Hz covers that loop) */
+        for (double f : F) if (f >= 110) {
+            double got = centre_near(res_render(sampler::STRING, sampler::BOWED, 0.9, 0.5, 1, f, 10, wind), 48000, f, 8);
+            worst_b = std::max(worst_b, std::fabs(1200 * std::log2(got / f)));
+        }
+        std::printf("resonator string: worst pitch error plucked %.2f cents (55 Hz - 3.5 kHz), bowed %.2f cents (110 Hz - 3.5 kHz)\n", worst, worst_b);
+        assert(worst < 3 && worst_b < 3);
+        double t0 = t60_of(res_render(sampler::STRING, sampler::PLUCKED, 0, 1, 1, 220, 1.5, wind));
+        double t1 = t60_of(res_render(sampler::STRING, sampler::PLUCKED, 1, 1, 1, 220, 6, wind));
+        std::printf("resonator string: T60 at Focus 0 %.2f s, at Focus 1 %.2f s\n", t0, t1);
+        assert(std::fabs(t0 / 0.2 - 1) < 0.2 && std::fabs(t1 / 10 - 1) < 0.2);
+        std::vector<float> a = res_render(sampler::STRING, sampler::BOWED, 0.1, 0.2, 0, 220, 1, wind);
+        std::vector<float> b = res_render(sampler::STRING, sampler::BOWED, 0.9, 0.9, 0, 440, 1, wind);
+        assert(a == b);                                                  /* Tune 0: the resonator is out of the path */
     }
     std::printf("core ok\n");
     return 0;
