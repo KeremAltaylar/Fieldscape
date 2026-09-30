@@ -42,7 +42,7 @@
     return JSON.parse(s);
   }
 
-  var ready = fetch("web/core-lab.wasm").then(function (r) { return r.arrayBuffer(); }).then(function (b) {
+  var ready = fetch("web/core-lab.wasm", { cache: "no-cache" }).then(function (r) { return r.arrayBuffer(); }).then(function (b) {
     return WebAssembly.instantiate(b, { env: new Proxy({}, { get: function () { return function () { return 0; }; } }),
       wasi_snapshot_preview1: new Proxy({}, { get: function () { return function () { return 0; }; } }) });
   }).then(function (r) {

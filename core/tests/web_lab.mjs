@@ -31,6 +31,7 @@ try {
   for (let i = 0; i < 60 && !(await ev("!!window.fsLab")); i++) await sleep(250);
   await ev("fsLab.ready");
   check("the bench loads its engine", await ev("!!fsLab.ready"), null);
+  check("the lab's script is always fetched fresh (a versioned address)", await ev("[].some.call(document.scripts, function (s) { return s.src.indexOf('web/lab.js?v=') >= 0; })"), await ev("[].map.call(document.scripts, function (s) { return s.src; })"));
   /* Kerem, 2026-09-30: "I can not click to note scale chord progression buttons" - on a fresh page they
      looked ready and did nothing. Now they are disabled until there is something to play, and say why. */
   check("before a recording: the play buttons are disabled", await ev("[].every.call(document.querySelectorAll('[data-play]'), function (b) { return b.disabled; })"), null);

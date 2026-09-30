@@ -53,6 +53,8 @@
 </section>
 <!-- silent, looping: played inside the first tap so an iPhone treats the page as playback (silent switch) -->
 <audio id="lab-keep" loop preload="auto" aria-hidden="true" src="data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA="></audio>
-<script src="web/lab.js"></script>
+<!-- always the newest script: GitHub Pages caches files 10 minutes, and a plain reload kept an old lab.js
+     under a new page (Kerem, 2026-09-30: the Octave menu was there but did nothing) -->
+<script>(function () { var s = document.createElement("script"); s.src = "web/lab.js?v=" + Date.now(); document.body.appendChild(s); })();</script>
 </body>
 </html>
