@@ -30,7 +30,7 @@ Frame yin(const float *x, int W, double sr, double fmin, double fmax, std::vecto
     for (int tau = tmin; tau <= tmax; tau++) if (d[tau] < 0.15) { while (tau + 1 <= tmax && d[tau + 1] < d[tau]) tau++; best = tau; break; }
     if (best < 0) { best = tmin; for (int tau = tmin; tau <= tmax; tau++) if (d[tau] < d[best]) best = tau; }
     double t = best;
-    if (best > 1 && best < tmax) { double a = raw[best - 1], b = raw[best], c = raw[best + 1], den = a - 2 * b + c; if (den != 0) t = best + 0.5 * (a - c) / den; }
+    if (best > 1 && best < tmax) { double a = raw[best - 1], b = raw[best], c = raw[best + 1], den = a - 2 * b + c; if (den != 0) t = best + std::max(-1.0, std::min(1.0, 0.5 * (a - c) / den)); }   /* a parabola never moves the dip past its neighbours */
     double conf = std::max(0.0, std::min(1.0, 1 - d[best]));
     return { t > 0 ? sr / t : 0, conf, 0 };
 }

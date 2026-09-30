@@ -39,7 +39,8 @@ struct Follower {
         if (idx < 0 || idx >= n) idx = best;
         else if (best != idx) {
             double gap = std::fabs(cents(t[idx], t[best]));
-            if (std::fabs(cents(f0, t[idx])) - std::fabs(cents(f0, t[best])) > margin * gap) idx = best;
+            /* d(held) - d(new) = 2 x how far past the midpoint the pitch is: past by margin x gap moves it */
+            if (std::fabs(cents(f0, t[idx])) - std::fabs(cents(f0, t[best])) > 2 * margin * gap) idx = best;
         }
         to = t[idx];
         if (!(at > 0)) at = to;

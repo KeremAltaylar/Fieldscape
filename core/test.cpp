@@ -36,6 +36,23 @@ static unsigned long long note_hash(const NoteLog &l) {
     return h;
 }
 
+/* A walk that swaps between two routes every 7.3 s at odd places along them, hashed as walk_notes. */
+static unsigned long long swap_walk_hash() {
+    NoteLog log; unsigned seed = 777;
+    fs_device *d = fs_create("piece");
+    fs_prepare(d, 48000, 128);
+    fs_piece_test_hooks(d, fixed_draw, &seed, log_note, &log);
+    int a = fs_piece_add_route(d, "{}"), b = fs_piece_add_route(d, "{}");
+    for (int i = 0; i < 90 * 48000 / 128; i++) {
+        double sec = i * 128.0 / 48000;
+        int r = ((int)(sec / 7.3)) % 2 ? b : a;
+        fs_piece_walk(d, r, std::fmod(sec * 0.0173 + (r == b ? 0.41 : 0.0), 1.0), 0);
+        fs_process(d, 128);
+    }
+    fs_destroy(d);
+    return note_hash(log);
+}
+
 /* The resampler as it was before its kernel table (2026-09-29): every tap's sinc and window computed
    per output sample. Kept here as the reference the table must match. */
 static void ref_resample(const short *in, long long frames, double from_rate, short *out, double to_rate) {
@@ -816,6 +833,34 @@ int main() {
         }
         char small[4] = "abc";
         assert(fs_analyse(sine.data(), (long long)sine.size(), SR, small, sizeof small) > 4 && std::strcmp(small, "abc") == 0);
+    }
+    {   /* final review (2026-09-30): route swaps in equal temperament match the engine before the harmony
+           core (hash from f0a81d7); the hysteresis margin is 30% of the gap past the midpoint (A-14);
+           odd signals keep every per-frame pitch finite and near the search range */
+        unsigned long long sw = swap_walk_hash();
+        std::printf("swap walk: hash %llu\n", sw);
+        assert(sw == 1554010510690710589ULL);
+        double T2[2] = { 220, 440 * std::pow(2.0, -10 / 12.0) };            /* A3, B3: 200 cents apart */
+        auto at = [](double c) { return 220 * std::pow(2.0, c / 1200); };
+        harmony::Follower f; f.choose(221, T2, 2);
+        assert(f.choose(at(100 + 0.2 * 200), T2, 2) == 0);                  /* 20% of the gap past the midpoint: held */
+        assert(f.choose(at(100 + 0.35 * 200), T2, 2) == 1);                 /* 35%: moves */
+        assert(f.choose(at(100 - 0.2 * 200), T2, 2) == 1);                  /* and back: held the other way */
+        assert(f.choose(at(100 - 0.35 * 200), T2, 2) == 0);
+        const double SR2 = 48000, PI2 = 3.141592653589793; uint32_t rr = 5;
+        std::vector<float> clicks(SR2 * 2), chirp(SR2 * 2);
+        for (size_t i = 0; i < clicks.size(); i++) {
+            double t = i / SR2; clicks[i] = (i % 997 == 0) ? 0.9f : 0.0f;
+            chirp[i] = (float)(0.5 * std::sin(2 * PI2 * (50 + 2500 * t) * t)); rr = rr * 1664525u + 1013904223u;
+        }
+        for (auto *x : { &clicks, &chirp }) {
+            int need = fs_analyse(x->data(), (long long)x->size(), SR2, nullptr, 0);
+            std::vector<char> b(need + 1); fs_analyse(x->data(), (long long)x->size(), SR2, b.data(), (int)b.size());
+            std::string j = b.data(); size_t p = j.find("\"track\":[") + 9; double mx = 0;
+            while ((p = j.find('[', p)) != std::string::npos) { mx = std::fmax(mx, std::atof(j.c_str() + p + 1)); p++; }
+            assert(mx < 2400);
+        }
+        std::printf("review fixes: swap walk unchanged, hysteresis holds to 30%% past the midpoint, per-frame pitch bounded\n");
     }
     std::printf("core ok\n");
     return 0;

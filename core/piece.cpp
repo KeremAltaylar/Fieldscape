@@ -586,8 +586,11 @@ struct Piece : Device {
     int default_tuning = harmony::EQUAL;    /* fs_piece_default_tuning */
     /* A note under the chord playing (the harmony core): today's mtof in equal temperament. */
     double note_hz(int m) {
-        int step = H.chord >= 0 ? H.chord : chord_index(t_along);
         int tu = patch.tuning >= 0 ? patch.tuning : default_tuning;
+        if (tu != harmony::JUST) return harmony::mtof(m);      /* equal: today's mtof, touching nothing else */
+        /* the chord playing; before the bar has set one (a route swap), where the walk is - read only:
+           chord_index would move the chord's own hysteresis (H.idx) ahead of harmony_bar */
+        int step = H.chord >= 0 ? H.chord : (H.idx >= 0 ? H.idx : std::max(0, std::min(patch.nprog - 1, (int)std::floor(t_along * patch.nprog))));
         return harmony::hz(tu, m, chord_root(step), dom_q(chord_quality(step)));
     }
 
