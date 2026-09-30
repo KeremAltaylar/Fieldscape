@@ -1016,6 +1016,62 @@ int main() {
             assert(std::fabs(got / want - 1) < 0.01);
         }
     }
+    {   /* 2a: no clicks (attack, release, a steal, stop), no runaway, bowed level = the recording's, fast enough */
+        const double SR = 48000;
+        std::vector<float> dc((size_t)(SR * 10), 0.5f);               /* a flat recording: every step is the envelope's */
+        sampler::Resonator r; r.init(SR); r.tune = 0; r.att = 0.005; r.rel = 0.03;
+        const float *p[1] = { dc.data() }; r.set_source(1, (long long)dc.size(), p);
+        for (int k = 0; k < 7; k++) { r.attack(110 * (k + 1), 0.05 * k, 0.5); r.release(0.05 * k + 0.2); }   /* the 7th steals */
+        std::vector<float> L((size_t)SR, 0.0f), R(L.size(), 0.0f);
+        for (size_t i = 0; i < L.size(); i += 128) { if (i == 24064) r.stop_all();   /* a block boundary: the loop steps 128 */ r.render(L.data() + i, R.data() + i, 128, i / SR); }
+        double step = 0; for (size_t i = 1; i < L.size(); i++) step = std::max(step, (double)std::fabs(L[i] - L[i - 1]));
+        const double bound = 0.5 * 0.5 * std::max(1.0 / (0.005 * SR), 1 - std::pow(1e-4, 1.0 / (0.03 * SR))) * 1.05;
+        std::printf("resonator envelopes: largest step %.5f (bound %.5f)\n", step, bound);
+        assert(step <= bound);
+        double tail = 0; for (size_t i = 24064 + 480; i < L.size(); i++) tail = std::max(tail, (double)std::fabs(L[i]));
+        assert(tail == 0);                                             /* stop_all: silent 10 ms later */
+        /* no recording: silence, no crash */
+        sampler::Resonator q; q.init(SR); q.attack(220, 0, 0.5);
+        std::vector<float> z(4096, 0.0f), z2(4096, 0.0f); q.render(z.data(), z2.data(), 4096, 0);
+        for (float s : z) assert(s == 0);
+        /* extreme notes and a minute at Focus 1 on full-scale noise: finite and bounded */
+        const std::vector<float> loud = noise_src(10, 1.0f, 3);
+        for (double f : { 5.0, 12000.0, 55.0 }) {
+            std::vector<float> o = res_render(sampler::STRING, sampler::BOWED, 1, 1, 1, f, f == 55.0 ? 60 : 2, loud);
+            double mx = 0; for (float s : o) { assert(std::isfinite(s)); mx = std::max(mx, (double)std::fabs(s)); }
+            assert(mx < 4);
+        }
+        /* bowed level follows the recording's within 1 dB, every body */
+        const std::vector<float> wind = noise_src(10, 0.5f, 11);
+        auto rms = [](const std::vector<float> &x) { double e = 0; size_t a = 2 * 48000, b = 4 * 48000; for (size_t i = a; i < b; i++) e += (double)x[i] * x[i]; return 10 * std::log10(e / (b - a)); };
+        for (int body = 0; body < 3; body++) {
+            double wet = rms(res_render(body, sampler::BOWED, 0.5, 0.5, 1, 220, 4, wind)), dry = rms(res_render(body, sampler::BOWED, 0.5, 0.5, 0, 220, 4, wind));
+            std::printf("resonator body %d: bowed %.2f dB vs the recording %.2f dB\n", body, wet, dry);
+            assert(std::fabs(wet - dry) <= 1);
+        }
+        /* a setting changed while voices sound touches only the next note */
+        sampler::Resonator s; s.init(SR); const float *wp[1] = { wind.data() }; s.set_source(1, (long long)wind.size(), wp);
+        s.attack(220, 0, 0.5); std::vector<float> a1(4800, 0.0f), a2(4800, 0.0f); s.render(a1.data(), a2.data(), 4800, 0);
+        double g = s.v[0].g; s.focus = 0.1; s.colour = 0.1; s.body = sampler::TUBE; s.render(a1.data(), a2.data(), 4800, 0.1);
+        assert(s.v[0].g == g);
+        /* six bowed strings inside one 128-sample block's budget */
+        sampler::Resonator sp; sp.init(SR); sp.set_source(1, (long long)wind.size(), wp);
+        for (int k = 0; k < 6; k++) sp.attack(110 * (k + 1), 0, 0.2);
+        std::vector<double> ms; std::vector<float> b1(128), b2(128);
+        for (int k = 0; k < (int)(10 * SR / 128); k++) {
+            std::fill(b1.begin(), b1.end(), 0.0f); std::fill(b2.begin(), b2.end(), 0.0f);
+            auto c0 = std::chrono::steady_clock::now(); sp.render(b1.data(), b2.data(), 128, k * 128 / SR);
+            ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - c0).count());
+        }
+        std::sort(ms.begin(), ms.end());
+#ifdef FS_TEST_O1
+        const double slack = 1.5;
+#else
+        const double slack = 1;
+#endif
+        std::printf("resonator: six bowed strings, 99.9%% of blocks within %.3f ms (budget %.2f)\n", ms[(size_t)(ms.size() * 0.999)], 1.33 * slack);
+        assert(ms[(size_t)(ms.size() * 0.999)] < 1.33 * slack);
+    }
     std::printf("core ok\n");
     return 0;
 }

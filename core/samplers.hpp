@@ -172,11 +172,15 @@ struct Resonator : tone::Synth {
                 const double in = src.at(x.pos++);
                 double exc = in;
                 if (excite == PLUCKED) { exc = x.burst < x.burst_len ? in * 0.5 * (1 - std::cos(2 * PI * x.burst / x.burst_len)) : 0; x.burst++; }
-                double wet = resonate(x, excite == BOWED && body != BELL ? exc * (1 - x.g60) : exc);
+                /* bowed noise through a feedback loop gains 1 / (1 - g^2) in power: fed through sqrt(1 - g^2), the
+                   loop's level starts near the recording's and the automatic gain below only fine-tunes it */
+                double wet = resonate(x, excite == BOWED && body != BELL ? exc * std::sqrt(std::fmax(0.0, 1 - x.g60 * x.g60)) : exc);
                 if (excite == BOWED) {                                /* the bowed level follows the recording's */
                     x.rin += (exc * exc - x.rin) * ka; x.rout += (wet * wet - x.rout) * ka;
-                    double tgt = x.rout > 1e-12 ? std::fmin(50.0, std::sqrt(x.rin / x.rout)) : 1;
-                    x.agc += (tgt - x.agc) * ka; wet *= x.agc;
+                    /* only while the recording is sounding: silence is never boosted (up to 1000x - a bowed Bell or
+                       Tube keeps a small share of broadband energy) */
+                    if (x.rin > 1e-10) { double tgt = x.rout > 1e-14 ? std::fmin(1000.0, std::sqrt(x.rin / x.rout)) : 1; x.agc += (tgt - x.agc) * ka; }
+                    wet *= x.agc;
                 }
                 const double o = x.env * x.vel * vol * ((1 - tune) * exc + tune * wet);
                 L[i] += (float)o; R[i] += (float)o;
