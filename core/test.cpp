@@ -887,6 +887,15 @@ int main() {
                     jg.find("\"pitched\"") != std::string::npos ? "pitched" : "UNPITCHED", fg);
         assert(jw.find("\"verdict\":\"pitched\"") != std::string::npos && std::fabs(1200 * std::log2(fw / 4000)) < 5);
         assert(jg.find("\"verdict\":\"pitched\"") != std::string::npos && fg > 3000 && fg < 5000);
+        /* a loop is at least 100 ms, or there is none: the goldfinch's steadiest stretch was one frame and its
+           loop one 13-sample cycle (a buzz). Short calls are played through, not looped. */
+        for (const std::string *j : { &jw, &jg }) {
+            size_t lp = j->find("\"loop\":");
+            if (j->compare(lp + 7, 4, "null") == 0) continue;
+            long la = std::atol(j->c_str() + lp + 8), lb = std::atol(j->c_str() + j->find(',', lp + 8) + 1);
+            assert(lb - la >= (long)(0.1 * SR3));
+        }
+
     }
     std::printf("core ok\n");
     return 0;

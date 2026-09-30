@@ -159,7 +159,8 @@ extern "C" int fs_analyse(const float *x, long long n, double sr, char *out, int
             long want = (long)((long long)(bl - 1) * H);
             long k = std::max(1L, (long)std::floor(want / period));
             long b = a >= 0 ? zero_up(x, n, a + (long)std::lround(k * period), (long)(period / 2)) : -1;
-            if (a >= 0 && b > a) { loop_a = a; loop_b = b; }
+            /* a loop shorter than 100 ms is a buzz, not the sound (a goldfinch gave one 13-sample cycle): none */
+            if (a >= 0 && b > a && b - a >= (long)(0.1 * sr)) { loop_a = a; loop_b = b; }
             int bestf = bs; for (int i = bs; i < bs + bl; i++) if (tr[i].conf > tr[bestf].conf) bestf = i;
             long c0 = zero_up(x, n, (long)bestf * H + W / 2, (long)period);
             long c1 = c0 >= 0 ? zero_up(x, n, c0 + (long)std::lround(period), (long)(period / 4)) : -1;

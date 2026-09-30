@@ -185,17 +185,25 @@
   });
   renderKept();
 
-  $("#lab-file").addEventListener("change", function () { if (this.files[0]) { load(this.files[0]); } });
+  /* the audio engine is made inside the tap itself (Safari keeps one made later, in a promise, silent) */
+  $("#lab-file").addEventListener("change", function () { audio(); if (this.files[0]) { load(this.files[0]); } });
   var drop = $("#lab-drop");
   drop.addEventListener("dragover", function (e) { e.preventDefault(); });
-  drop.addEventListener("drop", function (e) { e.preventDefault(); if (e.dataTransfer.files[0]) { load(e.dataTransfer.files[0]); } });
+  drop.addEventListener("drop", function (e) { e.preventDefault(); audio(); if (e.dataTransfer.files[0]) { load(e.dataTransfer.files[0]); } });
   $("#lab-route").addEventListener("change", function () { setRoute(this.value); });
   $("#lab-just").addEventListener("click", function () { tuning = 1; this.setAttribute("aria-pressed", "true"); $("#lab-equal").setAttribute("aria-pressed", "false"); setRoute(route && route.id); });
   $("#lab-equal").addEventListener("click", function () { tuning = 0; this.setAttribute("aria-pressed", "true"); $("#lab-just").setAttribute("aria-pressed", "false"); setRoute(route && route.id); });
   document.querySelectorAll("[data-play]").forEach(function (b) {
-    b.addEventListener("click", function () { unlock(); var r = play(b.dataset.play); if (r && !r.silent) { light(b.dataset.play); } });
+    b.addEventListener("click", function () { unlock(); audio(); var r = play(b.dataset.play); if (r && !r.silent) { light(b.dataset.play); } });
   });
   $("#lab-stop").addEventListener("click", stop);
+
+  /* what the audio is doing, readable on any machine: the engine's state and the level leaving it */
+  setInterval(function () {
+    var el = $("#lab-audio"); if (!el) { return; }
+    el.textContent = !ctx ? "Audio: not started" : "Audio: " + ctx.state + " · output " + Math.round(levelDb()) + " dB" +
+      (ctx.state !== "running" ? " — tap a play button to start it" : "");
+  }, 250);
 
   window.fsLab = { ready: ready, load: load, get analysis() { return analysis; }, get routes() { return routes; }, setRoute: setRoute, play: play, stop: stop,
     get peak() { return peak; }, level: levelDb, get bufferSeconds() { return buffer ? buffer.duration : 0; },

@@ -104,6 +104,13 @@ try {
   const lvl = await ev("fsLab.level()");
   await ev("fsLab.stop()");
   check("sound comes out while a chord plays (above -40 dBFS)", lvl > -40, lvl);
+  /* Kerem, 2026-09-30: still silent on his machine - the page now shows what the audio is doing, so a
+     silent run can be read: the engine's state and the level leaving it, live while it plays */
+  await ev("document.querySelector(\"[data-play='chord']\").click(), 0");
+  await sleep(700);
+  const st = await ev("document.querySelector('#lab-audio').textContent");
+  await ev("fsLab.stop()");
+  check("the audio status line shows the engine running and the output level while playing", /running/.test(st) && /-?\d+ dB/.test(st), st);
   check("no page errors", errors.length === 0, errors);
 } finally { ch.kill(); }
 process.exit(failed ? 1 : 0);
