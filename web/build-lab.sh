@@ -1,0 +1,9 @@
+#!/bin/sh
+# The lab's own engine (sample harmony): everything web/core.wasm has, plus the analyser and the bench's
+# progression. A separate file so the live site's engine never changes while the lab is researched.
+# Links at -O1: Windows App Control blocks binaryen's wasm-opt.exe, which -O2 runs. From the repo root:
+#   sh web/build-lab.sh        (em++ on PATH; on Windows a wrapper that runs python em++.py)
+set -e
+em++ -std=c++17 -O1 --no-entry -sSTANDALONE_WASM -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=32MB \
+  -sEXPORTED_FUNCTIONS=_fs_create,_fs_destroy,_fs_prepare,_fs_set_param,_fs_param_count,_fs_in,_fs_out,_fs_process,_fs_set_source,_fs_set_source_i16,_fs_stats,_fs_mix_create,_fs_mix_prepare,_fs_mix_add,_fs_mix_set_gain,_fs_mix_set_ramp,_fs_mix_set_lowpass,_fs_mix_process,_fs_mix_out,_fs_mix_stats,_fs_piece_add_route,_fs_piece_walk,_fs_piece_route,_fs_piece_sect_n,_fs_piece_bed_voices,_fs_piece_sector,_fs_piece_sector_now,_fs_piece_character,_fs_piece_zone,_fs_piece_rhythm_add,_fs_piece_rhythm_gain,_fs_piece_rhythm_source,_fs_piece_rhythm_remove,_fs_alloc_i16,_fs_engine_create,_fs_engine_features,_fs_engine_places,_fs_engine_step,_fs_engine_source,_fs_engine_process,_fs_engine_out,_fs_engine_state,_fs_engine_morphs,_fs_engine_chord,_fs_engine_route,_fs_engine_solo,_fs_engine_upsert,_fs_engine_remove,_fs_piece_default_tuning,_fs_analyse,_fs_harmony_progression,_malloc,_free \
+  core/core.cpp core/mix.cpp core/place.cpp core/sections.cpp core/webm.cpp core/resample.cpp core/piece.cpp core/engine.cpp core/analysis.cpp core/devices/*.cpp -o web/core-lab.wasm
