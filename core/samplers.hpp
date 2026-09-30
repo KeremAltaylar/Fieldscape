@@ -104,13 +104,22 @@ struct Resonator : tone::Synth {
             }
         } else {
             const double P = sr / f / (body == TUBE ? 2 : 1);        /* Tube: half a period, feedback inverted */
+            x.g60 = std::pow(10.0, -3.0 * (P / sr) / T);              /* one pass of the loop, in T60 terms */
+            /* The feedback never reaches 1 at any frequency (final review 2026-09-30: an uncapped g ran away through
+               the DC blocker's own low resonance, dark Colour or high notes). So g <= GMAX, and where Colour would
+               lose more at f than GMAX can make good, Colour's cutoff rises until it does not: the fundamental still
+               rings its T60. Below ~15 Hz (the DC blocker's own loss) T60 simply comes out shorter. */
+            const double GMAX = 0.99995, dcg = dc_gain(LOOP_R, w), need = x.g60 / (GMAX * dcg);
+            if (need >= 1) x.a = 0;
+            else if (lp_gain(x.a, w) < need) {                         /* lp_gain falls as a rises */
+                double lo = 0, hi = x.a;
+                for (int i = 0; i < 50; i++) { double m = 0.5 * (lo + hi); if (lp_gain(m, w) >= need) lo = m; else hi = m; }
+                x.a = lo;
+            }
+            x.g = std::fmin(GMAX, x.g60 / (lp_gain(x.a, w) * dcg));
             const double lpd = lp_delay(x.a, w) + dc_delay(LOOP_R, w);
             int N = (int)std::floor(P - lpd - 0.2); N = std::max(1, std::min(N, (int)MASK - 2));
             x.N = N; x.c = solve_ap(P - N - lpd, w);
-            x.g60 = std::pow(10.0, -3.0 * (P / sr) / T);              /* one pass of the loop, in T60 terms */
-            /* the filters' loss made good at f, so the fundamental rings exactly T60; the DC blocker in the loop
-               keeps 0 Hz (where the gain would exceed 1) from growing, and above f the colour filter only cuts */
-            x.g = x.g60 / (lp_gain(x.a, w) * dc_gain(LOOP_R, w));
         }
     }
 

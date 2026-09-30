@@ -1092,6 +1092,30 @@ int main() {
         assert(mx == 0);
         fs_destroy(b);
     }
+    {   /* final review (2026-09-30): no runaway anywhere - every body, Colour 0 / 0.5 / 1, Focus 1, 6 Hz to 12 kHz.
+           Plucked: the broadband peak of the last second <= the first second's. Bowed: the loop itself stays
+           bounded (its automatic gain would hide a growing loop at the output). */
+        const std::vector<float> wind = noise_src(12, 0.5f, 19);
+        int bad = 0;
+        for (int body = 0; body < 3; body++) for (double col : { 0.0, 0.5, 1.0 }) for (double f : { 6.0, 15.0, 55.0, 440.0, 3520.0, 6000.0, 12000.0 }) {
+            std::vector<float> o = res_render(body, sampler::PLUCKED, 1, col, 1, f, 8, wind);
+            /* energy, not peak: in a near-lossless loop (sub-audio notes) the partials drift in phase and the
+               waveform's peak wanders while the energy does not grow; a runaway grows in energy */
+            double first = 0, lastp = 0;
+            for (size_t i = 0; i < 48000; i++) first += (double)o[i] * o[i];
+            for (size_t i = o.size() - 48000; i < o.size(); i++) { if (!std::isfinite(o[i])) { lastp = 1e300; break; } lastp += (double)o[i] * o[i]; }
+            if (!(lastp <= first * 1.5)) { std::printf("  runaway: body %d colour %.1f %.0f Hz plucked: energy first %.3g last %.3g\n", body, col, f, first, lastp); bad++; }
+            sampler::Resonator r; r.init(48000); r.body = body; r.excite = sampler::BOWED; r.focus = 1; r.colour = col;
+            const float *p[1] = { wind.data() }; r.set_source(1, (long long)wind.size(), p);
+            r.attack(f, 0, 0.5); std::vector<float> a(48000 * 8, 0.0f), b2(a.size(), 0.0f);
+            for (size_t i = 0; i < a.size(); i += 128) r.render(a.data() + i, b2.data() + i, 128, i / 48000.0);
+            double line = 0; for (float s : r.v[0].line) line = std::max(line, (double)std::fabs(s));
+            for (int k = 0; k < 4; k++) line = std::max(line, std::fabs(r.v[0].y1[k]));
+            if (!(line < 100)) { std::printf("  runaway: body %d colour %.1f %.0f Hz bowed: loop %.3g\n", body, col, f, line); bad++; }
+        }
+        std::printf("resonator stability sweep: %d runaways\n", bad);
+        assert(bad == 0);
+    }
     std::printf("core ok\n");
     return 0;
 }
