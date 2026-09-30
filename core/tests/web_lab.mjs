@@ -52,6 +52,30 @@ try {
 
   const long = await ev(`fsLab.load(${WAV(220, 120, 22050)}).then(function (a) { return { secs: a.frames / a.rate, note: document.querySelector('#lab-note').textContent }; })`);
   check("a long recording: only the first 30 s analysed, and the panel says so", Math.abs(long.secs - 30) < 0.01 && /first 30 s/.test(long.note), long);
+  /* final review (2026-09-30): no clipping, Stop never lets a waiting voice start, unpitched says why, 30 s kept */
+  const LOUD = `(function(){ var sr = 48000, n = sr * 2, b = new ArrayBuffer(44 + n * 2), v = new DataView(b);
+    function s(o, t) { for (var i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); }
+    s(0, "RIFF"); v.setUint32(4, 36 + n * 2, true); s(8, "WAVEfmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, sr, true); v.setUint32(28, sr * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); s(36, "data"); v.setUint32(40, n * 2, true);
+    for (var i = 0; i < n; i++) v.setInt16(44 + i * 2, Math.round(32000 * Math.sin(2 * Math.PI * 146.83 * i / sr)), true);
+    return new File([b], "loud.wav", { type: "audio/wav" }); })()`;
+  await ev(`fsLab.load(${LOUD}).then(function () { return 1; })`);
+  const loud = await ev("(function(){ var r = fsLab.play('chord', { tuning: 'just', step: 0 }); fsLab.stop(); return { sum: r && r.gains ? r.gains.reduce(function (a, g) { return a + g; }, 0) : null, peak: fsLab.peak }; })()");
+  check("a loud chord's voices sum below full scale (no clipping)", loud.sum !== null && loud.sum * loud.peak <= 0.9, loud);
+  const held = await ev("(function(){ fsLab.play('scale', { tuning: 'just', step: 0 }); fsLab.stop(); var now = fsLab.now(); return fsLab.voices().filter(function (v) { return v.start > now && v.stopAt > v.start; }).length; })()");
+  check("Stop: no waiting voice starts afterwards", held === 0, held);
+  const NOISE = `(function(){ var sr = 48000, n = sr * 2, b = new ArrayBuffer(44 + n * 2), v = new DataView(b), r = 3;
+    function s(o, t) { for (var i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); }
+    s(0, "RIFF"); v.setUint32(4, 36 + n * 2, true); s(8, "WAVEfmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, sr, true); v.setUint32(28, sr * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); s(36, "data"); v.setUint32(40, n * 2, true);
+    for (var i = 0; i < n; i++) { r = (r * 1103515245 + 12345) & 0x7fffffff; v.setInt16(44 + i * 2, (r % 20000) - 10000, true); }
+    return new File([b], "wind.wav", { type: "audio/wav" }); })()`;
+  await ev(`fsLab.load(${NOISE}).then(function () { return 1; })`);
+  const un = await ev("(function(){ var r = fsLab.play('chord'); return { r: r, note: document.querySelector('#lab-note').textContent }; })()");
+  check("an unpitched recording says why it does not play yet", un.r && un.r.silent && /unpitched/i.test(un.note), un);
+  await ev(`fsLab.load(${WAV(220, 120, 22050)}).then(function () { return 1; })`);
+  const kept = await ev("fsLab.bufferSeconds");
+  check("a long recording keeps only the 30 s it analysed", kept > 29.9 && kept <= 30.01, kept);
   check("no page errors", errors.length === 0, errors);
 } finally { ch.kill(); }
 process.exit(failed ? 1 : 0);
