@@ -22,7 +22,7 @@ static const fs_param BENCH_PARAMS[] = {
 struct Bench : Device {
     sampler::Resonator res;
     double sr = 48000, t = 0;
-    std::vector<float> ring = std::vector<float>(16384, 0.0f); size_t w = 0;
+    std::vector<float> ring = std::vector<float>(65536, 0.0f); size_t w = 0;   /* 1.37 s: 0.7 Hz resolution */
     void prepare(float s, int) override { sr = s; res.init(s); t = 0; }
     const fs_param *params(int &n) override { n = 8; return BENCH_PARAMS; }
     void set_param(int i, float v) override {
@@ -42,7 +42,7 @@ struct Bench : Device {
         t += n / sr;
     }
     void *cast(const char *id) override { return std::strcmp(id, "bench") == 0 ? this : nullptr; }
-    /* Hann-windowed power at f over the last 16384 samples, in order */
+    /* Hann-windowed power at f over the last 65536 samples, in order */
     double power(double f) const {
         const size_t N = ring.size(); double s1 = 0, s2 = 0, k = 2 * std::cos(2 * sampler::PI * f / sr);
         for (size_t i = 0; i < N; i++) {
@@ -52,7 +52,9 @@ struct Bench : Device {
     }
     double created(double f) const {
         const double off[6] = { 0.03, 0.05, 0.08, 0.11, 0.15, 0.2 };
-        std::vector<double> nb; for (double o : off) { nb.push_back(power(f * (1 - o))); nb.push_back(power(f * (1 + o))); }
+        /* neighbours at least 3 resolution steps away, or a low note's own peak is compared with itself */
+        const double step = 3 * sr / ring.size();
+        std::vector<double> nb; for (double o : off) { double d = std::fmax(o * f, step); nb.push_back(power(f - d)); nb.push_back(power(f + d)); }
         std::nth_element(nb.begin(), nb.begin() + nb.size() / 2, nb.end());
         double p = power(f), m = nb[nb.size() / 2];
         return p > 1e-20 && m > 1e-30 ? 10 * std::log10(p / m) : 0;

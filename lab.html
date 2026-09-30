@@ -44,6 +44,14 @@
   <p id="lab-audio" style="color: var(--dim); margin: 4px 0;">Audio: not started</p>
   <canvas id="lab-roll" width="1600" height="420" aria-label="What is playing: each note's envelope at its pitch" style="height: 210px;"></canvas>
   <p id="lab-now" aria-live="polite" style="min-height: 1.45em; margin: 4px 0;"></p>
+  <div class="row"><label>Synth <select id="lab-synth"><option value="retune" selected>Retune (pitched)</option><option value="resonator">Resonator</option></select></label>
+    <span id="lab-res" hidden>
+      <label>Body <select id="lab-body"><option value="0">String</option><option value="1">Tube</option><option value="2">Bell</option></select></label>
+      <label>Excite <select id="lab-excite"><option value="0">Bowed</option><option value="1">Plucked</option></select></label>
+      <label>Focus <input type="range" id="lab-focus" min="0" max="1" step="0.01" value="0.5"></label>
+      <label>Colour <input type="range" id="lab-colour" min="0" max="1" step="0.01" value="0.5"></label>
+    </span></div>
+  <p id="lab-made" style="color: var(--dim); margin: 4px 0; min-height: 1.45em;"></p>
   <div class="row"><label>Octave <select id="lab-octave"><option value="-3">−3</option><option value="-2">−2</option><option value="-1">−1</option><option value="0" selected>0</option><option value="1">+1</option><option value="2">+2</option><option value="3">+3</option></select></label>
     <label>Tune <input type="range" id="lab-tune" min="0" max="1" step="0.01" value="1"></label>
     <label>Attack <input type="range" id="lab-attack" min="0.005" max="1" step="0.005" value="0.02"></label>

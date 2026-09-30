@@ -9,6 +9,7 @@
   var MAX_S = 30;                                   /* analysed length; a longer file is cut (spec Review Focus) */
   var $ = function (s) { return document.querySelector(s); };
   var ctx = null, x = null, buffer = null, peak = 1, analysis = null, routes = [], route = null, prog = null, tuning = 1, playing = [], last = [];
+  var synth = "retune", node = null, wasmBytes = null, engineReady = null, madeTimer = null, lastMade = null, loudAt = 0;
 
   /* one output bus with a meter on it: what the bench plays, measured (fsLab.level) */
   var bus = null, meter = null;
@@ -43,6 +44,7 @@
   }
 
   var ready = fetch("web/core-lab.wasm", { cache: "no-cache" }).then(function (r) { return r.arrayBuffer(); }).then(function (b) {
+    wasmBytes = b.slice(0);                                        /* the Resonator's worklet gets its own copy */
     return WebAssembly.instantiate(b, { env: new Proxy({}, { get: function () { return function () { return 0; }; } }),
       wasi_snapshot_preview1: new Proxy({}, { get: function () { return function () { return 0; }; } }) });
   }).then(function (r) {
@@ -74,7 +76,14 @@
       var p = x.malloc(n * 4); new Float32Array(x.memory.buffer, p, n).set(mono);
       analysis = call(x.fs_analyse, [p, BigInt(n), sr]); x.free(p);
       $("#lab-note").textContent = file.name + (b.length > n ? " — only the first 30 s analysed" : "") +
-        (analysis.f0 > 0 ? "" : " — unpitched: it has no pitch to retune; the pitch-making synths come next (sub-project 2)");
+        (analysis.f0 > 0 ? "" : " — unpitched: Retune has no pitch to move; the Resonator plays it");
+      /* where the Resonator starts reading: the loudest 100 ms (an unpitched file has no "clear moment") */
+      var win = Math.round(0.1 * sr), bestE = -1; loudAt = 0;
+      for (var s0 = 0; s0 + win <= n; s0 += Math.round(win / 2)) {
+        var e = 0; for (var k = 0; k < win; k++) { e += mono[s0 + k] * mono[s0 + k]; }
+        if (e > bestE) { bestE = e; loudAt = s0 / sr; }
+      }
+      sendSource(); sendParams();
       show(); gate();
       return analysis;
     }).catch(function (e) { $("#lab-note").textContent = "Could not read that file: " + (e && e.message || e); throw e; });
@@ -137,6 +146,7 @@
     if (!ctx || !analysis || !(analysis.f0 > 0)) { return; }
     var now = ctx.currentTime;
     playing.forEach(function (v) {
+      if (v.engine) { return; }                                     /* a ringing resonator is not retuned (a click); the next note is */
       v.hz = v.base * octaveFactor(); v.rate = rateFor(v.hz);
       v.src.playbackRate.setTargetAtTime(v.rate, now, 0.03);
     });
@@ -150,11 +160,12 @@
   function play(kind, opts) {
     opts = opts || {};
     if (!buffer || !analysis || !prog) { return { silent: true }; }
-    if (!(analysis.f0 > 0)) { return { silent: true }; }                 /* the panel already says why */
+    if (!(analysis.f0 > 0) && synth === "retune") { return { silent: true }; }   /* the panel already says why */
     if (opts.tuning) { tuning = opts.tuning === "just" ? 1 : 0; setRoute(route ? route.id : null); }
     stop(); last = [];
     var c = audio(), t = c.currentTime + 0.05, step = opts.step != null ? opts.step : +$("#lab-step").value || 0;
     var chord = prog.chords[step], beat = 60 / prog.tempo, hz = [], rates = [];
+    if (synth === "resonator") { return playResonator(kind, c, t, chord, beat); }
     if (kind === "note") { hz = [chord.hz[0]]; }
     else if (kind === "chord") { hz = chord.hz.slice(); }
     else if (kind === "scale") { hz = chord.scale_hz.slice(); }
@@ -172,6 +183,64 @@
     hz.forEach(function (h, i) { var r = rateFor(h); rates.push(r); gains.push(lvl); voice(h, r, kind === "scale" ? t + i * beat : t, kind === "scale" ? beat * 0.9 : beat * 4, lvl); });
     view();
     return { rates: rates, hz: hz, gains: gains };
+  }
+
+  /* The Resonator runs in the engine (2a spec R4): the lab's wasm, device "bench", in an AudioWorklet. An
+     unpitched recording has no pitch to centre on, so notes sound at the chord's written register (plus Octave). */
+  var P_BODY = 0, P_EXCITE = 1, P_FOCUS = 2, P_COLOUR = 3, P_TUNE = 4, P_ATTACK = 5, P_RELEASE = 6, P_OFFSET = 7;
+  function ensureEngine() {
+    if (engineReady) { return engineReady; }
+    var c = audio();
+    engineReady = ready.then(function () { return c.audioWorklet.addModule("web/core-worklet.js?v=" + Date.now()); }).then(function () {
+      node = new AudioWorkletNode(c, "fieldscape-core", { numberOfInputs: 0, outputChannelCount: [2],
+        processorOptions: { wasm: wasmBytes, device: "bench", params: [] } });
+      node.connect(bus);
+      node.port.onmessage = function (e) { if (e.data && e.data.type === "created") { lastMade = e.data.db; } };
+      sendParams(); sendSource(); gate();
+    });
+    return engineReady;
+  }
+  function sendParams() {
+    if (!node) { return; }
+    [[P_BODY, +$("#lab-body").value], [P_EXCITE, +$("#lab-excite").value], [P_FOCUS, +$("#lab-focus").value],
+     [P_COLOUR, +$("#lab-colour").value], [P_TUNE, +$("#lab-tune").value], [P_ATTACK, Math.max(0.005, +$("#lab-attack").value)],
+     [P_RELEASE, Math.max(0.03, +$("#lab-release").value)], [P_OFFSET, loudAt]].forEach(function (pv) { node.port.postMessage(pv); });
+  }
+  function sendSource() {
+    if (!node || !buffer) { return; }
+    var ch = []; for (var c = 0; c < buffer.numberOfChannels; c++) { ch.push(buffer.getChannelData(c).slice(0)); }
+    node.port.postMessage({ type: "source", channels: ch });
+  }
+  function setSynth(s) {
+    synth = s; $("#lab-synth").value = s; $("#lab-res").hidden = s !== "resonator";
+    if (s === "resonator") { ensureEngine(); }
+    gate();
+  }
+  function playResonator(kind, c, t, chord, beat) {
+    if (!node) { return { silent: true }; }
+    var oct = octaveFactor(), A = Math.max(0.005, +$("#lab-attack").value), R = Math.max(0.03, +$("#lab-release").value), list = [];
+    var groups = kind === "progression"
+      ? prog.chords.map(function (ch, i) { return { hz: ch.hz, at: i * beat * 4, dur: beat * 4 - 0.1, name: noteName(ch.root).replace(/-?[0-9]+.*$/, "") + " " + ch.label }; })
+      : [{ hz: kind === "note" ? [chord.hz[0]] : kind === "scale" ? chord.scale_hz : chord.hz, at: 0, dur: kind === "scale" ? beat * 0.9 : beat * 4, scale: kind === "scale" }];
+    var most = Math.max.apply(null, groups.map(function (gr) { return gr.hz.length; }));
+    var lvr = level(kind === "progression" ? 2 * most : kind === "scale" ? 2 : most);
+    groups.forEach(function (gr) {
+      gr.hz.forEach(function (h0, i) {
+        var h = h0 * oct, at = t + gr.at + (gr.scale ? i * beat : 0);
+        node.port.postMessage({ type: "note", hz: h, in: at - c.currentTime, dur: A + gr.dur, vel: lvr });
+        var v = { engine: true, hz: h, base: h0, rate: 1, level: lvr, A: A, dur: gr.dur, R: R, offset: loudAt, start: at, stopAt: at + A + gr.dur + R, chord: gr.name };
+        playing.push(v); last.push(v); list.push(h);
+      });
+    });
+    clearInterval(madeTimer);
+    madeTimer = setInterval(function () {
+      var now = c.currentTime, hz = last.filter(function (v) { return now >= v.start && now < v.stopAt; }).map(function (v) { return v.hz; });
+      if (!hz.length) { $("#lab-made").textContent = ""; return; }
+      node.port.postMessage({ type: "created", hz: hz });
+      if (lastMade && lastMade.length) { $("#lab-made").textContent = "pitch created: +" + Math.round(lastMade.reduce(function (a, d) { return a + d; }, 0) / lastMade.length) + " dB"; }
+    }, 300);
+    view();
+    return { rates: list.map(function () { return 1; }), hz: list, gains: list.map(function () { return lvr; }) };
   }
 
   /* The playing view (Kerem, 2026-09-30: "I can not differentiate ... since I don't see which envelope
@@ -209,7 +278,7 @@
       });
       if (now >= t0 && now <= t1) { g.fillStyle = "#e3e7e4"; g.fillRect(X(now), 0, 2, H); }
       var names = vs.filter(function (v) { return now >= v.start && now < v.stopAt && playing.indexOf(v) >= 0; })
-        .map(function (v) { return noteName(69 + 12 * Math.log2(v.hz / 440)) + " (" + v.rate.toFixed(2) + "x)"; });
+        .map(function (v) { return noteName(69 + 12 * Math.log2(v.hz / 440)) + " (" + (v.engine ? "res" : v.rate.toFixed(2) + "x") + ")"; });
       $("#lab-now").textContent = names.length ? "Now: " + names.join(" · ") : (now < t0 ? "Starting…" : "");
       if (now <= t1 && playing.length) { viewRaf = requestAnimationFrame(frame); }
     })();
@@ -218,8 +287,9 @@
      2026-09-30: "I can not click to note scale chord progression buttons" - they looked ready and did
      nothing before a file, or with a file that has no pitch). */
   function gate() {
-    var why = !prog ? "Routes are still loading." : !analysis ? "Load a pitched recording first." :
-      !(analysis.f0 > 0) ? "This recording is unpitched: there is no pitch to retune yet. The pitch-making synths come next (sub-project 2)." : "";
+    var why = !prog ? "Routes are still loading." : !analysis ? (synth === "resonator" ? "Load a recording first." : "Load a pitched recording first.") :
+      synth === "resonator" && !node ? "Starting the engine…" :
+      !(analysis.f0 > 0) && synth === "retune" ? "This recording is unpitched: Retune has no pitch to move. Choose Synth → Resonator to play it." : "";
     document.querySelectorAll("[data-play]").forEach(function (b) { b.disabled = !!why; });
     $("#lab-why").textContent = why;
   }
@@ -244,9 +314,12 @@
   }
   function stop() {
     light(null);
+    if (node) { node.port.postMessage({ type: "stop" }); }
+    clearInterval(madeTimer); if ($("#lab-made")) { $("#lab-made").textContent = ""; }
     var c = ctx; if (!c) { return; }
     var now = c.currentTime;
     playing.forEach(function (v) {
+      if (v.engine) { v.stopAt = Math.min(v.stopAt, now + 0.01); return; }
       /* not started yet: it never starts (a stop before its start is silence, not a click) */
       if (v.start > now) { v.src.stop(now); v.stopAt = now; return; }
       v.g.gain.cancelScheduledValues(now); v.g.gain.setValueAtTime(Math.max(0.0001, v.g.gain.value), now);
@@ -260,7 +333,9 @@
   function renderKept() { $("#lab-kept").innerHTML = kept().map(function (k) { return "<li>" + k.replace(/</g, "&lt;") + "</li>"; }).join(""); }
   $("#lab-keep").addEventListener("click", function () {
     var t = $("#lab-verdict").value.trim(); if (!t) { return; }
-    var line = t + " — " + ($("#lab-note").textContent || "no file") + ", tune " + $("#lab-tune").value + ", octave " + $("#lab-octave").value + ", " + (tuning ? "just" : "equal");
+    var line = t + " — " + ($("#lab-note").textContent || "no file") + ", tune " + $("#lab-tune").value + ", octave " + $("#lab-octave").value + ", " + (tuning ? "just" : "equal") +
+      ", synth " + synth + (synth === "resonator" ? " " + ["string", "tube", "bell"][+$("#lab-body").value] + " " + ["bowed", "plucked"][+$("#lab-excite").value] +
+      " focus " + $("#lab-focus").value + " colour " + $("#lab-colour").value : "");
     try { localStorage.setItem("fs.lab.kept", JSON.stringify(kept().concat([line]))); } catch (e) { /* private window: not kept */ }
     $("#lab-verdict").value = ""; renderKept();
   });
@@ -280,6 +355,9 @@
   $("#lab-stop").addEventListener("click", stop);
   $("#lab-octave").addEventListener("change", retune);
   $("#lab-tune").addEventListener("input", retune);
+  $("#lab-synth").addEventListener("change", function () { setSynth(this.value); });
+  ["#lab-body", "#lab-excite"].forEach(function (id) { $(id).addEventListener("change", sendParams); });
+  ["#lab-focus", "#lab-colour", "#lab-tune", "#lab-attack", "#lab-release"].forEach(function (id) { $(id).addEventListener("input", sendParams); });
 
   /* what the audio is doing, readable on any machine: the engine's state and the level leaving it */
   setInterval(function () {
@@ -291,5 +369,14 @@
   window.fsLab = { ready: ready, load: load, get analysis() { return analysis; }, get routes() { return routes; }, setRoute: setRoute, play: play, stop: stop,
     get peak() { return peak; }, level: levelDb, peakHz: peakHz, get bufferSeconds() { return buffer ? buffer.duration : 0; },
     now: function () { return ctx ? ctx.currentTime : 0; },
-    voices: function () { return last.map(function (v) { return { start: v.start, stopAt: v.stopAt, offset: v.offset, hz: v.hz }; }); } };
+    voices: function () { return last.map(function (v) { return { start: v.start, stopAt: v.stopAt, offset: v.offset, hz: v.hz }; }); },
+    setSynth: setSynth, get engineReady() { return engineReady || Promise.resolve(); },
+    created: function () {
+      if (!node || !ctx) { return Promise.resolve(null); }
+      var now = ctx.currentTime, hz = last.filter(function (v) { return now >= v.start && now < v.stopAt; }).map(function (v) { return v.hz; });
+      return new Promise(function (res) {
+        node.port.onmessage = function (e) { if (e.data && e.data.type === "created") { lastMade = e.data.db; res(e.data.db); } };
+        node.port.postMessage({ type: "created", hz: hz });
+      });
+    } };
 })();

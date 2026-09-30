@@ -78,7 +78,7 @@ try {
     function s(o, t) { for (var i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); }
     s(0, "RIFF"); v.setUint32(4, 36 + n * 2, true); s(8, "WAVEfmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
     v.setUint32(24, sr, true); v.setUint32(28, sr * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); s(36, "data"); v.setUint32(40, n * 2, true);
-    for (var i = 0; i < n; i++) { r = (r * 1103515245 + 12345) & 0x7fffffff; v.setInt16(44 + i * 2, (r % 20000) - 10000, true); }
+    for (var i = 0; i < n; i++) { r ^= r << 13; r ^= r >>> 17; r ^= r << 5; r >>>= 0; v.setInt16(44 + i * 2, Math.round((r / 4294967296 - 0.5) * 20000), true); }   /* xorshift32: white (an LCG in doubles was not) */
     return new File([b], "wind.wav", { type: "audio/wav" }); })()`;
   await ev(`fsLab.load(${NOISE}).then(function () { return 1; })`);
   const un = await ev("(function(){ var r = fsLab.play('chord'); return { r: r, note: document.querySelector('#lab-note').textContent }; })()");
@@ -153,6 +153,21 @@ try {
   const after = await ev("fsLab.peakHz()");
   await ev("fsLab.stop(); (function(){ var s = document.querySelector('#lab-octave'); s.value = '0'; s.dispatchEvent(new Event('change')); })(), 0");
   check("Octave changed while a note plays moves the sound an octave (measured at the output)", before > 0 && Math.abs(Math.log2(after / before) - 1) < 0.1, [before, after]);
+  /* 2a: the Resonator on the engine - an unpitched "wind" file plays a chord whose notes stand out */
+  await ev(`fsLab.load(${NOISE}).then(function () { return 1; })`);
+  await ev("fsLab.setSynth('resonator'), fsLab.engineReady");
+  check("with the Resonator, an unpitched recording is playable", await ev("!document.querySelector(\"[data-play='chord']\").disabled"), null);
+  const rc = await ev("(function(){ var r = fsLab.play('chord', { tuning: 'just', step: 0 }); return r; })()");
+  await sleep(1500);
+  const made = await ev("fsLab.created()");
+  let rl = -120; for (let i = 0; i < 5; i++) { await sleep(100); rl = Math.max(rl, await ev("fsLab.level()")); }
+  const rnow = await ev("document.querySelector('#lab-now').textContent");
+  await ev("fsLab.stop()");
+  check("the Resonator's chord is heard (above -40 dBFS)", rl > -40, rl);
+  check("each chord note stands >= 10 dB over the noise around it (pitch created)", made && made.length === rc.hz.length && made.every(function (d) { return d >= 10; }), made);
+  check("the Resonator plays the chord in its written register (octave 0)", rc.hz[0] > 60 && rc.hz[0] < 400, rc.hz);
+  check("the playing view and Now line follow the Resonator", /[A-G]#?\d/.test(rnow), rnow);
+  await ev("fsLab.setSynth('retune'), 0");
   check("no page errors", errors.length === 0, errors);
 } finally { ch.kill(); }
 process.exit(failed ? 1 : 0);
