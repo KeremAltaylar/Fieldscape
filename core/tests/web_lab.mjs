@@ -97,7 +97,7 @@ try {
     return new File([b], "bird.wav", { type: "audio/wav" }); })()`;
   const bird = await ev(`fsLab.load(${BIRD}).then(function (a) { return a.f0; })`);
   const br = await ev("(function(){ var r = fsLab.play('chord', { tuning: 'just', step: 0 }); fsLab.stop(); return r; })()");
-  check("a 4 kHz bird is played near its own pitch (every rate within half an octave)", br && br.rates && br.rates.every(function (r) { return r > 0.7 && r < 1.42; }), [bird, br && br.rates]);
+  check("a 4 kHz bird is played near its own pitch (every rate within an octave either side)", br && br.rates && br.rates.every(function (r) { return r > 0.5 && r < 2; }), [bird, br && br.rates]);
   check("... on the chord's own notes, octaves aside (just fifth still 3/2 up to octaves)", br && br.hz && Math.abs(Math.log2(br.hz[2] / br.hz[0] / 1.5) - Math.round(Math.log2(br.hz[2] / br.hz[0] / 1.5))) < 1e-9, br && br.hz);
   await ev("fsLab.play('chord', { tuning: 'just', step: 0 }), 0");
   await sleep(700);
@@ -111,6 +111,31 @@ try {
   const st = await ev("document.querySelector('#lab-audio').textContent");
   await ev("fsLab.stop()");
   check("the audio status line shows the engine running and the output level while playing", /running/.test(st) && /-?\d+ dB/.test(st), st);
+  /* Kerem, 2026-09-30: "scale is too low in volume ... I want to hear the different pitches of each step ...
+     I don't hear differences in progression ... make it a view that I can see". A bird that starts after
+     0.6 s of quiet: notes start at its clear moment, a scale climbs, chords keep their shape, and the
+     playing view draws every voice with its envelope. */
+  const LATE = `(function(){ var sr = 48000, n = sr * 3, b = new ArrayBuffer(44 + n * 2), v = new DataView(b);
+    function s(o, t) { for (var i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); }
+    s(0, "RIFF"); v.setUint32(4, 36 + n * 2, true); s(8, "WAVEfmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, sr, true); v.setUint32(28, sr * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); s(36, "data"); v.setUint32(40, n * 2, true);
+    for (var i = 0; i < n; i++) { var t = i / sr; v.setInt16(44 + i * 2, t < 0.6 ? 0 : Math.round(12000 * Math.sin(2 * Math.PI * 3800 * t)), true); }
+    return new File([b], "late-bird.wav", { type: "audio/wav" }); })()`;
+  await ev(`fsLab.load(${LATE}).then(function () { return 1; })`);
+  const sc = await ev("(function(){ var r = fsLab.play('scale', { tuning: 'just', step: 0 }); var v = fsLab.voices(); fsLab.stop(); return { hz: r.hz, offs: v.map(function (x) { return x.offset; }), f0: fsLab.analysis.f0 }; })()");
+  check("each note starts at the recording's clear moment, not its quiet start", sc.offs.every(function (o) { return o >= 0.6; }), sc.offs);
+  check("the scale climbs, step by step", sc.hz.every(function (h, i) { return i === 0 || h > sc.hz[i - 1]; }), sc.hz);
+  check("... around the recording's pitch (within an octave either side)", sc.hz.every(function (h) { return h > sc.f0 / 2 && h < sc.f0 * 2; }), [sc.f0, sc.hz]);
+  const cd = await ev("(function(){ var r = fsLab.play('chord', { tuning: 'just', step: 0 }); fsLab.stop(); return r.hz; })()");
+  check("a chord keeps its shape (its notes rise as written)", cd.every(function (h, i) { return i === 0 || h > cd[i - 1]; }), cd);
+  await ev("fsLab.play('scale', { tuning: 'just', step: 0 }), 0");
+  await sleep(1500);
+  const lv2 = await ev("fsLab.level()");
+  const roll = await ev("({ voices: +document.querySelector('#lab-roll').dataset.voices, now: document.querySelector('#lab-now').textContent })");
+  await ev("fsLab.stop()");
+  check("the scale is heard (above -40 dBFS)", lv2 > -40, lv2);
+  check("the playing view draws every voice", roll.voices === 7, roll);
+  check("... and names what is sounding now", /[A-G]#?\d/.test(roll.now), roll.now);
   check("no page errors", errors.length === 0, errors);
 } finally { ch.kill(); }
 process.exit(failed ? 1 : 0);

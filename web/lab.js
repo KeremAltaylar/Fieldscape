@@ -92,25 +92,42 @@
   function noteName(m) { var N = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"], r = Math.round(m), c = Math.round((m - r) * 100); return N[(r % 12 + 12) % 12] + (Math.floor(r / 12) - 1) + (c ? (c > 0 ? " +" : " ") + c + "¢" : ""); }
 
   /* one retuned voice: attack and release ramps (A-2, A-3), exponential to silence */
-  function voice(rate, at, dur, level) {
+  function voice(hz, rate, at, dur, level) {
     var c = audio(), src = c.createBufferSource(), g = c.createGain(), A = Math.max(0.005, +$("#lab-attack").value), R = Math.max(0.03, +$("#lab-release").value);
     src.buffer = buffer; src.playbackRate.value = rate;
     if (analysis.loop) { src.loop = true; src.loopStart = analysis.loop[0] / analysis.rate; src.loopEnd = analysis.loop[1] / analysis.rate; }
     g.gain.setValueAtTime(0.0001, at); g.gain.exponentialRampToValueAtTime(level, at + A);
     g.gain.setValueAtTime(level, at + A + dur); g.gain.exponentialRampToValueAtTime(0.0001, at + A + dur + R);
-    src.connect(g).connect(bus); src.start(at);
-    var v = { src: src, g: g, start: at, stopAt: at + A + dur + R + 0.05 };
+    var off = clearMoment();
+    src.connect(g).connect(bus); src.start(at, off);
+    var v = { src: src, g: g, hz: hz, rate: rate, level: level, A: A, dur: dur, R: R, offset: off, start: at, stopAt: at + A + dur + R + 0.05 };
     src.stop(v.stopAt);
     playing.push(v); last.push(v);
+  }
+  /* Where a note starts in the recording (the spec's "position"): the most confident moment at its main
+     pitch - a recording opening quietly made every short scale step play only that quiet (Kerem, 2026-09-30:
+     "scale is too low in volume"). */
+  function clearMoment() {
+    var best = -1, bc = 0;
+    analysis.track.forEach(function (f, i) {
+      if (f[0] > 0 && f[1] > bc && Math.abs(1200 * Math.log2(f[0] / analysis.f0)) < 50) { best = i; bc = f[1]; }
+    });
+    return best < 0 ? 0 : Math.max(0, best * analysis.hop_s);
   }
   /* each voice's level: the voices that can sound together (a release overlapping the next chord's
      attack doubles them) never sum past 0.8 of full scale - clipping would be heard as the harshness a
      just/equal comparison is listening past (rulebook A-6) */
   function level(voices) { return Math.min(0.25, 0.8 / (Math.max(peak, 1e-3) * voices)); }
   function rateFor(hz) { var tune = +$("#lab-tune").value; return Math.pow(hz / analysis.f0, tune); }
-  /* the chord note in the octave nearest the recording (spec D2: "in any octave") - a 4 kHz bird on a
-     chord around 150-300 Hz was otherwise played 28x slower and could not be heard (Kerem, 2026-09-30) */
-  function near(h) { return h * Math.pow(2, Math.round(Math.log2(analysis.f0 / h))); }
+  /* A chord or a scale moved by whole octaves as one block, centred on the recording's pitch (spec D2 "any
+     octave"): a 4 kHz bird on chords around 150-300 Hz was played 28x slower and could not be heard, and
+     folding each note on its own wrapped the scale and made every chord the same cluster (Kerem,
+     2026-09-30: "I want to hear the different pitches of each step"). */
+  function block(hz) {
+    var centre = Math.exp(hz.reduce(function (a, h) { return a + Math.log(h); }, 0) / hz.length);
+    var k = Math.pow(2, Math.round(Math.log2(analysis.f0 / centre)));
+    return hz.map(function (h) { return h * k; });
+  }
 
   function play(kind, opts) {
     opts = opts || {};
@@ -123,15 +140,60 @@
     if (kind === "note") { hz = [chord.hz[0]]; }
     else if (kind === "chord") { hz = chord.hz.slice(); }
     else if (kind === "scale") { hz = chord.scale_hz.slice(); }
-    hz = hz.map(near);
+    if (hz.length) { hz = block(hz); }
     if (kind === "progression") {
       var most = Math.max.apply(null, prog.chords.map(function (ch) { return ch.hz.length; })), lv = level(2 * most);
-      prog.chords.forEach(function (ch, i) { ch.hz.forEach(function (h) { voice(rateFor(near(h)), t + i * beat * 4, beat * 4 - 0.1, lv); }); });
+      prog.chords.forEach(function (ch, i) {
+        var name = noteName(ch.root).replace(/-?[0-9]+.*$/, "") + " " + ch.label;
+        block(ch.hz).forEach(function (h) { voice(h, rateFor(h), t + i * beat * 4, beat * 4 - 0.1, lv); last[last.length - 1].chord = name; });
+      });
+      view();
       return { chords: prog.chords.length, gains: last.map(function () { return lv; }) };
     }
     var lvl = level(kind === "scale" ? 2 : hz.length), gains = [];
-    hz.forEach(function (h, i) { var r = rateFor(h); rates.push(r); gains.push(lvl); voice(r, kind === "scale" ? t + i * beat : t, kind === "scale" ? beat * 0.9 : beat * 4, lvl); });
+    hz.forEach(function (h, i) { var r = rateFor(h); rates.push(r); gains.push(lvl); voice(h, r, kind === "scale" ? t + i * beat : t, kind === "scale" ? beat * 0.9 : beat * 4, lvl); });
+    view();
     return { rates: rates, hz: hz, gains: gains };
+  }
+
+  /* The playing view (Kerem, 2026-09-30: "I can not differentiate ... since I don't see which envelope
+     plays which"): every voice as its envelope - attack ramp, hold, release - at its pitch, named, with a
+     playhead; the line under it names what is sounding now. */
+  var viewRaf = 0;
+  function view() {
+    cancelAnimationFrame(viewRaf);
+    var cv = $("#lab-roll"), g = cv.getContext("2d"), vs = last.slice();
+    cv.dataset.voices = vs.length;
+    if (!vs.length || !ctx) { g.clearRect(0, 0, cv.width, cv.height); $("#lab-now").textContent = ""; return; }
+    var t0 = vs[0].start, t1 = vs.reduce(function (m, v) { return Math.max(m, v.stopAt); }, 0);
+    var lo = Math.min.apply(null, vs.map(function (v) { return v.hz; })) / 1.12, hi = Math.max.apply(null, vs.map(function (v) { return v.hz; })) * 1.12;
+    var L = 70, W = cv.width - L - 8, H = cv.height;
+    var X = function (t) { return L + (t - t0) / Math.max(0.1, t1 - t0) * W; }, Y = function (h) { return H - 12 - Math.log(h / lo) / Math.log(hi / lo) * (H - 40); };
+    var bar = Math.max(6, Math.min(22, (H - 24) / 14));
+    (function frame() {
+      var now = ctx.currentTime;
+      g.clearRect(0, 0, cv.width, cv.height);
+      g.font = "20px system-ui, sans-serif"; g.textBaseline = "middle";
+      /* the chord names over their blocks (a progression), and the note names down the side without overlap */
+      var seen = {};
+      vs.forEach(function (v) { if (v.chord && !seen[v.start]) { seen[v.start] = 1; g.fillStyle = "#9ca49d"; g.fillText(v.chord, X(v.start) + 2, 12); } });
+      var names = {}, lastY = -99;
+      vs.map(function (v) { return v.hz; }).sort(function (a, b) { return b - a; }).forEach(function (h) {
+        var y = Y(h) - bar / 2; if (names[h.toFixed(3)] || y - lastY < 22) { return; }
+        names[h.toFixed(3)] = 1; lastY = y; g.fillStyle = "#9ca49d"; g.fillText(noteName(69 + 12 * Math.log2(h / 440)).replace(/ .*$/, ""), 4, y);
+      });
+      vs.forEach(function (v) {
+        var y = Y(v.hz), a = X(v.start), b = X(v.start + v.A), c = X(v.start + v.A + v.dur), d = X(v.start + v.A + v.dur + v.R);
+        var on = now >= v.start && now < v.stopAt && playing.indexOf(v) >= 0;
+        g.fillStyle = on ? "rgba(186,230,177,0.85)" : "rgba(186,230,177,0.25)";
+        g.beginPath(); g.moveTo(a, y); g.lineTo(b, y - bar); g.lineTo(c, y - bar); g.lineTo(d, y); g.closePath(); g.fill();
+      });
+      if (now >= t0 && now <= t1) { g.fillStyle = "#e3e7e4"; g.fillRect(X(now), 0, 2, H); }
+      var names = vs.filter(function (v) { return now >= v.start && now < v.stopAt && playing.indexOf(v) >= 0; })
+        .map(function (v) { return noteName(69 + 12 * Math.log2(v.hz / 440)) + " (" + v.rate.toFixed(2) + "x)"; });
+      $("#lab-now").textContent = names.length ? "Now: " + names.join(" · ") : (now < t0 ? "Starting…" : "");
+      if (now <= t1 && playing.length) { viewRaf = requestAnimationFrame(frame); }
+    })();
   }
   /* The play buttons only when there is something to play, and a line saying why not (Kerem,
      2026-09-30: "I can not click to note scale chord progression buttons" - they looked ready and did
@@ -208,5 +270,5 @@
   window.fsLab = { ready: ready, load: load, get analysis() { return analysis; }, get routes() { return routes; }, setRoute: setRoute, play: play, stop: stop,
     get peak() { return peak; }, level: levelDb, get bufferSeconds() { return buffer ? buffer.duration : 0; },
     now: function () { return ctx ? ctx.currentTime : 0; },
-    voices: function () { return last.map(function (v) { return { start: v.start, stopAt: v.stopAt }; }); } };
+    voices: function () { return last.map(function (v) { return { start: v.start, stopAt: v.stopAt, offset: v.offset, hz: v.hz }; }); } };
 })();
