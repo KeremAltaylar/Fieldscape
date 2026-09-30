@@ -176,6 +176,10 @@ int fs_piece_chord_notes(fs_device *d, float *notes5, float *root);   /* the cho
 /* The tuning a route plays in when its patch does not say (0 equal - the default - or 1 just).
    Only the lab sets it; the live site and the apps keep equal temperament (sample harmony, D1/D8). */
 void fs_piece_default_tuning(fs_device *d, int tuning);
+/* A route's progression for the lab's audition bench: each chord's notes (MIDI) and their frequencies
+   in the given tuning (0 equal, 1 just), plus the scale of one section's mode. JSON into out; returns
+   the length needed, and writes nothing if size is too small. */
+int fs_harmony_progression(const char *patch_json, int tuning, int sector, char *out, int size);
 /* A stretch device's shaping from a point's properties.sound.shape (JSON text; NULL or "" = none, all
    dry), and the piece's chord onto it (tune and layers follow the route; call it often - a chord
    changes on the bar, not on a GPS fix). */

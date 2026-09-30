@@ -753,6 +753,25 @@ int main() {
         assert(note_hash(walk_notes("{\"tuning\":\"just\"}", 0)) == note_hash(just));   /* the patch wins over the default */
         std::printf("route notes, just: every note one exact just correction off equal, %d moved; the patch overrides the default\n", moved);
     }
+    {   /* the bench's progression: 16 chords of the default patch, exact just ratios, a safe buffer */
+        char small[8] = "unused";
+        int need = fs_harmony_progression("{}", 1, 0, small, sizeof small);
+        assert(need > 100 && std::strcmp(small, "unused") == 0);           /* too small: nothing written */
+        std::vector<char> buf(need + 1);
+        assert(fs_harmony_progression("{}", 1, 0, buf.data(), (int)buf.size()) == need);
+        std::string j = buf.data();
+        int n = 0; for (size_t k = 0; (k = j.find("\"label\"", k)) != std::string::npos; k++) n++;
+        assert(n == 16);
+        assert(j.find("\"tuning\":\"just\"") != std::string::npos && j.find("\"scale\":[") != std::string::npos);
+        assert(j.find("\"scale_hz\":[") != std::string::npos);
+        /* the first chord (D m9, root 50): its fifth is exactly 3/2 of its root */
+        size_t hz = j.find("\"hz\":[");
+        double r = std::atof(j.c_str() + hz + 6);
+        size_t c3 = hz + 6; for (int i = 0; i < 2; i++) c3 = j.find(',', c3) + 1;
+        double fifth = std::atof(j.c_str() + c3);
+        assert(std::fabs(fifth / r - 1.5) < 1e-6);
+        std::printf("bench progression: 16 chords, just fifth %.4f / root %.4f\n", fifth, r);
+    }
     std::printf("core ok\n");
     return 0;
 }

@@ -1601,5 +1601,36 @@ void fs_piece_test_hooks(fs_device *d, double (*rnd)(void *), void *rnd_ctx,
 void fs_piece_test_walk(fs_device *d, double seconds) { Piece *p = P(d); if (p) p->test_walk_s = seconds; }
 void fs_piece_default_tuning(fs_device *d, int tuning) { Piece *p = P(d); if (p) p->default_tuning = tuning == harmony::JUST ? harmony::JUST : harmony::EQUAL; }
 
+int fs_harmony_progression(const char *patch_json, int tuning, int sector, char *out, int size) {
+    Json j = Json::parse(patch_json);
+    Patch P; patch_of(&j, P);
+    std::string s = "{\"tempo\":" + std::to_string((int)std::lround(P.tempo)) + ",\"key\":" + std::to_string(P.key) +
+                    ",\"tuning\":\"" + (tuning == harmony::JUST ? "just" : "equal") + "\",\"scale\":[";
+    const Sector *sc = P.nsectors > 0 ? &P.sectors[std::max(0, std::min(P.nsectors - 1, sector))] : nullptr;
+    const int mode = sc && sc->mode >= 0 ? sc->mode : MODE_DORIAN;
+    if (sc) for (int i = 0; i < MODES[mode].n; i++) s += (i ? "," : "") + std::to_string(((P.key + sc->r + MODES[mode].iv[i]) % 12 + 12) % 12);
+    s += "],\"chords\":[";
+    char num[32];
+    for (int step = 0; step < P.nprog; step++) {
+        int q = quality_of(P, step); if (q < 0) q = Q_M7;
+        int root = root_of(P, step);
+        bool dom = dom_q(q);
+        s += std::string(step ? "," : "") + "{\"label\":\"" + CHORDS[q].name + "\",\"root\":" + std::to_string(root) + ",\"notes\":[";
+        for (int i = 0; i < CHORDS[q].n; i++) s += (i ? "," : "") + std::to_string(root + CHORDS[q].iv[i]);
+        s += "],\"hz\":[";
+        for (int i = 0; i < CHORDS[q].n; i++) { std::snprintf(num, sizeof num, "%.6f", harmony::hz(tuning, root + CHORDS[q].iv[i], root, dom)); s += (i ? "," : "") + std::string(num); }
+        s += "],\"scale_hz\":[";                    /* the section scale from this chord's root, in the same tuning */
+        if (sc) for (int i = 0; i < MODES[mode].n; i++) {
+            int pcn = ((P.key + sc->r + MODES[mode].iv[i]) % 12 + 12) % 12, m = root + ((pcn - root) % 12 + 12) % 12;
+            std::snprintf(num, sizeof num, "%.6f", harmony::hz(tuning, m, root, dom)); s += (i ? "," : "") + std::string(num);
+        }
+        s += "]}";
+    }
+    s += "]}";
+    int need = (int)s.size();
+    if (out && size > need) std::memcpy(out, s.c_str(), need + 1);
+    return need;
+}
+
 }
 
