@@ -12,6 +12,30 @@
 #include <string>
 #include <vector>
 
+/* Every note the route engine plays over a 60 s walk, hashed (frequencies to 1 mHz), with fixed draws. */
+#define ROUTE_NOTES_HASH 11448281553059379543ULL   /* today's engine, captured 2026-09-30 before the harmony core */
+struct NoteLog { std::vector<double> f; std::vector<int> role; };
+static double fixed_draw(void *p) { unsigned *s = (unsigned *)p; *s = *s * 1664525u + 1013904223u; return (*s >> 8) / 16777216.0; }
+static void log_note(void *p, int role, double f, double, double, double) { ((NoteLog *)p)->f.push_back(f); ((NoteLog *)p)->role.push_back(role); }
+static NoteLog walk_notes(const char *patch, int default_tuning) {
+    NoteLog log; unsigned seed = 12345;
+    fs_device *d = fs_create("piece");
+    fs_prepare(d, 48000, 128);
+    fs_piece_test_hooks(d, fixed_draw, &seed, log_note, &log);
+    fs_piece_test_walk(d, 60);
+    if (default_tuning >= 0) fs_piece_default_tuning(d, default_tuning);
+    int r = fs_piece_add_route(d, patch);
+    fs_piece_walk(d, r, 0, 0);
+    for (int i = 0; i < 60 * 48000 / 128; i++) fs_process(d, 128);
+    fs_destroy(d);
+    return log;
+}
+static unsigned long long note_hash(const NoteLog &l) {
+    unsigned long long h = 1469598103934665603ULL;
+    for (size_t i = 0; i < l.f.size(); i++) { h = (h ^ (unsigned long long)std::llround(l.f[i] * 1000)) * 1099511628211ULL; h = (h ^ (unsigned)l.role[i]) * 1099511628211ULL; }
+    return h;
+}
+
 /* The resampler as it was before its kernel table (2026-09-29): every tap's sinc and window computed
    per output sample. Kept here as the reference the table must match. */
 static void ref_resample(const short *in, long long frames, double from_rate, short *out, double to_rate) {
@@ -702,6 +726,32 @@ int main() {
         double v = 0; for (int i = 0; i < 400; i++) v = h.step(0.01);
         assert(v == 220);
         std::printf("harmony: just ratios exact, 0 flips at a boundary, sweep reaches 3/3, glide lands\n");
+    }
+    {   /* the route engine through the harmony core: equal temperament is today, note for note */
+        NoteLog today = walk_notes("{}", -1);
+        std::printf("route notes, equal (default): %zu notes, hash %llu\n", today.f.size(), note_hash(today));
+        assert(today.f.size() > 20);
+        assert(note_hash(today) == ROUTE_NOTES_HASH);            /* captured from the engine before Task 2 */
+        assert(note_hash(walk_notes("{\"tuning\":\"equal\"}", -1)) == ROUTE_NOTES_HASH);
+        assert(note_hash(walk_notes("{}", 0)) == ROUTE_NOTES_HASH);
+        /* just: the same notes (same draws, same drift), each moved from equal temperament by exactly one
+           just ratio's correction - just_ratio(iv) / 2^(iv/12) - and the non-root notes really move */
+        NoteLog just = walk_notes("{}", 1);
+        assert(just.f.size() == today.f.size());
+        double fix[13];
+        for (int iv = 0; iv < 12; iv++) fix[iv] = harmony::just_ratio(iv, false) / std::pow(2.0, iv / 12.0);
+        fix[12] = 7.0 / 4 / std::pow(2.0, 10 / 12.0);
+        int moved = 0;
+        for (size_t i = 0; i < just.f.size(); i++) {
+            if (!(today.f[i] > 0)) continue;                      /* a noise zone has no pitch */
+            double q = just.f[i] / today.f[i];
+            bool one = false; for (double v : fix) if (std::fabs(q - v) < 1e-9) one = true;
+            assert(one);
+            if (std::fabs(q - 1) > 1e-9) moved++;
+        }
+        assert(moved > 0);
+        assert(note_hash(walk_notes("{\"tuning\":\"just\"}", 0)) == note_hash(just));   /* the patch wins over the default */
+        std::printf("route notes, just: every note one exact just correction off equal, %d moved; the patch overrides the default\n", moved);
     }
     std::printf("core ok\n");
     return 0;

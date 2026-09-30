@@ -173,6 +173,9 @@ void fs_piece_rhythm_config(fs_device *d, int handle, const char *rhythm_json); 
 int fs_piece_morphs(fs_device *d, double *out, int max, double *clock, int *root, int *shown);
 void fs_piece_solo(fs_device *d, int handle);   /* Listen on a rhythm point: it alone, the route and other points resting (-1: all) */
 int fs_piece_chord_notes(fs_device *d, float *notes5, float *root);   /* the chord playing, MIDI, root first; -1 none */
+/* The tuning a route plays in when its patch does not say (0 equal - the default - or 1 just).
+   Only the lab sets it; the live site and the apps keep equal temperament (sample harmony, D1/D8). */
+void fs_piece_default_tuning(fs_device *d, int tuning);
 /* A stretch device's shaping from a point's properties.sound.shape (JSON text; NULL or "" = none, all
    dry), and the piece's chord onto it (tune and layers follow the route; call it often - a chord
    changes on the bar, not on a GPS fix). */
