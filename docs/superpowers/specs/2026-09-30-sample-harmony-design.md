@@ -212,3 +212,24 @@ In the lab, setters only. It grows as each synth is built.
   temperament.
 - **Windows App Control blocks `wasm-opt.exe`**, which web engine builds need → Kerem allows it, or
   wasm builds move to the Mac.
+
+## Listening sessions
+
+### Session 1 — 2026-09-30, the audition bench (sub-project 1), Kerem on Chrome
+
+Material: *29 American Goldfinch Song, Call.mp3* (a bird, 3–6 kHz calls with silence between).
+
+What the session found, and what changed because of it:
+- Birds read "unpitched": the pitch search stopped at 2 kHz and silence outvoted the calls → a 1–8 kHz
+  search beside the low one; silence does not vote.
+- No sound: chords were placed in their own octave (a 4 kHz bird played 28× slower) → the chord or scale
+  moves by octaves as one block, centred on the recording.
+- Scale too quiet, steps unclear, progression changes inaudible → notes start at the recording's clearest
+  moment; scales climb; chords keep their shape.
+- "I can't see which envelope plays which" → a playing view: each voice's envelope at its pitch, chord
+  names, a playhead, and the notes sounding now with their cents and speed.
+- An Octave control (−3…+3) was asked for; Octave and Tune act on what is already sounding.
+
+**Verdict (Kerem):** *"this works well — pitch is nicely adjusted for a pitched sound file; this version
+and test works great."* The harmony core's retuning of pitched material is accepted as the base for the
+synths. Next: sub-project 2, the non-pitch sampler (resonator first), heard on the same bench.
