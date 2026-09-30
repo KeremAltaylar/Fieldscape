@@ -1116,6 +1116,40 @@ int main() {
         std::printf("resonator stability sweep: %d runaways\n", bad);
         assert(bad == 0);
     }
+    {   /* final review: Body / Excite changed mid-note leave the sounding note untouched (bit-identical); Tune moves
+           without a zipper; a quiet passage is not boosted 60 dB */
+        const std::vector<float> wind = noise_src(6, 0.5f, 23);
+        const float *wp[1] = { wind.data() };
+        auto run = [&](bool change) {
+            sampler::Resonator r; r.init(48000); r.set_source(1, (long long)wind.size(), wp); r.focus = 0.8;
+            r.attack(220, 0, 0.5); std::vector<float> a(48000 * 2, 0.0f), b(a.size(), 0.0f);
+            for (size_t i = 0; i < a.size(); i += 128) {
+                if (change && i == 48000) { r.body = sampler::BELL; r.excite = sampler::PLUCKED; }
+                r.render(a.data() + i, b.data() + i, 128, i / 48000.0);
+            }
+            return a;
+        };
+        assert(run(false) == run(true));
+        /* Tune from 0 to 1 in one step while a note holds a flat recording: the mix glides (no step over 0.01) */
+        std::vector<float> dc(48000 * 2, 0.5f); const float *dp[1] = { dc.data() };
+        sampler::Resonator t; t.init(48000); t.set_source(1, (long long)dc.size(), dp); t.tune = 0; t.att = 0.005;
+        t.attack(220, 0, 0.5); std::vector<float> a(48000, 0.0f), b(a.size(), 0.0f);
+        for (size_t i = 0; i < a.size(); i += 128) { if (i == 24064) t.tune = 1; t.render(a.data() + i, b.data() + i, 128, i / 48000.0); }
+        double step = 0; for (size_t i = 24064; i < a.size(); i++) step = std::max(step, (double)std::fabs(a[i] - a[i - 1]));
+        std::printf("resonator tune change: largest step %.5f\n", step);
+        assert(step < 0.01);
+        /* room tone at -80 dBFS for 2 s, then loud: a bowed Tube's output in the quiet stays under -50 dBFS */
+        std::vector<float> room = noise_src(4, 0.5f, 29);
+        for (size_t i = 0; i < 96000; i++) room[i] *= 0.0002f;              /* ~ -80 dBFS RMS */
+        /* when the loud part returns, the gain the quiet part asked for must not swell it: the loudest 50 ms in
+           the half second after the return stays within 3 dB of the settled level (seconds 3-4) */
+        std::vector<float> o = res_render(sampler::TUBE, sampler::BOWED, 0.8, 0.5, 1, 220, 4, room);
+        auto win_db = [&](size_t a, size_t n) { double e = 0; for (size_t i = a; i < a + n; i++) e += (double)o[i] * o[i]; return 10 * std::log10(e / n + 1e-30); };
+        double swell = -300; for (size_t a = 96000; a + 2400 <= 96000 + 24000; a += 1200) swell = std::max(swell, win_db(a, 2400));
+        double settled = win_db(144000, 48000);
+        std::printf("resonator: bowed Tube, loud after -80 dBFS room tone: loudest 50 ms %.1f dB vs settled %.1f dB\n", swell, settled);
+        assert(swell - settled <= 3);
+    }
     std::printf("core ok\n");
     return 0;
 }

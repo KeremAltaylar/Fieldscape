@@ -57,6 +57,7 @@ struct Voice {
     double c = 0, a = 0, g = 0, ap_x = 0, ap_y = 0, lp = 0;
     int modes = 0; double b0[4] = {}, a1[4] = {}, a2[4] = {}, y1[4] = {}, y2[4] = {}, wt[4] = {};
     double dc_x = 0, dc_y = 0, lx = 0, ly = 0, g60 = 0, rin = 0, rout = 0, agc = 1;
+    int body = 0, excite = 0;                                     /* the note's own: a later change is the next note's */
 };
 
 struct Resonator : tone::Synth {
@@ -66,6 +67,8 @@ struct Resonator : tone::Synth {
     int body = STRING, excite = BOWED;
     double focus = 0.5, colour = 0.5, tune = 1, att = 0.02, rel = 0.6, offset_s = 0;
     Voice v[VOICES]; int last = -1;
+    double tune_s = -1;                                           /* Tune as heard: glides to `tune` over ~10 ms (A-2) */
+    std::vector<double> tune_buf;                                 /* per block; sized once to the largest block */
 
     static double t60(double focus) { return 0.2 * std::pow(50.0, std::fmin(1.0, std::fmax(0.0, focus))); }
 
@@ -84,7 +87,7 @@ struct Resonator : tone::Synth {
         std::fill(x.line.begin(), x.line.end(), 0.0f);
         f = std::fmin(std::fmax(f, 6.0), 0.45 * sr);                 /* extreme octaves: clamped, never unstable */
         x.active = true; x.started = false; x.releasing = false; x.stealing = false; x.has_next = false;
-        x.f = f; x.on_t = t; x.off_t = 1e300; x.vel = vel; x.env = 0;
+        x.f = f; x.on_t = t; x.off_t = 1e300; x.vel = vel; x.env = 0; x.body = body; x.excite = excite;
         x.pos = (long long)(offset_s * sr); x.burst = 0; x.burst_len = (int)(0.025 * sr);
         x.w = 0; x.ap_x = x.ap_y = x.lp = 0; x.dc_x = x.dc_y = 0; x.lx = x.ly = 0; x.rin = x.rout = 0; x.agc = 1;
         const double w = 2 * PI * f / sr, T = t60(focus);
@@ -140,7 +143,7 @@ struct Resonator : tone::Synth {
     void stop_all() { for (auto &x : v) if (x.active) { x.stealing = true; x.has_next = false; } }
 
     double resonate(Voice &x, double in) {
-        if (body == BELL) {
+        if (x.body == BELL) {
             double y = 0;
             for (int k = 0; k < x.modes; k++) {
                 double o = x.b0[k] * in - x.a1[k] * x.y1[k] - x.a2[k] * x.y2[k];
@@ -153,7 +156,7 @@ struct Resonator : tone::Synth {
         double ap = x.c * read + x.ap_x - x.c * x.ap_y; x.ap_x = read; x.ap_y = std::fabs(ap) < 1e-20 ? 0 : ap;
         x.lp = (1 - x.a) * x.ap_y + x.a * x.lp; if (std::fabs(x.lp) < 1e-20) x.lp = 0;
         double hp = x.lp - x.lx + LOOP_R * x.ly; x.lx = x.lp; x.ly = std::fabs(hp) < 1e-20 ? 0 : hp;
-        double y = in + (body == TUBE ? -1 : 1) * x.g * x.ly;
+        double y = in + (x.body == TUBE ? -1 : 1) * x.g * x.ly;
         x.line[x.w & MASK] = (float)y; x.w++;
         double o = y - x.dc_x + 0.995 * x.dc_y; x.dc_x = y; x.dc_y = std::fabs(o) < 1e-20 ? 0 : o;   /* DC blocker */
         return x.dc_y;
@@ -162,6 +165,10 @@ struct Resonator : tone::Synth {
     void render(float *L, float *R, int n, double t0) override {
         const double up = 1.0 / (std::fmax(0.005, att) * sr), fade = 1.0 / (0.005 * sr);
         const double kr = std::pow(1e-4, 1.0 / (std::fmax(0.03, rel) * sr)), ka = 1 - std::exp(-1.0 / (0.3 * sr));
+        const double kt = 1 - std::exp(-1.0 / (0.01 * sr));
+        if (tune_s < 0) tune_s = tune;
+        std::vector<double> &tu = tune_buf; tu.resize((size_t)n);
+        for (int i = 0; i < n; i++) { tune_s += (tune - tune_s) * kt; if (std::fabs(tune - tune_s) < 1e-9) tune_s = tune; tu[(size_t)i] = tune_s; }
         for (auto &x : v) {
             if (!x.active) continue;
             for (int i = 0; i < n; i++) {
@@ -180,18 +187,19 @@ struct Resonator : tone::Synth {
                 else if (x.env < 1) x.env = std::fmin(1.0, x.env + up);
                 const double in = src.at(x.pos++);
                 double exc = in;
-                if (excite == PLUCKED) { exc = x.burst < x.burst_len ? in * 0.5 * (1 - std::cos(2 * PI * x.burst / x.burst_len)) : 0; x.burst++; }
+                if (x.excite == PLUCKED) { exc = x.burst < x.burst_len ? in * 0.5 * (1 - std::cos(2 * PI * x.burst / x.burst_len)) : 0; x.burst++; }
                 /* bowed noise through a feedback loop gains 1 / (1 - g^2) in power: fed through sqrt(1 - g^2), the
                    loop's level starts near the recording's and the automatic gain below only fine-tunes it */
-                double wet = resonate(x, excite == BOWED && body != BELL ? exc * std::sqrt(std::fmax(0.0, 1 - x.g60 * x.g60)) : exc);
-                if (excite == BOWED) {                                /* the bowed level follows the recording's */
+                double wet = resonate(x, x.excite == BOWED && x.body != BELL ? exc * std::sqrt(std::fmax(0.0, 1 - x.g60 * x.g60)) : exc);
+                if (x.excite == BOWED) {                              /* the bowed level follows the recording's */
                     x.rin += (exc * exc - x.rin) * ka; x.rout += (wet * wet - x.rout) * ka;
-                    /* only while the recording is sounding: silence is never boosted (up to 1000x - a bowed Bell or
-                       Tube keeps a small share of broadband energy) */
+                    /* only while the recording sounds: silence is never boosted (up to 1000x - a bowed Bell or Tube keeps
+                       a small share of broadband energy). The loop is linear, so the gain asked for is the same at any
+                       input level: a quiet passage does not wind it up (measured: no swell when loud returns). */
                     if (x.rin > 1e-10) { double tgt = x.rout > 1e-14 ? std::fmin(1000.0, std::sqrt(x.rin / x.rout)) : 1; x.agc += (tgt - x.agc) * ka; }
                     wet *= x.agc;
                 }
-                const double o = x.env * x.vel * vol * ((1 - tune) * exc + tune * wet);
+                const double o = x.env * x.vel * vol * ((1 - tu[(size_t)i]) * exc + tu[(size_t)i] * wet);
                 L[i] += (float)o; R[i] += (float)o;
             }
         }
