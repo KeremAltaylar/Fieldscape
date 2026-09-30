@@ -9,7 +9,7 @@
   var MAX_S = 30;                                   /* analysed length; a longer file is cut (spec Review Focus) */
   var $ = function (s) { return document.querySelector(s); };
   var ctx = null, x = null, buffer = null, peak = 1, analysis = null, routes = [], route = null, prog = null, tuning = 1, playing = [], last = [];
-  var synth = "retune", node = null, wasmBytes = null, engineReady = null, madeTimer = null, lastMade = null, loudAt = 0;
+  var synth = "retune", node = null, wasmBytes = null, engineReady = null, madeTimer = null, loudAt = 0;
 
   /* one output bus with a meter on it: what the bench plays, measured (fsLab.level) */
   var bus = null, meter = null;
@@ -22,6 +22,33 @@
     if (ctx.state === "suspended") { ctx.resume(); }
     return ctx;
   }
+  /* pitch created (spec 2a): each note's level over the median of 12 neighbours 3-20% away (at least 3 bins, or a
+     low note meets its own peak), in dB, on the bench's last 1.37 s - the same measure as the core's
+     fs_bench_created. The worklet only copies its ring out; the measuring runs here, on the page (final review #5) */
+  function goertzel(x, f) {                         /* x already windowed */
+    var N = x.length, k = 2 * Math.cos(2 * Math.PI * f / ctx.sampleRate), s1 = 0, s2 = 0, s0, i;
+    for (i = 0; i < N; i++) { s0 = x[i] + k * s1 - s2; s2 = s1; s1 = s0; }
+    return s1 * s1 + s2 * s2 - k * s1 * s2;
+  }
+  function createdDb(x, hz) {
+    var N = x.length, step = 3 * ctx.sampleRate / N;
+    for (var i = 0; i < N; i++) { x[i] *= 0.5 - 0.5 * Math.cos(2 * Math.PI * i / N); }   /* Hann, once */
+    return hz.map(function (f) {
+      var nb = []; [0.03, 0.05, 0.08, 0.11, 0.15, 0.2].forEach(function (o) { var d = Math.max(o * f, step); nb.push(goertzel(x, f - d), goertzel(x, f + d)); });
+      nb.sort(function (a, b) { return a - b; });
+      var p = goertzel(x, f), m = nb[nb.length >> 1];
+      return p > 1e-20 && m > 1e-30 ? 10 * Math.log10(p / m) : 0;
+    });
+  }
+  function measureCreated() {
+    var hz = sounding();
+    if (!node || !hz.length) { return Promise.resolve(null); }
+    return new Promise(function (res) {
+      node.port.onmessage = function (e) { if (e.data && e.data.type === "ring") { res(createdDb(e.data.samples, hz)); } };
+      node.port.postMessage({ type: "ring" });
+    });
+  }
+  function sounding() { var now = ctx.currentTime; return last.filter(function (v) { return v.engine && now >= v.start && now < v.stopAt; }).map(function (v) { return v.hz; }); }
   /* the loudest frequency leaving the bench (tests measure the pitch that comes out, not the maths) */
   function peakHz() {
     if (!meter) { return 0; }
@@ -195,7 +222,6 @@
       node = new AudioWorkletNode(c, "fieldscape-core", { numberOfInputs: 0, outputChannelCount: [2],
         processorOptions: { wasm: wasmBytes, device: "bench", params: [] } });
       node.connect(bus);
-      node.port.onmessage = function (e) { if (e.data && e.data.type === "created") { lastMade = e.data.db; } };
       sendParams(); sendSource(); gate();
     });
     return engineReady;
@@ -234,10 +260,9 @@
     });
     clearInterval(madeTimer);
     madeTimer = setInterval(function () {
-      var now = c.currentTime, hz = last.filter(function (v) { return now >= v.start && now < v.stopAt; }).map(function (v) { return v.hz; });
-      if (!hz.length) { $("#lab-made").textContent = ""; return; }
-      node.port.postMessage({ type: "created", hz: hz });
-      if (lastMade && lastMade.length) { $("#lab-made").textContent = "pitch created: +" + Math.round(lastMade.reduce(function (a, d) { return a + d; }, 0) / lastMade.length) + " dB"; }
+      measureCreated().then(function (db) {
+        $("#lab-made").textContent = db ? "pitch created: +" + Math.round(db.reduce(function (a, d) { return a + d; }, 0) / db.length) + " dB" : "";
+      });
     }, 300);
     view();
     return { rates: list.map(function () { return 1; }), hz: list, gains: list.map(function () { return lvr; }) };
@@ -371,12 +396,5 @@
     now: function () { return ctx ? ctx.currentTime : 0; },
     voices: function () { return last.map(function (v) { return { start: v.start, stopAt: v.stopAt, offset: v.offset, hz: v.hz }; }); },
     setSynth: setSynth, get engineReady() { return engineReady || Promise.resolve(); },
-    created: function () {
-      if (!node || !ctx) { return Promise.resolve(null); }
-      var now = ctx.currentTime, hz = last.filter(function (v) { return now >= v.start && now < v.stopAt; }).map(function (v) { return v.hz; });
-      return new Promise(function (res) {
-        node.port.onmessage = function (e) { if (e.data && e.data.type === "created") { lastMade = e.data.db; res(e.data.db); } };
-        node.port.postMessage({ type: "created", hz: hz });
-      });
-    } };
+    created: measureCreated };
 })();

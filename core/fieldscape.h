@@ -192,6 +192,9 @@ void fs_bench_note(fs_device *d, double hz, double at_s, double dur_s, double ve
 void fs_bench_stop(fs_device *d);
 double fs_bench_time(fs_device *d);
 double fs_bench_created(fs_device *d, double hz);
+/* the last 65536 output samples, oldest first, into dst (65536 floats): a copy for the page to measure - the
+   measuring itself never runs on the audio thread. Returns the count. */
+int fs_bench_ring(fs_device *d, float *dst);
 /* A stretch device's shaping from a point's properties.sound.shape (JSON text; NULL or "" = none, all
    dry), and the piece's chord onto it (tune and layers follow the route; call it often - a chord
    changes on the bar, not on a GPS fix). */

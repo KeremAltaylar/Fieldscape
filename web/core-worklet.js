@@ -36,7 +36,12 @@ class FieldscapeCore extends AudioWorkletProcessor {
       }
       else if (m.type === "note") { x.fs_bench_note(this.dev, m.hz, x.fs_bench_time(this.dev) + m.in, m.dur, m.vel); }
       else if (m.type === "stop") { x.fs_bench_stop(this.dev); }
-      else if (m.type === "created") { this.port.postMessage({ type: "created", db: m.hz.map((h) => x.fs_bench_created(this.dev, h)) }); }
+      else if (m.type === "ring") {             /* a copy only; the page does the measuring */
+        if (!this.ring) { this.ring = x.malloc(4 * 65536); }
+        const n = x.fs_bench_ring(this.dev, this.ring), a = new Float32Array(n);
+        a.set(new Float32Array(x.memory.buffer, this.ring, n));
+        this.port.postMessage({ type: "ring", samples: a }, [a.buffer]);
+      }
       else if (m.type === "stats") {
         x.fs_stats(this.dev, this.stats);
         const v = new DataView(x.memory.buffer, this.stats, 32);

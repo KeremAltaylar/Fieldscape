@@ -165,6 +165,8 @@ try {
   await ev("fsLab.stop()");
   check("the Resonator's chord is heard (above -40 dBFS)", rl > -40, rl);
   check("each chord note stands >= 10 dB over the noise around it (pitch created)", made && made.length === rc.hz.length && made.every(function (d) { return d >= 10; }), made);
+  /* final review #5: measuring it on the audio thread blocked a render ~70 ms per poll; the page measures it now */
+  check("pitch created is measured on the page, never on the audio thread", await ev("fetch('web/core-worklet.js?v=' + Date.now()).then(function (r) { return r.text(); }).then(function (s) { return !/fs_bench_created/.test(s); })"), null);
   check("the Resonator plays the chord in its written register (octave 0)", rc.hz[0] > 60 && rc.hz[0] < 400, rc.hz);
   check("the playing view and Now line follow the Resonator", /[A-G]#?\d/.test(rnow), rnow);
   await ev("fsLab.setSynth('retune'), 0");

@@ -77,4 +77,10 @@ void fs_bench_note(fs_device *d, double hz, double at_s, double dur_s, double ve
 void fs_bench_stop(fs_device *d) { Bench *b = B(d); if (b) { b->queue.clear(); b->res.stop_all(); } }
 double fs_bench_time(fs_device *d) { Bench *b = B(d); return b ? b->t : 0; }
 double fs_bench_created(fs_device *d, double hz) { Bench *b = B(d); return b ? b->created(hz) : 0; }
+int fs_bench_ring(fs_device *d, float *dst) {
+    Bench *b = B(d); if (!b) return 0;
+    const size_t N = b->ring.size(), k = N - b->w;
+    std::memcpy(dst, b->ring.data() + b->w, k * sizeof(float)); std::memcpy(dst + k, b->ring.data(), b->w * sizeof(float));
+    return (int)N;
+}
 }
