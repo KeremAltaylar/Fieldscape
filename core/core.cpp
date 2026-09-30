@@ -10,6 +10,7 @@ Device *make_sine();
 Device *make_stretch();
 Device *make_piece();
 Device *make_play();
+Device *make_bench();
 
 static const struct { const char *id; Device *(*make)(); } REGISTRY[] = {
     { "passthrough", make_passthrough },
@@ -17,6 +18,7 @@ static const struct { const char *id; Device *(*make)(); } REGISTRY[] = {
     { "stretch", make_stretch },
     { "piece", make_piece },
     { "play", make_play },
+    { "bench", make_bench },
 };
 
 struct fs_device {

@@ -184,6 +184,14 @@ int fs_harmony_progression(const char *patch_json, int tuning, int sector, char 
    its brightness, a pitched/unpitched verdict, a loop for sustaining it and one period for FM/AM.
    Mono float at its own rate; JSON into out; returns the length needed (writes nothing if too small). */
 int fs_analyse(const float *mono, long long frames, double rate, char *out, int size);
+/* The lab's audition bench on the engine (sample harmony 2a): device "bench" holds one sampler synth (the
+   Resonator), its recording (fs_set_source / _i16) and settings (params: body, excite, focus, colour,
+   tune, attack, release, offset). Notes at device seconds; the clock; stop (a 5 ms fade); and how far the
+   output at hz stands above the spectrum around it, in dB ("pitch created"). */
+void fs_bench_note(fs_device *d, double hz, double at_s, double dur_s, double vel);
+void fs_bench_stop(fs_device *d);
+double fs_bench_time(fs_device *d);
+double fs_bench_created(fs_device *d, double hz);
 /* A stretch device's shaping from a point's properties.sound.shape (JSON text; NULL or "" = none, all
    dry), and the piece's chord onto it (tune and layers follow the route; call it often - a chord
    changes on the bar, not on a GPS fix). */

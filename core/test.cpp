@@ -1072,6 +1072,26 @@ int main() {
         std::printf("resonator: six bowed strings, 99.9%% of blocks within %.3f ms (budget %.2f)\n", ms[(size_t)(ms.size() * 0.999)], 1.33 * slack);
         assert(ms[(size_t)(ms.size() * 0.999)] < 1.33 * slack);
     }
+    {   /* 2a: the bench device - notes at times, the clock, "pitch created", stop */
+        fs_device *b = fs_create("bench");
+        assert(b);
+        fs_prepare(b, 48000, 128);
+        const std::vector<float> wind = noise_src(4, 0.5f, 5);
+        const float *wp[1] = { wind.data() };
+        fs_set_source(b, 1, (int)wind.size(), wp);
+        assert(std::isfinite(fs_bench_created(b, 220)));               /* before any sound */
+        fs_bench_note(b, 220, 0.1, 5, 0.5);
+        for (int i = 0; i < 48000 * 2 / 128; i++) fs_process(b, 128);
+        assert(std::fabs(fs_bench_time(b) - 2.0) < 0.01);
+        double made = fs_bench_created(b, 220);
+        std::printf("bench: a bowed string on noise, pitch created %+.1f dB at 220 Hz\n", made);
+        assert(made >= 10);
+        fs_bench_stop(b);
+        for (int i = 0; i < 8; i++) fs_process(b, 128);
+        double mx = 0; for (int i = 0; i < 128; i++) mx = std::max(mx, (double)std::fabs(fs_out(b, 0)[i]));
+        assert(mx == 0);
+        fs_destroy(b);
+    }
     std::printf("core ok\n");
     return 0;
 }
