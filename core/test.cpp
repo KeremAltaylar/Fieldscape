@@ -858,9 +858,35 @@ int main() {
             std::vector<char> b(need + 1); fs_analyse(x->data(), (long long)x->size(), SR2, b.data(), (int)b.size());
             std::string j = b.data(); size_t p = j.find("\"track\":[") + 9; double mx = 0;
             while ((p = j.find('[', p)) != std::string::npos) { mx = std::fmax(mx, std::atof(j.c_str() + p + 1)); p++; }
-            assert(mx < 2400);
+            assert(mx < 8800);                                              /* the search reaches 8 kHz (birds) */
         }
         std::printf("review fixes: swap walk unchanged, hysteresis holds to 30%% past the midpoint, per-frame pitch bounded\n");
+    }
+    {   /* birds (Kerem, 2026-09-30: a goldfinch read "unpitched"): calls at 3-6 kHz with silence between
+           them are pitched, and the silence does not count against them */
+        const double SR3 = 48000, PI3 = 3.141592653589793;
+        auto grab = [](const std::vector<float> &x, double sr) {
+            int need = fs_analyse(x.data(), (long long)x.size(), sr, nullptr, 0);
+            std::vector<char> b(need + 1); fs_analyse(x.data(), (long long)x.size(), sr, b.data(), (int)b.size());
+            return std::string(b.data());
+        };
+        auto f0of = [](const std::string &j) { return std::atof(j.c_str() + j.find("\"f0\":") + 5); };
+        std::vector<float> whistle(SR3 * 2, 0.0f), glide(SR3 * 2, 0.0f);
+        for (size_t i = 0; i < whistle.size(); i++) {
+            double t = i / SR3, in = std::fmod(t, 0.25);                     /* an 80 ms call every 250 ms */
+            if (in < 0.08) {
+                double env = std::sin(PI3 * in / 0.08);
+                whistle[i] = (float)(0.4 * env * std::sin(2 * PI3 * 4000 * t));
+                double ph = 2 * PI3 * (3000 * in + 0.5 * (2000 / 0.08) * in * in);   /* 3 -> 5 kHz in each call */
+                glide[i] = (float)(0.4 * env * std::sin(ph));
+            }
+        }
+        std::string jw = grab(whistle, SR3), jg = grab(glide, SR3);
+        double fw = f0of(jw), fg = f0of(jg);
+        std::printf("birds: whistle %s %.1f Hz, glide %s %.1f Hz\n", jw.find("\"pitched\"") != std::string::npos ? "pitched" : "UNPITCHED", fw,
+                    jg.find("\"pitched\"") != std::string::npos ? "pitched" : "UNPITCHED", fg);
+        assert(jw.find("\"verdict\":\"pitched\"") != std::string::npos && std::fabs(1200 * std::log2(fw / 4000)) < 5);
+        assert(jg.find("\"verdict\":\"pitched\"") != std::string::npos && fg > 3000 && fg < 5000);
     }
     std::printf("core ok\n");
     return 0;

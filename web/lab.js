@@ -63,7 +63,7 @@
     var pts = 0;
     a.track.forEach(function (f, i) {
       if (!(f[0] > 0)) { return; }
-      var X = i / Math.max(1, a.track.length - 1) * cv.width, Y = cv.height - (Math.log2(f[0] / 50) / Math.log2(40)) * cv.height;
+      var X = i / Math.max(1, a.track.length - 1) * cv.width, Y = cv.height - (Math.log2(f[0] / 50) / Math.log2(160)) * cv.height;
       g.fillStyle = "rgba(186,230,177," + (0.15 + 0.85 * f[1]) + ")"; g.fillRect(X, Y - 2, 3, 4); pts++;
     });
     cv.dataset.points = pts;

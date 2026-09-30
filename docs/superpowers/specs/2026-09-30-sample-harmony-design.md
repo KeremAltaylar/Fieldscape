@@ -117,7 +117,8 @@ In the lab, setters only. It grows as each synth is built.
   avoid octave errors; confidence = 1 − YIN's aperiodicity. Recording pitch = median over frames
   with confidence ≥ 0.8.
 - **Brightness:** spectral centroid per frame.
-- **Verdict:** pitched if ≥ 50% of frames are confident, else unpitched (a suggestion only).
+- **Range:** 50 Hz – 2 kHz (on a ~16 kHz copy) and 1 – 8 kHz (on the recording, 10 ms windows), the more confident kept per frame — birds sing at 2–8 kHz (a goldfinch read unpitched with the low range alone, 2026-09-30).
+- **Verdict:** pitched if ≥ 50% of the *sounding* frames are confident (frames 40 dB under the loudest are silence and do not vote), else unpitched (a suggestion only).
 - **Loop points** (looped model): within the steadiest confident stretch, the lag of maximal
   autocorrelation, both ends snapped to zero crossings; crossfade 10–50 ms.
 - **Modulator cycle** (FM/AM): one period (1/f0) at the most confident, steadiest frame, cut at zero

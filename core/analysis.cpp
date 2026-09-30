@@ -105,26 +105,45 @@ extern "C" int fs_analyse(const float *x, long long n, double sr, char *out, int
     FFT fft; int N = 2048; fft.reserve(N); fft.plan(N); fft.twiddles(0, N);
     std::vector<float> buf(4 * N); std::vector<double> d;
     double peak = 0; for (long long i = 0; i < n; i++) peak = std::max(peak, (double)std::fabs(x[i]));
+    /* Two searches per frame, the more confident one kept: 50 Hz - 2 kHz on the 16 kHz copy, and
+       1 - 8 kHz on the recording itself over 10 ms (birds sing at 2-8 kHz; Kerem's goldfinch read
+       "unpitched" with the low search alone, 2026-09-30). The high one is cheap: its lags are short. */
+    const int Wh = (int)std::lround(sr * 0.01);
+    const double fhi = std::min(8000.0, sr / 4);
+    std::vector<double> d2, en;
     for (long long at = 0; Wd > 0 && at + Wd <= (long long)dx.size() && peak > 1e-4; at += Hd) {
         Frame f = yin(dx.data() + at, Wd, sd, 50, 2000, d);
+        if (fhi > 1000 && at * K + Wh <= n) {
+            Frame g = yin(x + at * K, Wh, sr, 1000, fhi, d2);
+            if (g.conf > f.conf) f = g;
+        }
         double e = 0; for (int i = 0; i < Wd; i++) e += (double)dx[at + i] * dx[at + i];
-        if (e / Wd < 1e-7) f = { 0, 0, 0 };                                 /* a silent frame is not a pitch */
+        en.push_back(e / Wd);
         f.centroid = centroid(x + at * K, std::min(W, N), sr, fft, buf);
         tr.push_back(f);
     }
+    /* Silence is not a pitch, and does not vote: a frame 40 dB under the loudest (or absolutely quiet)
+       has no pitch and is left out of the verdict and the mean confidence - the calls of a bird are
+       separated by more silence than sound. */
+    double emax = 0; for (double e : en) emax = std::max(emax, e);
+    std::vector<char> sounding(tr.size(), 1);
+    for (size_t i = 0; i < tr.size(); i++) if (en[i] < std::max(1e-7, emax * 1e-4)) { sounding[i] = 0; tr[i].f0 = 0; tr[i].conf = 0; }
     /* octave errors: a confident frame an octave off the median of its confident neighbours is folded */
     std::vector<double> good; for (auto &f : tr) if (f.conf >= 0.8 && f.f0 > 0) good.push_back(f.f0);
     double f0 = 0;
     if (!good.empty()) { std::vector<double> g = good; std::nth_element(g.begin(), g.begin() + g.size() / 2, g.end()); f0 = g[g.size() / 2]; }
     for (auto &f : tr) if (f0 > 0 && f.f0 > 0) { double c = 1200 * std::log2(f.f0 / f0); if (std::fabs(c - 1200) < 60) f.f0 /= 2; else if (std::fabs(c + 1200) < 60) f.f0 *= 2; }
-    bool pitched = !tr.empty() && good.size() * 2 >= tr.size();
+    size_t heard = 0; for (char c : sounding) heard += c;
+    bool pitched = heard > 0 && good.size() * 2 >= heard;
     if (pitched && f0 > 0) {                                           /* up to 5 confident moments, spread evenly */
         std::vector<long long> cs;
         std::vector<int> ok; for (int i = 0; i < (int)tr.size(); i++) if (tr[i].conf >= 0.8 && tr[i].f0 > 0) ok.push_back(i);
         for (int k = 0; k < 5 && !ok.empty(); k++) cs.push_back((long long)ok[ok.size() * (2 * k + 1) / 10] * H + W / 2);
         f0 = refine(x, n, sr, f0, cs);
     }
-    double conf = 0, cen = 0; for (auto &f : tr) { conf += f.conf; cen += f.centroid; } if (!tr.empty()) { conf /= tr.size(); cen /= tr.size(); }
+    double conf = 0, cen = 0;
+    for (size_t i = 0; i < tr.size(); i++) if (sounding[i]) { conf += tr[i].conf; cen += tr[i].centroid; }
+    if (heard) { conf /= heard; cen /= heard; }
     /* the steadiest confident run (within 20 cents of f0): the loop lives there; its most confident frame gives the cycle */
     long loop_a = -1, loop_b = -1, cyc_a = -1, cyc_b = -1;
     if (pitched && f0 > 0) {
