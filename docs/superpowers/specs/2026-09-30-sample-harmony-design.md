@@ -172,10 +172,11 @@ In the lab, setters only. It grows as each synth is built.
 - `core/harmony.cpp` + the route engine's `mtof` calls routed through it; per-route
   `patch.tuning` (`"just"` default, `"equal"`); the existing sound unchanged when `tuning` is
   `"equal"` (bit-identical fingerprint against today).
-- `lab.html`: the site's page with the harmony core on, and the audition bench with its source
-  panel (drop a file → pitch track, confidence, verdict, loop, cycle drawn) and its players (note,
-  scale, chord just/equal, progression). Until sub-project 2 adds real synths, the bench plays a
-  plain retuned recording, enough to hear the harmony core's ratios.
+- `lab.html`: the audition bench, standalone, on its own engine file (`web/core-lab.wasm`, so the live
+  site's engine never changes): a source panel (drop a file → pitch track, confidence, verdict, loop,
+  cycle drawn) and players (note, scale, chord just/equal, progression). Until sub-project 2 adds real
+  synths, the bench plays a plain retuned recording, enough to hear the harmony core's ratios. Walking
+  the routes in the new tuning joins the lab when routes pick instruments (sub-project 3).
 - Nothing in `index.html`'s live behaviour changes.
 
 ## How we know it works
