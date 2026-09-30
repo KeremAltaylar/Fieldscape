@@ -37,7 +37,7 @@ def build():
         cxx = [sys.executable, em + ".py"]   # em++ is a shell script; its .py runs everywhere
         # -O1: Windows App Control blocks binaryen's wasm-opt.exe (2026-09-30), which -O2 links run;
         # -O1 skips it and all 19 checks pass unchanged.
-        flags, ext = ["-std=c++17", "-O1", "-Wall", "-Wextra", "-sNODERAWFS=1", "-sALLOW_MEMORY_GROWTH=1"], ".js"
+        flags, ext = ["-std=c++17", "-O1", "-DFS_TEST_O1", "-Wall", "-Wextra", "-sNODERAWFS=1", "-sALLOW_MEMORY_GROWTH=1"], ".js"
     devices = [os.path.join("core", "devices", f) for f in os.listdir(os.path.join(ROOT, "core", "devices")) if f.endswith(".cpp")]
     targets = {
         "core_test": ["core/core.cpp", "core/mix.cpp", "core/place.cpp", "core/webm.cpp", "core/sections.cpp", "core/resample.cpp", "core/analysis.cpp", "core/piece.cpp", "core/engine.cpp", *devices, "core/test.cpp"],
