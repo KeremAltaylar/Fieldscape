@@ -16,6 +16,7 @@
 #include "device.hpp"
 #include "json.hpp"
 #include "synths.hpp"
+#include "harmony.hpp"
 
 #include <cstdio>
 #include <cstring>
@@ -164,6 +165,7 @@ struct Patch {
     bool zones_on = true, morph_on = true, morph_cells = true;   /* morph.cells: the cells shown when it loads */
     Morph morph[24]; int nmorph = 0;
     Sector sectors[32]; int nsectors = 0;
+    int tuning = -1;   /* "just" 1, "equal" 0, absent -1: the piece's default (sample harmony) */
 };
 
 static FxCfg fx_of(const Json *j, const char *div, double wet, double fb, double rw, double rd) {
@@ -194,6 +196,8 @@ static void patch_of(const Json *p, Patch &P) {
     int version = p ? (int)p->n("version", 0) : 0;
     const Json *prog = p ? p->get("prog") : nullptr;
     bool use = p && prog && prog->kind == Json::ARR && prog->size() && version >= 4 && version <= 17;
+    std::string tu = p ? p->s("tuning", "") : "";           /* read before an old patch is set aside */
+    P.tuning = tu == "just" ? harmony::JUST : tu == "equal" ? harmony::EQUAL : -1;
     if (!use) p = nullptr;
 
     P.tempo = p ? p->n("tempo", 72) : 72; P.key = p ? (int)p->n("key", 50) : 50; P.key2 = p ? (int)p->n("key2", 55) : 55;
@@ -579,6 +583,16 @@ struct Piece : Device {
     /* hooks for the parity test: every note the steps play */
     void (*on_note)(void *, int role, double f, double dur, double t, double vel) = nullptr; void *note_ctx = nullptr;
     double test_walk_s = 0;           /* tests: t along the route = time / this, as the reference harness walks */
+    int default_tuning = harmony::EQUAL;    /* fs_piece_default_tuning */
+    /* A note under the chord playing (the harmony core): today's mtof in equal temperament. */
+    double note_hz(int m) {
+        int tu = patch.tuning >= 0 ? patch.tuning : default_tuning;
+        if (tu != harmony::JUST) return harmony::mtof(m);      /* equal: today's mtof, touching nothing else */
+        /* the chord playing; before the bar has set one (a route swap), where the walk is - read only:
+           chord_index would move the chord's own hysteresis (H.idx) ahead of harmony_bar */
+        int step = H.chord >= 0 ? H.chord : (H.idx >= 0 ? H.idx : std::max(0, std::min(patch.nprog - 1, (int)std::floor(t_along * patch.nprog))));
+        return harmony::hz(tu, m, chord_root(step), dom_q(chord_quality(step)));
+    }
 
     void *cast(const char *kind) override { return std::strcmp(kind, "piece") ? nullptr : this; }
     fs_param dummy[1] = { { "none", "none", "", 0, 1, 0 } };
@@ -796,7 +810,7 @@ struct Piece : Device {
         H.chord = step;
         int b = lead_to(H.have_bass, H.bass, tones, 1, patch.key - 24, patch.key - 5);
         if (changed || !H.held || PERCUSSIVE[patch.voice.synth]) {
-            note(0, bass.sy(), mtof(b), -1, time, 0.5);
+            note(0, bass.sy(), note_hz(b), -1, time, 0.5);
             H.bass = b; H.have_bass = true; H.held = true;
         }
         std::memcpy(H.tones, tones, sizeof tones); H.ntones = nt;
@@ -826,7 +840,7 @@ struct Piece : Device {
         H.top = mm; H.have_top = true;
         double drift = 1 + (rnd() - 0.5) * 0.006;
         double dur = 0.35 + rnd() * 0.55;
-        double f = mtof(mm) * drift;
+        double f = note_hz(mm) * drift;
         note(1, top.sy(), f, dur, time, 0.22 + rnd() * 0.16);
     }
 
@@ -917,7 +931,7 @@ struct Piece : Device {
         C.last = bm; C.have_last = true;
         double drift = 1 + (rnd() - 0.5) * 0.005;
         double dur = 0.28 + rnd() * 0.6;
-        double f = mtof(bm) * drift;
+        double f = note_hz(bm) * drift;
         note(2, sectr.sy(), f, dur, time, 0.42 + rnd() * 0.2);
     }
 
@@ -958,7 +972,7 @@ struct Piece : Device {
         T3.last = bm; T3.have_last = true;
         double beat = 60 / p.tempo;
         double dur = beat * (1.5 + rnd() * 2.5);
-        double f = mtof(bm) * (1 + (rnd() - 0.5) * 0.004);
+        double f = note_hz(bm) * (1 + (rnd() - 0.5) * 0.004);
         note(3, sy, f, dur, time, 0.36 + rnd() * 0.16);
     }
 
@@ -984,7 +998,7 @@ struct Piece : Device {
         o->noise = false;
         o->s.osc.w = &basic_wave(tim.osc);
         o->s.env.set(0.02, 0.5, 0.3, tim.dur);
-        note(5, &o->s, mtof(midi), tim.dur, at, 0.4);
+        note(5, &o->s, note_hz(midi), tim.dur, at, 0.4);
     }
 
     /* ---- rhythmStep ---- */
@@ -1588,6 +1602,38 @@ void fs_piece_test_hooks(fs_device *d, double (*rnd)(void *), void *rnd_ctx,
     p->rnd.hook = rnd; p->rnd.hook_ctx = rnd_ctx; p->on_note = on_note; p->note_ctx = note_ctx;
 }
 void fs_piece_test_walk(fs_device *d, double seconds) { Piece *p = P(d); if (p) p->test_walk_s = seconds; }
+void fs_piece_default_tuning(fs_device *d, int tuning) { Piece *p = P(d); if (p) p->default_tuning = tuning == harmony::JUST ? harmony::JUST : harmony::EQUAL; }
+
+int fs_harmony_progression(const char *patch_json, int tuning, int sector, char *out, int size) {
+    Json j = Json::parse(patch_json);
+    Patch P; patch_of(&j, P);
+    std::string s = "{\"tempo\":" + std::to_string((int)std::lround(P.tempo)) + ",\"key\":" + std::to_string(P.key) +
+                    ",\"tuning\":\"" + (tuning == harmony::JUST ? "just" : "equal") + "\",\"scale\":[";
+    const Sector *sc = P.nsectors > 0 ? &P.sectors[std::max(0, std::min(P.nsectors - 1, sector))] : nullptr;
+    const int mode = sc && sc->mode >= 0 ? sc->mode : MODE_DORIAN;
+    if (sc) for (int i = 0; i < MODES[mode].n; i++) s += (i ? "," : "") + std::to_string(((P.key + sc->r + MODES[mode].iv[i]) % 12 + 12) % 12);
+    s += "],\"chords\":[";
+    char num[32];
+    for (int step = 0; step < P.nprog; step++) {
+        int q = quality_of(P, step); if (q < 0) q = Q_M7;
+        int root = root_of(P, step);
+        bool dom = dom_q(q);
+        s += std::string(step ? "," : "") + "{\"label\":\"" + CHORDS[q].name + "\",\"root\":" + std::to_string(root) + ",\"notes\":[";
+        for (int i = 0; i < CHORDS[q].n; i++) s += (i ? "," : "") + std::to_string(root + CHORDS[q].iv[i]);
+        s += "],\"hz\":[";
+        for (int i = 0; i < CHORDS[q].n; i++) { std::snprintf(num, sizeof num, "%.6f", harmony::hz(tuning, root + CHORDS[q].iv[i], root, dom)); s += (i ? "," : "") + std::string(num); }
+        s += "],\"scale_hz\":[";                    /* the section scale from this chord's root, in the same tuning */
+        if (sc) for (int i = 0; i < MODES[mode].n; i++) {
+            int pcn = ((P.key + sc->r + MODES[mode].iv[i]) % 12 + 12) % 12, m = root + ((pcn - root) % 12 + 12) % 12;
+            std::snprintf(num, sizeof num, "%.6f", harmony::hz(tuning, m, root, dom)); s += (i ? "," : "") + std::string(num);
+        }
+        s += "]}";
+    }
+    s += "]}";
+    int need = (int)s.size();
+    if (out && size > need) std::memcpy(out, s.c_str(), need + 1);
+    return need;
+}
 
 }
 
