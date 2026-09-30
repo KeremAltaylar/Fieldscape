@@ -100,8 +100,10 @@ try {
   check("a 4 kHz bird is played near its own pitch (every rate within an octave either side)", br && br.rates && br.rates.every(function (r) { return r > 0.5 && r < 2; }), [bird, br && br.rates]);
   check("... on the chord's own notes, octaves aside (just fifth still 3/2 up to octaves)", br && br.hz && Math.abs(Math.log2(br.hz[2] / br.hz[0] / 1.5) - Math.round(Math.log2(br.hz[2] / br.hz[0] / 1.5))) < 1e-9, br && br.hz);
   await ev("fsLab.play('chord', { tuning: 'just', step: 0 }), 0");
-  await sleep(700);
-  const lvl = await ev("fsLab.level()");
+  /* the test bird calls 80 ms in every 250: one 43 ms meter read can land between calls - the loudest of
+     ten reads across a second */
+  let lvl = -120;
+  for (let i = 0; i < 10; i++) { await sleep(100); lvl = Math.max(lvl, await ev("fsLab.level()")); }
   await ev("fsLab.stop()");
   check("sound comes out while a chord plays (above -40 dBFS)", lvl > -40, lvl);
   /* Kerem, 2026-09-30: still silent on his machine - the page now shows what the audio is doing, so a
