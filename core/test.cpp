@@ -983,6 +983,39 @@ int main() {
         std::vector<float> b = res_render(sampler::STRING, sampler::BOWED, 0.9, 0.9, 0, 440, 1, wind);
         assert(a == b);                                                  /* Tune 0: the resonator is out of the path */
     }
+    {   /* 2a: Tube rings the odd harmonics, Bell its bar modes; both land on the note */
+        const std::vector<float> wind = noise_src(12, 0.5f, 7);
+        const double F[7] = { 55, 110, 220, 440, 880, 1760, 3520 };
+        double worst = 0, worst_b = 0;
+        for (int body : { (int)sampler::TUBE, (int)sampler::BELL }) for (double f : F) {
+            double got = peak_near(res_render(body, sampler::PLUCKED, 0.9, 0.5, 1, f, 3, wind), 48000, f, 0.04);
+            worst = std::max(worst, std::fabs(1200 * std::log2(got / f)));
+            if (f >= 110) {
+                double gb = centre_near(res_render(body, sampler::BOWED, 0.9, 0.5, 1, f, 10, wind), 48000, f, 8);
+                worst_b = std::max(worst_b, std::fabs(1200 * std::log2(gb / f)));
+            }
+        }
+        std::printf("resonator tube and bell: worst pitch error plucked %.2f cents, bowed %.2f cents\n", worst, worst_b);
+        assert(worst < 3 && worst_b < 3);
+        /* Tube: the odd harmonics stand >= 15 dB over the even */
+        std::vector<float> tube = res_render(sampler::TUBE, sampler::BOWED, 0.8, 0.6, 1, 220, 10, wind);
+        auto level_at = [&](double f) {
+            const int N = 262144; double re = 0, im = 0; size_t s0 = tube.size() - N;
+            for (int i = 0; i < N; i++) { double w = 0.5 - 0.5 * std::cos(2 * 3.141592653589793 * i / N), ph = 2 * 3.141592653589793 * f * i / 48000; re += tube[s0 + i] * w * std::cos(ph); im += tube[s0 + i] * w * std::sin(ph); }
+            return 10 * std::log10(re * re + im * im + 1e-30);
+        };
+        double odd = 0.5 * (level_at(centre_near(tube, 48000, 220, 8)) + level_at(centre_near(tube, 48000, 660, 8)));
+        double even = 0.5 * (level_at(440) + level_at(880));
+        std::printf("resonator tube: odd harmonics %.1f dB over even\n", odd - even);
+        assert(odd - even >= 15);
+        /* Bell: its modes at 2.76, 5.40, 8.93 x f within 1% */
+        std::vector<float> bell = res_render(sampler::BELL, sampler::PLUCKED, 0.9, 1, 1, 220, 3, wind);
+        for (int k = 1; k < 4; k++) {
+            double want = 220 * sampler::BELL_RATIO[k], got = peak_near(bell, 48000, want, 0.05);
+            std::printf("resonator bell: mode %d at %.1f Hz (want %.1f)\n", k, got, want);
+            assert(std::fabs(got / want - 1) < 0.01);
+        }
+    }
     std::printf("core ok\n");
     return 0;
 }
