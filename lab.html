@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Fieldscape lab</title>
+<style>
+  /* Research tooling (spec D11): plain, on the site's own dark ground. */
+  :root { color-scheme: dark; --ground: #0d1310; --ink: #e3e7e4; --dim: #9ca49d; --lamp: #bae6b1; --line: #2a332d; }
+  body { margin: 0; padding: 16px; background: var(--ground); color: var(--ink); font: 15px/1.45 system-ui, sans-serif; max-width: 880px; }
+  h1 { font-size: 20px; margin: 0 0 12px; } h2 { font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); margin: 20px 0 8px; }
+  section { border-top: 1px solid var(--line); padding-top: 4px; }
+  button, select, input { font: inherit; color: var(--ink); background: #18201b; border: 1px solid var(--line); border-radius: 8px; min-height: 44px; padding: 0 14px; }
+  button[aria-pressed="true"] { border-color: var(--lamp); color: var(--lamp); }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+  #lab-drop { border: 1px dashed var(--dim); border-radius: 10px; padding: 18px; text-align: center; color: var(--dim); }
+  canvas { width: 100%; height: 140px; background: #111814; border-radius: 8px; }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 8px 0; } dt { color: var(--dim); }
+  label { display: flex; gap: 8px; align-items: center; } input[type=range] { min-height: 0; padding: 0; }
+</style>
+</head>
+<body>
+<h1>Fieldscape lab — audition bench</h1>
+<section>
+  <h2>Source</h2>
+  <div id="lab-drop">Drop a recording here, or <label style="display:inline"><input type="file" id="lab-file" accept="audio/*"></label></div>
+  <p id="lab-note"></p>
+  <canvas id="lab-track" width="1600" height="280" aria-label="Pitch track"></canvas>
+  <dl id="lab-facts"></dl>
+</section>
+<section>
+  <h2>Harmony</h2>
+  <div class="row"><label>Route <select id="lab-route"></select></label>
+    <button id="lab-just" aria-pressed="true">Just</button><button id="lab-equal" aria-pressed="false">Equal</button></div>
+  <div class="row"><label>Chord <select id="lab-step"></select></label></div>
+</section>
+<section>
+  <h2>Play</h2>
+  <div class="row"><button data-play="note">Note</button><button data-play="scale">Scale</button><button data-play="chord">Chord</button><button data-play="progression">Progression</button><button id="lab-stop">Stop</button></div>
+  <div class="row"><label>Tune <input type="range" id="lab-tune" min="0" max="1" step="0.01" value="1"></label>
+    <label>Attack <input type="range" id="lab-attack" min="0.005" max="1" step="0.005" value="0.02"></label>
+    <label>Release <input type="range" id="lab-release" min="0.03" max="3" step="0.01" value="0.6"></label></div>
+  <div class="row"><input type="text" id="lab-verdict" placeholder="Your note on this sound" style="flex:1"><button id="lab-keep">Keep</button></div>
+  <ul id="lab-kept"></ul>
+</section>
+<script src="web/lab.js"></script>
+</body>
+</html>
