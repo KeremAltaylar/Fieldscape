@@ -180,6 +180,10 @@ void fs_piece_default_tuning(fs_device *d, int tuning);
    in the given tuning (0 equal, 1 just), plus the scale of one section's mode. JSON into out; returns
    the length needed, and writes nothing if size is too small. */
 int fs_harmony_progression(const char *patch_json, int tuning, int sector, char *out, int size);
+/* Sample harmony: a recording's pitch over time (YIN, 40 ms windows every 20 ms), how sure it is,
+   its brightness, a pitched/unpitched verdict, a loop for sustaining it and one period for FM/AM.
+   Mono float at its own rate; JSON into out; returns the length needed (writes nothing if too small). */
+int fs_analyse(const float *mono, long long frames, double rate, char *out, int size);
 /* A stretch device's shaping from a point's properties.sound.shape (JSON text; NULL or "" = none, all
    dry), and the piece's chord onto it (tune and layers follow the route; call it often - a chord
    changes on the bar, not on a GPS fix). */

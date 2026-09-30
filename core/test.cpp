@@ -772,6 +772,51 @@ int main() {
         assert(std::fabs(fifth / r - 1.5) < 1e-6);
         std::printf("bench progression: 16 chords, just fifth %.4f / root %.4f\n", fifth, r);
     }
+    {   /* the analyser: known pitches within 5 cents, noise unpitched, loop and cycle on the waveform */
+        auto analyse = [](const std::vector<float> &x, double sr) {
+            int need = fs_analyse(x.data(), (long long)x.size(), sr, nullptr, 0);
+            std::vector<char> b(need + 1);
+            fs_analyse(x.data(), (long long)x.size(), sr, b.data(), (int)b.size());
+            return std::string(b.data());
+        };
+        auto num = [](const std::string &j, const char *k) { size_t p = j.find(std::string("\"") + k + "\":"); return p == std::string::npos ? -1.0 : std::atof(j.c_str() + p + std::strlen(k) + 3); };
+        auto cents = [](double a, double b) { return 1200 * std::log2(a / b); };
+        const double SR = 48000, PI = 3.141592653589793;
+        std::vector<float> sine(SR * 2), saw(SR * 2), bell(SR * 2), noise(SR * 2);
+        uint32_t r = 99;
+        for (size_t i = 0; i < sine.size(); i++) {
+            double t = i / SR;
+            sine[i] = (float)(0.5 * std::sin(2 * PI * 220 * t));
+            double s = 0; for (int k = 1; k <= 30; k++) s += std::sin(2 * PI * 110 * k * t) / k; saw[i] = (float)(0.3 * s);
+            bell[i] = (float)((0.5 * std::sin(2 * PI * 330 * t) + 0.3 * std::sin(2 * PI * 660 * t) + 0.2 * std::sin(2 * PI * 990 * t) + 0.1 * std::sin(2 * PI * 330 * 2.76 * t)) * std::exp(-t * 0.8));
+            r = r * 1664525u + 1013904223u; noise[i] = (float)(((int)(r >> 8) - 8388608) / 16777216.0);
+        }
+        std::string js = analyse(sine, SR), jw = analyse(saw, SR), jb = analyse(bell, SR), jn = analyse(noise, SR);
+        std::printf("analyse sine %.2f, saw %.2f, bell %.2f, noise %s\n", num(js, "f0"), num(jw, "f0"), num(jb, "f0"), jn.find("\"unpitched\"") != std::string::npos ? "unpitched" : "PITCHED");
+        assert(std::fabs(cents(num(js, "f0"), 220)) < 5 && js.find("\"pitched\"") != std::string::npos);
+        assert(std::fabs(cents(num(jw, "f0"), 110)) < 5);          /* no octave error on a bright tone */
+        assert(std::fabs(cents(num(jb, "f0"), 330)) < 5);
+        assert(jn.find("\"verdict\":\"unpitched\"") != std::string::npos);
+        /* the loop on the sine: a whole number of periods, ends on zero crossings */
+        size_t lp = js.find("\"loop\":["); assert(lp != std::string::npos);
+        long a = std::atol(js.c_str() + lp + 8), b = std::atol(js.c_str() + js.find(',', lp + 8) + 1);
+        double periods = (b - a) * 220 / SR;
+        assert(b > a && std::fabs(periods - std::round(periods)) < 0.02 && std::fabs(sine[a]) < 0.02 && std::fabs(sine[b]) < 0.02);
+        /* the cycle: one period long */
+        size_t cp = js.find("\"cycle\":["); assert(cp != std::string::npos);
+        long c0 = std::atol(js.c_str() + cp + 9), c1 = std::atol(js.c_str() + js.find(',', cp + 9) + 1);
+        assert(std::fabs((c1 - c0) - SR / 220) <= 1.5);
+        /* 44.1 kHz, too short, silence: sane answers and no NaN */
+        std::vector<float> s44(44100); for (size_t i = 0; i < s44.size(); i++) s44[i] = (float)(0.5 * std::sin(2 * PI * 440 * i / 44100.0));
+        assert(std::fabs(cents(num(analyse(s44, 44100), "f0"), 440)) < 5);
+        std::vector<float> tiny(500, 0.1f), quiet(SR, 0.0f);
+        for (auto &j : { analyse(tiny, SR), analyse(quiet, SR) }) {
+            assert(j.find("\"verdict\":\"unpitched\"") != std::string::npos);
+            assert(j.find("nan") == std::string::npos && j.find("inf") == std::string::npos);
+        }
+        char small[4] = "abc";
+        assert(fs_analyse(sine.data(), (long long)sine.size(), SR, small, sizeof small) > 4 && std::strcmp(small, "abc") == 0);
+    }
     std::printf("core ok\n");
     return 0;
 }
