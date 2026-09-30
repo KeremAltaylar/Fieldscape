@@ -10,7 +10,23 @@
   var $ = function (s) { return document.querySelector(s); };
   var ctx = null, x = null, buffer = null, peak = 1, analysis = null, routes = [], route = null, prog = null, tuning = 1, playing = [], last = [];
 
-  function audio() { if (!ctx) { ctx = new AudioContext(); } if (ctx.state === "suspended") { ctx.resume(); } return ctx; }
+  /* one output bus with a meter on it: what the bench plays, measured (fsLab.level) */
+  var bus = null, meter = null;
+  function audio() {
+    if (!ctx) {
+      ctx = new AudioContext();
+      bus = ctx.createGain(); meter = ctx.createAnalyser(); meter.fftSize = 2048;
+      bus.connect(meter); bus.connect(ctx.destination);
+    }
+    if (ctx.state === "suspended") { ctx.resume(); }
+    return ctx;
+  }
+  function levelDb() {
+    if (!meter) { return -120; }
+    var a = new Float32Array(meter.fftSize), e = 0; meter.getFloatTimeDomainData(a);
+    for (var i = 0; i < a.length; i++) { e += a[i] * a[i]; }
+    return e > 0 ? 10 * Math.log10(e / a.length) : -120;
+  }
   function cstr(s) { var b = new TextEncoder().encode(s + "\0"), p = x.malloc(b.length); new Uint8Array(x.memory.buffer, p, b.length).set(b); return p; }
   function call(fn, args) {
     var need = fn.apply(null, args.concat([0, 0])), out = x.malloc(need + 1);
@@ -82,7 +98,7 @@
     if (analysis.loop) { src.loop = true; src.loopStart = analysis.loop[0] / analysis.rate; src.loopEnd = analysis.loop[1] / analysis.rate; }
     g.gain.setValueAtTime(0.0001, at); g.gain.exponentialRampToValueAtTime(level, at + A);
     g.gain.setValueAtTime(level, at + A + dur); g.gain.exponentialRampToValueAtTime(0.0001, at + A + dur + R);
-    src.connect(g).connect(c.destination); src.start(at);
+    src.connect(g).connect(bus); src.start(at);
     var v = { src: src, g: g, start: at, stopAt: at + A + dur + R + 0.05 };
     src.stop(v.stopAt);
     playing.push(v); last.push(v);
@@ -92,6 +108,9 @@
      just/equal comparison is listening past (rulebook A-6) */
   function level(voices) { return Math.min(0.25, 0.8 / (Math.max(peak, 1e-3) * voices)); }
   function rateFor(hz) { var tune = +$("#lab-tune").value; return Math.pow(hz / analysis.f0, tune); }
+  /* the chord note in the octave nearest the recording (spec D2: "in any octave") - a 4 kHz bird on a
+     chord around 150-300 Hz was otherwise played 28x slower and could not be heard (Kerem, 2026-09-30) */
+  function near(h) { return h * Math.pow(2, Math.round(Math.log2(analysis.f0 / h))); }
 
   function play(kind, opts) {
     opts = opts || {};
@@ -104,9 +123,10 @@
     if (kind === "note") { hz = [chord.hz[0]]; }
     else if (kind === "chord") { hz = chord.hz.slice(); }
     else if (kind === "scale") { hz = chord.scale_hz.slice(); }
+    hz = hz.map(near);
     if (kind === "progression") {
       var most = Math.max.apply(null, prog.chords.map(function (ch) { return ch.hz.length; })), lv = level(2 * most);
-      prog.chords.forEach(function (ch, i) { ch.hz.forEach(function (h) { voice(rateFor(h), t + i * beat * 4, beat * 4 - 0.1, lv); }); });
+      prog.chords.forEach(function (ch, i) { ch.hz.forEach(function (h) { voice(rateFor(near(h)), t + i * beat * 4, beat * 4 - 0.1, lv); }); });
       return { chords: prog.chords.length, gains: last.map(function () { return lv; }) };
     }
     var lvl = level(kind === "scale" ? 2 : hz.length), gains = [];
@@ -178,7 +198,7 @@
   $("#lab-stop").addEventListener("click", stop);
 
   window.fsLab = { ready: ready, load: load, get analysis() { return analysis; }, get routes() { return routes; }, setRoute: setRoute, play: play, stop: stop,
-    get peak() { return peak; }, get bufferSeconds() { return buffer ? buffer.duration : 0; },
+    get peak() { return peak; }, level: levelDb, get bufferSeconds() { return buffer ? buffer.duration : 0; },
     now: function () { return ctx ? ctx.currentTime : 0; },
     voices: function () { return last.map(function (v) { return { start: v.start, stopAt: v.stopAt }; }); } };
 })();

@@ -48,9 +48,11 @@ try {
   await sleep(300); await ev("fsLab.stop()");
   const eq = await ev("fsLab.play('chord', { tuning: 'equal', step: 0 })");
   await sleep(300); await ev("fsLab.stop()");
-  const ratio = just.hz[2] / just.hz[0];
+  /* octaves aside (each note is played in the octave nearest the recording, spec D2) */
+  const fold = (r) => r / Math.pow(2, Math.floor(Math.log2(r)));
+  const ratio = fold(just.hz[2] / just.hz[0]);
   check("the chord in just intonation has an exact 3/2 fifth", Math.abs(ratio - 1.5) < 1e-6, ratio);
-  check("equal temperament's fifth is 700 cents", Math.abs(1200 * Math.log2(eq.hz[2] / eq.hz[0]) - 700) < 0.01, eq.hz);
+  check("equal temperament's fifth is 700 cents", Math.abs(((1200 * Math.log2(eq.hz[2] / eq.hz[0])) % 1200 + 1200) % 1200 - 700) < 0.01, eq.hz);
   check("each note's rate = its target / the measured f0", just.rates.every((r, i) => Math.abs(r - just.hz[i] / a.f0) < 1e-9), just.rates);
 
   const prog = await ev("fsLab.play('progression', { tuning: 'just' })");
@@ -84,6 +86,24 @@ try {
   await ev(`fsLab.load(${WAV(220, 120, 22050)}).then(function () { return 1; })`);
   const kept = await ev("fsLab.bufferSeconds");
   check("a long recording keeps only the 30 s it analysed", kept > 29.9 && kept <= 30.01, kept);
+  /* Kerem, 2026-09-30: "the buttons are clickable but I don't hear any sound" - a 4 kHz bird was
+     retuned to chord notes around 150-300 Hz (28x slower, inaudible). Each note is the chord note in the
+     octave nearest the recording (spec D2 "any octave"), and sound really comes out. */
+  const BIRD = `(function(){ var sr = 48000, n = sr * 2, b = new ArrayBuffer(44 + n * 2), v = new DataView(b);
+    function s(o, t) { for (var i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); }
+    s(0, "RIFF"); v.setUint32(4, 36 + n * 2, true); s(8, "WAVEfmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, sr, true); v.setUint32(28, sr * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); s(36, "data"); v.setUint32(40, n * 2, true);
+    for (var i = 0; i < n; i++) { var t = i / sr, k = t % 0.25; v.setInt16(44 + i * 2, k < 0.08 ? Math.round(12000 * Math.sin(Math.PI * k / 0.08) * Math.sin(2 * Math.PI * 4000 * t)) : 0, true); }
+    return new File([b], "bird.wav", { type: "audio/wav" }); })()`;
+  const bird = await ev(`fsLab.load(${BIRD}).then(function (a) { return a.f0; })`);
+  const br = await ev("(function(){ var r = fsLab.play('chord', { tuning: 'just', step: 0 }); fsLab.stop(); return r; })()");
+  check("a 4 kHz bird is played near its own pitch (every rate within half an octave)", br && br.rates && br.rates.every(function (r) { return r > 0.7 && r < 1.42; }), [bird, br && br.rates]);
+  check("... on the chord's own notes, octaves aside (just fifth still 3/2 up to octaves)", br && br.hz && Math.abs(Math.log2(br.hz[2] / br.hz[0] / 1.5) - Math.round(Math.log2(br.hz[2] / br.hz[0] / 1.5))) < 1e-9, br && br.hz);
+  await ev("fsLab.play('chord', { tuning: 'just', step: 0 }), 0");
+  await sleep(700);
+  const lvl = await ev("fsLab.level()");
+  await ev("fsLab.stop()");
+  check("sound comes out while a chord plays (above -40 dBFS)", lvl > -40, lvl);
   check("no page errors", errors.length === 0, errors);
 } finally { ch.kill(); }
 process.exit(failed ? 1 : 0);
