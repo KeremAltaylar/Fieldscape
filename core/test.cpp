@@ -1150,6 +1150,48 @@ int main() {
         std::printf("resonator: bowed Tube, loud after -80 dBFS room tone: loudest 50 ms %.1f dB vs settled %.1f dB\n", swell, settled);
         assert(swell - settled <= 3);
     }
+    {   /* final review: notes posted ahead all sound - a 7-note scale, a re-pressed chord, a 10-chord progression (a
+           note queue in the bench; a steal never overwrites a waiting note) - checked at the output */
+        const std::vector<float> wind = noise_src(30, 0.5f, 31);
+        const float *wp[1] = { wind.data() };
+        auto make = [&]() { fs_device *b = fs_create("bench"); fs_prepare(b, 48000, 128); fs_set_source(b, 1, (int)wind.size(), wp); fs_set_param(b, 2, 0.8f); return b; };
+        auto render = [&](fs_device *b, double secs, std::vector<float> &out) {
+            for (int i = 0; i < (int)(secs * 48000 / 128); i++) { fs_process(b, 128); const float *l = fs_out(b, 0); out.insert(out.end(), l, l + 128); }
+        };
+        auto pw = [](const std::vector<float> &x, double f, double a, double z) {       /* Goertzel power in [a, z) s */
+            size_t i0 = (size_t)(a * 48000), i1 = std::min(x.size(), (size_t)(z * 48000)); double s1 = 0, s2 = 0, k = 2 * std::cos(2 * 3.141592653589793 * f / 48000);
+            for (size_t i = i0; i < i1; i++) { double w = 0.5 - 0.5 * std::cos(2 * 3.141592653589793 * (i - i0) / (i1 - i0)), s0 = x[i] * w + k * s1 - s2; s2 = s1; s1 = s0; }
+            return s1 * s1 + s2 * s2 - k * s1 * s2;
+        };
+        /* 1: a 7-note scale posted at once, one note each 0.5 s: each is the loudest of the seven in its own turn */
+        const double sc[7] = { 146.83, 164.81, 174.61, 196.00, 220.00, 246.94, 261.63 };
+        fs_device *b = make(); std::vector<float> o;
+        for (int k = 0; k < 7; k++) fs_bench_note(b, sc[k], 0.1 + 0.5 * k, 0.4, 0.4);
+        render(b, 4, o);
+        int heard = 0;
+        for (int k = 0; k < 7; k++) { bool top = true; double me = pw(o, sc[k], 0.25 + 0.5 * k, 0.5 + 0.5 * k); for (int j = 0; j < 7; j++) if (j != k && pw(o, sc[j], 0.25 + 0.5 * k, 0.5 + 0.5 * k) >= me) top = false; heard += top; }
+        fs_destroy(b);
+        /* 2: a chord, then Stop and a new chord while the first still rings: all four new notes sound */
+        const double c1[4] = { 146.83, 174.61, 220.00, 261.63 }, c2[4] = { 196.00, 246.94, 293.66, 349.23 };
+        b = make(); o.clear();
+        for (double h : c1) fs_bench_note(b, h, 0.05, 2, 0.3);
+        render(b, 1, o);
+        fs_bench_stop(b); for (double h : c2) fs_bench_note(b, h, fs_bench_time(b) + 0.02, 2, 0.3);
+        render(b, 1.5, o);
+        int second = 0; for (double h : c2) { double me = pw(o, h, 1.6, 2.4), off = pw(o, h * 1.06, 1.6, 2.4); second += me > 30 * off; }
+        fs_destroy(b);
+        /* 3: ten 3-note chords posted at once, one per second: each chord's root sounds in its second at least a quarter
+           of its power alone (against itself: at Focus 0.8 a pitch can find almost nothing in the noise it is played on) */
+        const double roots[10] = { 146.83, 196.00, 130.81, 174.61, 164.81, 220.00, 123.47, 185.00, 138.59, 207.65 };
+        b = make(); o.clear();
+        for (int k = 0; k < 10; k++) for (double r : { 1.0, 1.25, 1.5 }) fs_bench_note(b, roots[k] * r, 0.1 + k, 0.9, 0.2);
+        render(b, 11, o);
+        auto alone = [&](double h) { fs_device *a = make(); std::vector<float> x; fs_bench_note(a, h, 0.1, 0.9, 0.2); render(a, 1, x); fs_destroy(a); return pw(x, h, 0.4, 0.95); };
+        int chords = 0; for (int k = 0; k < 10; k++) chords += pw(o, roots[k], 0.4 + k, 0.95 + k) > 0.25 * alone(roots[k]);
+        fs_destroy(b);
+        std::printf("bench queue: scale %d/7 notes heard, re-pressed chord %d/4, progression %d/10 chords\n", heard, second, chords);
+        assert(heard == 7 && second == 4 && chords == 10);
+    }
     std::printf("core ok\n");
     return 0;
 }

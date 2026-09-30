@@ -51,6 +51,7 @@ struct Voice {
     bool active = false, started = false, releasing = false, stealing = false;
     double f = 0, on_t = 0, off_t = 1e300; double vel = 0;
     bool has_next = false; double nf = 0, nt = 0, noff = 1e300, nvel = 0;   /* the note waiting for a steal's fade */
+    double steal_at = 0;                                          /* the fade starts 5 ms before that note, not at once */
     double env = 0;
     long long pos = 0; int burst = 0, burst_len = 0;
     std::vector<float> line; unsigned w = 0; int N = 1;
@@ -130,8 +131,15 @@ struct Resonator : tone::Synth {
         int q = -1;
         for (int i = 0; i < VOICES; i++) if (!v[i].active) { q = i; break; }
         if (q >= 0) { start(v[q], f, t, vel); last = q; return; }
-        q = 0; for (int i = 1; i < VOICES; i++) if (v[i].env < v[q].env) q = i;   /* the quietest gives way (A-5) */
-        Voice &x = v[q]; x.stealing = true; x.has_next = true; x.nf = f; x.nt = t; x.nvel = vel; x.noff = 1e300; last = q;
+        /* the quietest gives way (A-5): first a voice already fading out, then the quietest sounding one - never one
+           holding a waiting note or about to start its own, which would be lost (final review: a scale lost its
+           first note, a re-pressed chord half its notes - a not-yet-started voice reads as silent) */
+        auto rank = [](const Voice &x) { return x.stealing ? -1.0 : !x.started ? 2.0 : x.env; };
+        for (int i = 0; i < VOICES; i++) if (!v[i].has_next && (q < 0 || rank(v[i]) < rank(v[q]))) q = i;
+        if (q < 0) { q = 0; for (int i = 1; i < VOICES; i++) if (v[i].env < v[q].env) q = i; }
+        Voice &x = v[q];
+        if (!x.stealing) x.steal_at = t - 0.005;                   /* a voice already fading keeps fading */
+        x.stealing = true; x.has_next = true; x.nf = f; x.nt = t; x.nvel = vel; x.noff = 1e300; last = q;
     }
     void release(double t) override {
         if (last < 0) return;
@@ -140,7 +148,7 @@ struct Resonator : tone::Synth {
     }
     /* the two timbre slots the morphs drive (spec D10): Focus and Colour, for the next note */
     void timbre(int which, double val, double, double) override { if (which == 0) focus = val; else colour = val; }
-    void stop_all() { for (auto &x : v) if (x.active) { x.stealing = true; x.has_next = false; } }
+    void stop_all() { for (auto &x : v) if (x.active) { x.stealing = true; x.has_next = false; x.steal_at = 0; } }
 
     double resonate(Voice &x, double in) {
         if (x.body == BELL) {
@@ -175,7 +183,7 @@ struct Resonator : tone::Synth {
                 const double t = t0 + i / sr;
                 if (!x.started) { if (t < x.on_t) continue; x.started = true; }
                 if (!x.releasing && t >= x.off_t) x.releasing = true;
-                if (x.stealing) {
+                if (x.stealing && t >= x.steal_at) {
                     x.env -= fade;
                     if (x.env <= 0) {
                         x.env = 0;
@@ -183,7 +191,7 @@ struct Resonator : tone::Synth {
                         double nf = x.nf, nt = std::fmax(x.nt, t), nv = x.nvel, no = x.noff;
                         start(x, nf, nt, nv); x.off_t = no; continue;
                     }
-                } else if (x.releasing) { x.env *= kr; if (x.env < 1e-4) { x.active = false; break; } }
+                } else if (x.releasing) { x.env *= kr; if (x.env < 1e-4) { if (x.has_next) { x.env = 0; x.steal_at = 0; continue; } x.active = false; break; } }
                 else if (x.env < 1) x.env = std::fmin(1.0, x.env + up);
                 const double in = src.at(x.pos++);
                 double exc = in;

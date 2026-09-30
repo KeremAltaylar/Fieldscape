@@ -21,6 +21,10 @@ static const fs_param BENCH_PARAMS[] = {
 
 struct Bench : Device {
     sampler::Resonator res;
+    /* the note queue (2a spec R4): notes are handed to the synth ~50 ms before they sound, so a scale or a whole
+       progression posted at once never has more notes waiting than voices (final review 2026-09-30) */
+    struct Note { double hz, at, dur, vel; };
+    std::vector<Note> queue;
     double sr = 48000, t = 0;
     std::vector<float> ring = std::vector<float>(65536, 0.0f); size_t w = 0;   /* 1.37 s: 0.7 Hz resolution */
     void prepare(float s, int) override { sr = s; res.init(s); t = 0; }
@@ -36,6 +40,11 @@ struct Bench : Device {
     void set_source(int ch, int n, const float *const *s) override { res.set_source(ch, n, s); }
     void set_source_i16(int ch, int n, const int16_t *const *s) override { res.set_source_i16(ch, n, s); }
     void process(int n) override {
+        const double soon = t + n / sr + 0.05;
+        std::sort(queue.begin(), queue.end(), [](const Note &a, const Note &b) { return a.at < b.at; });
+        size_t k = 0;
+        for (; k < queue.size() && queue[k].at <= soon; k++) { res.attack(queue[k].hz, queue[k].at, queue[k].vel); res.release(queue[k].at + queue[k].dur); }
+        if (k) queue.erase(queue.begin(), queue.begin() + (long)k);
         std::fill(out[0].begin(), out[0].begin() + n, 0.0f); std::fill(out[1].begin(), out[1].begin() + n, 0.0f);
         res.render(out[0].data(), out[1].data(), n, t);
         for (int i = 0; i < n; i++) { ring[w] = out[0][i]; w = (w + 1) % ring.size(); }
@@ -64,8 +73,8 @@ Device *make_bench() { return new Bench(); }
 
 static Bench *B(fs_device *d) { return d ? (Bench *)fs_device_impl(d)->cast("bench") : nullptr; }
 extern "C" {
-void fs_bench_note(fs_device *d, double hz, double at_s, double dur_s, double vel) { Bench *b = B(d); if (b) { b->res.attack(hz, at_s, vel); b->res.release(at_s + dur_s); } }
-void fs_bench_stop(fs_device *d) { Bench *b = B(d); if (b) b->res.stop_all(); }
+void fs_bench_note(fs_device *d, double hz, double at_s, double dur_s, double vel) { Bench *b = B(d); if (b) b->queue.push_back({ hz, at_s, dur_s, vel }); }
+void fs_bench_stop(fs_device *d) { Bench *b = B(d); if (b) { b->queue.clear(); b->res.stop_all(); } }
 double fs_bench_time(fs_device *d) { Bench *b = B(d); return b ? b->t : 0; }
 double fs_bench_created(fs_device *d, double hz) { Bench *b = B(d); return b ? b->created(hz) : 0; }
 }
