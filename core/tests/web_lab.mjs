@@ -138,6 +138,9 @@ try {
   check("the scale is heard (above -40 dBFS)", lv2 > -40, lv2);
   check("the playing view draws every voice", roll.voices === 7, roll);
   check("... and names what is sounding now", /[A-G]#?\d/.test(roll.now), roll.now);
+  /* Kerem, 2026-09-30: "can you add an octave adjusting attribute" - the whole block up or down by octaves */
+  const oct = await ev("(function(){ var sel = document.querySelector('#lab-octave'); if (!sel) return null; var out = {}; ['0', '1', '-2'].forEach(function (o) { sel.value = o; sel.dispatchEvent(new Event('change')); var r = fsLab.play('chord', { tuning: 'just', step: 0 }); fsLab.stop(); out[o] = r.hz; }); sel.value = '0'; sel.dispatchEvent(new Event('change')); return out; })()");
+  check("Octave +1 doubles every note, -2 quarters them", oct && oct["1"].every(function (h, i) { return Math.abs(h / oct["0"][i] - 2) < 1e-9; }) && oct["-2"].every(function (h, i) { return Math.abs(h / oct["0"][i] - 0.25) < 1e-9; }), oct);
   check("no page errors", errors.length === 0, errors);
 } finally { ch.kill(); }
 process.exit(failed ? 1 : 0);

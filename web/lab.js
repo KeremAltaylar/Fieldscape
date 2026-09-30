@@ -125,7 +125,7 @@
      2026-09-30: "I want to hear the different pitches of each step"). */
   function block(hz) {
     var centre = Math.exp(hz.reduce(function (a, h) { return a + Math.log(h); }, 0) / hz.length);
-    var k = Math.pow(2, Math.round(Math.log2(analysis.f0 / centre)));
+    var k = Math.pow(2, Math.round(Math.log2(analysis.f0 / centre)) + (+$("#lab-octave").value || 0));   /* + the Octave control (Kerem, 2026-09-30) */
     return hz.map(function (h) { return h * k; });
   }
 
@@ -241,7 +241,7 @@
   function renderKept() { $("#lab-kept").innerHTML = kept().map(function (k) { return "<li>" + k.replace(/</g, "&lt;") + "</li>"; }).join(""); }
   $("#lab-keep").addEventListener("click", function () {
     var t = $("#lab-verdict").value.trim(); if (!t) { return; }
-    var line = t + " — " + ($("#lab-note").textContent || "no file") + ", tune " + $("#lab-tune").value + ", " + (tuning ? "just" : "equal");
+    var line = t + " — " + ($("#lab-note").textContent || "no file") + ", tune " + $("#lab-tune").value + ", octave " + $("#lab-octave").value + ", " + (tuning ? "just" : "equal");
     try { localStorage.setItem("fs.lab.kept", JSON.stringify(kept().concat([line]))); } catch (e) { /* private window: not kept */ }
     $("#lab-verdict").value = ""; renderKept();
   });
