@@ -34,6 +34,9 @@ class FieldscapeCore extends AudioWorkletProcessor {
         try { this.setSource(m.channels); this.port.postMessage({ type: "source", frames: m.channels[0].length }); }
         catch (err) { this.port.postMessage({ type: "error", where: "source", message: String(err) }); }
       }
+      else if (m.type === "note") { x.fs_bench_note(this.dev, m.hz, x.fs_bench_time(this.dev) + m.in, m.dur, m.vel); }
+      else if (m.type === "stop") { x.fs_bench_stop(this.dev); }
+      else if (m.type === "created") { this.port.postMessage({ type: "created", db: m.hz.map((h) => x.fs_bench_created(this.dev, h)) }); }
       else if (m.type === "stats") {
         x.fs_stats(this.dev, this.stats);
         const v = new DataView(x.memory.buffer, this.stats, 32);

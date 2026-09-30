@@ -29,3 +29,17 @@ test("a 220 Hz sine analysed within 5 cents", () => {
 test("the live site's engine file is not the lab's", () => {
   assert.notDeepEqual(readFileSync("web/core.wasm"), readFileSync("web/core-lab.wasm"));
 });
+
+test("the lab's engine has the bench: a bowed string on noise creates its pitch", () => {
+  const name = str("bench"), d = x.fs_create(name);
+  assert.ok(d);
+  x.fs_prepare(d, 48000, 128);
+  const n = 48000 * 3, p = x.malloc(n * 4), f = new Float32Array(x.memory.buffer, p, n);
+  let s = 5; for (let i = 0; i < n; i++) { s = (s * 1103515245 + 12345) >>> 0; f[i] = ((s >>> 8) / 16777216 - 0.5); }
+  const ptrs = x.malloc(4); new Uint32Array(x.memory.buffer, ptrs, 1)[0] = p;
+  x.fs_set_source(d, 1, n, ptrs);
+  x.fs_bench_note(d, 220, 0.05, 5, 0.5);
+  for (let i = 0; i < 48000 * 1.5 / 128; i++) x.fs_process(d, 128);
+  const made = x.fs_bench_created(d, 220);
+  assert.ok(made >= 10, "pitch created " + made);
+});
