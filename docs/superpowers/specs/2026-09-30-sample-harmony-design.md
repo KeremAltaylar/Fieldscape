@@ -30,6 +30,8 @@ idea of super consonance between all engines"*.
 | D9 | Held notes on chord change | **Glide** for Voice and Third voice; **restart** for Sections (a melodic line). |
 | D10 | Morphs | Kept; they drive each synth's two timbre controls. |
 | D11 | Lab UI | Research tooling only, plain; the real UI is designed (and mocked, C-13) when it moves to the site. |
+| D12 | Judging mechanisms | An **audition bench** in the lab from sub-project 1 on, and a **listening session** closing every sub-project: Kerem drops in his own recordings and judges each mechanism by ear; his verdict keeps, reworks or drops it. *"I will upload a non-pitched synth for example and it will play the ratios with that sample and mechanisms so I will consider the mechanisms quality to derive pitch from them."* |
+| D13 | Order | The **non-pitch sampler comes right after sub-project 1**, before the pitch sampler, so the first listening session is a non-pitched recording playing the chord ratios through each mechanism. |
 
 ## Architecture
 
@@ -53,7 +55,25 @@ route patch ─► route engine picks notes ─► HARMONY CORE ─► exact Hz 
    way point recordings are today (`need` / `source` messages; `fs_engine_source`).
 4. **Four synths** (`core/samplers.hpp`, new) — `tone::Synth` implementations.
 5. **Point integration** — grains, stretch, rhythm read their analysis and ask the harmony core.
-6. **Lab page** (`lab.html` + `web/lab.js`) — the site with the new path on, plus research tools.
+6. **Lab page** (`lab.html` + `web/lab.js`) — the site with the new path on, plus research tools,
+   including the audition bench (below).
+
+### Audition bench (D12)
+
+In the lab, setters only. It grows as each synth is built.
+
+- **Source:** drop any recording (or pick a point's); its analysis is shown (pitch track, confidence,
+  verdict, loop, cycle).
+- **Synth and model:** any built so far — resonator, harmonic filter, formant, pulsar, freeze, pitch
+  sampler, Sample FM, Sample AM/ring.
+- **What it plays:** a single note · the scale · the current chord in **just vs equal** (the ratios
+  audible) · a route's full 16-chord progression at its tempo.
+- **Live controls:** the two timbre controls, Tune, attack/release, while it plays.
+- **Compare:** A/B two models or two settings on the same recording, back to back, level-matched.
+- **Keep:** save a setting with Kerem's note ("wind + resonator, focus 0.7: good"); kept settings
+  become the synth's defaults.
+- **Numbers beside the ear:** for each run, how clearly the pitch was created — the spectral peak at
+  each chord note against the noise floor around it (dB) — and the output level.
 
 ### Harmony core
 
@@ -134,11 +154,12 @@ route patch ─► route engine picks notes ─► HARMONY CORE ─► exact Hz 
 - **Off-route:** the last chord heard; before any, the park's key centre.
 - Every point gets **Tune** (0 = today's sound, bit-identical) and **chord/scale**.
 
-## Sub-projects (each: spec detail → plan → build → by-ear session in the lab)
+## Sub-projects (each: spec detail → plan → build → listening session on the audition bench)
 
-1. **Analysis + harmony core + lab page skeleton** ← first
-2. **Pitch sampler** + instruments (store, upload, route role picker, per-route tuning)
-3. **Non-pitch sampler** — resonator first, then harmonic filter, formant, pulsar, freeze
+1. **Analysis + harmony core + lab page + audition bench** ← first
+2. **Non-pitch sampler** — resonator first, then harmonic filter, formant, pulsar, freeze (D13);
+   listening session per model
+3. **Pitch sampler** + instruments (store, upload, route role picker, per-route tuning)
 4. **Sample FM** and **Sample AM/ring**
 5. **Points:** tuned grains, pitch-follow stretch, tuned rhythm hits
 6. **Move to the site and apps** (on Kerem's approval): real UI designed and mocked, old synths
@@ -151,9 +172,10 @@ route patch ─► route engine picks notes ─► HARMONY CORE ─► exact Hz 
 - `core/harmony.cpp` + the route engine's `mtof` calls routed through it; per-route
   `patch.tuning` (`"just"` default, `"equal"`); the existing sound unchanged when `tuning` is
   `"equal"` (bit-identical fingerprint against today).
-- `lab.html`: the site's page with the harmony core on, an analysis panel (drop a file → pitch track,
-  confidence, verdict, loop, cycle drawn), and a "play the current chord" check tone built from a
-  recording.
+- `lab.html`: the site's page with the harmony core on, and the audition bench with its source
+  panel (drop a file → pitch track, confidence, verdict, loop, cycle drawn) and its players (note,
+  scale, chord just/equal, progression). Until sub-project 2 adds real synths, the bench plays a
+  plain retuned recording, enough to hear the harmony core's ratios.
 - Nothing in `index.html`'s live behaviour changes.
 
 ## How we know it works
