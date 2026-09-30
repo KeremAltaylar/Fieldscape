@@ -141,6 +141,17 @@ try {
   /* Kerem, 2026-09-30: "can you add an octave adjusting attribute" - the whole block up or down by octaves */
   const oct = await ev("(function(){ var sel = document.querySelector('#lab-octave'); if (!sel) return null; var out = {}; ['0', '1', '-2'].forEach(function (o) { sel.value = o; sel.dispatchEvent(new Event('change')); var r = fsLab.play('chord', { tuning: 'just', step: 0 }); fsLab.stop(); out[o] = r.hz; }); sel.value = '0'; sel.dispatchEvent(new Event('change')); return out; })()");
   check("Octave +1 doubles every note, -2 quarters them", oct && oct["1"].every(function (h, i) { return Math.abs(h / oct["0"][i] - 2) < 1e-9; }) && oct["-2"].every(function (h, i) { return Math.abs(h / oct["0"][i] - 0.25) < 1e-9; }), oct);
+  /* Kerem, 2026-09-30: "it is there but it does not affect the sound" - it only applied to the next press.
+     Changed while a note sounds, the pitch coming out moves: measured at the output (loudest frequency). */
+  await ev(`fsLab.load(${LATE}).then(function () { return 1; })`);
+  await ev("document.querySelector(\"[data-play='note']\").click(), 0");
+  await sleep(600);
+  const before = await ev("fsLab.peakHz()");
+  await ev("(function(){ var s = document.querySelector('#lab-octave'); s.value = '1'; s.dispatchEvent(new Event('change')); })(), 0");
+  await sleep(600);
+  const after = await ev("fsLab.peakHz()");
+  await ev("fsLab.stop(); (function(){ var s = document.querySelector('#lab-octave'); s.value = '0'; s.dispatchEvent(new Event('change')); })(), 0");
+  check("Octave changed while a note plays moves the sound an octave (measured at the output)", before > 0 && Math.abs(Math.log2(after / before) - 1) < 0.1, [before, after]);
   check("no page errors", errors.length === 0, errors);
 } finally { ch.kill(); }
 process.exit(failed ? 1 : 0);

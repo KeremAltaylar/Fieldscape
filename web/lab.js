@@ -21,6 +21,13 @@
     if (ctx.state === "suspended") { ctx.resume(); }
     return ctx;
   }
+  /* the loudest frequency leaving the bench (tests measure the pitch that comes out, not the maths) */
+  function peakHz() {
+    if (!meter) { return 0; }
+    var f = new Float32Array(meter.frequencyBinCount), best = 1; meter.getFloatFrequencyData(f);
+    for (var i = 2; i < f.length; i++) { if (f[i] > f[best]) { best = i; } }
+    return f[best] > -100 ? best * ctx.sampleRate / meter.fftSize : 0;
+  }
   function levelDb() {
     if (!meter) { return -120; }
     var a = new Float32Array(meter.fftSize), e = 0; meter.getFloatTimeDomainData(a);
@@ -100,7 +107,7 @@
     g.gain.setValueAtTime(level, at + A + dur); g.gain.exponentialRampToValueAtTime(0.0001, at + A + dur + R);
     var off = clearMoment();
     src.connect(g).connect(bus); src.start(at, off);
-    var v = { src: src, g: g, hz: hz, rate: rate, level: level, A: A, dur: dur, R: R, offset: off, start: at, stopAt: at + A + dur + R + 0.05 };
+    var v = { src: src, g: g, hz: hz, base: hz / octaveFactor(), rate: rate, level: level, A: A, dur: dur, R: R, offset: off, start: at, stopAt: at + A + dur + R + 0.05 };
     src.stop(v.stopAt);
     playing.push(v); last.push(v);
   }
@@ -123,6 +130,17 @@
      octave"): a 4 kHz bird on chords around 150-300 Hz was played 28x slower and could not be heard, and
      folding each note on its own wrapped the scale and made every chord the same cluster (Kerem,
      2026-09-30: "I want to hear the different pitches of each step"). */
+  function octaveFactor() { return Math.pow(2, +$("#lab-octave").value || 0); }
+  /* Octave and Tune act on what is sounding and waiting, not only on the next press (Kerem, 2026-09-30:
+     "it is there but it does not affect the sound"): each voice glides to its new rate (no jump, A-2). */
+  function retune() {
+    if (!ctx || !analysis || !(analysis.f0 > 0)) { return; }
+    var now = ctx.currentTime;
+    playing.forEach(function (v) {
+      v.hz = v.base * octaveFactor(); v.rate = rateFor(v.hz);
+      v.src.playbackRate.setTargetAtTime(v.rate, now, 0.03);
+    });
+  }
   function block(hz) {
     var centre = Math.exp(hz.reduce(function (a, h) { return a + Math.log(h); }, 0) / hz.length);
     var k = Math.pow(2, Math.round(Math.log2(analysis.f0 / centre)) + (+$("#lab-octave").value || 0));   /* + the Octave control (Kerem, 2026-09-30) */
@@ -166,12 +184,13 @@
     cv.dataset.voices = vs.length;
     if (!vs.length || !ctx) { g.clearRect(0, 0, cv.width, cv.height); $("#lab-now").textContent = ""; return; }
     var t0 = vs[0].start, t1 = vs.reduce(function (m, v) { return Math.max(m, v.stopAt); }, 0);
-    var lo = Math.min.apply(null, vs.map(function (v) { return v.hz; })) / 1.12, hi = Math.max.apply(null, vs.map(function (v) { return v.hz; })) * 1.12;
+    var lo, hi;   /* re-fitted every frame: Octave and Tune move the voices while they play */
     var L = 70, W = cv.width - L - 8, H = cv.height;
     var X = function (t) { return L + (t - t0) / Math.max(0.1, t1 - t0) * W; }, Y = function (h) { return H - 12 - Math.log(h / lo) / Math.log(hi / lo) * (H - 40); };
     var bar = Math.max(6, Math.min(22, (H - 24) / 14));
     (function frame() {
       var now = ctx.currentTime;
+      lo = Math.min.apply(null, vs.map(function (v) { return v.hz; })) / 1.12; hi = Math.max.apply(null, vs.map(function (v) { return v.hz; })) * 1.12;
       g.clearRect(0, 0, cv.width, cv.height);
       g.font = "20px system-ui, sans-serif"; g.textBaseline = "middle";
       /* the chord names over their blocks (a progression), and the note names down the side without overlap */
@@ -259,6 +278,8 @@
     b.addEventListener("click", function () { unlock(); audio(); var r = play(b.dataset.play); if (r && !r.silent) { light(b.dataset.play); } });
   });
   $("#lab-stop").addEventListener("click", stop);
+  $("#lab-octave").addEventListener("change", retune);
+  $("#lab-tune").addEventListener("input", retune);
 
   /* what the audio is doing, readable on any machine: the engine's state and the level leaving it */
   setInterval(function () {
@@ -268,7 +289,7 @@
   }, 250);
 
   window.fsLab = { ready: ready, load: load, get analysis() { return analysis; }, get routes() { return routes; }, setRoute: setRoute, play: play, stop: stop,
-    get peak() { return peak; }, level: levelDb, get bufferSeconds() { return buffer ? buffer.duration : 0; },
+    get peak() { return peak; }, level: levelDb, peakHz: peakHz, get bufferSeconds() { return buffer ? buffer.duration : 0; },
     now: function () { return ctx ? ctx.currentTime : 0; },
     voices: function () { return last.map(function (v) { return { start: v.start, stopAt: v.stopAt, offset: v.offset, hz: v.hz }; }); } };
 })();
