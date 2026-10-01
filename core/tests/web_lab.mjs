@@ -199,6 +199,15 @@ try {
   await ev("fsLab.stop()"); await set("lab-release", 0.6);
   check("a progression with an 8 s release changes chord without a sudden drop (< 6 dB in 50 ms)", pdrop < 6, pdrop);
   check("... and its overlapping tails stay below full scale", ppeak > 0 && ppeak < 1, ppeak);
+  /* Kerem 2026-10-01: "increase the master output twice, it is too low" - x2 (+6 dB) at the output, a limiter after it */
+  await ev(`fsLab.load(${WAV(220, 30, 22050)}).then(function () { return 1; })`);
+  await set("lab-attack", 0.02);
+  const one = await ev("(function(){ var r = fsLab.play('note', { tuning: 'just', step: 0 }); return { g: r.gains[0], peak: fsLab.peak }; })()");
+  await sleep(1200);
+  let ol = -120; for (let i = 0; i < 5; i++) { await sleep(60); ol = Math.max(ol, await ev("fsLab.level()")); }
+  await ev("fsLab.stop()");
+  const want = 20 * Math.log10(2 * one.g * one.peak / Math.SQRT2);
+  check("the master output is twice the voice's level (+6 dB, within 1.5 dB)", Math.abs(ol - want) < 1.5, [ol, want]);
   check("no page errors", errors.length === 0, errors);
 } finally { ch.kill(); }
 process.exit(failed ? 1 : 0);

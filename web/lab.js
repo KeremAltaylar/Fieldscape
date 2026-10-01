@@ -17,7 +17,16 @@
     if (!ctx) {
       ctx = new AudioContext();
       bus = ctx.createGain(); meter = ctx.createAnalyser(); meter.fftSize = 2048;
-      bus.connect(meter); bus.connect(ctx.destination);
+      /* the master: x2 (+6 dB; Kerem 2026-10-01 "too low"), straight up to 0.8, then rounded into a 0.98 ceiling so
+         a loud chord or long overlapping tails never clip (a compressor node added its own make-up gain); the meter
+         reads what leaves */
+      var master = ctx.createWaveShaper(), curve = new Float32Array(4097);
+      for (var i = 0; i < curve.length; i++) {
+        var x = 2 * (2 * i / (curve.length - 1) - 1), m = Math.abs(x);
+        curve[i] = m <= 0.8 ? x : Math.sign(x) * (0.8 + 0.18 * Math.tanh((m - 0.8) / 0.18));
+      }
+      master.curve = curve; master.oversample = "4x";
+      bus.connect(master); master.connect(meter); master.connect(ctx.destination);
     }
     if (ctx.state === "suspended") { ctx.resume(); }
     return ctx;
