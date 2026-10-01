@@ -189,15 +189,22 @@ try {
   await set("lab-attack", 0.02);
   await ev("fsLab.play('progression', { tuning: 'just' }), 0");
   const changes = await ev("(function(){ var s = {}; fsLab.voices().forEach(function (v) { s[v.start.toFixed(3)] = 1; }); return Object.keys(s).map(Number).sort(function (a, b) { return a - b; }).slice(1, 4); })()");
-  let pdrop = 0, prev = null, ppeak = 0;
+  /* levels averaged over ~150 ms: notes a semitone apart across a change beat at ~10 Hz, and one 46 ms reading can
+     sit in a beat's trough (a single-reading check failed 1 run in 5 at 6.06 dB) */
+  const lv = []; let ppeak = 0;
   while ((await ev("fsLab.now()")) < changes[2] + 0.6) {
-    const now = await ev("fsLab.now()"), l = await ev("fsLab.level()");
+    lv.push([await ev("fsLab.now()"), await ev("fsLab.level()")]);
     ppeak = Math.max(ppeak, await ev("fsLab.peakOut()"));
-    if (prev !== null && changes.some(function (c) { return now > c - 0.1 && now < c + 0.6; })) { pdrop = Math.max(pdrop, prev - l); }
-    prev = l; await sleep(40);
+    await sleep(40);
   }
   await ev("fsLab.stop()"); await set("lab-release", 0.6);
-  check("a progression with an 8 s release changes chord without a sudden drop (< 6 dB in 50 ms)", pdrop < 6, pdrop);
+  const mean = (a, b) => { const s = lv.filter((p) => p[0] >= a && p[0] < b); return s.length ? s.reduce((m, p) => m + p[1], 0) / s.length : null; };
+  let pdrop = 0;
+  changes.forEach(function (c) {
+    const before = mean(c - 0.3, c - 0.05);
+    for (let s = c; s < c + 0.6; s += 0.05) { const m = mean(s, s + 0.15); if (before !== null && m !== null) { pdrop = Math.max(pdrop, before - m); } }
+  });
+  check("a progression with an 8 s release changes chord without a sudden drop (< 6 dB, 150 ms averages)", pdrop < 6, pdrop);
   check("... and its overlapping tails stay below full scale", ppeak > 0 && ppeak < 1, ppeak);
   /* Kerem 2026-10-01: "increase the master output twice, it is too low" - x2 (+6 dB) at the output, a limiter after it */
   await ev(`fsLab.load(${WAV(220, 30, 22050)}).then(function () { return 1; })`);
