@@ -170,6 +170,35 @@ try {
   check("the Resonator plays the chord in its written register (octave 0)", rc.hz[0] > 60 && rc.hz[0] < 400, rc.hz);
   check("the playing view and Now line follow the Resonator", /[A-G]#?\d/.test(rnow), rnow);
   await ev("fsLab.setSynth('retune'), 0");
+  /* Kerem 2026-10-01: "smooth cloudy transitions when release is longer than the note" - longer ranges, an S-curve
+     attack, chord changes without a sudden drop, and the overlapping tails still below full scale */
+  const set = (id, v) => ev(`(function(){ var s = document.querySelector('#${id}'); s.value = '${v}'; s.dispatchEvent(new Event('input')); return 1; })()`);
+  const ranges = await ev("[document.querySelector('#lab-attack').max, document.querySelector('#lab-release').max]");
+  check("Attack reaches 4 s and Release 10 s", ranges[0] === "4" && ranges[1] === "10", ranges);
+  await ev(`fsLab.load(${WAV(220, 30, 22050)}).then(function () { return 1; })`);
+  await set("lab-attack", 2); await set("lab-release", 8);
+  await ev("fsLab.play('note', { tuning: 'just', step: 0 }), 0");
+  const st0 = await ev("fsLab.voices()[0].start");
+  while ((await ev("fsLab.now()")) < st0 + 0.5) { await sleep(5); }
+  const quarter = await ev("fsLab.level()");
+  while ((await ev("fsLab.now()")) < st0 + 2.6) { await sleep(20); }
+  const full = await ev("fsLab.level()");
+  await ev("fsLab.stop()");
+  check("Retune's attack fades in as an S-curve (a quarter in: 13-21 dB under full; a line is 12, the old curve 60)", quarter - full < -13 && quarter - full > -21, [quarter, full]);
+  await ev(`fsLab.load(${LOUD}).then(function () { return 1; })`);
+  await set("lab-attack", 0.02);
+  await ev("fsLab.play('progression', { tuning: 'just' }), 0");
+  const changes = await ev("(function(){ var s = {}; fsLab.voices().forEach(function (v) { s[v.start.toFixed(3)] = 1; }); return Object.keys(s).map(Number).sort(function (a, b) { return a - b; }).slice(1, 4); })()");
+  let pdrop = 0, prev = null, ppeak = 0;
+  while ((await ev("fsLab.now()")) < changes[2] + 0.6) {
+    const now = await ev("fsLab.now()"), l = await ev("fsLab.level()");
+    ppeak = Math.max(ppeak, await ev("fsLab.peakOut()"));
+    if (prev !== null && changes.some(function (c) { return now > c - 0.1 && now < c + 0.6; })) { pdrop = Math.max(pdrop, prev - l); }
+    prev = l; await sleep(40);
+  }
+  await ev("fsLab.stop()"); await set("lab-release", 0.6);
+  check("a progression with an 8 s release changes chord without a sudden drop (< 6 dB in 50 ms)", pdrop < 6, pdrop);
+  check("... and its overlapping tails stay below full scale", ppeak > 0 && ppeak < 1, ppeak);
   check("no page errors", errors.length === 0, errors);
 } finally { ch.kill(); }
 process.exit(failed ? 1 : 0);

@@ -1021,14 +1021,17 @@ int main() {
         std::vector<float> dc((size_t)(SR * 10), 0.5f);               /* a flat recording: every step is the envelope's */
         sampler::Resonator r; r.init(SR); r.tune = 0; r.att = 0.005; r.rel = 0.03;
         const float *p[1] = { dc.data() }; r.set_source(1, (long long)dc.size(), p);
-        for (int k = 0; k < 7; k++) { r.attack(110 * (k + 1), 0.05 * k, 0.5); r.release(0.05 * k + 0.2); }   /* the 7th steals */
-        std::vector<float> L((size_t)SR, 0.0f), R(L.size(), 0.0f);
-        for (size_t i = 0; i < L.size(); i += 128) { if (i == 24064) r.stop_all();   /* a block boundary: the loop steps 128 */ r.render(L.data() + i, R.data() + i, 128, i / SR); }
+        /* every voice, then one more that steals; releases 40 ms apart so each step is one voice's; the stealer still
+           sounds when Stop is pressed */
+        const int NV = sampler::Resonator::VOICES;
+        for (int k = 0; k <= NV; k++) { r.attack(110 * (k + 1), 0.01 * k, 0.5); r.release(k == NV ? 1.6 : 0.3 + 0.04 * k); }
+        std::vector<float> L((size_t)(2 * SR), 0.0f), R(L.size(), 0.0f);
+        for (size_t i = 0; i < L.size(); i += 128) { if (i == 72064) r.stop_all();   /* a block boundary: the loop steps 128 */ r.render(L.data() + i, R.data() + i, 128, i / SR); }
         double step = 0; for (size_t i = 1; i < L.size(); i++) step = std::max(step, (double)std::fabs(L[i] - L[i - 1]));
         const double bound = 0.5 * 0.5 * std::max(1.0 / (0.005 * SR), 1 - std::pow(1e-4, 1.0 / (0.03 * SR))) * 1.05;
         std::printf("resonator envelopes: largest step %.5f (bound %.5f)\n", step, bound);
         assert(step <= bound);
-        double tail = 0; for (size_t i = 24064 + 480; i < L.size(); i++) tail = std::max(tail, (double)std::fabs(L[i]));
+        double tail = 0; for (size_t i = 72064 + 480; i < L.size(); i++) tail = std::max(tail, (double)std::fabs(L[i]));
         assert(tail == 0);                                             /* stop_all: silent 10 ms later */
         /* no recording: silence, no crash */
         sampler::Resonator q; q.init(SR); q.attack(220, 0, 0.5);
@@ -1054,9 +1057,9 @@ int main() {
         s.attack(220, 0, 0.5); std::vector<float> a1(4800, 0.0f), a2(4800, 0.0f); s.render(a1.data(), a2.data(), 4800, 0);
         double g = s.v[0].g; s.focus = 0.1; s.colour = 0.1; s.body = sampler::TUBE; s.render(a1.data(), a2.data(), 4800, 0.1);
         assert(s.v[0].g == g);
-        /* six bowed strings inside one 128-sample block's budget */
+        /* every voice bowed at once inside one 128-sample block's budget */
         sampler::Resonator sp; sp.init(SR); sp.set_source(1, (long long)wind.size(), wp);
-        for (int k = 0; k < 6; k++) sp.attack(110 * (k + 1), 0, 0.2);
+        for (int k = 0; k < sampler::Resonator::VOICES; k++) sp.attack(55 * (k + 1), 0, 0.05);
         std::vector<double> ms; std::vector<float> b1(128), b2(128);
         for (int k = 0; k < (int)(10 * SR / 128); k++) {
             std::fill(b1.begin(), b1.end(), 0.0f); std::fill(b2.begin(), b2.end(), 0.0f);
@@ -1069,7 +1072,7 @@ int main() {
 #else
         const double slack = 1;
 #endif
-        std::printf("resonator: six bowed strings, 99.9%% of blocks within %.3f ms (budget %.2f)\n", ms[(size_t)(ms.size() * 0.999)], 1.33 * slack);
+        std::printf("resonator: %d bowed strings, 99.9%% of blocks within %.3f ms (budget %.2f)\n", sampler::Resonator::VOICES, ms[(size_t)(ms.size() * 0.999)], 1.33 * slack);
         assert(ms[(size_t)(ms.size() * 0.999)] < 1.33 * slack);
     }
     {   /* 2a: the bench device - notes at times, the clock, "pitch created", stop */
@@ -1191,6 +1194,31 @@ int main() {
         fs_destroy(b);
         std::printf("bench queue: scale %d/7 notes heard, re-pressed chord %d/4, progression %d/10 chords\n", heard, second, chords);
         assert(heard == 7 && second == 4 && chords == 10);
+        /* 4 (Kerem 2026-10-01: "smooth cloudy transitions when release is longer than the note"): 5-note chords every
+           2.4 s with a 3 s release - the last chord's tail still sounds under the next (not cut by a steal), and the
+           level never drops abruptly at a change */
+        const double ch5[5] = { 1.0, 1.25, 1.5, 1.875, 2.25 }, r5[4] = { 146.83, 196.00, 130.81, 174.61 };
+        b = make(); o.clear(); fs_set_param(b, 6, 3.0f);
+        for (int k = 0; k < 4; k++) for (double r : ch5) fs_bench_note(b, r5[k] * r, 0.1 + 2.4 * k, 2.3, 0.15);
+        render(b, 10, o);
+        int tails = 0; double drop = 0;
+        for (int k = 1; k < 4; k++) {
+            const double at = 0.1 + 2.4 * k, own = pw(o, r5[k - 1], at - 1.0, at - 0.3), after = pw(o, r5[k - 1], at + 0.1, at + 0.6);
+            tails += after > 0.02 * own;
+            std::vector<double> db; for (double s = at - 0.1; s < at + 0.5; s += 0.02) { double e = 0; for (size_t i = (size_t)(s * 48000); i < (size_t)((s + 0.02) * 48000); i++) e += (double)o[i] * o[i]; db.push_back(10 * std::log10(e + 1e-30)); }
+            for (size_t i = 1; i < db.size(); i++) drop = std::max(drop, db[i - 1] - db[i]);
+        }
+        fs_destroy(b);
+        std::printf("bench release overlap: %d/3 tails under the next chord, largest 20 ms drop at a change %.1f dB\n", tails, drop);
+        assert(tails == 3 && drop < 3);
+    }
+    {   /* Kerem 2026-10-01: the attack is an S-curve (raised cosine), not a straight line: a quarter in, it stands at
+           ~0.15 of full (a line: 0.25) - long attacks fade in instead of arriving at the end */
+        sampler::Resonator r; r.init(48000); r.att = 1;
+        const std::vector<float> wind = noise_src(2, 0.5f, 5); const float *p[1] = { wind.data() }; r.set_source(1, (long long)wind.size(), p);
+        r.attack(220, 0, 0.5); std::vector<float> a(12000, 0.0f), c(12000, 0.0f); r.render(a.data(), c.data(), 12000, 0);
+        std::printf("resonator attack: a quarter in at %.3f of full\n", r.v[0].env);
+        assert(r.v[0].env > 0.13 && r.v[0].env < 0.16);
     }
     std::printf("core ok\n");
     return 0;

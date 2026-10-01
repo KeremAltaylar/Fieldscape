@@ -14,8 +14,8 @@ static const fs_param BENCH_PARAMS[] = {
     { "focus", "Focus", "", 0.0f, 1.0f, 0.5f },
     { "colour", "Colour", "", 0.0f, 1.0f, 0.5f },
     { "tune", "Tune", "", 0.0f, 1.0f, 1.0f },
-    { "attack", "Attack", "s", 0.005f, 2.0f, 0.02f },
-    { "release", "Release", "s", 0.03f, 5.0f, 0.6f },
+    { "attack", "Attack", "s", 0.008f, 4.0f, 0.02f },
+    { "release", "Release", "s", 0.03f, 10.0f, 0.6f },
     { "offset", "Position", "s", 0.0f, 600.0f, 0.0f },
 };
 

@@ -136,10 +136,13 @@
 
   /* one retuned voice: attack and release ramps (A-2, A-3), exponential to silence */
   function voice(hz, rate, at, dur, level) {
-    var c = audio(), src = c.createBufferSource(), g = c.createGain(), A = Math.max(0.005, +$("#lab-attack").value), R = Math.max(0.03, +$("#lab-release").value);
+    var c = audio(), src = c.createBufferSource(), g = c.createGain(), A = Math.max(0.008, +$("#lab-attack").value), R = Math.max(0.03, +$("#lab-release").value);
     src.buffer = buffer; src.playbackRate.value = rate;
     if (analysis.loop) { src.loop = true; src.loopStart = analysis.loop[0] / analysis.rate; src.loopEnd = analysis.loop[1] / analysis.rate; }
-    g.gain.setValueAtTime(0.0001, at); g.gain.exponentialRampToValueAtTime(level, at + A);
+    /* the attack is a raised cosine (S-curve), as in the core: it fades in, where an exponential from silence
+       arrived all at the end (Kerem 2026-10-01: "smooth cloudy transitions"). Line segments, so Stop can cancel it */
+    g.gain.setValueAtTime(0, at);
+    for (var k = 1; k <= 16; k++) { g.gain.linearRampToValueAtTime(level * (0.5 - 0.5 * Math.cos(Math.PI * k / 16)), at + A * k / 16); }
     g.gain.setValueAtTime(level, at + A + dur); g.gain.exponentialRampToValueAtTime(0.0001, at + A + dur + R);
     var off = clearMoment();
     src.connect(g).connect(bus); src.start(at, off);
@@ -229,7 +232,7 @@
   function sendParams() {
     if (!node) { return; }
     [[P_BODY, +$("#lab-body").value], [P_EXCITE, +$("#lab-excite").value], [P_FOCUS, +$("#lab-focus").value],
-     [P_COLOUR, +$("#lab-colour").value], [P_TUNE, +$("#lab-tune").value], [P_ATTACK, Math.max(0.005, +$("#lab-attack").value)],
+     [P_COLOUR, +$("#lab-colour").value], [P_TUNE, +$("#lab-tune").value], [P_ATTACK, Math.max(0.008, +$("#lab-attack").value)],
      [P_RELEASE, Math.max(0.03, +$("#lab-release").value)], [P_OFFSET, loudAt]].forEach(function (pv) { node.port.postMessage(pv); });
   }
   function sendSource() {
@@ -244,7 +247,7 @@
   }
   function playResonator(kind, c, t, chord, beat) {
     if (!node) { return { silent: true }; }
-    var oct = octaveFactor(), A = Math.max(0.005, +$("#lab-attack").value), R = Math.max(0.03, +$("#lab-release").value), list = [];
+    var oct = octaveFactor(), A = Math.max(0.008, +$("#lab-attack").value), R = Math.max(0.03, +$("#lab-release").value), list = [];
     var groups = kind === "progression"
       ? prog.chords.map(function (ch, i) { return { hz: ch.hz, at: i * beat * 4, dur: beat * 4 - 0.1, name: noteName(ch.root).replace(/-?[0-9]+.*$/, "") + " " + ch.label }; })
       : [{ hz: kind === "note" ? [chord.hz[0]] : kind === "scale" ? chord.scale_hz : chord.hz, at: 0, dur: kind === "scale" ? beat * 0.9 : beat * 4, scale: kind === "scale" }];
@@ -392,7 +395,8 @@
   }, 250);
 
   window.fsLab = { ready: ready, load: load, get analysis() { return analysis; }, get routes() { return routes; }, setRoute: setRoute, play: play, stop: stop,
-    get peak() { return peak; }, level: levelDb, peakHz: peakHz, get bufferSeconds() { return buffer ? buffer.duration : 0; },
+    get peak() { return peak; }, level: levelDb,
+    peakOut: function () { if (!meter) { return 0; } var a = new Float32Array(meter.fftSize), m = 0; meter.getFloatTimeDomainData(a); for (var i = 0; i < a.length; i++) { m = Math.max(m, Math.abs(a[i])); } return m; }, peakHz: peakHz, get bufferSeconds() { return buffer ? buffer.duration : 0; },
     now: function () { return ctx ? ctx.currentTime : 0; },
     voices: function () { return last.map(function (v) { return { start: v.start, stopAt: v.stopAt, offset: v.offset, hz: v.hz }; }); },
     setSynth: setSynth, get engineReady() { return engineReady || Promise.resolve(); },

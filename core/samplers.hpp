@@ -51,7 +51,9 @@ struct Voice {
     bool active = false, started = false, releasing = false, stealing = false;
     double f = 0, on_t = 0, off_t = 1e300; double vel = 0;
     bool has_next = false; double nf = 0, nt = 0, noff = 1e300, nvel = 0;   /* the note waiting for a steal's fade */
-    double steal_at = 0;                                          /* the fade starts 5 ms before that note, not at once */
+    double steal_at = 0;                                          /* the fade starts 50 ms before that note, not at once */
+    double fade = 0;                                              /* per sample while stealing: 50 ms for a steal, 5 ms for Stop */
+    double aph = 0;                                               /* attack progress 0..1, shaped as a raised cosine */
     double env = 0;
     long long pos = 0; int burst = 0, burst_len = 0;
     std::vector<float> line; unsigned w = 0; int N = 1;
@@ -62,7 +64,10 @@ struct Voice {
 };
 
 struct Resonator : tone::Synth {
-    static const int VOICES = 6;
+    /* 24: three overlapping chords of up to 8 notes - a long release rings under the next chords instead of being
+       stolen (Kerem 2026-10-01: "smooth cloudy transitions when release is longer than the note") */
+    static const int VOICES = 24;
+    static constexpr double STEAL_S = 0.05, STOP_S = 0.005;
     static const unsigned MASK = (1u << 13) - 1;                  /* 8192-sample lines: down to ~6 Hz */
     Source src;
     int body = STRING, excite = BOWED;
@@ -88,7 +93,7 @@ struct Resonator : tone::Synth {
         std::fill(x.line.begin(), x.line.end(), 0.0f);
         f = std::fmin(std::fmax(f, 6.0), 0.45 * sr);                 /* extreme octaves: clamped, never unstable */
         x.active = true; x.started = false; x.releasing = false; x.stealing = false; x.has_next = false;
-        x.f = f; x.on_t = t; x.off_t = 1e300; x.vel = vel; x.env = 0; x.body = body; x.excite = excite;
+        x.f = f; x.on_t = t; x.off_t = 1e300; x.vel = vel; x.env = 0; x.aph = 0; x.body = body; x.excite = excite;
         x.pos = (long long)(offset_s * sr); x.burst = 0; x.burst_len = (int)(0.025 * sr);
         x.w = 0; x.ap_x = x.ap_y = x.lp = 0; x.dc_x = x.dc_y = 0; x.lx = x.ly = 0; x.rin = x.rout = 0; x.agc = 1;
         const double w = 2 * PI * f / sr, T = t60(focus);
@@ -138,7 +143,7 @@ struct Resonator : tone::Synth {
         for (int i = 0; i < VOICES; i++) if (!v[i].has_next && (q < 0 || rank(v[i]) < rank(v[q]))) q = i;
         if (q < 0) { q = 0; for (int i = 1; i < VOICES; i++) if (v[i].env < v[q].env) q = i; }
         Voice &x = v[q];
-        if (!x.stealing) x.steal_at = t - 0.005;                   /* a voice already fading keeps fading */
+        if (!x.stealing) { x.steal_at = t - STEAL_S; x.fade = 1.0 / (STEAL_S * sr); }   /* one already fading keeps fading */
         x.stealing = true; x.has_next = true; x.nf = f; x.nt = t; x.nvel = vel; x.noff = 1e300; last = q;
     }
     void release(double t) override {
@@ -148,7 +153,7 @@ struct Resonator : tone::Synth {
     }
     /* the two timbre slots the morphs drive (spec D10): Focus and Colour, for the next note */
     void timbre(int which, double val, double, double) override { if (which == 0) focus = val; else colour = val; }
-    void stop_all() { for (auto &x : v) if (x.active) { x.stealing = true; x.has_next = false; x.steal_at = 0; } }
+    void stop_all() { for (auto &x : v) if (x.active) { x.stealing = true; x.has_next = false; x.steal_at = 0; x.fade = 1.0 / (STOP_S * sr); } }
 
     double resonate(Voice &x, double in) {
         if (x.body == BELL) {
@@ -171,7 +176,9 @@ struct Resonator : tone::Synth {
     }
 
     void render(float *L, float *R, int n, double t0) override {
-        const double up = 1.0 / (std::fmax(0.005, att) * sr), fade = 1.0 / (0.005 * sr);
+        /* the attack is a raised cosine (S-curve): it fades in rather than arriving at the end. Its steepest point is
+           pi/2 x a straight line's, so the shortest attack is 8 ms - no steeper than the old 5 ms line (A-2) */
+        const double up = 1.0 / (std::fmax(0.008, att) * sr);
         const double kr = std::pow(1e-4, 1.0 / (std::fmax(0.03, rel) * sr)), ka = 1 - std::exp(-1.0 / (0.3 * sr));
         const double kt = 1 - std::exp(-1.0 / (0.01 * sr));
         if (tune_s < 0) tune_s = tune;
@@ -184,7 +191,7 @@ struct Resonator : tone::Synth {
                 if (!x.started) { if (t < x.on_t) continue; x.started = true; }
                 if (!x.releasing && t >= x.off_t) x.releasing = true;
                 if (x.stealing && t >= x.steal_at) {
-                    x.env -= fade;
+                    x.env -= x.fade;
                     if (x.env <= 0) {
                         x.env = 0;
                         if (!x.has_next) { x.active = false; break; }
@@ -192,7 +199,7 @@ struct Resonator : tone::Synth {
                         start(x, nf, nt, nv); x.off_t = no; continue;
                     }
                 } else if (x.releasing) { x.env *= kr; if (x.env < 1e-4) { if (x.has_next) { x.env = 0; x.steal_at = 0; continue; } x.active = false; break; } }
-                else if (x.env < 1) x.env = std::fmin(1.0, x.env + up);
+                else if (x.aph < 1) { x.aph = std::fmin(1.0, x.aph + up); x.env = 0.5 - 0.5 * std::cos(PI * x.aph); }
                 const double in = src.at(x.pos++);
                 double exc = in;
                 if (x.excite == PLUCKED) { exc = x.burst < x.burst_len ? in * 0.5 * (1 - std::cos(2 * PI * x.burst / x.burst_len)) : 0; x.burst++; }
