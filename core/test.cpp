@@ -1268,7 +1268,7 @@ int main() {
         assert(r.v[0].env > 0.13 && r.v[0].env < 0.16);
     }
     {   /* 2b: the Harmonic filter and the Formant, every method in `methods` (spec "How we know it works") */
-        const int methods[] = { sampler::BANK, sampler::SPECTRAL };
+        const int methods[] = { sampler::BANK, sampler::SPECTRAL, sampler::COMB };
         const std::vector<float> wind = noise_src(16, 0.5f, 101);
         std::vector<float> clicks(65536, 0.0f); clicks[0] = 0.5f;          /* a repeating impulse: the response's exact peak */
         std::vector<float> gust(48000 * 8, 0.0f); for (size_t i = 0; i < 48000 * 3; i++) gust[i] = wind[i];   /* 3 s, then silence past every 6 s render (Spectral reads 43 ms ahead: a 6 s file looped into its noise) */
@@ -1314,7 +1314,9 @@ int main() {
             auto lift = [&](double col) {
                 std::vector<float> o = part_render(sampler::HARMONIC, m, sampler::RINGING, 0.9, col, 1, 220, 10, wind);
                 std::vector<float> t(o.end() - 65536, o.end());
-                auto band = [&](double f) { return 20 * std::log10(peak_amp(t, 48000, f)); };
+                /* the loudest point within +-0.5 % of n f: Comb Ringing is a string loop, its upper partials a little off n f
+                   and ~0.3 Hz wide at Focus 0.9 - read at n f exactly they vanished */
+                auto band = [&](double f) { double mx = 0; for (double q = f * 0.995; q <= f * 1.005; q += f * 0.0005) mx = std::max(mx, peak_amp(t, 48000, q)); return 20 * std::log10(mx); };
                 double hi = 0; for (int n = 4; n <= 8; n++) hi += band(220.0 * n) / 5;
                 return hi - band(220);
             };
@@ -1326,7 +1328,8 @@ int main() {
             for (int want : { 3, 6, 10, 14 }) {
                 std::vector<float> o = part_render(sampler::FORMANT, m, sampler::RINGING, 0.9, (want - 1) / 15.0, 1, 110, 10, wind);
                 std::vector<float> t(o.end() - 65536, o.end()); int best = 2;
-                for (int n = 2; n <= 16; n++) if (peak_amp(t, 48000, 110.0 * n) > peak_amp(t, 48000, 110.0 * best)) best = n;
+                auto at = [&](double f) { double mx = 0; for (double q = f * 0.995; q <= f * 1.005; q += f * 0.0005) mx = std::max(mx, peak_amp(t, 48000, q)); return mx; };   /* as the lift's */
+                double bm = 0; for (int n = 2; n <= 16; n++) { double a = at(110.0 * n); if (a > bm) { bm = a; best = n; } }
                 ok += std::abs(best - want) <= 1;
             }
             std::printf("2b method %d: Formant peak on the named partial %d/4\n", m, ok);
@@ -1349,7 +1352,7 @@ int main() {
         /* stability: every partial synth x mode x Colour, extreme and ordinary notes, Focus 1, full-scale noise */
         const std::vector<float> loud = noise_src(2, 1.0f, 9);
         int bad = 0;
-        for (int m : { sampler::BANK, sampler::SPECTRAL }) for (int syn : { sampler::HARMONIC, sampler::FORMANT }) for (int mode : { sampler::DRY, sampler::RINGING })
+        for (int m : { sampler::BANK, sampler::SPECTRAL, sampler::COMB }) for (int syn : { sampler::HARMONIC, sampler::FORMANT }) for (int mode : { sampler::DRY, sampler::RINGING })
             for (double col : { 0.0, 0.5, 1.0 }) for (double f : { 5.0, 55.0, 3500.0, 12000.0 }) {
                 std::vector<float> o = part_render(syn, m, mode, 1, col, 1, f, 2, loud);
                 double mx = 0; bool fin = true; for (float v : o) { fin = fin && std::isfinite(v); mx = std::max(mx, (double)std::fabs(v)); }
@@ -1363,7 +1366,7 @@ int main() {
 #else
         const double slack = 1;
 #endif
-        for (int m : { sampler::BANK, sampler::SPECTRAL }) {
+        for (int m : { sampler::BANK, sampler::SPECTRAL, sampler::COMB }) {
             sampler::Resonator sp; sp.init(48000); sp.set_source(1, (long long)wind.size(), wp);
             sp.synth = sampler::HARMONIC; sp.method = m; sp.mode = sampler::RINGING;
             for (int k = 0; k < sampler::Resonator::VOICES; k++) sp.attack(55 * (k + 1), 0, 0.05);

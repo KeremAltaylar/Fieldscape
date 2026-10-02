@@ -122,6 +122,7 @@ struct Voice {
        note began, this voice's place in the hop, the hold's decay per frame */
     std::vector<float> ola, hold, ph, mask; std::vector<int> owner; long long sk = 0; int soff = 0; double sd = 1, sf = 0;
     double rotr[PARTIALS + 1] = {}, roti[PARTIALS + 1] = {};      /* Ringing: each partial's turn per hop, times the decay */
+    double fb0 = 0, fa1 = 0, fa2 = 0, fx1 = 0, fx2 = 0, fy1 = 0, fy2 = 0;   /* Comb's Formant peak */
 };
 
 struct Resonator : tone::Synth {
@@ -182,25 +183,29 @@ struct Resonator : tone::Synth {
                 x.b0[k] = (1 - r) * std::abs(1.0 - r * std::polar(1.0, -2 * wk));   /* about unity at the peak */
                 x.y1[k] = x.y2[k] = 0; x.wt[k] = std::pow(cw, k); x.modes++;
             }
-        } else {
-            const double P = sr / f / (body == TUBE ? 2 : 1);        /* Tube: half a period, feedback inverted */
-            x.g60 = std::pow(10.0, -3.0 * (P / sr) / T);              /* one pass of the loop, in T60 terms */
-            /* The feedback never reaches 1 at any frequency (final review 2026-09-30: an uncapped g ran away through
-               the DC blocker's own low resonance, dark Colour or high notes). So g <= GMAX, and where Colour would
-               lose more at f than GMAX can make good, Colour's cutoff rises until it does not: the fundamental still
-               rings its T60. Below ~15 Hz (the DC blocker's own loss) T60 simply comes out shorter. */
-            const double GMAX = 0.99995, dcg = dc_gain(LOOP_R, w), need = x.g60 / (GMAX * dcg);
-            if (need >= 1) x.a = 0;
-            else if (lp_gain(x.a, w) < need) {                         /* lp_gain falls as a rises */
-                double lo = 0, hi = x.a;
-                for (int i = 0; i < 50; i++) { double m = 0.5 * (lo + hi); if (lp_gain(m, w) >= need) lo = m; else hi = m; }
-                x.a = lo;
-            }
-            x.g = std::fmin(GMAX, x.g60 / (lp_gain(x.a, w) * dcg));
-            const double lpd = lp_delay(x.a, w) + dc_delay(LOOP_R, w);
-            int N = (int)std::floor(P - lpd - 0.2); N = std::max(1, std::min(N, (int)MASK - 2));
-            x.N = N; x.c = solve_ap(P - N - lpd, w);
+        } else start_loop(x, f, T, body == TUBE);
+    }
+
+    /* the String / Tube loop tuned to f, ringing for T (2a; Comb Ringing in 2b plays the String) */
+    void start_loop(Voice &x, double f, double T, bool tube) {
+        const double w = 2 * PI * f / sr;
+        const double P = sr / f / (tube ? 2 : 1);        /* Tube: half a period, feedback inverted */
+        x.g60 = std::pow(10.0, -3.0 * (P / sr) / T);              /* one pass of the loop, in T60 terms */
+        /* The feedback never reaches 1 at any frequency (final review 2026-09-30: an uncapped g ran away through
+           the DC blocker's own low resonance, dark Colour or high notes). So g <= GMAX, and where Colour would
+           lose more at f than GMAX can make good, Colour's cutoff rises until it does not: the fundamental still
+           rings its T60. Below ~15 Hz (the DC blocker's own loss) T60 simply comes out shorter. */
+        const double GMAX = 0.99995, dcg = dc_gain(LOOP_R, w), need = x.g60 / (GMAX * dcg);
+        if (need >= 1) x.a = 0;
+        else if (lp_gain(x.a, w) < need) {                         /* lp_gain falls as a rises */
+            double lo = 0, hi = x.a;
+            for (int i = 0; i < 50; i++) { double m = 0.5 * (lo + hi); if (lp_gain(m, w) >= need) lo = m; else hi = m; }
+            x.a = lo;
         }
+        x.g = std::fmin(GMAX, x.g60 / (lp_gain(x.a, w) * dcg));
+        const double lpd = lp_delay(x.a, w) + dc_delay(LOOP_R, w);
+        int N = (int)std::floor(P - lpd - 0.2); N = std::max(1, std::min(N, (int)MASK - 2));
+        x.N = N; x.c = solve_ap(P - N - lpd, w);
     }
 
     /* Harmonic filter / Formant (2b): the engines' state, and the level expected for a white input, so the slow level
@@ -263,7 +268,41 @@ struct Resonator : tone::Synth {
             x.sf = f; x.sk = 0; x.soff = (int)((&x - v) * SPH / VOICES); x.sd = std::pow(10.0, -3.0 * SPH / (sr * T));
             for (int n = 1; n <= npart; n++) { const double th = 2 * PI * n * f * SPH / sr; x.rotr[n] = x.sd * std::cos(th); x.roti[n] = x.sd * std::sin(th); }
         }
+        if (x.method == COMB) {
+            std::fill(x.line.begin(), x.line.end(), 0.0f);
+            /* the Formant's Colour places its peak, not a tilt: its comb runs open, a flat base as in the Bank and the
+               Spectral (a dark comb under it pulled a 220 Hz note 12.9 cents flat, measured) */
+            if (x.synth == FORMANT) x.a = 0;
+            if (x.mode == RINGING) { x.body = STRING; start_loop(x, f, T, false); G = 1; }   /* the 2a String; input scaled as bowed */
+            else {                                                      /* feed-forward: the recording plus itself one period later */
+                const double w = 2 * PI * f / sr, P = sr / f, lpd = lp_delay(x.a, w);
+                int N = (int)std::floor(P - lpd - 0.2); N = std::max(1, std::min(N, (int)MASK - 2));
+                x.N = N; x.c = solve_ap(P - N - lpd, w); G = 2;
+            }
+            if (x.synth == FORMANT) {                                   /* one peak, +18 dB, at the named partial */
+                const double fp = std::fmin((1 + 15 * colour) * f, 0.44 * sr), wp = 2 * PI * fp / sr;
+                const double Bp = std::fmax(x.mode == DRY ? 73.0 : 20.0, (1 + 3 * (1 - focus)) * 0.5 * f), al = std::sin(wp) * Bp / (2 * fp);
+                x.fb0 = al / (1 + al); x.fa1 = -2 * std::cos(wp) / (1 + al); x.fa2 = (1 - al) / (1 + al); x.fx1 = x.fx2 = x.fy1 = x.fy2 = 0;
+                G *= 1 + 6.9 * 6.9 * PI * Bp / sr;                    /* the peak's own share of the power */
+            }
+        }
         x.agc = G > 0 ? std::fmin(1000.0, 1 / std::sqrt(G)) : 1;
+    }
+    double comb(Voice &x, double in) {
+        double y;
+        if (x.mode == RINGING) y = loop(x, in);
+        else {
+            double read = x.line[(x.w - (unsigned)x.N) & MASK];
+            double ap = x.c * read + x.ap_x - x.c * x.ap_y; x.ap_x = read; x.ap_y = std::fabs(ap) < 1e-20 ? 0 : ap;
+            x.lp = (1 - x.a) * x.ap_y + x.a * x.lp; if (std::fabs(x.lp) < 1e-20) x.lp = 0;
+            x.line[x.w & MASK] = (float)in; x.w++;
+            y = in + x.lp;
+        }
+        if (x.synth == FORMANT) {                                       /* a true band-pass at the peak, added at +18 dB */
+            double o = x.fb0 * (y - x.fx2) - x.fa1 * x.fy1 - x.fa2 * x.fy2; if (std::fabs(o) < 1e-20) o = 0;
+            x.fx2 = x.fx1; x.fx1 = y; x.fy2 = x.fy1; x.fy1 = o; y += 6.9 * o;
+        }
+        return y;
     }
     /* one output sample; a frame is analysed when this voice's hop comes round (voices staggered across the hop, so 24
        never all transform in one block). The recording is a file, so the frame reads ahead of the note: no delay. */
@@ -331,7 +370,7 @@ struct Resonator : tone::Synth {
     void stop_all() { for (auto &x : v) if (x.active) { x.stealing = true; x.has_next = false; x.steal_at = 0; x.fade = 1.0 / (STOP_S * sr); } }
 
     double resonate(Voice &x, double in) {
-        if (x.synth != RESONATE) return x.method == SPECTRAL ? spectral(x) : bank(x, in);
+        if (x.synth != RESONATE) return x.method == SPECTRAL ? spectral(x) : x.method == COMB ? comb(x, in) : bank(x, in);
         if (x.body == BELL) {
             double y = 0;
             for (int k = 0; k < x.modes; k++) {
@@ -341,6 +380,9 @@ struct Resonator : tone::Synth {
             }
             return y;
         }
+        return loop(x, in);
+    }
+    double loop(Voice &x, double in) {
         double read = x.line[(x.w - (unsigned)x.N) & MASK];
         double ap = x.c * read + x.ap_x - x.c * x.ap_y; x.ap_x = read; x.ap_y = std::fabs(ap) < 1e-20 ? 0 : ap;
         x.lp = (1 - x.a) * x.ap_y + x.a * x.lp; if (std::fabs(x.lp) < 1e-20) x.lp = 0;
@@ -382,7 +424,8 @@ struct Resonator : tone::Synth {
                 if (!part && x.excite == PLUCKED) { exc = x.burst < x.burst_len ? in * 0.5 * (1 - std::cos(2 * PI * x.burst / x.burst_len)) : 0; x.burst++; }
                 /* bowed noise through a feedback loop gains 1 / (1 - g^2) in power: fed through sqrt(1 - g^2), the
                    loop's level starts near the recording's and the automatic gain below only fine-tunes it */
-                double wet = resonate(x, !part && x.excite == BOWED && x.body != BELL ? exc * std::sqrt(std::fmax(0.0, 1 - x.g60 * x.g60)) : exc);
+                const bool fed = part ? x.method == COMB && x.mode == RINGING : x.excite == BOWED && x.body != BELL;   /* a feedback loop fed continuously */
+                double wet = resonate(x, fed ? exc * std::sqrt(std::fmax(0.0, 1 - x.g60 * x.g60)) : exc);
                 if (part || x.excite == BOWED) {                      /* the bowed level follows the recording's */
                     const double k = part ? ks : ka;                 /* partial synths: 3 s, so gusts keep their shape */
                     x.rin += (exc * exc - x.rin) * k; x.rout += (wet * wet - x.rout) * k;
