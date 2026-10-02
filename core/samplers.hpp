@@ -4,6 +4,7 @@
    A tone::Synth: notes at times on the caller's clock, rendered by adding into the buffers given. */
 #pragma once
 #include "synths.hpp"
+#include "devices/fft.hpp"
 #include <algorithm>
 #include <cmath>
 #include <complex>
@@ -52,6 +53,7 @@ inline double solve_ap(double want, double w) {
 }
 
 static const int PARTIALS = 24;
+static const int SPN = 2048, SPH = 512;                            /* Spectral: frame, hop (75 % overlap) */
 /* partial n's weight (2b spec, Colour): the Harmonic filter's overtone balance n^-(2 - 2 Colour), or the Formant's peak
    on partial 1 + 15 Colour, a raised-cosine bump 1 + 3 (1 - Focus) partials wide each side over a -24 dB floor */
 inline double partial_weight(int synth, int n, double colour, double focus) {
@@ -62,6 +64,43 @@ inline double partial_weight(int synth, int n, double colour, double focus) {
 }
 /* a partial's bandwidth in Hz: Dry never narrower than a 30 ms decay (60 dB in 2.2 / B s); Ringing from T60 */
 inline double band_hz(int mode, double f, double focus, double T60) { return mode == RINGING ? 2.2 / T60 : std::fmax(73.0, 0.5 * f * (1 - focus)); }
+
+/* A real transform of N points as one N/2-point complex transform plus an untangling step: half the work of a full
+   complex FFT (24 Spectral voices ran 2.23 ms a block on full transforms, over budget). inverse() returns N x the
+   signal, like a forward transform's inverse. Checked against the full transform to float precision. */
+struct RFFT {
+    int N = 0; FFT h; std::vector<float> zr, zi, br, bi, twr, twi;
+    void init(int n) {
+        N = n; h.reserve(N / 2); h.plan(N / 2); h.twiddles(0, N / 2);
+        zr.assign(N / 2, 0); zi.assign(N / 2, 0); br.assign(N / 2, 0); bi.assign(N / 2, 0); twr.resize(N / 2 + 1); twi.resize(N / 2 + 1);
+        for (int k = 0; k <= N / 2; k++) { twr[k] = (float)std::cos(2 * PI * k / N); twi[k] = (float)-std::sin(2 * PI * k / N); }
+    }
+    void run() {
+        for (int p = 0; p < h.passes; p++) { if (p % 2 == 0) h.pass(p, zr.data(), zi.data(), br.data(), bi.data(), 0, h.butterflies(p)); else h.pass(p, br.data(), bi.data(), zr.data(), zi.data(), 0, h.butterflies(p)); }
+        if (h.passes % 2) { std::copy(br.begin(), br.end(), zr.begin()); std::copy(bi.begin(), bi.end(), zi.begin()); }
+    }
+    void forward(const float *x, float *Xr, float *Xi) {         /* x: N real -> X[0..N/2] */
+        const int M = N / 2;
+        for (int n = 0; n < M; n++) { zr[n] = x[2 * n]; zi[n] = x[2 * n + 1]; }
+        run();
+        for (int k = 0; k <= M; k++) {
+            const int a = k % M, b = (M - k) % M;
+            const float er = 0.5f * (zr[a] + zr[b]), ei = 0.5f * (zi[a] - zi[b]), orr = 0.5f * (zi[a] + zi[b]), oi = -0.5f * (zr[a] - zr[b]);
+            Xr[k] = er + twr[k] * orr - twi[k] * oi; Xi[k] = ei + twr[k] * oi + twi[k] * orr;
+        }
+    }
+    void inverse(const float *Xr, const float *Xi, float *x) {   /* X[0..N/2], Hermitian -> N x the signal */
+        const int M = N / 2;
+        for (int k = 0; k < M; k++) {
+            const float ar = Xr[k], ai = Xi[k], cr = Xr[M - k], ci = -Xi[M - k];
+            const float er = 0.5f * (ar + cr), ei = 0.5f * (ai + ci), dr = 0.5f * (ar - cr), di = 0.5f * (ai - ci);
+            const float orr = dr * twr[k] + di * twi[k], oi = di * twr[k] - dr * twi[k];
+            zr[k] = er - oi; zi[k] = -(ei + orr);
+        }
+        run();
+        for (int n = 0; n < M; n++) { x[2 * n] = 2 * zr[n]; x[2 * n + 1] = -2 * zi[n]; }
+    }
+};
 
 struct Voice {
     bool active = false, started = false, releasing = false, stealing = false;
@@ -79,6 +118,10 @@ struct Voice {
     int body = 0, excite = 0, synth = 0, method = 0, mode = 0;    /* the note's own: a later change is the next note's */
     int np = 0; double pb0[PARTIALS] = {}, pa1[PARTIALS] = {}, pa2[PARTIALS] = {}, py1[PARTIALS] = {}, py2[PARTIALS] = {}, pw[PARTIALS] = {};
     double px1 = 0, px2 = 0;                                      /* the bank's shared input history */
+    /* Spectral: the overlap-add ring, each bin's held level and phase, its weight and its partial; samples since the
+       note began, this voice's place in the hop, the hold's decay per frame */
+    std::vector<float> ola, hold, ph, mask; std::vector<int> owner; long long sk = 0; int soff = 0; double sd = 1, sf = 0;
+    double rotr[PARTIALS + 1] = {}, roti[PARTIALS + 1] = {};      /* Ringing: each partial's turn per hop, times the decay */
 };
 
 struct Resonator : tone::Synth {
@@ -93,10 +136,19 @@ struct Resonator : tone::Synth {
     Voice v[VOICES]; int last = -1;
     double tune_s = -1;                                           /* Tune as heard: glides to `tune` over ~10 ms (A-2) */
     std::vector<double> tune_buf;                                 /* per block; sized once to the largest block */
+    RFFT rf; std::vector<float> xin, Xr, Xi, yout, win;           /* Spectral: one transform shared by the voices */
 
     static double t60(double focus) { return 0.2 * std::pow(50.0, std::fmin(1.0, std::fmax(0.0, focus))); }
 
-    void init(double s) override { sr = s; for (auto &x : v) x.line.assign(MASK + 1, 0.0f); }
+    void init(double s) override {
+        sr = s;
+        for (auto &x : v) {
+            x.line.assign(MASK + 1, 0.0f);
+            x.ola.assign(SPN, 0.0f); x.hold.assign(SPN / 2 + 1, 0.0f); x.ph.assign(SPN / 2 + 1, 0.0f); x.mask.assign(SPN / 2 + 1, 0.0f); x.owner.assign(SPN / 2 + 1, 0);
+        }
+        rf.init(SPN); xin.assign(SPN, 0.0f); Xr.assign(SPN / 2 + 1, 0.0f); Xi.assign(SPN / 2 + 1, 0.0f); yout.assign(SPN, 0.0f);
+        win.resize(SPN); for (int j = 0; j < SPN; j++) win[j] = (float)(0.5 - 0.5 * std::cos(2 * PI * j / SPN));
+    }
     void set_source(int ch, long long n, const float *const *p) {
         src = Source(); if (!p || n <= 0) return;
         src.nch = std::min(ch, 2); for (int k = 0; k < src.nch; k++) src.f[k] = p[k]; src.frames = n;
@@ -190,7 +242,60 @@ struct Resonator : tone::Synth {
                 for (double q = step / 2; q < top; q += step) G += std::exp(lmag(q)) * step / (0.5 * sr);
             }
         }
+        if (x.method == SPECTRAL) {
+            /* each partial keeps the bins within a raised-cosine band around n f: Dry at least 3 bins each side (its
+               centre then sits on n f within a hair), Ringing 2 (its pitch comes from the phase, below) */
+            std::fill(x.ola.begin(), x.ola.end(), 0.0f); std::fill(x.hold.begin(), x.hold.end(), 0.0f);
+            std::fill(x.mask.begin(), x.mask.end(), 0.0f); std::fill(x.owner.begin(), x.owner.end(), 0);
+            const double bin = sr / SPN, half = x.mode == RINGING ? 2.0 : std::fmax(3.0, 0.5 * B / bin);
+            int npart = 0; double cs[PARTIALS + 1], wts[PARTIALS + 1];
+            for (int n = 1; n <= PARTIALS && n * f < 0.45 * sr; n++) { cs[n] = n * f / bin; wts[n] = partial_weight(x.synth, n, colour, focus); npart = n; }
+            auto build = [&]() {
+                std::fill(x.mask.begin(), x.mask.end(), 0.0f); std::fill(x.owner.begin(), x.owner.end(), 0);
+                for (int n = 1; n <= npart; n++)
+                    for (int k = std::max(1, (int)std::ceil(cs[n] - half)); k <= std::min(SPN / 2 - 1, (int)std::floor(cs[n] + half)); k++) {
+                        const double m = wts[n] * (0.5 + 0.5 * std::cos(PI * (k - cs[n]) / half));
+                        if (m > x.mask[k]) { x.mask[k] = (float)m; x.owner[k] = n; }
+                    }
+            };
+            build();
+            for (int k = 0; k <= SPN / 2; k++) G += x.mask[k] * x.mask[k] / (SPN / 2);
+            x.sf = f; x.sk = 0; x.soff = (int)((&x - v) * SPH / VOICES); x.sd = std::pow(10.0, -3.0 * SPH / (sr * T));
+            for (int n = 1; n <= npart; n++) { const double th = 2 * PI * n * f * SPH / sr; x.rotr[n] = x.sd * std::cos(th); x.roti[n] = x.sd * std::sin(th); }
+        }
         x.agc = G > 0 ? std::fmin(1000.0, 1 / std::sqrt(G)) : 1;
+    }
+    /* one output sample; a frame is analysed when this voice's hop comes round (voices staggered across the hop, so 24
+       never all transform in one block). The recording is a file, so the frame reads ahead of the note: no delay. */
+    double spectral(Voice &x) {
+        if (((x.sk + x.soff) & (SPH - 1)) == 0) spectral_frame(x);
+        float &o = x.ola[(size_t)(x.sk & (SPN - 1))]; const double y = o; o = 0; x.sk++;
+        return y;
+    }
+    void spectral_frame(Voice &x) {
+        const long long base = x.pos - 1;                              /* this sample's place in the recording */
+        for (int j = 0; j < SPN; j++) xin[j] = src.at(base + j) * win[j];
+        rf.forward(xin.data(), Xr.data(), Xi.data());
+        for (int k = 0; k <= SPN / 2; k++) {
+            double re = 0, im = 0;
+            if (x.mask[k] > 0) {
+                const double m = x.mask[k];
+                if (x.mode == DRY) { re = Xr[k] * m; im = Xi[k] * m; }
+                else {
+                    /* a spectral sustain, sounding at the partial's own frequency: the held bin (hold, ph as re, im) turns by
+                       its partial's step each hop and decays, unless the recording is louder there now - no trigonometry
+                       per bin (atan2 / cos / sin per bin put 24 voices over budget: 2.49 ms of 2.0, measured) */
+                    const int n = x.owner[k]; const double tr = x.hold[k] * x.rotr[n] - x.ph[k] * x.roti[n], ti = x.hold[k] * x.roti[n] + x.ph[k] * x.rotr[n];
+                    const double nr = Xr[k] * m, ni = Xi[k] * m;
+                    if (nr * nr + ni * ni >= tr * tr + ti * ti) { re = nr; im = ni; } else { re = tr; im = ti; }
+                    x.hold[k] = (float)re; x.ph[k] = (float)im;
+                }
+            }
+            Xr[k] = (float)re; Xi[k] = (float)im;
+        }
+        rf.inverse(Xr.data(), Xi.data(), yout.data());
+        const long long at = x.sk;
+        for (int j = 0; j < SPN; j++) x.ola[(size_t)((at + j) & (SPN - 1))] += yout[j] / SPN * win[j] / 1.5f;
     }
     double bank(Voice &x, double in) {
         double y = 0; const double dx = in - x.px2; x.px2 = x.px1; x.px1 = in;
@@ -226,7 +331,7 @@ struct Resonator : tone::Synth {
     void stop_all() { for (auto &x : v) if (x.active) { x.stealing = true; x.has_next = false; x.steal_at = 0; x.fade = 1.0 / (STOP_S * sr); } }
 
     double resonate(Voice &x, double in) {
-        if (x.synth != RESONATE) return bank(x, in);
+        if (x.synth != RESONATE) return x.method == SPECTRAL ? spectral(x) : bank(x, in);
         if (x.body == BELL) {
             double y = 0;
             for (int k = 0; k < x.modes; k++) {
