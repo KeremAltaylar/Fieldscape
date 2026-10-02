@@ -163,3 +163,34 @@ class FieldscapeEngine extends AudioWorkletProcessor {
   }
 }
 registerProcessor("fieldscape-engine", FieldscapeEngine);
+
+/* The lab's master (sample harmony 2b): x2, then a 5 ms look-ahead limiter to -1 dBFS. Kerem heard "clicks and clips"
+   on dense Dry progressions: the oversampled curve before this rang past full scale (output peaks 1.14). Here the gain
+   falls over the 5 ms before a peak arrives, so nothing passes -1 dBFS and nothing is shaped; quiet passages are
+   exactly x2. Lab only - the walk's FieldscapeEngine never uses it. */
+class FsLimiter extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.L = Math.round(sampleRate * 0.005); this.buf = [new Float32Array(this.L), new Float32Array(this.L)];
+    this.peaks = new Float32Array(this.L); this.w = 0; this.g = 1;
+    this.ka = 1 - Math.exp(-1 / (0.0008 * sampleRate)); this.kr = 1 - Math.exp(-1 / (0.15 * sampleRate));
+  }
+  process(inputs, outputs) {
+    const inp = inputs[0] || [], out = outputs[0], n = out[0].length, C = 0.891, L = this.L;
+    const src = (c, i) => 2 * (((inp[c] || inp[0]) || [])[i] || 0);
+    for (let i = 0; i < n; i++) {
+      let p = 0; for (let c = 0; c < out.length; c++) p = Math.max(p, Math.abs(src(c, i)));
+      this.peaks[this.w] = p;
+      let m = 0; for (let k = 0; k < L; k++) if (this.peaks[k] > m) m = this.peaks[k];   /* ponytail: an O(L) scan per sample (~0.05 ms a block); a monotonic deque if it ever costs */
+      const tgt = m > C ? C / m : 1;
+      this.g += (tgt - this.g) * (tgt < this.g ? this.ka : this.kr);
+      for (let c = 0; c < out.length; c++) {
+        const x = src(c, i), d = this.buf[c][this.w]; this.buf[c][this.w] = x;
+        const y = d * this.g; out[c][i] = y > C ? C : y < -C ? -C : y;
+      }
+      this.w = (this.w + 1) % L;
+    }
+    return true;
+  }
+}
+registerProcessor("fs-limiter", FsLimiter);

@@ -12,21 +12,21 @@
   var synth = "retune", node = null, wasmBytes = null, engineReady = null, madeTimer = null, loudAt = 0;
 
   /* one output bus with a meter on it: what the bench plays, measured (fsLab.level) */
-  var bus = null, meter = null;
+  var bus = null, meter = null, limReady = null;
   function audio() {
     if (!ctx) {
       ctx = new AudioContext();
       bus = ctx.createGain(); meter = ctx.createAnalyser(); meter.fftSize = 2048;
-      /* the master: x2 (+6 dB; Kerem 2026-10-01 "too low"), straight up to 0.8, then rounded into a 0.98 ceiling so
-         a loud chord or long overlapping tails never clip (a compressor node added its own make-up gain); the meter
-         reads what leaves */
-      var master = ctx.createWaveShaper(), curve = new Float32Array(4097);
-      for (var i = 0; i < curve.length; i++) {
-        var x = 2 * (2 * i / (curve.length - 1) - 1), m = Math.abs(x);
-        curve[i] = m <= 0.8 ? x : Math.sign(x) * (0.8 + 0.18 * Math.tanh((m - 0.8) / 0.18));
-      }
-      master.curve = curve; master.oversample = "4x";
-      bus.connect(master); master.connect(meter); master.connect(ctx.destination);
+      /* the master: x2 (+6 dB; Kerem 2026-10-01 "too low") and a 5 ms look-ahead limiter to -1 dBFS (core-worklet.js
+         fs-limiter; Kerem 2026-10-02 heard clicks and clips where an oversampled curve rang past full scale). Until the
+         module loads, a plain x2 stands in; the meter reads what leaves */
+      var x2 = ctx.createGain(); x2.gain.value = 2;
+      bus.connect(x2); x2.connect(meter); x2.connect(ctx.destination);
+      limReady = ctx.audioWorklet.addModule("web/core-worklet.js?v=" + Date.now()).then(function () {
+        var lim = new AudioWorkletNode(ctx, "fs-limiter", { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2] });
+        bus.connect(lim); lim.connect(meter); lim.connect(ctx.destination);
+        bus.disconnect(x2); x2.disconnect();
+      });
     }
     if (ctx.state === "suspended") { ctx.resume(); }
     return ctx;
@@ -418,5 +418,13 @@
     now: function () { return ctx ? ctx.currentTime : 0; },
     voices: function () { return last.map(function (v) { return { start: v.start, stopAt: v.stopAt, offset: v.offset, hz: v.hz }; }); },
     setSynth: setSynth, get engineReady() { return engineReady || Promise.resolve(); },
-    created: measureCreated };
+    created: measureCreated,
+    /* the engine's own timing: blocks over their time (underruns) and the slowest, in whole ms on the web */
+    stats: function () {
+      if (!node) { return Promise.resolve(null); }
+      return new Promise(function (res) {
+        var h = function (e) { if (e.data && e.data.type === "stats") { node.port.removeEventListener("message", h); res(e.data); } };
+        node.port.addEventListener("message", h); node.port.start(); node.port.postMessage({ type: "stats" });
+      });
+    } };
 })();

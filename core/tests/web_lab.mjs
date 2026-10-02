@@ -233,6 +233,19 @@ try {
   const fl = await ev("(document.querySelector('#lab-colour-label') || {}).textContent || ''");
   check("Colour reads Partial 5 for the Formant at 0.27", /Partial 5/.test(fl), fl);
   await ev("(function(){ var s = document.querySelector('#lab-colour'); s.value = '0.5'; s.dispatchEvent(new Event('input')); return 1; })()");
+  /* Kerem 2026-10-02: "clicks and clips ... chord and progression with release full and overtones full" - the master's
+     oversampled curve rang past full scale (output peaks 1.14, measured): a dense Dry progression never passes -1 dBFS */
+  await ev("fsLab.setSynth('harmonic'), fsLab.engineReady");
+  await ev("(function(){ var s = document.querySelector('#lab-method'); s.value = '1'; s.dispatchEvent(new Event('change')); return 1; })()");
+  await ev("(function(){ var s = document.querySelector('#lab-colour'); s.value = '1'; s.dispatchEvent(new Event('input')); s = document.querySelector('#lab-release'); s.value = '10'; s.dispatchEvent(new Event('input')); return 1; })()");
+  await ev(`fsLab.load(${NOISE}).then(function () { return 1; })`);
+  await ev("fsLab.play('progression', { tuning: 'just' }), 0");
+  let lpk = 0; for (let i = 0; i < 40; i++) { await sleep(200); lpk = Math.max(lpk, await ev("fsLab.peakOut()")); }
+  const lst = await ev("fsLab.stats()");
+  await ev("fsLab.stop()");
+  check("a dense progression (Release 10 s, Overtones full) never passes -1 dBFS at the output", lpk > 0.3 && lpk <= 0.892, lpk);
+  check("... and the engine keeps time (no block over its time)", lst && lst.underruns === 0, lst);
+  await ev("(function(){ var s = document.querySelector('#lab-release'); s.value = '0.6'; s.dispatchEvent(new Event('input')); s = document.querySelector('#lab-colour'); s.value = '0.5'; s.dispatchEvent(new Event('input')); s = document.querySelector('#lab-method'); s.value = '0'; s.dispatchEvent(new Event('change')); return 1; })()");
   await ev("(function(){ var s = document.querySelector('#lab-mode'); s.value = '0'; s.dispatchEvent(new Event('change')); return 1; })()");
   await ev("fsLab.setSynth('retune'), 0");
   check("no page errors", errors.length === 0, errors);
