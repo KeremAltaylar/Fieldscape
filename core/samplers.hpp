@@ -51,6 +51,18 @@ inline double solve_ap(double want, double w) {
     return 0.5 * (lo + hi);
 }
 
+static const int PARTIALS = 24;
+/* partial n's weight (2b spec, Colour): the Harmonic filter's overtone balance n^-(2 - 2 Colour), or the Formant's peak
+   on partial 1 + 15 Colour, a raised-cosine bump 1 + 3 (1 - Focus) partials wide each side over a -24 dB floor */
+inline double partial_weight(int synth, int n, double colour, double focus) {
+    colour = std::fmin(1.0, std::fmax(0.0, colour)); focus = std::fmin(1.0, std::fmax(0.0, focus));
+    if (synth == HARMONIC) return std::pow((double)n, -(2 - 2 * colour));
+    const double p = 1 + 15 * colour, h = 1 + 3 * (1 - focus), d = std::fabs(n - p);
+    return 0.063 + (1 - 0.063) * (d < h ? 0.5 + 0.5 * std::cos(PI * d / h) : 0);
+}
+/* a partial's bandwidth in Hz: Dry never narrower than a 30 ms decay (60 dB in 2.2 / B s); Ringing from T60 */
+inline double band_hz(int mode, double f, double focus, double T60) { return mode == RINGING ? 2.2 / T60 : std::fmax(73.0, 0.5 * f * (1 - focus)); }
+
 struct Voice {
     bool active = false, started = false, releasing = false, stealing = false;
     double f = 0, on_t = 0, off_t = 1e300; double vel = 0;
@@ -65,6 +77,8 @@ struct Voice {
     int modes = 0; double b0[4] = {}, a1[4] = {}, a2[4] = {}, y1[4] = {}, y2[4] = {}, wt[4] = {};
     double dc_x = 0, dc_y = 0, lx = 0, ly = 0, g60 = 0, rin = 0, rout = 0, agc = 1;
     int body = 0, excite = 0, synth = 0, method = 0, mode = 0;    /* the note's own: a later change is the next note's */
+    int np = 0; double pb0[PARTIALS] = {}, pa1[PARTIALS] = {}, pa2[PARTIALS] = {}, py1[PARTIALS] = {}, py2[PARTIALS] = {}, pw[PARTIALS] = {};
+    double px1 = 0, px2 = 0;                                      /* the bank's shared input history */
 };
 
 struct Resonator : tone::Synth {
@@ -105,6 +119,7 @@ struct Resonator : tone::Synth {
            every register without swallowing the fundamental - a fixed filter killed high notes in milliseconds */
         const double col = std::fmin(1.0, std::fmax(0.0, colour));
         x.a = col >= 0.999 ? 0 : std::exp(-2 * PI * std::fmin(f * (1.5 + 30 * col * col), 0.45 * sr) / sr);
+        if (synth != RESONATE) { start_partials(x, f, T); return; }
         if (body == BELL) {
             x.modes = 0;
             const double cw = 0.15 + 0.85 * colour;                  /* Colour: how strongly the upper modes speak */
@@ -136,6 +151,57 @@ struct Resonator : tone::Synth {
         }
     }
 
+    /* Harmonic filter / Formant (2b): the engines' state, and the level expected for a white input, so the slow level
+       matching starts close (no swell while it settles) */
+    void start_partials(Voice &x, double f, double T) {
+        const double B = band_hz(x.mode, f, focus, T);
+        double G = 0; x.np = 0;
+        if (x.method == BANK) {
+            /* a true band-pass (zeros at DC and Nyquist, peak 0 dB, 3 dB width B): an all-pole one as wide as a Dry band
+               left a floor under the fundamental only 4 dB down at 100 Hz (220 Hz note, measured) */
+            x.px1 = x.px2 = 0;
+            double fc[PARTIALS];
+            auto coef = [&](int k) {
+                const double wc = 2 * PI * fc[k] / sr, al = std::sin(wc) * B / (2 * fc[k]);
+                x.pb0[k] = al / (1 + al); x.pa1[k] = -2 * std::cos(wc) / (1 + al); x.pa2[k] = (1 - al) / (1 + al);
+            };
+            for (int n = 1; n <= PARTIALS && n * f < 0.45 * sr; n++, x.np++) {
+                const int k = x.np; fc[k] = n * f; coef(k);
+                x.py1[k] = x.py2[k] = 0; x.pw[k] = partial_weight(x.synth, n, colour, focus);
+                G += x.pw[k] * x.pw[k] * PI * B / sr;              /* a peak-1 band of width B passes pi B / sr of white power */
+            }
+            /* Neighbouring bands' skirts add a quarter-cycle out of phase and pull the summed peak off the partial (a
+               220 Hz Dry fundamental peaked 24 cents sharp, measured): each band's centre is nudged until the sum
+               peaks on n f - three passes of a parabola on the summed response */
+            auto lmag = [&](double fq) {
+                const std::complex<double> z1 = std::polar(1.0, -2 * PI * fq / sr), z2 = z1 * z1; std::complex<double> h = 0;
+                for (int k = 0; k < x.np; k++) h += x.pw[k] * x.pb0[k] * (1.0 - z2) / (1.0 + x.pa1[k] * z1 + x.pa2[k] * z2);
+                return std::log(std::norm(h) + 1e-300);
+            };
+            for (int it = 0; it < 5; it++)
+                for (int k = 0; k < x.np; k++) {
+                    const double fn = (k + 1) * f, d = std::fmax(0.02, 0.01 * B), lo = lmag(fn - d), mid = lmag(fn), hi = lmag(fn + d), den = lo - 2 * mid + hi;
+                    if (den < 0) { fc[k] -= 0.5 * (lo - hi) / den * d; coef(k); }
+                }
+            /* bands that overlap (B > f / 4: low Dry notes) add up: their white-noise gain is measured on the summed
+               response, not assumed - a 5 Hz Dry note started ~24x too loud (measured) */
+            if (B > 0.25 * f) {
+                G = 0; const double step = B / 8, top = std::fmin(0.5 * sr, (x.np + 2) * f + 4 * B);
+                for (double q = step / 2; q < top; q += step) G += std::exp(lmag(q)) * step / (0.5 * sr);
+            }
+        }
+        x.agc = G > 0 ? std::fmin(1000.0, 1 / std::sqrt(G)) : 1;
+    }
+    double bank(Voice &x, double in) {
+        double y = 0; const double dx = in - x.px2; x.px2 = x.px1; x.px1 = in;
+        for (int k = 0; k < x.np; k++) {
+            double o = x.pb0[k] * dx - x.pa1[k] * x.py1[k] - x.pa2[k] * x.py2[k];
+            if (std::fabs(o) < 1e-20) o = 0;
+            x.py2[k] = x.py1[k]; x.py1[k] = o; y += x.pw[k] * o;
+        }
+        return y;
+    }
+
     void attack(double f, double t, double vel) override {
         int q = -1;
         for (int i = 0; i < VOICES; i++) if (!v[i].active) { q = i; break; }
@@ -160,6 +226,7 @@ struct Resonator : tone::Synth {
     void stop_all() { for (auto &x : v) if (x.active) { x.stealing = true; x.has_next = false; x.steal_at = 0; x.fade = 1.0 / (STOP_S * sr); } }
 
     double resonate(Voice &x, double in) {
+        if (x.synth != RESONATE) return bank(x, in);
         if (x.body == BELL) {
             double y = 0;
             for (int k = 0; k < x.modes; k++) {
@@ -184,7 +251,7 @@ struct Resonator : tone::Synth {
            pi/2 x a straight line's, so the shortest attack is 8 ms - no steeper than the old 5 ms line (A-2) */
         const double up = 1.0 / (std::fmax(0.008, att) * sr);
         const double kr = std::pow(1e-4, 1.0 / (std::fmax(0.03, rel) * sr)), ka = 1 - std::exp(-1.0 / (0.3 * sr));
-        const double kt = 1 - std::exp(-1.0 / (0.01 * sr));
+        const double kt = 1 - std::exp(-1.0 / (0.01 * sr)), ks = 1 - std::exp(-1.0 / (3.0 * sr));
         if (tune_s < 0) tune_s = tune;
         std::vector<double> &tu = tune_buf; tu.resize((size_t)n);
         for (int i = 0; i < n; i++) { tune_s += (tune - tune_s) * kt; if (std::fabs(tune - tune_s) < 1e-9) tune_s = tune; tu[(size_t)i] = tune_s; }
@@ -205,17 +272,19 @@ struct Resonator : tone::Synth {
                 } else if (x.releasing) { x.env *= kr; if (x.env < 1e-4) { if (x.has_next) { x.env = 0; x.steal_at = 0; continue; } x.active = false; break; } }
                 else if (x.aph < 1) { x.aph = std::fmin(1.0, x.aph + up); x.env = 0.5 - 0.5 * std::cos(PI * x.aph); }
                 const double in = src.at(x.pos++);
+                const bool part = x.synth != RESONATE;
                 double exc = in;
-                if (x.excite == PLUCKED) { exc = x.burst < x.burst_len ? in * 0.5 * (1 - std::cos(2 * PI * x.burst / x.burst_len)) : 0; x.burst++; }
+                if (!part && x.excite == PLUCKED) { exc = x.burst < x.burst_len ? in * 0.5 * (1 - std::cos(2 * PI * x.burst / x.burst_len)) : 0; x.burst++; }
                 /* bowed noise through a feedback loop gains 1 / (1 - g^2) in power: fed through sqrt(1 - g^2), the
                    loop's level starts near the recording's and the automatic gain below only fine-tunes it */
-                double wet = resonate(x, x.excite == BOWED && x.body != BELL ? exc * std::sqrt(std::fmax(0.0, 1 - x.g60 * x.g60)) : exc);
-                if (x.excite == BOWED) {                              /* the bowed level follows the recording's */
-                    x.rin += (exc * exc - x.rin) * ka; x.rout += (wet * wet - x.rout) * ka;
+                double wet = resonate(x, !part && x.excite == BOWED && x.body != BELL ? exc * std::sqrt(std::fmax(0.0, 1 - x.g60 * x.g60)) : exc);
+                if (part || x.excite == BOWED) {                      /* the bowed level follows the recording's */
+                    const double k = part ? ks : ka;                 /* partial synths: 3 s, so gusts keep their shape */
+                    x.rin += (exc * exc - x.rin) * k; x.rout += (wet * wet - x.rout) * k;
                     /* only while the recording sounds: silence is never boosted (up to 1000x - a bowed Bell or Tube keeps
                        a small share of broadband energy). The loop is linear, so the gain asked for is the same at any
                        input level: a quiet passage does not wind it up (measured: no swell when loud returns). */
-                    if (x.rin > 1e-10) { double tgt = x.rout > 1e-14 ? std::fmin(1000.0, std::sqrt(x.rin / x.rout)) : 1; x.agc += (tgt - x.agc) * ka; }
+                    if (x.rin > 1e-10) { double tgt = x.rout > 1e-14 ? std::fmin(1000.0, std::sqrt(x.rin / x.rout)) : 1; if (!part || x.rout > 1e-14) x.agc += (tgt - x.agc) * k; }
                     wet *= x.agc;
                 }
                 const double o = x.env * x.vel * vol * ((1 - tu[(size_t)i]) * exc + tu[(size_t)i] * wet);

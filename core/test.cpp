@@ -85,6 +85,34 @@ static double peak_near(const std::vector<float> &x, double sr, double f, double
     double a = std::log(mag(pk - 1)), c = std::log(mag(pk)), d = std::log(mag(pk + 1)), den = a - 2 * c + d;
     return (pk + (den != 0 ? 0.5 * (a - d) / den : 0)) * sr / N;
 }
+/* the peak of a response to an impulse repeating every 65536 samples: the last period's exact (unwindowed) spectrum,
+   scanned then narrowed - a Hann window and a 3-bin fit read a 73 Hz-wide Dry peak 1.7 cents off (the true peak, by a
+   0.01 Hz scan, sat on the note) */
+static double periodic_peak(const std::vector<float> &x, double sr, double f, double span) {
+    const size_t N = 65536, s0 = x.size() - N;
+    auto mag = [&](double fq) { double re = 0, im = 0; for (size_t i = 0; i < N; i++) { double ph = 2 * 3.141592653589793 * fq * i / sr; re += x[s0 + i] * std::cos(ph); im += x[s0 + i] * std::sin(ph); } return re * re + im * im; };
+    double step = std::fmax(0.25, f * span / 40), bf = f * (1 - span), bm = -1;
+    for (double q = f * (1 - span); q <= f * (1 + span); q += step) { double m = mag(q); if (m > bm) { bm = m; bf = q; } }
+    double lo = bf - step, hi = bf + step;
+    for (int i = 0; i < 40; i++) { double a = lo + (hi - lo) * 0.382, b = lo + (hi - lo) * 0.618; if (mag(a) > mag(b)) hi = b; else lo = a; }
+    return 0.5 * (lo + hi);
+}
+/* the Hann-windowed DFT magnitude at f over all of x (one window) */
+static double peak_amp(const std::vector<float> &x, double sr, double f) {
+    double re = 0, im = 0; const size_t N = x.size();
+    for (size_t i = 0; i < N; i++) { double w = 0.5 - 0.5 * std::cos(2 * 3.141592653589793 * i / N), ph = 2 * 3.141592653589793 * f * i / sr; re += x[i] * w * std::cos(ph); im += x[i] * w * std::sin(ph); }
+    return std::sqrt(re * re + im * im) / N + 1e-30;
+}
+static std::vector<float> part_render(int synth, int method, int mode, double focus, double colour, double tune, double f,
+                                      double secs, const std::vector<float> &src, double off_at = 1e300) {
+    sampler::Resonator r; r.init(48000);
+    r.synth = synth; r.method = method; r.mode = mode; r.focus = focus; r.colour = colour; r.tune = tune; r.att = 0.02; r.rel = 0.03;
+    const float *p[1] = { src.data() }; r.set_source(1, (long long)src.size(), p);
+    r.attack(f, 0.0, 0.5); r.release(off_at);
+    std::vector<float> L((size_t)(secs * 48000), 0.0f), R(L.size(), 0.0f);
+    for (size_t i = 0; i < L.size(); i += 128) r.render(L.data() + i, R.data() + i, (int)std::min<size_t>(128, L.size() - i), i / 48000.0);
+    return L;
+}
 /* A bowed (noise-driven) resonance's centre: one spectrum of it wanders +-7 cents with the noise (measured
    2026-09-30), so power spectra of 65536-point Hann windows are averaged over the last `secs` seconds
    (half-overlapped), then the power-weighted mean frequency within 0.5% of the peak is taken. */
@@ -1219,6 +1247,115 @@ int main() {
         r.attack(220, 0, 0.5); std::vector<float> a(12000, 0.0f), c(12000, 0.0f); r.render(a.data(), c.data(), 12000, 0);
         std::printf("resonator attack: a quarter in at %.3f of full\n", r.v[0].env);
         assert(r.v[0].env > 0.13 && r.v[0].env < 0.16);
+    }
+    {   /* 2b: the Harmonic filter and the Formant, every method in `methods` (spec "How we know it works") */
+        const int methods[] = { sampler::BANK };
+        const std::vector<float> wind = noise_src(16, 0.5f, 101);
+        std::vector<float> clicks(65536, 0.0f); clicks[0] = 0.5f;          /* a repeating impulse: the response's exact peak */
+        std::vector<float> gust(48000 * 6, 0.0f); for (size_t i = 0; i < 48000 * 3; i++) gust[i] = wind[i];   /* 3 s, then silence */
+        auto rms = [](const std::vector<float> &x, double a, double z) { double e = 0; size_t i0 = (size_t)(a * 48000), i1 = (size_t)(z * 48000); for (size_t i = i0; i < i1; i++) e += (double)x[i] * x[i]; return 10 * std::log10(e / (i1 - i0) + 1e-30); };
+        for (int m : methods) {
+            const double tol = m == sampler::COMB ? 3 : 1;
+            for (int syn : { sampler::HARMONIC, sampler::FORMANT }) {
+                /* pitch: the peak of the response to a repeating impulse (a noise band 73 Hz wide has no 1-cent pitch for
+                   8 s of noise to pin down; its peak does). Ringing from 55 Hz, Dry from 220 Hz (closer partials blur) */
+                double worst = 0; double wf = 0; int wmode = 0;
+                for (int mode : { sampler::DRY, sampler::RINGING })
+                    for (double f : { 55.0, 110.0, 220.0, 440.0, 880.0, 1760.0, 3520.0 }) {
+                        if (mode == sampler::DRY && f < 220) continue;
+                        std::vector<float> o = part_render(syn, m, mode, 0.9, syn == sampler::FORMANT ? 0.0 : 0.5, 1, f, 65536 * 4 / 48000.0, clicks);
+                        double got = periodic_peak(o, 48000, f, 0.03);
+                        double e = std::fabs(1200 * std::log2(got / f)); if (e > worst) { worst = e; wf = f; wmode = mode; }
+                    }
+                std::printf("2b method %d synth %d: worst pitch error %.2f cents (%.0f Hz, mode %d)\n", m, syn, worst, wf, wmode);
+                assert(worst <= tol);
+                /* Dry follows the recording: down 60 dB within 30 ms (Spectral: one frame, 43 ms) of silence */
+                std::vector<float> d = part_render(syn, m, sampler::DRY, 1.0, 0.5, 1, 440, 5, gust);
+                const double lim = m == sampler::SPECTRAL ? 0.043 : 0.030, drop = rms(d, 2.5, 3.0) - rms(d, 3.0 + lim, 3.0 + lim + 0.01);
+                std::printf("2b method %d synth %d: Dry down %.1f dB %.0f ms after the recording stops\n", m, syn, drop, lim * 1000);
+                assert(drop >= 60);
+                /* Ringing sustains its Focus T60 within 20 % */
+                std::vector<float> g = part_render(syn, m, sampler::RINGING, 0.5, 0.5, 1, 440, 6, gust);
+                std::vector<float> tail(g.begin() + 3 * 48000, g.end());
+                double t60 = t60_of(tail), want = sampler::Resonator::t60(0.5);
+                std::printf("2b method %d synth %d: Ringing T60 %.2f s (want %.2f)\n", m, syn, t60, want);
+                assert(std::fabs(t60 / want - 1) <= 0.2);
+                /* level within 1 dB of the recording, settled; and no swell at the onset (the first 3 s <= settled + 3 dB) */
+                for (int mode : { sampler::DRY, sampler::RINGING }) {
+                    std::vector<float> o = part_render(syn, m, mode, 0.7, 0.5, 1, 220, 15, wind), dry = part_render(syn, m, mode, 0.7, 0.5, 0, 220, 15, wind);
+                    double set = rms(o, 10, 14), ref = rms(dry, 10, 14), onset = -200;
+                    onset = rms(o, 0, 3);   /* as a whole: a 0.7 Hz-wide partial's level wanders +-2.5 dB second to second all through a note (measured), the gain only ~1 dB */
+                    std::printf("2b method %d synth %d mode %d: level %.2f dB vs the recording %.2f, onset peak %.2f\n", m, syn, mode, set, ref, onset);
+                    assert(std::fabs(set - ref) <= 1 && onset <= set + 3);
+                }
+            }
+            /* Harmonic filter: Colour 1 lifts partials 4-8 over the fundamental by >= 12 dB against Colour 0 */
+            auto lift = [&](double col) {
+                std::vector<float> o = part_render(sampler::HARMONIC, m, sampler::RINGING, 0.9, col, 1, 220, 10, wind);
+                std::vector<float> t(o.end() - 65536, o.end());
+                auto band = [&](double f) { return 20 * std::log10(peak_amp(t, 48000, f)); };
+                double hi = 0; for (int n = 4; n <= 8; n++) hi += band(220.0 * n) / 5;
+                return hi - band(220);
+            };
+            double l0 = lift(0), l1 = lift(1);
+            std::printf("2b method %d: Harmonic filter partials 4-8 vs fundamental %.1f dB at Colour 0, %.1f at 1\n", m, l0, l1);
+            assert(l1 - l0 >= 12);
+            /* Formant: among partials 2-16 the loudest is the one Colour names (+-1) */
+            int ok = 0;
+            for (int want : { 3, 6, 10, 14 }) {
+                std::vector<float> o = part_render(sampler::FORMANT, m, sampler::RINGING, 0.9, (want - 1) / 15.0, 1, 110, 10, wind);
+                std::vector<float> t(o.end() - 65536, o.end()); int best = 2;
+                for (int n = 2; n <= 16; n++) if (peak_amp(t, 48000, 110.0 * n) > peak_amp(t, 48000, 110.0 * best)) best = n;
+                ok += std::abs(best - want) <= 1;
+            }
+            std::printf("2b method %d: Formant peak on the named partial %d/4\n", m, ok);
+            assert(ok == 4);
+        }
+    }
+    {   /* 2b: a Synth / Method / Mode / Focus / Colour change while a note sounds touches only the next note (bit-identical) */
+        const std::vector<float> wind = noise_src(4, 0.5f, 7); const float *wp[1] = { wind.data() };
+        auto run = [&](bool change) {
+            sampler::Resonator r; r.init(48000); r.set_source(1, (long long)wind.size(), wp);
+            r.synth = sampler::FORMANT; r.method = sampler::BANK; r.mode = sampler::RINGING; r.focus = 0.8; r.colour = 0.4;
+            r.attack(220, 0, 0.5); std::vector<float> a(48000 * 2, 0.0f), b(a.size(), 0.0f);
+            for (size_t i = 0; i < a.size(); i += 128) {
+                if (change && i == 48000) { r.synth = sampler::HARMONIC; r.method = sampler::COMB; r.mode = sampler::DRY; r.focus = 0.1; r.colour = 0.9; }
+                r.render(a.data() + i, b.data() + i, 128, i / 48000.0);
+            }
+            return a;
+        };
+        assert(run(false) == run(true));
+        /* stability: every partial synth x mode x Colour, extreme and ordinary notes, Focus 1, full-scale noise */
+        const std::vector<float> loud = noise_src(2, 1.0f, 9);
+        int bad = 0;
+        for (int m : { sampler::BANK }) for (int syn : { sampler::HARMONIC, sampler::FORMANT }) for (int mode : { sampler::DRY, sampler::RINGING })
+            for (double col : { 0.0, 0.5, 1.0 }) for (double f : { 5.0, 55.0, 3500.0, 12000.0 }) {
+                std::vector<float> o = part_render(syn, m, mode, 1, col, 1, f, 2, loud);
+                double mx = 0; bool fin = true; for (float v : o) { fin = fin && std::isfinite(v); mx = std::max(mx, (double)std::fabs(v)); }
+                if (!fin || mx >= 4) { std::printf("  2b runaway: method %d synth %d mode %d colour %.1f %.0f Hz: peak %.3g\n", m, syn, mode, col, f, mx); bad++; }
+            }
+        std::printf("2b stability sweep: %d runaways\n", bad);
+        assert(bad == 0);
+        /* budget: 24 voices of each method inside one 128-sample block's budget */
+#ifdef FS_TEST_O1
+        const double slack = 1.5;
+#else
+        const double slack = 1;
+#endif
+        for (int m : { sampler::BANK }) {
+            sampler::Resonator sp; sp.init(48000); sp.set_source(1, (long long)wind.size(), wp);
+            sp.synth = sampler::HARMONIC; sp.method = m; sp.mode = sampler::RINGING;
+            for (int k = 0; k < sampler::Resonator::VOICES; k++) sp.attack(55 * (k + 1), 0, 0.05);
+            std::vector<double> ms; std::vector<float> b1(128), b2(128);
+            for (int k = 0; k < (int)(10 * 48000 / 128); k++) {
+                std::fill(b1.begin(), b1.end(), 0.0f); std::fill(b2.begin(), b2.end(), 0.0f);
+                auto c0 = std::chrono::steady_clock::now(); sp.render(b1.data(), b2.data(), 128, k * 128 / 48000.0);
+                ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - c0).count());
+            }
+            std::sort(ms.begin(), ms.end());
+            std::printf("2b method %d: 24 voices, 99.9%% of blocks within %.3f ms (budget %.2f)\n", m, ms[(size_t)(ms.size() * 0.999)], 1.33 * slack);
+            assert(ms[(size_t)(ms.size() * 0.999)] < 1.33 * slack);
+        }
     }
     {   /* 2b guard: the Resonator renders exactly as in 2a (P5) - a hash of every body x excite */
         const std::vector<float> wind = noise_src(3, 0.5f, 77); const float *p[1] = { wind.data() };
