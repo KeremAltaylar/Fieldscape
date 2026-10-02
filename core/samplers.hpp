@@ -228,23 +228,38 @@ struct Resonator : tone::Synth {
                 G += x.pw[k] * x.pw[k] * PI * B / sr;              /* a peak-1 band of width B passes pi B / sr of white power */
             }
             /* Neighbouring bands' skirts add a quarter-cycle out of phase and pull the summed peak off the partial (a
-               220 Hz Dry fundamental peaked 24 cents sharp, measured): each band's centre is nudged until the sum
-               peaks on n f - three passes of a parabola on the summed response */
-            auto lmag = [&](double fq) {
-                const std::complex<double> z1 = std::polar(1.0, -2 * PI * fq / sr), z2 = z1 * z1; std::complex<double> h = 0;
-                for (int k = 0; k < x.np; k++) h += x.pw[k] * x.pb0[k] * (1.0 - z2) / (1.0 + x.pa1[k] * z1 + x.pa2[k] * z2);
-                return std::log(std::norm(h) + 1e-300);
-            };
-            for (int it = 0; it < 5; it++)
-                for (int k = 0; k < x.np; k++) {
-                    const double fn = (k + 1) * f, d = std::fmax(0.02, 0.01 * B), lo = lmag(fn - d), mid = lmag(fn), hi = lmag(fn + d), den = lo - 2 * mid + hi;
-                    if (den < 0) { fc[k] -= 0.5 * (lo - hi) / den * d; coef(k); }
+               220 Hz Dry fundamental peaked 24 cents sharp, measured): each band's centre is nudged until the sum peaks
+               on n f - a parabola on the summed response, near bands only. Bounded (final review #1: where the sum is
+               flat the step was unbounded, centres flew past Nyquist and the bands blew up): each step <= B / 4, the
+               whole nudge <= B / 2, bands under 5 % of the loudest left alone. Cheap at a note start (review #2):
+               five passes, neighbours within 10 B + 2 f; narrow Ringing bands (B < f / 50) pull too little to need it. */
+            double wmax = 0; for (int k = 0; k < x.np; k++) wmax = std::fmax(wmax, x.pw[k]);
+            auto lmag = [&](double fq) {                                /* complex arithmetic by hand: std::complex division is a
+                                                                           slow library call in wasm (review #2) */
+                const double w = 2 * PI * fq / sr, c1 = std::cos(w), s1 = -std::sin(w), c2 = c1 * c1 - s1 * s1, s2 = 2 * c1 * s1;
+                const double nr = 1 - c2, ni = -s2; double hr = 0, hi = 0;
+                for (int k = 0; k < x.np; k++) if (std::fabs(fc[k] - fq) < 10 * B + 2 * f) {
+                    const double dr = 1 + x.pa1[k] * c1 + x.pa2[k] * c2, di = x.pa1[k] * s1 + x.pa2[k] * s2, g = x.pw[k] * x.pb0[k] / (dr * dr + di * di);
+                    hr += g * (nr * dr + ni * di); hi += g * (ni * dr - nr * di);
                 }
-            /* bands that overlap (B > f / 4: low Dry notes) add up: their white-noise gain is measured on the summed
-               response, not assumed - a 5 Hz Dry note started ~24x too loud (measured) */
+                return std::log(hr * hr + hi * hi + 1e-300);
+            };
+            if (B > f / 50)
+                for (int it = 0; it < 5; it++)
+                    for (int k = 0; k < x.np; k++) {
+                        if (x.pw[k] < 0.05 * wmax) continue;
+                        const double fn = (k + 1) * f, d = std::fmax(0.02, 0.01 * B), lo = lmag(fn - d), mid = lmag(fn), hi = lmag(fn + d), den = lo - 2 * mid + hi;
+                        if (!(den < 0)) continue;
+                        const double step = std::fmax(-0.25 * B, std::fmin(0.25 * B, -0.5 * (lo - hi) / den * d));
+                        fc[k] = std::fmin(0.49 * sr, std::fmax(0.5 * fn, std::fmax(fn - 0.5 * B, std::fmin(fn + 0.5 * B, fc[k] + step))));
+                        coef(k);
+                    }
+            /* bands that overlap (B > f / 4: low Dry notes) add up: two bands' shared white-noise power falls as
+               1 / (1 + (df / B)^2) (Lorentzians) - a closed form, not the integration review #2 found ~1 ms per note */
             if (B > 0.25 * f) {
-                G = 0; const double step = B / 8, top = std::fmin(0.5 * sr, (x.np + 2) * f + 4 * B);
-                for (double q = step / 2; q < top; q += step) G += std::exp(lmag(q)) * step / (0.5 * sr);
+                G = 0;
+                for (int i = 0; i < x.np; i++) for (int j = 0; j < x.np; j++) { const double r = (fc[i] - fc[j]) / B; G += x.pw[i] * x.pw[j] / (1 + r * r); }
+                G *= PI * B / sr;
             }
         }
         if (x.method == SPECTRAL) {
@@ -265,7 +280,10 @@ struct Resonator : tone::Synth {
             };
             build();
             for (int k = 0; k <= SPN / 2; k++) G += x.mask[k] * x.mask[k] / (SPN / 2);
-            x.sf = f; x.sk = 0; x.soff = (int)((&x - v) * SPH / VOICES); x.sd = std::pow(10.0, -3.0 * SPH / (sr * T));
+            /* frames on the global clock, voice k at k / 24 of the hop: keyed to the note's own start, voices whose starts lined
+               up all transformed in one block (final review #3: 4.36 ms). Reading ahead makes any phase valid. */
+            const long long s0 = (long long)std::ceil(x.on_t * sr - 1e-9);
+            x.sf = f; x.sk = 0; x.soff = (int)((((&x - v) * SPH / VOICES - s0) % SPH + SPH) % SPH); x.sd = std::pow(10.0, -3.0 * SPH / (sr * T));
             for (int n = 1; n <= npart; n++) { const double th = 2 * PI * n * f * SPH / sr; x.rotr[n] = x.sd * std::cos(th); x.roti[n] = x.sd * std::sin(th); }
         }
         if (x.method == COMB) {
@@ -273,11 +291,17 @@ struct Resonator : tone::Synth {
             /* the Formant's Colour places its peak, not a tilt: its comb runs open, a flat base as in the Bank and the
                Spectral (a dark comb under it pulled a 220 Hz note 12.9 cents flat, measured) */
             if (x.synth == FORMANT) x.a = 0;
-            if (x.mode == RINGING) { x.body = STRING; start_loop(x, f, T, false); G = 1; }   /* the 2a String; input scaled as bowed */
-            else {                                                      /* feed-forward: the recording plus itself one period later */
+            /* the white-noise power gain, as it is (final review #4: assumed 2 and 1, a Colour-filtered comb started up to
+               6 dB quiet and faded up for seconds) */
+            if (x.mode == RINGING) {                                    /* the 2a String; input scaled as bowed */
+                x.body = STRING; start_loop(x, f, T, false);
+                G = 0; const int K = 256;                               /* mean over frequency of 1 / (1 - |loop gain|^2) */
+                for (int k = 0; k < K; k++) { const double w = PI * (k + 0.5) / K, lg = x.g * lp_gain(x.a, w) * dc_gain(LOOP_R, w); G += 1 / std::fmax(1e-9, 1 - lg * lg); }
+                G *= (1 - x.g60 * x.g60) / K;
+            } else {                                                    /* feed-forward: the recording plus itself one period later */
                 const double w = 2 * PI * f / sr, P = sr / f, lpd = lp_delay(x.a, w);
                 int N = (int)std::floor(P - lpd - 0.2); N = std::max(1, std::min(N, (int)MASK - 2));
-                x.N = N; x.c = solve_ap(P - N - lpd, w); G = 2;
+                x.N = N; x.c = solve_ap(P - N - lpd, w); G = 1 + (1 - x.a) / (1 + x.a);   /* + a one-pole low-pass's noise gain */
             }
             if (x.synth == FORMANT) {                                   /* one peak, +18 dB, at the named partial */
                 const double fp = std::fmin((1 + 15 * colour) * f, 0.44 * sr), wp = 2 * PI * fp / sr;

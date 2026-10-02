@@ -1304,10 +1304,11 @@ int main() {
                 /* level within 1 dB of the recording, settled; and no swell at the onset (the first 3 s <= settled + 3 dB) */
                 for (int mode : { sampler::DRY, sampler::RINGING }) {
                     std::vector<float> o = part_render(syn, m, mode, 0.7, 0.5, 1, 220, 15, wind), dry = part_render(syn, m, mode, 0.7, 0.5, 0, 220, 15, wind);
-                    double set = rms(o, 10, 14), ref = rms(dry, 10, 14), onset = -200;
+                    double set = rms(o, 10, 14), ref = rms(dry, 10, 14), onset = -200, early = rms(o, 0.25, 2);
                     onset = rms(o, 0, 3);   /* as a whole: a 0.7 Hz-wide partial's level wanders +-2.5 dB second to second all through a note (measured), the gain only ~1 dB */
-                    std::printf("2b method %d synth %d mode %d: level %.2f dB vs the recording %.2f, onset peak %.2f\n", m, syn, mode, set, ref, onset);
-                    assert(std::fabs(set - ref) <= 1 && onset <= set + 3);
+                    std::printf("2b method %d synth %d mode %d: level %.2f dB vs the recording %.2f, onset peak %.2f, 0.25-2 s %.2f\n", m, syn, mode, set, ref, onset, early);
+                    /* final review #4: nor a fade-up - the first seconds within 2 dB under the settled level */
+                    assert(std::fabs(set - ref) <= 1 && onset <= set + 3 && early >= set - 2);
                 }
             }
             /* Harmonic filter: Colour 1 lifts partials 4-8 over the fundamental by >= 12 dB against Colour 0 */
@@ -1352,14 +1353,29 @@ int main() {
         /* stability: every partial synth x mode x Colour, extreme and ordinary notes, Focus 1, full-scale noise */
         const std::vector<float> loud = noise_src(2, 1.0f, 9);
         int bad = 0;
+        /* final review #1: every Focus and the low register (a Bank nudge diverged at 80-165 Hz, default settings) */
         for (int m : { sampler::BANK, sampler::SPECTRAL, sampler::COMB }) for (int syn : { sampler::HARMONIC, sampler::FORMANT }) for (int mode : { sampler::DRY, sampler::RINGING })
-            for (double col : { 0.0, 0.5, 1.0 }) for (double f : { 5.0, 55.0, 3500.0, 12000.0 }) {
-                std::vector<float> o = part_render(syn, m, mode, 1, col, 1, f, 2, loud);
+            for (double foc : { 0.0, 0.5, 1.0 }) for (double col : { 0.0, 0.5, 1.0 }) for (double f : { 5.0, 41.0, 80.0, 130.8, 3500.0, 12000.0 }) {
+                std::vector<float> o = part_render(syn, m, mode, foc, col, 1, f, 1, loud);
                 double mx = 0; bool fin = true; for (float v : o) { fin = fin && std::isfinite(v); mx = std::max(mx, (double)std::fabs(v)); }
                 if (!fin || mx >= 4) { std::printf("  2b runaway: method %d synth %d mode %d colour %.1f %.0f Hz: peak %.3g\n", m, syn, mode, col, f, mx); bad++; }
             }
         std::printf("2b stability sweep: %d runaways\n", bad);
         assert(bad == 0);
+        /* every Bank band on a fine grid: poles inside the unit circle, centre within (0, sr / 2) */
+        int badband = 0;
+        for (int syn : { sampler::HARMONIC, sampler::FORMANT }) for (int mode : { sampler::DRY, sampler::RINGING })
+            for (double foc = 0; foc <= 1.001; foc += 0.25) for (double col = 0; col <= 1.001; col += 0.25) for (double f = 30; f < 4000; f *= 1.07) {
+                sampler::Resonator r; r.init(48000); r.synth = syn; r.method = sampler::BANK; r.mode = mode; r.focus = foc; r.colour = col;
+                r.set_source(1, (long long)loud.size(), wp); r.attack(f, 0, 0.5);
+                const sampler::Voice &x = r.v[0];
+                for (int k = 0; k < x.np; k++) {
+                    const double cw = -x.pa1[k] / (1 + x.pa2[k]);          /* cos of the centre */
+                    if (!(x.pa2[k] >= 0 && x.pa2[k] < 1 && std::fabs(cw) < 1 && std::isfinite(x.agc))) { if (!badband) std::printf("  bad band: synth %d mode %d focus %.2f colour %.2f %.1f Hz partial %d\n", syn, mode, foc, col, f, k + 1); badband++; }
+                }
+            }
+        std::printf("2b bank grid: %d bad bands\n", badband);
+        assert(badband == 0);
         /* budget: 24 voices of each method inside one 128-sample block's budget */
 #ifdef FS_TEST_O1
         const double slack = 1.5;
@@ -1379,6 +1395,34 @@ int main() {
             std::sort(ms.begin(), ms.end());
             std::printf("2b method %d: 24 voices, 99.9%% of blocks within %.3f ms (budget %.2f)\n", m, ms[(size_t)(ms.size() * 0.999)], 1.33 * slack);
             assert(ms[(size_t)(ms.size() * 0.999)] < 1.33 * slack);
+            /* final review #2: low Dry chords starting - 8 notes at once, the starts timed with their block */
+            sampler::Resonator st; st.init(48000); st.set_source(1, (long long)wind.size(), wp);
+            st.synth = sampler::HARMONIC; st.method = m; st.mode = sampler::DRY; st.focus = 0.5;
+            double worst = 0;
+            for (int c = 0; c < 12; c++) {
+                const double t = c * 0.5; std::vector<float> b1(128, 0.0f), b2(128, 0.0f);
+                auto c0 = std::chrono::steady_clock::now();
+                for (int k = 0; k < 8; k++) { st.attack(55 * std::pow(2.0, (k + c % 3) / 7.0), t, 0.1); st.release(t + 0.4); }
+                st.render(b1.data(), b2.data(), 128, t);
+                worst = std::max(worst, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - c0).count());
+                for (int i = 1; i < (int)(0.5 * 48000 / 128); i++) st.render(b1.data(), b2.data(), 128, t + i * 128 / 48000.0);
+            }
+            std::printf("2b method %d: a low 8-note Dry chord starting, worst block %.3f ms (budget %.2f)\n", m, worst, 1.33 * slack);
+            assert(worst < 1.33 * slack);
+            /* final review #3: 24 voices whose start times line their frames up (voice k starting k x 512 / 24 samples in - steals at
+               arbitrary times can land like this) still spread their frames */
+            sampler::Resonator sc; sc.init(48000); sc.set_source(1, (long long)wind.size(), wp);
+            sc.synth = sampler::HARMONIC; sc.method = m; sc.mode = sampler::RINGING;
+            for (int k = 0; k < sampler::Resonator::VOICES; k++) sc.attack(55 * (k + 1), (k * sampler::SPH / sampler::Resonator::VOICES) / 48000.0, 0.05);
+            std::vector<double> ms2; std::vector<float> c1(128), c2(128);
+            for (int k = 0; k < (int)(6 * 48000 / 128); k++) {
+                std::fill(c1.begin(), c1.end(), 0.0f);
+                auto c0 = std::chrono::steady_clock::now(); sc.render(c1.data(), c2.data(), 128, k * 128 / 48000.0);
+                if (k * 128 > 48000 / 2) ms2.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - c0).count());
+            }
+            std::sort(ms2.begin(), ms2.end());
+            std::printf("2b method %d: 24 voices started apart, 99.9%% of blocks within %.3f ms\n", m, ms2[(size_t)(ms2.size() * 0.999)]);
+            assert(ms2[(size_t)(ms2.size() * 0.999)] < 1.33 * slack);
         }
     }
     {   /* 2b guard: the Resonator renders exactly as in 2a (P5) - a hash of every body x excite */
