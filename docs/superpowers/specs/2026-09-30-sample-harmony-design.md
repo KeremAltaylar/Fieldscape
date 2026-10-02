@@ -233,3 +233,21 @@ What the session found, and what changed because of it:
 **Verdict (Kerem):** *"this works well — pitch is nicely adjusted for a pitched sound file; this version
 and test works great."* The harmony core's retuning of pitched material is accepted as the base for the
 synths. Next: sub-project 2, the non-pitch sampler (resonator first), heard on the same bench.
+
+### Session 2a — 2026-10-01, the Resonator (lab2 on a private claude.ai page), Kerem on a phone
+
+Material: Kerem's own recordings, away from home; the Resonator beside Retune on the same bench.
+
+What the session found, and what changed because of it:
+- The page could not load its engine or routes inside claude.ai's sandbox ("Failed to fetch") → lab2 carries
+  the engine embedded and plays the default progression when routes are unreachable.
+- Kerem asked whether the pitches come only from the recording → yes: the recording is the only input; the
+  loop or the Bell's filters keep the frequencies of it that fit the note (a pitch the recording lacks
+  comes out weak). Accepted as the principle.
+- "In progression the chord changes are abrupt ... I want smooth cloudy transitions when release is longer
+  than the note" → six voices cut a releasing chord in 5 ms (an 11 dB drop in 20 ms): 24 voices, a 50 ms
+  steal fade, an S-curve attack in both synths, Attack to 4 s and Release to 10 s (a change now dips 0.2-0.9 dB).
+- "Increase the master output twice, it is too low" → x2 (+6 dB) into a soft 0.98 ceiling.
+
+**Verdict (Kerem):** *"this works"*, *"it's working good"*. The Resonator is accepted as the first
+non-pitch mechanism. Next: 2b, the Harmonic filter and the Formant, heard on the same bench.
