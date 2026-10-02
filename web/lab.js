@@ -204,7 +204,7 @@
     stop(); last = [];
     var c = audio(), t = c.currentTime + 0.05, step = opts.step != null ? opts.step : +$("#lab-step").value || 0;
     var chord = prog.chords[step], beat = 60 / prog.tempo, hz = [], rates = [];
-    if (synth === "resonator") { return playResonator(kind, c, t, chord, beat); }
+    if (synth in ENGINE) { return playResonator(kind, c, t, chord, beat); }
     if (kind === "note") { hz = [chord.hz[0]]; }
     else if (kind === "chord") { hz = chord.hz.slice(); }
     else if (kind === "scale") { hz = chord.scale_hz.slice(); }
@@ -226,7 +226,12 @@
 
   /* The Resonator runs in the engine (2a spec R4): the lab's wasm, device "bench", in an AudioWorklet. An
      unpitched recording has no pitch to centre on, so notes sound at the chord's written register (plus Octave). */
-  var P_BODY = 0, P_EXCITE = 1, P_FOCUS = 2, P_COLOUR = 3, P_TUNE = 4, P_ATTACK = 5, P_RELEASE = 6, P_OFFSET = 7;
+  var P_BODY = 0, P_EXCITE = 1, P_FOCUS = 2, P_COLOUR = 3, P_TUNE = 4, P_ATTACK = 5, P_RELEASE = 6, P_OFFSET = 7, P_SYNTH = 8, P_METHOD = 9, P_MODE = 10;
+  var ENGINE = { resonator: 0, harmonic: 1, formant: 2 };          /* the synths on the engine, by the bench's "synth" */
+  /* Colour says what it does: the Harmonic filter's overtone balance, the Formant's peak partial (2b spec) */
+  function colourLabel() {
+    $("#lab-colour-label").textContent = synth === "harmonic" ? "Overtones" : synth === "formant" ? "Partial " + Math.round(1 + 15 * +$("#lab-colour").value) : "Colour";
+  }
   function ensureEngine() {
     if (engineReady) { return engineReady; }
     var c = audio();
@@ -242,7 +247,8 @@
     if (!node) { return; }
     [[P_BODY, +$("#lab-body").value], [P_EXCITE, +$("#lab-excite").value], [P_FOCUS, +$("#lab-focus").value],
      [P_COLOUR, +$("#lab-colour").value], [P_TUNE, +$("#lab-tune").value], [P_ATTACK, Math.max(0.008, +$("#lab-attack").value)],
-     [P_RELEASE, Math.max(0.03, +$("#lab-release").value)], [P_OFFSET, loudAt]].forEach(function (pv) { node.port.postMessage(pv); });
+     [P_RELEASE, Math.max(0.03, +$("#lab-release").value)], [P_OFFSET, loudAt], [P_SYNTH, ENGINE[synth] || 0],
+     [P_METHOD, +$("#lab-method").value], [P_MODE, +$("#lab-mode").value]].forEach(function (pv) { node.port.postMessage(pv); });
   }
   function sendSource() {
     if (!node || !buffer) { return; }
@@ -250,8 +256,9 @@
     node.port.postMessage({ type: "source", channels: ch });
   }
   function setSynth(s) {
-    synth = s; $("#lab-synth").value = s; $("#lab-res").hidden = s !== "resonator";
-    if (s === "resonator") { ensureEngine(); }
+    synth = s; $("#lab-synth").value = s;
+    var eng = s in ENGINE; $("#lab-np").hidden = !eng; $("#lab-res").hidden = s !== "resonator"; $("#lab-part").hidden = !(s === "harmonic" || s === "formant");
+    colourLabel(); if (eng) { ensureEngine().then(sendParams); }
     gate();
   }
   function playResonator(kind, c, t, chord, beat) {
@@ -324,9 +331,9 @@
      2026-09-30: "I can not click to note scale chord progression buttons" - they looked ready and did
      nothing before a file, or with a file that has no pitch). */
   function gate() {
-    var why = !prog ? "Routes are still loading." : !analysis ? (synth === "resonator" ? "Load a recording first." : "Load a pitched recording first.") :
-      synth === "resonator" && !node ? "Starting the engine…" :
-      !(analysis.f0 > 0) && synth === "retune" ? "This recording is unpitched: Retune has no pitch to move. Choose Synth → Resonator to play it." : "";
+    var why = !prog ? "Routes are still loading." : !analysis ? (synth in ENGINE ? "Load a recording first." : "Load a pitched recording first.") :
+      synth in ENGINE && !node ? "Starting the engine…" :
+      !(analysis.f0 > 0) && synth === "retune" ? "This recording is unpitched: Retune has no pitch to move. Choose Synth → Resonator, Harmonic filter or Formant to play it." : "";
     document.querySelectorAll("[data-play]").forEach(function (b) { b.disabled = !!why; });
     $("#lab-why").textContent = why;
   }
@@ -371,8 +378,9 @@
   $("#lab-keep").addEventListener("click", function () {
     var t = $("#lab-verdict").value.trim(); if (!t) { return; }
     var line = t + " — " + ($("#lab-note").textContent || "no file") + ", tune " + $("#lab-tune").value + ", octave " + $("#lab-octave").value + ", " + (tuning ? "just" : "equal") +
-      ", synth " + synth + (synth === "resonator" ? " " + ["string", "tube", "bell"][+$("#lab-body").value] + " " + ["bowed", "plucked"][+$("#lab-excite").value] +
-      " focus " + $("#lab-focus").value + " colour " + $("#lab-colour").value : "");
+      ", synth " + synth + (synth === "resonator" ? " " + ["string", "tube", "bell"][+$("#lab-body").value] + " " + ["bowed", "plucked"][+$("#lab-excite").value] : "") +
+      (synth === "harmonic" || synth === "formant" ? " " + ["bank", "spectral", "comb"][+$("#lab-method").value] + " " + ["dry", "ringing"][+$("#lab-mode").value] : "") +
+      (synth in ENGINE ? " focus " + $("#lab-focus").value + " colour " + $("#lab-colour").value : "");
     try { localStorage.setItem("fs.lab.kept", JSON.stringify(kept().concat([line]))); } catch (e) { /* private window: not kept */ }
     $("#lab-verdict").value = ""; renderKept();
   });
@@ -393,7 +401,8 @@
   $("#lab-octave").addEventListener("change", retune);
   $("#lab-tune").addEventListener("input", retune);
   $("#lab-synth").addEventListener("change", function () { setSynth(this.value); });
-  ["#lab-body", "#lab-excite"].forEach(function (id) { $(id).addEventListener("change", sendParams); });
+  ["#lab-body", "#lab-excite", "#lab-method", "#lab-mode"].forEach(function (id) { $(id).addEventListener("change", sendParams); });
+  $("#lab-colour").addEventListener("input", colourLabel);
   ["#lab-focus", "#lab-colour", "#lab-tune", "#lab-attack", "#lab-release"].forEach(function (id) { $(id).addEventListener("input", sendParams); });
 
   /* what the audio is doing, readable on any machine: the engine's state and the level leaving it */

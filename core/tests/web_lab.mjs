@@ -215,6 +215,26 @@ try {
   await ev("fsLab.stop()");
   const want = 20 * Math.log10(2 * one.g * one.peak / Math.SQRT2);
   check("the master output is twice the voice's level (+6 dB, within 1.5 dB)", Math.abs(ol - want) < 1.5, [ol, want]);
+  /* 2b: the Harmonic filter and the Formant on the bench */
+  await ev(`fsLab.load(${NOISE}).then(function () { return 1; })`);
+  check("the Synth menu offers the Harmonic filter and the Formant", await ev("['harmonic','formant'].every(function (v) { return !!document.querySelector(\"#lab-synth option[value='\" + v + \"']\"); })"), null);
+  await ev("fsLab.setSynth('harmonic'), fsLab.engineReady");
+  check("... with Method and Mode beside Focus, and Body/Excite hidden", await ev("!!document.querySelector('#lab-part') && !document.querySelector('#lab-part').hidden && document.querySelector('#lab-res').hidden"), null);
+  check("Colour reads Overtones for the Harmonic filter", /Overtones/.test(await ev("(document.querySelector('#lab-colour-label') || {}).textContent || ''")), null);
+  /* Ringing: the pitched mode (Dry's bands are >= 73 Hz wide, so a low chord's notes blur - spec) */
+  await ev("(function(){ var s = document.querySelector('#lab-mode'); s.value = '1'; s.dispatchEvent(new Event('change')); return 1; })()");
+  const hc = await ev("fsLab.play('chord', { tuning: 'just', step: 0 })");
+  await sleep(2500);
+  const hm = await ev("fsLab.created()");
+  await ev("fsLab.stop()");
+  check("the Harmonic filter creates pitch on a noise file (each note >= 10 dB)", hm && hc && hc.hz && hm.length === hc.hz.length && hm.every(function (d) { return d >= 10; }), hm);
+  await ev("fsLab.setSynth('formant'), 0");
+  await ev("(function(){ var s = document.querySelector('#lab-colour'); s.value = '0.2667'; s.dispatchEvent(new Event('input')); return 1; })()");
+  const fl = await ev("(document.querySelector('#lab-colour-label') || {}).textContent || ''");
+  check("Colour reads Partial 5 for the Formant at 0.27", /Partial 5/.test(fl), fl);
+  await ev("(function(){ var s = document.querySelector('#lab-colour'); s.value = '0.5'; s.dispatchEvent(new Event('input')); return 1; })()");
+  await ev("(function(){ var s = document.querySelector('#lab-mode'); s.value = '0'; s.dispatchEvent(new Event('change')); return 1; })()");
+  await ev("fsLab.setSynth('retune'), 0");
   check("no page errors", errors.length === 0, errors);
 } finally { ch.kill(); }
 process.exit(failed ? 1 : 0);
