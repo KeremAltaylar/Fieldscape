@@ -14,6 +14,10 @@ namespace sampler {
 
 enum Body { STRING = 0, TUBE = 1, BELL = 2 };
 enum Excite { BOWED = 0, PLUCKED = 1 };
+/* 2b (docs/superpowers/specs/2026-10-02-non-pitch-2b-partials-design.md): which synth, drawn out how, in what time */
+enum Synth { RESONATE = 0, HARMONIC = 1, FORMANT = 2 };
+enum Method { BANK = 0, SPECTRAL = 1, COMB = 2 };
+enum Mode { DRY = 0, RINGING = 1 };
 static const double BELL_RATIO[4] = { 1.0, 2.76, 5.40, 8.93 };   /* a bar's / bell's modes */
 static const double BELL_DECAY[4] = { 1.0, 0.6, 0.35, 0.2 };     /* the higher modes ring shorter */
 static const double PI = 3.141592653589793;
@@ -60,7 +64,7 @@ struct Voice {
     double c = 0, a = 0, g = 0, ap_x = 0, ap_y = 0, lp = 0;
     int modes = 0; double b0[4] = {}, a1[4] = {}, a2[4] = {}, y1[4] = {}, y2[4] = {}, wt[4] = {};
     double dc_x = 0, dc_y = 0, lx = 0, ly = 0, g60 = 0, rin = 0, rout = 0, agc = 1;
-    int body = 0, excite = 0;                                     /* the note's own: a later change is the next note's */
+    int body = 0, excite = 0, synth = 0, method = 0, mode = 0;    /* the note's own: a later change is the next note's */
 };
 
 struct Resonator : tone::Synth {
@@ -70,7 +74,7 @@ struct Resonator : tone::Synth {
     static constexpr double STEAL_S = 0.05, STOP_S = 0.005;
     static const unsigned MASK = (1u << 13) - 1;                  /* 8192-sample lines: down to ~6 Hz */
     Source src;
-    int body = STRING, excite = BOWED;
+    int body = STRING, excite = BOWED, synth = RESONATE, method = BANK, mode = DRY;
     double focus = 0.5, colour = 0.5, tune = 1, att = 0.02, rel = 0.6, offset_s = 0;
     Voice v[VOICES]; int last = -1;
     double tune_s = -1;                                           /* Tune as heard: glides to `tune` over ~10 ms (A-2) */
@@ -93,7 +97,7 @@ struct Resonator : tone::Synth {
         std::fill(x.line.begin(), x.line.end(), 0.0f);
         f = std::fmin(std::fmax(f, 6.0), 0.45 * sr);                 /* extreme octaves: clamped, never unstable */
         x.active = true; x.started = false; x.releasing = false; x.stealing = false; x.has_next = false;
-        x.f = f; x.on_t = t; x.off_t = 1e300; x.vel = vel; x.env = 0; x.aph = 0; x.body = body; x.excite = excite;
+        x.f = f; x.on_t = t; x.off_t = 1e300; x.vel = vel; x.env = 0; x.aph = 0; x.body = body; x.excite = excite; x.synth = synth; x.method = method; x.mode = mode;
         x.pos = (long long)(offset_s * sr); x.burst = 0; x.burst_len = (int)(0.025 * sr);
         x.w = 0; x.ap_x = x.ap_y = x.lp = 0; x.dc_x = x.dc_y = 0; x.lx = x.ly = 0; x.rin = x.rout = 0; x.agc = 1;
         const double w = 2 * PI * f / sr, T = t60(focus);

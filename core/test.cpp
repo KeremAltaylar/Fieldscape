@@ -1220,6 +1220,20 @@ int main() {
         std::printf("resonator attack: a quarter in at %.3f of full\n", r.v[0].env);
         assert(r.v[0].env > 0.13 && r.v[0].env < 0.16);
     }
+    {   /* 2b guard: the Resonator renders exactly as in 2a (P5) - a hash of every body x excite */
+        const std::vector<float> wind = noise_src(3, 0.5f, 77); const float *p[1] = { wind.data() };
+        uint64_t h = 1469598103934665603ull;
+        for (int body = 0; body < 3; body++) for (int ex = 0; ex < 2; ex++) {
+            sampler::Resonator r; r.init(48000); r.set_source(1, (long long)wind.size(), p);
+            r.body = body; r.excite = ex; r.focus = 0.7; r.colour = 0.4;
+            r.attack(196, 0, 0.5); r.release(1.2);
+            std::vector<float> a(48000 * 2, 0.0f), b(a.size(), 0.0f);
+            for (size_t i = 0; i < a.size(); i += 128) r.render(a.data() + i, b.data() + i, 128, i / 48000.0);
+            for (float s : a) { uint32_t u; std::memcpy(&u, &s, 4); h = (h ^ u) * 1099511628211ull; }
+        }
+        std::printf("resonator 2a hash %016llx\n", (unsigned long long)h);
+        assert(h == 0xcc29d779bacb46dbull);   /* the em++ -O1 test build (no FMA in wasm) */
+    }
     std::printf("core ok\n");
     return 0;
 }

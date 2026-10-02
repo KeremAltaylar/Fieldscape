@@ -17,6 +17,9 @@ static const fs_param BENCH_PARAMS[] = {
     { "attack", "Attack", "s", 0.008f, 4.0f, 0.02f },
     { "release", "Release", "s", 0.03f, 10.0f, 0.6f },
     { "offset", "Position", "s", 0.0f, 600.0f, 0.0f },
+    { "synth", "Synth", "", 0.0f, 2.0f, 0.0f },        /* Resonator, Harmonic filter, Formant */
+    { "method", "Method", "", 0.0f, 2.0f, 0.0f },      /* Bank, Spectral, Comb */
+    { "mode", "Mode", "", 0.0f, 1.0f, 0.0f },          /* Dry, Ringing */
 };
 
 struct Bench : Device {
@@ -28,13 +31,15 @@ struct Bench : Device {
     double sr = 48000, t = 0;
     std::vector<float> ring = std::vector<float>(65536, 0.0f); size_t w = 0;   /* 1.37 s: 0.7 Hz resolution */
     void prepare(float s, int) override { sr = s; res.init(s); t = 0; }
-    const fs_param *params(int &n) override { n = 8; return BENCH_PARAMS; }
+    const fs_param *params(int &n) override { n = 11; return BENCH_PARAMS; }
     void set_param(int i, float v) override {
         switch (i) {
             case 0: res.body = (int)std::lround(v); break;       case 1: res.excite = (int)std::lround(v); break;
             case 2: res.focus = v; break;                        case 3: res.colour = v; break;
             case 4: res.tune = v; break;                         case 5: res.att = v; break;
             case 6: res.rel = v; break;                          case 7: res.offset_s = v; break;
+            case 8: res.synth = (int)std::lround(v); break;      case 9: res.method = (int)std::lround(v); break;
+            case 10: res.mode = (int)std::lround(v); break;
         }
     }
     void set_source(int ch, int n, const float *const *s) override { res.set_source(ch, n, s); }
