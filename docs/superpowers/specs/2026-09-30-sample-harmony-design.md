@@ -251,3 +251,17 @@ What the session found, and what changed because of it:
 
 **Verdict (Kerem):** *"this works"*, *"it's working good"*. The Resonator is accepted as the first
 non-pitch mechanism. Next: 2b, the Harmonic filter and the Formant, heard on the same bench.
+
+### Session 2b — 2026-10-02/03, the Harmonic filter and the Formant (lab2), Kerem
+
+Material: Kerem's recordings; Harmonic filter and Formant × Bank / Spectral / Comb × Dry / Ringing beside the Resonator.
+
+What the session found, and what changed because of it:
+- "Clicks and clips ... chord and progression with release full and overtones full" (Spectral worst, Comb a few,
+  the Formant too; Ringing good; Resonator perfect) → the engine kept time (no late blocks, measured) but the lab's
+  ×2 master, an oversampled curve, rang past full scale (output peaks 1.14) and hard-clipped dense Dry noise into
+  crackle → a 5 ms look-ahead limiter to −1 dBFS (every synth now peaks at 0.891; quiet playing still ×2).
+- *"Ringing mode sounds really good"*; *"Resonator work still perfect"*.
+
+**Verdict (Kerem):** *"it worked very well"*. The Harmonic filter and the Formant, all three methods, are accepted
+beside the Resonator. Next: 2c, Pulsar grains and Spectral freeze, on the same bench.
