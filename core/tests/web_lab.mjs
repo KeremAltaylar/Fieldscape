@@ -233,6 +233,25 @@ try {
   const fl = await ev("(document.querySelector('#lab-colour-label') || {}).textContent || ''");
   check("Colour reads Partial 5 for the Formant at 0.27", /Partial 5/.test(fl), fl);
   await ev("(function(){ var s = document.querySelector('#lab-colour'); s.value = '0.5'; s.dispatchEvent(new Event('input')); return 1; })()");
+  /* 2c: Pulsar and Freeze on the bench */
+  check("the Synth menu offers Pulsar and Freeze", await ev("['pulsar','freeze'].every(function (v) { return !!document.querySelector(\"#lab-synth option[value='\" + v + \"']\"); })"), null);
+  const setv = (id, v, evn) => ev(`(function(){ var s = document.querySelector('#${id}'); s.value = '${v}'; s.dispatchEvent(new Event('${evn || "input"}')); return 1; })()`);
+  await ev("fsLab.setSynth('pulsar'), fsLab.engineReady");
+  check("... with only Focus and Colour (no Method/Mode, no Body/Excite)", await ev("!!document.querySelector('#lab-part') && document.querySelector('#lab-part').hidden && document.querySelector('#lab-res').hidden && !document.querySelector('#lab-np').hidden"), null);
+  await setv("lab-colour", 0.5);
+  const pl = await ev("(document.querySelector('#lab-colour-label') || {}).textContent || ''");
+  check("Colour reads Grain 53 % for Pulsar at 0.5", /Grain 53 %/.test(pl), pl);
+  await setv("lab-focus", 1);
+  const pc = await ev("fsLab.play('chord', { tuning: 'just', step: 0 })"); await sleep(2500);
+  const pm = await ev("fsLab.created()"); await ev("fsLab.stop()");
+  check("Pulsar creates pitch on a noise file (each note >= 10 dB)", pm && pc && pc.hz && pm.length === pc.hz.length && pm.every(function (d) { return d >= 10; }), pm);
+  await ev("fsLab.setSynth('freeze'), 0");
+  const fz = await ev("(document.querySelector('#lab-colour-label') || {}).textContent || ''");
+  check("Colour reads a Moment m:ss for Freeze", /^Moment \d+:\d\d$/.test(fz), fz);
+  const fc = await ev("fsLab.play('chord', { tuning: 'just', step: 0 })"); await sleep(2500);
+  const fm = await ev("fsLab.created()"); await ev("fsLab.stop()");
+  check("Freeze creates pitch on a noise file (each note >= 10 dB)", fm && fc && fc.hz && fm.length === fc.hz.length && fm.every(function (d) { return d >= 10; }), fm);
+  await setv("lab-focus", 0.5);
   /* Kerem 2026-10-02: "clicks and clips ... chord and progression with release full and overtones full" - the master's
      oversampled curve rang past full scale (output peaks 1.14, measured): a dense Dry progression never passes -1 dBFS */
   await ev("fsLab.setSynth('harmonic'), fsLab.engineReady");

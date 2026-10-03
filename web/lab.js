@@ -120,7 +120,7 @@
         if (e > bestE) { bestE = e; loudAt = s0 / sr; }
       }
       sendSource(); sendParams();
-      show(); gate();
+      show(); gate(); colourLabel();
       return analysis;
     }).catch(function (e) { $("#lab-note").textContent = "Could not read that file: " + (e && e.message || e); throw e; });
   }
@@ -227,10 +227,14 @@
   /* The Resonator runs in the engine (2a spec R4): the lab's wasm, device "bench", in an AudioWorklet. An
      unpitched recording has no pitch to centre on, so notes sound at the chord's written register (plus Octave). */
   var P_BODY = 0, P_EXCITE = 1, P_FOCUS = 2, P_COLOUR = 3, P_TUNE = 4, P_ATTACK = 5, P_RELEASE = 6, P_OFFSET = 7, P_SYNTH = 8, P_METHOD = 9, P_MODE = 10;
-  var ENGINE = { resonator: 0, harmonic: 1, formant: 2 };          /* the synths on the engine, by the bench's "synth" */
-  /* Colour says what it does: the Harmonic filter's overtone balance, the Formant's peak partial (2b spec) */
+  var ENGINE = { resonator: 0, harmonic: 1, formant: 2, pulsar: 3, freeze: 4 };          /* the synths on the engine, by the bench's "synth" */
+  /* Colour says what it does: the Harmonic filter's overtone balance, the Formant's peak partial (2b spec), Pulsar's
+     grain as a share of the period, Freeze's moment in the recording (2c spec) */
   function colourLabel() {
-    $("#lab-colour-label").textContent = synth === "harmonic" ? "Overtones" : synth === "formant" ? "Partial " + Math.round(1 + 15 * +$("#lab-colour").value) : "Colour";
+    var c = +$("#lab-colour").value, sec = buffer ? Math.max(0, c * (buffer.duration - 2048 / buffer.sampleRate)) : 0;
+    $("#lab-colour-label").textContent = synth === "harmonic" ? "Overtones" : synth === "formant" ? "Partial " + Math.round(1 + 15 * c)
+      : synth === "pulsar" ? "Grain " + Math.round(100 * (0.05 + 0.95 * c)) + " %"
+      : synth === "freeze" ? "Moment " + Math.floor(sec / 60) + ":" + ("0" + Math.floor(sec % 60)).slice(-2) : "Colour";
   }
   function ensureEngine() {
     if (engineReady) { return engineReady; }
