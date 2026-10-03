@@ -1509,6 +1509,97 @@ int main() {
         std::printf("2c pulsar: 24 voices %.3f ms, an 8-note chord starting %.3f ms (budget %.2f)\n", t1, worstb, 1.33 * slack);
         assert(t1 < 1.33 * slack && worstb < 1.33 * slack);
     }
+    {   /* 2c: Freeze - one moment's colour placed on the note's partials, held (spec 2c "How we know it works") */
+        const std::vector<float> wind = noise_src(16, 0.5f, 303); const float *wp[1] = { wind.data() };
+        auto rms = [](const std::vector<float> &x, double a, double z) { double e = 0; size_t i0 = (size_t)(a * 48000), i1 = (size_t)(z * 48000); for (size_t i = i0; i < i1; i++) e += (double)x[i] * x[i]; return 10 * std::log10(e / (i1 - i0) + 1e-30); };
+        auto bandmax = [](const std::vector<float> &t, double f) { double mx = 0; for (double q = f * 0.995; q <= f * 1.005; q += f * 0.0005) mx = std::max(mx, peak_amp(t, 48000, q)); return 20 * std::log10(mx); };
+        /* pitch at Focus 1 (one clean line per partial) */
+        double worst = 0, wf = 0;
+        for (double f : { 55.0, 110.0, 220.0, 440.0, 880.0, 1760.0, 3520.0 }) {
+            std::vector<float> o = part_render(sampler::FREEZE, 0, 0, 1.0, 0.3, 1, f, 6, wind);
+            double e = std::fabs(1200 * std::log2(line_peak(o, 48000, f, 0.02) / f)); if (e > worst) { worst = e; wf = f; }
+        }
+        std::printf("2c freeze: worst pitch error %.3f cents (%.0f Hz)\n", worst, wf);
+        assert(worst <= 1);
+        /* the moment: a dark first half, a bright second half - two moments, two colours */
+        std::vector<float> dk((size_t)(48000 * 10)); { double lp = 0; for (size_t i = 0; i < dk.size(); i++) { if (i < dk.size() / 2) { lp = 0.95 * lp + 0.05 * wind[i] * 6; dk[i] = (float)lp; } else dk[i] = wind[i]; } }
+        auto balance = [&](double col) { std::vector<float> o = part_render(sampler::FREEZE, 0, 0, 1.0, col, 1, 220, 5, dk); std::vector<float> t(o.end() - 65536, o.end());
+            double hi = 0; for (int n = 4; n <= 8; n++) hi += bandmax(t, 220.0 * n) / 5; return hi - bandmax(t, 220); };
+        const double bd = balance(0.1), bb = balance(0.9);
+        std::printf("2c freeze: partials 4-8 vs fundamental %.1f dB at a dark moment, %.1f at a bright one\n", bd, bb);
+        assert(bb - bd >= 6);
+        /* holds: the recording falls silent under a held note - its level stays */
+        std::vector<float> gust(48000 * 8, 0.0f); for (size_t i = 0; i < 48000 * 3; i++) gust[i] = wind[i];
+        { std::vector<float> o = part_render(sampler::FREEZE, 0, 0, 0.7, 0.0, 1, 220, 6, gust);
+          const double a = rms(o, 1, 2.5), b = rms(o, 4, 5.5);
+          std::printf("2c freeze: %.2f dB while the recording sounds, %.2f after it falls silent\n", a, b);
+          assert(std::fabs(a - b) <= 0.5); }
+        /* purity: Focus 0 spreads a partial over >= 3x its Focus 1 width (-6 dB, averaged spectrum) */
+        auto width = [&](double foc) {
+            std::vector<float> o = part_render(sampler::FREEZE, 0, 0, foc, 0.3, 1, 220, 8, wind);
+            const int N = 65536; FFT fft; fft.reserve(N); fft.plan(N); fft.twiddles(0, N);
+            std::vector<float> b(4 * N); float *ar = b.data(), *ai = ar + N, *br = ai + N, *bi = br + N; std::vector<double> pw(N / 2, 0.0);
+            for (size_t s0 = o.size() - (size_t)(4 * 48000); s0 + N <= o.size(); s0 += N / 2) {
+                for (int i = 0; i < N; i++) { ar[i] = (float)(o[s0 + i] * (0.5 - 0.5 * std::cos(2 * 3.141592653589793 * i / N))); ai[i] = 0; }
+                for (int q = 0; q < fft.passes; q++) { if (q % 2 == 0) fft.pass(q, ar, ai, br, bi, 0, fft.butterflies(q)); else fft.pass(q, br, bi, ar, ai, 0, fft.butterflies(q)); }
+                const float *re = fft.passes % 2 ? br : ar, *im = fft.passes % 2 ? bi : ai;
+                for (int k = 0; k < N / 2; k++) pw[k] += (double)re[k] * re[k] + (double)im[k] * im[k];
+            }
+            int pk = (int)(220.0 * 0.97 * N / 48000); for (int k = pk; k <= (int)(220.0 * 1.03 * N / 48000); k++) if (pw[k] > pw[pk]) pk = k;
+            int l = pk, r = pk; while (l > 1 && pw[l - 1] > pw[pk] / 4) l--; while (r < N / 2 - 2 && pw[r + 1] > pw[pk] / 4) r++;
+            return (r - l + 1) * 48000.0 / N;
+        };
+        const double w1 = width(1.0), w0 = width(0.0);
+        std::printf("2c freeze: -6 dB width %.1f Hz at Focus 1, %.1f at Focus 0\n", w1, w0);
+        assert(w0 >= 3 * w1);
+        /* level: at the moment's own on a steady recording; no swell, no fade-up */
+        { std::vector<float> o = part_render(sampler::FREEZE, 0, 0, 0.5, 0.3, 1, 220, 12, wind), dry = part_render(sampler::FREEZE, 0, 0, 0.5, 0.3, 0, 220, 12, wind);
+          const double set = rms(o, 8, 11), ref = rms(dry, 8, 11), onset = rms(o, 0, 3), early = rms(o, 0.25, 2);
+          std::printf("2c freeze: level %.2f dB vs the recording %.2f, first 3 s %.2f, 0.25-2 s %.2f\n", set, ref, onset, early);
+          assert(std::fabs(set - ref) <= 1 && onset <= set + 3 && early >= set - 2); }
+        /* a silent moment stays silent */
+        { std::vector<float> sil(48000 * 4, 0.0f); for (size_t i = 48000 * 2; i < sil.size(); i++) sil[i] = wind[i];
+          std::vector<float> o = part_render(sampler::FREEZE, 0, 0, 0.5, 0.0, 1, 220, 3, sil);
+          std::printf("2c freeze: a silent moment plays at %.1f dB\n", rms(o, 0.5, 2.5));
+          assert(rms(o, 0.5, 2.5) < -100); }
+        /* edges: recordings no longer than a frame, the moment at the very end */
+        for (size_t len : { (size_t)1000, (size_t)2048 }) { std::vector<float> e(wind.begin(), wind.begin() + len); std::vector<float> o = part_render(sampler::FREEZE, 0, 0, 0.5, 1.0, 1, 220, 1, e);
+          for (float v : o) assert(std::isfinite(v)); }
+        /* stability */
+        const std::vector<float> loud = noise_src(2, 1.0f, 9), shortf = noise_src(0.3, 1.0f, 4);
+        int bad = 0;
+        for (const std::vector<float> *sf : { &loud, &shortf }) for (double foc : { 0.0, 0.5, 1.0 }) for (double col : { 0.0, 0.5, 1.0 }) for (double f : { 5.0, 41.0, 80.0, 3500.0, 12000.0 }) {
+            std::vector<float> o = part_render(sampler::FREEZE, 0, 0, foc, col, 1, f, 1, *sf);
+            double mx = 0; bool fin = true; for (float v : o) { fin = fin && std::isfinite(v); mx = std::max(mx, (double)std::fabs(v)); }
+            if (!fin || mx >= 4) { std::printf("  2c freeze runaway: focus %.1f colour %.1f %.0f Hz peak %.3g\n", foc, col, f, mx); bad++; }
+        }
+        std::printf("2c freeze stability: %d runaways\n", bad);
+        assert(bad == 0);
+        /* budget: 24 voices; 8 starts in one block; starts lined up */
+#ifdef FS_TEST_O1
+        const double slack = 1.5;
+#else
+        const double slack = 1;
+#endif
+        auto timed = [&](sampler::Resonator &r, double from, double secs) { std::vector<double> ms; std::vector<float> b1(128), b2(128);
+            for (int k = 0; k < (int)(secs * 48000 / 128); k++) { std::fill(b1.begin(), b1.end(), 0.0f); auto c0 = std::chrono::steady_clock::now(); r.render(b1.data(), b2.data(), 128, from + k * 128 / 48000.0);
+                if (from + k * 128 / 48000.0 > 0.5) ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - c0).count()); }
+            std::sort(ms.begin(), ms.end()); return ms[(size_t)(ms.size() * 0.999)]; };
+        sampler::Resonator a; a.init(48000); a.set_source(1, (long long)wind.size(), wp); a.synth = sampler::FREEZE;
+        for (int k = 0; k < sampler::Resonator::VOICES; k++) a.attack(55 * (k + 1), 0, 0.05);
+        const double t1 = timed(a, 0, 6);
+        sampler::Resonator lu; lu.init(48000); lu.set_source(1, (long long)wind.size(), wp); lu.synth = sampler::FREEZE;
+        for (int k = 0; k < sampler::Resonator::VOICES; k++) lu.attack(55 * (k + 1), (k * sampler::SPH / sampler::Resonator::VOICES) / 48000.0, 0.05);
+        const double t2 = timed(lu, 0, 6);
+        sampler::Resonator st; st.init(48000); st.set_source(1, (long long)wind.size(), wp); st.synth = sampler::FREEZE;
+        double worstb = 0;
+        for (int c = 0; c < 12; c++) { const double t = c * 0.5; std::vector<float> b1(128, 0.0f), b2(128, 0.0f); auto c0 = std::chrono::steady_clock::now();
+            for (int k = 0; k < 8; k++) { st.attack(55 * std::pow(2.0, (k + c % 3) / 7.0), t, 0.1); st.release(t + 0.4); }
+            st.render(b1.data(), b2.data(), 128, t); worstb = std::max(worstb, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - c0).count());
+            for (int i = 1; i < (int)(0.5 * 48000 / 128); i++) st.render(b1.data(), b2.data(), 128, t + i * 128 / 48000.0); }
+        std::printf("2c freeze: 24 voices %.3f ms, lined up %.3f ms, an 8-note chord starting %.3f ms (budget %.2f)\n", t1, t2, worstb, 1.33 * slack);
+        assert(t1 < 1.33 * slack && t2 < 1.33 * slack && worstb < 1.33 * slack);
+    }
     {   /* 2c guard: the Harmonic filter and the Formant render exactly as in 2b - a hash of every method x mode */
         const std::vector<float> wind = noise_src(3, 0.5f, 77); const float *p[1] = { wind.data() };
         uint64_t h = 1469598103934665603ull;

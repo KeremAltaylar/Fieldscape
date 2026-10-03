@@ -126,6 +126,7 @@ struct Voice {
     /* Pulsar (2c): the period and grain length in samples; the slice's start, when it was last refreshed, the grain
        now sounding, the refresh interval (-1: never) */
     double pP = 1, pD = 1; long long pr = 0, plast = 0, pk = -1, prefresh = -1;
+    double vfocus = 0.5, fpow = 0; uint32_t rng = 1;             /* Freeze (2c): the note's Focus, the moment's power, jitter */
 };
 
 struct Resonator : tone::Synth {
@@ -141,6 +142,8 @@ struct Resonator : tone::Synth {
     double tune_s = -1;                                           /* Tune as heard: glides to `tune` over ~10 ms (A-2) */
     std::vector<double> tune_buf;                                 /* per block; sized once to the largest block */
     RFFT rf; std::vector<float> xin, Xr, Xi, yout, win;           /* Spectral: one transform shared by the voices */
+    std::vector<double> freeze_pw;                                /* Freeze: the moment's averaged power spectrum */
+    long long freeze_at = -1; const void *freeze_src = nullptr; double freeze_tp = 0;   /* ...and which moment it is */
 
     static double t60(double focus) { return 0.2 * std::pow(50.0, std::fmin(1.0, std::fmax(0.0, focus))); }
 
@@ -150,15 +153,15 @@ struct Resonator : tone::Synth {
             x.line.assign(MASK + 1, 0.0f);
             x.ola.assign(SPN, 0.0f); x.hold.assign(SPN / 2 + 1, 0.0f); x.ph.assign(SPN / 2 + 1, 0.0f); x.mask.assign(SPN / 2 + 1, 0.0f); x.owner.assign(SPN / 2 + 1, 0);
         }
-        rf.init(SPN); xin.assign(SPN, 0.0f); Xr.assign(SPN / 2 + 1, 0.0f); Xi.assign(SPN / 2 + 1, 0.0f); yout.assign(SPN, 0.0f);
+        rf.init(SPN); freeze_pw.assign(SPN / 2 + 1, 0.0); xin.assign(SPN, 0.0f); Xr.assign(SPN / 2 + 1, 0.0f); Xi.assign(SPN / 2 + 1, 0.0f); yout.assign(SPN, 0.0f);
         win.resize(SPN); for (int j = 0; j < SPN; j++) win[j] = (float)(0.5 - 0.5 * std::cos(2 * PI * j / SPN));
     }
     void set_source(int ch, long long n, const float *const *p) {
-        src = Source(); if (!p || n <= 0) return;
+        src = Source(); freeze_at = -1;   /* a new recording: no frozen moment carried over */ if (!p || n <= 0) return;
         src.nch = std::min(ch, 2); for (int k = 0; k < src.nch; k++) src.f[k] = p[k]; src.frames = n;
     }
     void set_source_i16(int ch, long long n, const int16_t *const *p) {
-        src = Source(); if (!p || n <= 0) return;
+        src = Source(); freeze_at = -1;   /* a new recording: no frozen moment carried over */ if (!p || n <= 0) return;
         src.nch = std::min(ch, 2); for (int k = 0; k < src.nch; k++) src.s[k] = p[k]; src.frames = n;
     }
 
@@ -167,7 +170,7 @@ struct Resonator : tone::Synth {
         std::fill(x.line.begin(), x.line.end(), 0.0f);
         f = std::fmin(std::fmax(f, 6.0), 0.45 * sr);                 /* extreme octaves: clamped, never unstable */
         x.active = true; x.started = false; x.releasing = false; x.stealing = false; x.has_next = false;
-        x.f = f; x.on_t = t; x.off_t = 1e300; x.vel = vel; x.env = 0; x.aph = 0; x.body = body; x.excite = excite; x.synth = synth; x.method = method; x.mode = mode;
+        x.f = f; x.on_t = t; x.off_t = 1e300; x.vel = vel; x.env = 0; x.aph = 0; x.body = body; x.excite = excite; x.synth = synth; x.method = method; x.mode = mode; x.vfocus = focus;
         x.pos = (long long)(offset_s * sr); x.burst = 0; x.burst_len = (int)(0.025 * sr);
         x.w = 0; x.ap_x = x.ap_y = x.lp = 0; x.dc_x = x.dc_y = 0; x.lx = x.ly = 0; x.rin = x.rout = 0; x.agc = 1;
         const double w = 2 * PI * f / sr, T = t60(focus);
@@ -176,6 +179,7 @@ struct Resonator : tone::Synth {
         const double col = std::fmin(1.0, std::fmax(0.0, colour));
         x.a = col >= 0.999 ? 0 : std::exp(-2 * PI * std::fmin(f * (1.5 + 30 * col * col), 0.45 * sr) / sr);
         if (synth == PULSAR) { start_pulsar(x, f); return; }
+        if (synth == FREEZE) { start_freeze(x, f); return; }
         if (synth != RESONATE) { start_partials(x, f, T); return; }
         if (body == BELL) {
             x.modes = 0;
@@ -235,6 +239,61 @@ struct Resonator : tone::Synth {
         const long long i = (long long)tau; const double fr = tau - (double)i;
         const double v = src.at(x.pr + i) * (1 - fr) + src.at(x.pr + i + 1) * fr;
         return v * (0.5 - 0.5 * std::cos(2 * PI * tau / x.pD));
+    }
+
+    /* Freeze (2c): one moment's spectrum (4 frames averaged), its level read at each partial and held for ever. Each kept
+       bin turns at its partial's own frequency every hop (in tune) and, below Focus 1, by a random amount as well, so a wide
+       band breathes as air around the line */
+    void start_freeze(Voice &x, double f) {
+        std::fill(x.ola.begin(), x.ola.end(), 0.0f); std::fill(x.ph.begin(), x.ph.end(), 0.0f);
+        std::fill(x.mask.begin(), x.mask.end(), 0.0f); std::fill(x.owner.begin(), x.owner.end(), 0);
+        const long long len = std::max<long long>(src.frames, 1), at = (long long)(std::fmin(1.0, std::fmax(0.0, colour)) * (double)std::max<long long>(0, len - SPN));
+        /* a chord's notes freeze the same moment: it is analysed once (an 8-note chord start cost 2.99 ms, measured) */
+        const void *sid = src.f[0] ? (const void *)src.f[0] : (const void *)src.s[0];
+        if (at != freeze_at || sid != freeze_src) {
+            std::fill(freeze_pw.begin(), freeze_pw.end(), 0.0); double tp = 0;
+            for (int fr = 0; fr < 4; fr++) {
+                for (int j = 0; j < SPN; j++) { const float smp = src.at(at + fr * SPH + j); xin[j] = smp * win[j]; tp += (double)smp * smp; }
+                rf.forward(xin.data(), Xr.data(), Xi.data());
+                for (int k = 0; k <= SPN / 2; k++) freeze_pw[k] += (double)Xr[k] * Xr[k] + (double)Xi[k] * Xi[k];
+            }
+            freeze_at = at; freeze_src = sid; freeze_tp = tp;
+        }
+        x.fpow = freeze_tp / (4.0 * SPN);                              /* the moment's own power: the level it keeps */
+        const double bin = sr / SPN, fo = std::fmin(1.0, std::fmax(0.0, focus)), h = 1 + 3 * (1 - fo);
+        int npart = 0;
+        for (int n = 1; n <= PARTIALS && n * f < 0.45 * sr; n++, npart++) {
+            const double c = n * f / bin;
+            for (int k = std::max(1, (int)std::ceil(c - h)); k <= std::min(SPN / 2 - 1, (int)std::floor(c + h)); k++) {
+                const double m = (0.5 + 0.5 * std::cos(PI * (k - c) / h)) * std::sqrt(freeze_pw[k] / 4);
+                if (m > x.mask[k]) { x.mask[k] = (float)m; x.owner[k] = n; }
+            }
+        }
+        /* the output's expected power - its bins add as one line (Focus 1) or as independent noise (Focus 0) - so the
+           level starts near the moment's and the matching (to that fixed power) only fine-tunes it */
+        double coh = 0, inc = 0, amp[PARTIALS + 1] = {};
+        for (int k = 1; k < SPN / 2; k++) if (x.owner[k] > 0) { amp[x.owner[k]] += x.mask[k]; inc += (double)x.mask[k] * x.mask[k]; }
+        for (int n = 1; n <= npart; n++) coh += amp[n] * amp[n];
+        const double unit = 2.0 / SPN * 2.0 / 1.5 * 0.5, est = fo * coh * unit * unit / 2 + (1 - fo) * inc * unit * unit / 2 * 1.5 / 2;
+        x.agc = x.fpow > 1e-20 ? (est > 1e-30 ? std::fmin(1000.0, std::sqrt(x.fpow / est)) : 1) : 0;
+        x.rin = x.fpow; x.rout = est;                                  /* the matching starts settled, not from zero (a 4.9 dB swell) */
+        const long long s0 = (long long)std::ceil(x.on_t * sr - 1e-9);
+        x.sf = f; x.sk = 0; x.soff = (int)((((&x - v) * SPH / VOICES - s0) % SPH + SPH) % SPH); x.rng = 0x9e3779b9u ^ (uint32_t)(&x - v);
+    }
+    void freeze_frame(Voice &x) {
+        const double jit = (1 - std::fmin(1.0, std::fmax(0.0, x.vfocus))) * PI;
+        for (int k = 0; k <= SPN / 2; k++) {
+            double re = 0, im = 0;
+            if (x.mask[k] > 0) {
+                x.rng ^= x.rng << 13; x.rng ^= x.rng >> 17; x.rng ^= x.rng << 5;
+                const double turn = 2 * PI * x.owner[k] * x.sf * SPH / sr + jit * ((x.rng >> 8) / 8388608.0 - 1);
+                x.ph[k] = (float)std::fmod(x.ph[k] + turn, 2 * PI);
+                re = x.mask[k] * std::cos((double)x.ph[k]); im = x.mask[k] * std::sin((double)x.ph[k]);
+            }
+            Xr[k] = (float)re; Xi[k] = (float)im;
+        }
+        rf.inverse(Xr.data(), Xi.data(), yout.data());
+        for (int j = 0; j < SPN; j++) x.ola[(size_t)((x.sk + j) & (SPN - 1))] += yout[j] / SPN * win[j] / 1.5f;
     }
 
     /* Harmonic filter / Formant (2b): the engines' state, and the level expected for a white input, so the slow level
@@ -365,6 +424,7 @@ struct Resonator : tone::Synth {
         return y;
     }
     void spectral_frame(Voice &x) {
+        if (x.synth == FREEZE) { freeze_frame(x); return; }
         const long long base = x.pos - 1;                              /* this sample's place in the recording */
         for (int j = 0; j < SPN; j++) xin[j] = src.at(base + j) * win[j];
         rf.forward(xin.data(), Xr.data(), Xi.data());
@@ -424,6 +484,7 @@ struct Resonator : tone::Synth {
 
     double resonate(Voice &x, double in) {
         if (x.synth == PULSAR) return pulsar(x);
+        if (x.synth == FREEZE) return spectral(x);
         if (x.synth != RESONATE) return x.method == SPECTRAL ? spectral(x) : x.method == COMB ? comb(x, in) : bank(x, in);
         if (x.body == BELL) {
             double y = 0;
@@ -481,8 +542,12 @@ struct Resonator : tone::Synth {
                 const bool fed = part ? x.method == COMB && x.mode == RINGING : x.excite == BOWED && x.body != BELL;   /* a feedback loop fed continuously */
                 double wet = resonate(x, fed ? exc * std::sqrt(std::fmax(0.0, 1 - x.g60 * x.g60)) : exc);
                 if (part || x.excite == BOWED) {                      /* the bowed level follows the recording's */
-                    const double k = part ? ks : ka;                 /* partial synths: 3 s, so gusts keep their shape */
-                    x.rin += (exc * exc - x.rin) * k; x.rout += (wet * wet - x.rout) * k;
+                    /* partial synths: 3 s, so gusts keep their shape. Freeze matches a fixed power, the moment's - the
+                       recording moving on underneath must not move a frozen note - at the 0.3 s rate */
+                    const bool frz = x.synth == FREEZE;
+                    const double k = part && !frz ? ks : ka;
+                    if (frz) x.rin = x.fpow; else x.rin += (exc * exc - x.rin) * k;
+                    x.rout += (wet * wet - x.rout) * k;
                     /* only while the recording sounds: silence is never boosted (up to 1000x - a bowed Bell or Tube keeps
                        a small share of broadband energy). The loop is linear, so the gain asked for is the same at any
                        input level: a quiet passage does not wind it up (measured: no swell when loud returns). */
