@@ -1436,6 +1436,79 @@ int main() {
             assert(ms2[(size_t)(ms2.size() * 0.999)] < 1.33 * slack);
         }
     }
+    {   /* 2c: Pulsar - grains of the recording fired f times a second (spec 2c "How we know it works") */
+        const std::vector<float> wind = noise_src(16, 0.5f, 202); const float *wp[1] = { wind.data() };
+        auto rms = [](const std::vector<float> &x, double a, double z) { double e = 0; size_t i0 = (size_t)(a * 48000), i1 = (size_t)(z * 48000); for (size_t i = i0; i < i1; i++) e += (double)x[i] * x[i]; return 10 * std::log10(e / (i1 - i0) + 1e-30); };
+        auto bandmax = [](const std::vector<float> &t, double f) { double mx = 0; for (double q = f * 0.995; q <= f * 1.005; q += f * 0.0005) mx = std::max(mx, peak_amp(t, 48000, q)); return 20 * std::log10(mx); };
+        /* pitch: Focus 1 (one grain repeated) is a set of pure lines */
+        double worst = 0, wf = 0;
+        for (double f : { 55.0, 110.0, 220.0, 440.0, 880.0, 1760.0, 3520.0 }) {
+            std::vector<float> o = part_render(sampler::PULSAR, 0, 0, 1.0, 0.5, 1, f, 8, wind);
+            double e = std::fabs(1200 * std::log2(line_peak(o, 48000, f, 0.02) / f)); if (e > worst) { worst = e; wf = f; }
+        }
+        std::printf("2c pulsar: worst pitch error %.3f cents (%.0f Hz)\n", worst, wf);
+        assert(worst <= 1);
+        /* colour: short grains (Colour 0) lift partials 4-8 against the fundamental >= 6 dB over long ones (Colour 1) */
+        auto lift = [&](double col) { std::vector<float> o = part_render(sampler::PULSAR, 0, 0, 1.0, col, 1, 220, 6, wind); std::vector<float> t(o.end() - 65536, o.end());
+            double hi = 0; for (int n = 4; n <= 8; n++) hi += bandmax(t, 220.0 * n) / 5; return hi - bandmax(t, 220); };
+        const double l0 = lift(0), l1 = lift(1);
+        std::printf("2c pulsar: partials 4-8 vs fundamental %.1f dB at Colour 0, %.1f at 1\n", l0, l1);
+        assert(l0 - l1 >= 6);
+        /* content: Focus 1 repeats one grain (power on the harmonics), Focus 0 refreshes it every grain (noise between) */
+        auto on_lines = [&](double foc) {
+            std::vector<float> o = part_render(sampler::PULSAR, 0, 0, foc, 0.5, 1, 220, 4, wind);
+            const int N = 65536; FFT fft; fft.reserve(N); fft.plan(N); fft.twiddles(0, N);
+            std::vector<float> b(4 * N); float *ar = b.data(), *ai = ar + N, *br = ai + N, *bi = br + N; size_t s0 = o.size() - N;
+            for (int i = 0; i < N; i++) { ar[i] = (float)(o[s0 + i] * (0.5 - 0.5 * std::cos(2 * 3.141592653589793 * i / N))); ai[i] = 0; }
+            for (int q = 0; q < fft.passes; q++) { if (q % 2 == 0) fft.pass(q, ar, ai, br, bi, 0, fft.butterflies(q)); else fft.pass(q, br, bi, ar, ai, 0, fft.butterflies(q)); }
+            const float *re = fft.passes % 2 ? br : ar, *im = fft.passes % 2 ? bi : ai;
+            double all = 0, lines = 0;
+            for (int k = 1; k < N / 2; k++) { const double pw = (double)re[k] * re[k] + (double)im[k] * im[k]; all += pw;
+                const double h = k * 48000.0 / N / 220.0; if (std::fabs(h - std::round(h)) * 220.0 * N / 48000.0 <= 2 && std::round(h) >= 1) lines += pw; }
+            return lines / all;
+        };
+        const double c1 = on_lines(1.0), c0 = on_lines(0.0);
+        std::printf("2c pulsar: power on the harmonics %.3f at Focus 1, %.3f at Focus 0\n", c1, c0);
+        assert(c1 >= 0.9 && c0 < 0.6);
+        /* level: within 1 dB of the recording, settled; no swell, no fade-up */
+        {
+            std::vector<float> o = part_render(sampler::PULSAR, 0, 0, 0.5, 0.5, 1, 220, 15, wind), dry = part_render(sampler::PULSAR, 0, 0, 0.5, 0.5, 0, 220, 15, wind);
+            const double set = rms(o, 10, 14), ref = rms(dry, 10, 14), onset = rms(o, 0, 3), early = rms(o, 0.25, 2);
+            std::printf("2c pulsar: level %.2f dB vs the recording %.2f, first 3 s %.2f, 0.25-2 s %.2f\n", set, ref, onset, early);
+            assert(std::fabs(set - ref) <= 1 && onset <= set + 3 && early >= set - 2);
+        }
+        /* stability: every Focus x Colour, extreme notes, full-scale noise and a 0.3 s looped file */
+        const std::vector<float> loud = noise_src(2, 1.0f, 9), shortf = noise_src(0.3, 1.0f, 4);
+        int bad = 0;
+        for (const std::vector<float> *sf : { &loud, &shortf }) for (double foc : { 0.0, 0.5, 1.0 }) for (double col : { 0.0, 0.5, 1.0 }) for (double f : { 5.0, 41.0, 80.0, 3500.0, 12000.0 }) {
+            std::vector<float> o = part_render(sampler::PULSAR, 0, 0, foc, col, 1, f, 1, *sf);
+            double mx = 0; bool fin = true; for (float v : o) { fin = fin && std::isfinite(v); mx = std::max(mx, (double)std::fabs(v)); }
+            if (!fin || mx >= 4) { std::printf("  2c pulsar runaway: focus %.1f colour %.1f %.0f Hz peak %.3g\n", foc, col, f, mx); bad++; }
+        }
+        std::printf("2c pulsar stability: %d runaways\n", bad);
+        assert(bad == 0);
+        /* budget: 24 voices; 8-note chords starting; starts lined up */
+#ifdef FS_TEST_O1
+        const double slack = 1.5;
+#else
+        const double slack = 1;
+#endif
+        auto timed = [&](sampler::Resonator &r, double from, double secs) { std::vector<double> ms; std::vector<float> b1(128), b2(128);
+            for (int k = 0; k < (int)(secs * 48000 / 128); k++) { std::fill(b1.begin(), b1.end(), 0.0f); auto c0 = std::chrono::steady_clock::now(); r.render(b1.data(), b2.data(), 128, from + k * 128 / 48000.0);
+                ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - c0).count()); }
+            std::sort(ms.begin(), ms.end()); return ms[(size_t)(ms.size() * 0.999)]; };
+        sampler::Resonator a; a.init(48000); a.set_source(1, (long long)wind.size(), wp); a.synth = sampler::PULSAR;
+        for (int k = 0; k < sampler::Resonator::VOICES; k++) a.attack(55 * (k + 1), 0, 0.05);
+        const double t1 = timed(a, 0, 6);
+        sampler::Resonator st; st.init(48000); st.set_source(1, (long long)wind.size(), wp); st.synth = sampler::PULSAR;
+        double worstb = 0;
+        for (int c = 0; c < 12; c++) { const double t = c * 0.5; std::vector<float> b1(128, 0.0f), b2(128, 0.0f); auto c0 = std::chrono::steady_clock::now();
+            for (int k = 0; k < 8; k++) { st.attack(55 * std::pow(2.0, (k + c % 3) / 7.0), t, 0.1); st.release(t + 0.4); }
+            st.render(b1.data(), b2.data(), 128, t); worstb = std::max(worstb, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - c0).count());
+            for (int i = 1; i < (int)(0.5 * 48000 / 128); i++) st.render(b1.data(), b2.data(), 128, t + i * 128 / 48000.0); }
+        std::printf("2c pulsar: 24 voices %.3f ms, an 8-note chord starting %.3f ms (budget %.2f)\n", t1, worstb, 1.33 * slack);
+        assert(t1 < 1.33 * slack && worstb < 1.33 * slack);
+    }
     {   /* 2c guard: the Harmonic filter and the Formant render exactly as in 2b - a hash of every method x mode */
         const std::vector<float> wind = noise_src(3, 0.5f, 77); const float *p[1] = { wind.data() };
         uint64_t h = 1469598103934665603ull;

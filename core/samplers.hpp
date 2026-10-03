@@ -123,6 +123,9 @@ struct Voice {
     std::vector<float> ola, hold, ph, mask; std::vector<int> owner; long long sk = 0; int soff = 0; double sd = 1, sf = 0;
     double rotr[PARTIALS + 1] = {}, roti[PARTIALS + 1] = {};      /* Ringing: each partial's turn per hop, times the decay */
     double fb0 = 0, fa1 = 0, fa2 = 0, fx1 = 0, fx2 = 0, fy1 = 0, fy2 = 0;   /* Comb's Formant peak */
+    /* Pulsar (2c): the period and grain length in samples; the slice's start, when it was last refreshed, the grain
+       now sounding, the refresh interval (-1: never) */
+    double pP = 1, pD = 1; long long pr = 0, plast = 0, pk = -1, prefresh = -1;
 };
 
 struct Resonator : tone::Synth {
@@ -172,6 +175,7 @@ struct Resonator : tone::Synth {
            every register without swallowing the fundamental - a fixed filter killed high notes in milliseconds */
         const double col = std::fmin(1.0, std::fmax(0.0, colour));
         x.a = col >= 0.999 ? 0 : std::exp(-2 * PI * std::fmin(f * (1.5 + 30 * col * col), 0.45 * sr) / sr);
+        if (synth == PULSAR) { start_pulsar(x, f); return; }
         if (synth != RESONATE) { start_partials(x, f, T); return; }
         if (body == BELL) {
             x.modes = 0;
@@ -206,6 +210,31 @@ struct Resonator : tone::Synth {
         const double lpd = lp_delay(x.a, w) + dc_delay(LOOP_R, w);
         int N = (int)std::floor(P - lpd - 0.2); N = std::max(1, std::min(N, (int)MASK - 2));
         x.N = N; x.c = solve_ap(P - N - lpd, w);
+    }
+
+    /* Pulsar (2c): a grain of the recording every period - fractional, so the repetition rate is the note exactly -
+       Hann-shaped, d of a period long (Colour); its slice refreshed every R(Focus) = 1 ms ... 10 s, never at Focus 1 */
+    void start_pulsar(Voice &x, double f) {
+        const double d = 0.05 + 0.95 * std::fmin(1.0, std::fmax(0.0, colour));
+        x.pP = sr / f; x.pD = std::fmax(4.0, d * x.pP); x.sk = 0; x.pk = -1;
+        x.pr = x.pos; x.plast = 0;
+        x.prefresh = focus >= 0.999 ? -1 : (long long)std::llround(0.001 * std::pow(10.0, 4 * std::fmax(0.0, focus)) * sr);
+        x.agc = std::fmin(1000.0, 1 / std::sqrt(0.375 * std::fmin(1.0, x.pD / x.pP)));   /* a Hann grain of duty d: 0.375 d of the power */
+    }
+    double pulsar(Voice &x) {
+        const double n = (double)x.sk++;
+        const long long k = (long long)std::floor(n / x.pP);
+        if (k != x.pk) {                                           /* a new grain: its slice refreshed when due */
+            x.pk = k;
+            if (x.prefresh >= 0 && (long long)n - x.plast >= x.prefresh) { x.pr = x.pos - 1; x.plast = (long long)n; }
+        }
+        const double tau = n - k * x.pP;
+        if (tau >= x.pD) return 0;
+        /* read between samples: a grain starts at a fractional time, and whole-sample reads shifted each repeat by up to
+           half a sample - on noise, a quarter of the power fell between the harmonics (measured) */
+        const long long i = (long long)tau; const double fr = tau - (double)i;
+        const double v = src.at(x.pr + i) * (1 - fr) + src.at(x.pr + i + 1) * fr;
+        return v * (0.5 - 0.5 * std::cos(2 * PI * tau / x.pD));
     }
 
     /* Harmonic filter / Formant (2b): the engines' state, and the level expected for a white input, so the slow level
@@ -394,6 +423,7 @@ struct Resonator : tone::Synth {
     void stop_all() { for (auto &x : v) if (x.active) { x.stealing = true; x.has_next = false; x.steal_at = 0; x.fade = 1.0 / (STOP_S * sr); } }
 
     double resonate(Voice &x, double in) {
+        if (x.synth == PULSAR) return pulsar(x);
         if (x.synth != RESONATE) return x.method == SPECTRAL ? spectral(x) : x.method == COMB ? comb(x, in) : bank(x, in);
         if (x.body == BELL) {
             double y = 0;
