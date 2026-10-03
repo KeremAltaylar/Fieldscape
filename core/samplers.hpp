@@ -269,12 +269,24 @@ struct Resonator : tone::Synth {
                 if (m > x.mask[k]) { x.mask[k] = (float)m; x.owner[k] = n; }
             }
         }
-        /* the output's expected power - its bins add as one line (Focus 1) or as independent noise (Focus 0) - so the
-           level starts near the moment's and the matching (to that fixed power) only fine-tunes it */
+        /* the output's expected power, so the level starts at the moment's (final review 2c #2: a flat blend was 3-5 dB
+           loud at Focus 0 and 1). A partial's bins sound as one line, each weighted by the Hann window's spectrum at its
+           distance from n f (overlap-add of turning bins); with the random turn of up to a per hop, successive frames
+           keep (sin a / a)^2 of that coherence, the rest adds as independent bins (Hann^2 overlap 1.5) */
+        auto D = [](double d) { return std::fabs(d) < 1e-9 ? 1.0 : std::sin(PI * d) / (PI * d); };
         double coh = 0, inc = 0, amp[PARTIALS + 1] = {};
-        for (int k = 1; k < SPN / 2; k++) if (x.owner[k] > 0) { amp[x.owner[k]] += x.mask[k]; inc += (double)x.mask[k] * x.mask[k]; }
+        for (int k = 1; k < SPN / 2; k++) if (x.owner[k] > 0) {
+            const double d = k - x.owner[k] * f / bin; amp[x.owner[k]] += x.mask[k] * (0.5 * D(d) + 0.25 * (D(d - 1) + D(d + 1)));
+            inc += (double)x.mask[k] * x.mask[k];
+        }
         for (int n = 1; n <= npart; n++) coh += amp[n] * amp[n];
-        const double unit = 2.0 / SPN * 2.0 / 1.5 * 0.5, est = fo * coh * unit * unit / 2 + (1 - fo) * inc * unit * unit / 2 * 1.5 / 2;
+        const double ja = (1 - fo) * PI, beta = ja < 1e-9 ? 1 : std::pow(std::sin(ja) / ja, 2);
+        const double pcoh = coh * std::pow(2.0 / (1.5 * SPH), 2) / 2, pinc = inc * std::pow(2.0 / SPN, 2) / 3;
+        /* and a measured correction over Focus (the model reads 0.3-2 dB high at Focus 0.25-1; the midpoint of noise and of
+           a harmonic tone, measured at 110 / 220 / 880 Hz) */
+        static const double CORR_DB[5] = { 0.1, -0.33, -1.1, -1.67, -1.2 };
+        const double cf = fo * 4; const int ci = std::min(3, (int)cf);
+        const double est = (beta * pcoh + (1 - beta) * pinc) * std::pow(10.0, (CORR_DB[ci] + (CORR_DB[ci + 1] - CORR_DB[ci]) * (cf - ci)) / 10);
         x.agc = x.fpow > 1e-20 ? (est > 1e-30 ? std::fmin(1000.0, std::sqrt(x.fpow / est)) : 1) : 0;
         x.rin = x.fpow; x.rout = est;                                  /* the matching starts settled, not from zero (a 4.9 dB swell) */
         const long long s0 = (long long)std::ceil(x.on_t * sr - 1e-9);
@@ -353,7 +365,9 @@ struct Resonator : tone::Synth {
         if (x.method == SPECTRAL) {
             /* each partial keeps the bins within a raised-cosine band around n f: Dry at least 3 bins each side (its
                centre then sits on n f within a hair), Ringing 2 (its pitch comes from the phase, below) */
-            std::fill(x.ola.begin(), x.ola.end(), 0.0f); std::fill(x.hold.begin(), x.hold.end(), 0.0f);
+            /* ph too: Ringing reads it as the held bins' imaginary half, and a Freeze note before left phases there (a
+               +25 dB burst, final review 2c #1) */
+            std::fill(x.ola.begin(), x.ola.end(), 0.0f); std::fill(x.hold.begin(), x.hold.end(), 0.0f); std::fill(x.ph.begin(), x.ph.end(), 0.0f);
             std::fill(x.mask.begin(), x.mask.end(), 0.0f); std::fill(x.owner.begin(), x.owner.end(), 0);
             const double bin = sr / SPN, half = x.mode == RINGING ? 2.0 : std::fmax(3.0, 0.5 * B / bin);
             int npart = 0; double cs[PARTIALS + 1], wts[PARTIALS + 1];

@@ -1600,6 +1600,37 @@ int main() {
         std::printf("2c freeze: 24 voices %.3f ms, lined up %.3f ms, an 8-note chord starting %.3f ms (budget %.2f)\n", t1, t2, worstb, 1.33 * slack);
         assert(t1 < 1.33 * slack && t2 < 1.33 * slack && worstb < 1.33 * slack);
     }
+    {   /* 2c final review #1: a voice Freeze used leaves no state behind - a Spectral Ringing note after it starts as on a
+           fresh voice (Freeze's phases were read as held levels: +24.5 dB, measured by the reviewer) */
+        std::vector<float> quiet = noise_src(6, 0.01f, 41); const float *qp[1] = { quiet.data() };
+        auto play = [&](bool after_freeze) {
+            sampler::Resonator r; r.init(48000); r.set_source(1, (long long)quiet.size(), qp); r.rel = 0.03;
+            std::vector<float> a(48000 * 2, 0.0f), b(a.size(), 0.0f);
+            if (after_freeze) { r.synth = sampler::FREEZE; r.focus = 0.2; r.attack(220, 0, 0.5); r.release(0.5);
+                for (size_t i = 0; i < a.size(); i += 128) r.render(a.data() + i, b.data() + i, 128, i / 48000.0); }
+            r.synth = sampler::HARMONIC; r.method = sampler::SPECTRAL; r.mode = sampler::RINGING; r.focus = 0.5;
+            std::fill(a.begin(), a.end(), 0.0f); r.attack(220, 2.0, 0.5);
+            for (size_t i = 0; i < a.size(); i += 128) r.render(a.data() + i, b.data() + i, 128, 2.0 + i / 48000.0);
+            double e = 0; for (size_t i = 0; i < 48000 * 3 / 10; i++) e += (double)a[i] * a[i]; return 10 * std::log10(e / (48000 * 3 / 10) + 1e-30);
+        };
+        const double fresh = play(false), reused = play(true);
+        std::printf("2c review: Spectral Ringing's first 0.3 s %.1f dB on a fresh voice, %.1f after Freeze\n", fresh, reused);
+        assert(std::fabs(reused - fresh) <= 1);
+    }
+    {   /* 2c final review #2: Freeze starts at the moment's level at every Focus - not 3-5 dB loud at the ends (the spec's
+           1 dB, on noise and on a tonal moment) */
+        const std::vector<float> wind = noise_src(10, 0.5f, 77);
+        std::vector<float> tone(48000 * 10); for (size_t i = 0; i < tone.size(); i++) { double v = 0; for (int n = 1; n <= 12; n++) v += std::sin(2 * 3.141592653589793 * 196.0 * n * i / 48000) / n; tone[i] = (float)(0.2 * v); }
+        auto rms = [](const std::vector<float> &x, double a, double z) { double e = 0; size_t i0 = (size_t)(a * 48000), i1 = (size_t)(z * 48000); for (size_t i = i0; i < i1; i++) e += (double)x[i] * x[i]; return 10 * std::log10(e / (i1 - i0) + 1e-30); };
+        double worst = 0; std::string wcase;
+        for (const std::vector<float> *sf : { &wind, (const std::vector<float> *)&tone }) for (double foc : { 0.0, 0.5, 1.0 }) for (double f : { 110.0, 220.0, 880.0 }) {
+            std::vector<float> o = part_render(sampler::FREEZE, 0, 0, foc, 0.3, 1, f, 6, *sf);
+            const double d = rms(o, 0.05, 1) - rms(o, 2, 6);   /* a 1 s window: at Focus 0 a few random-turning bins wander +-1 dB over 0.25 s (tone, 110 Hz) */
+            if (std::fabs(d) > std::fabs(worst)) { worst = d; wcase = (sf == &wind ? "noise" : "tone") + std::string(" focus ") + std::to_string(foc).substr(0, 4) + " " + std::to_string((int)f) + " Hz"; }
+        }
+        std::printf("2c review: Freeze's start against its settled level, worst %.2f dB (%s)\n", worst, wcase.c_str());
+        assert(std::fabs(worst) <= 1);
+    }
     {   /* 2c guard: the Harmonic filter and the Formant render exactly as in 2b - a hash of every method x mode */
         const std::vector<float> wind = noise_src(3, 0.5f, 77); const float *p[1] = { wind.data() };
         uint64_t h = 1469598103934665603ull;
