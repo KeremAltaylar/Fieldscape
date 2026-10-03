@@ -17,7 +17,7 @@ static const fs_param BENCH_PARAMS[] = {
     { "attack", "Attack", "s", 0.008f, 4.0f, 0.02f },
     { "release", "Release", "s", 0.03f, 10.0f, 0.6f },
     { "offset", "Position", "s", 0.0f, 600.0f, 0.0f },
-    { "synth", "Synth", "", 0.0f, 2.0f, 0.0f },        /* Resonator, Harmonic filter, Formant */
+    { "synth", "Synth", "", 0.0f, 4.0f, 0.0f },        /* Resonator, Harmonic filter, Formant, Pulsar, Freeze */
     { "method", "Method", "", 0.0f, 2.0f, 0.0f },      /* Bank, Spectral, Comb */
     { "mode", "Mode", "", 0.0f, 1.0f, 0.0f },          /* Dry, Ringing */
 };

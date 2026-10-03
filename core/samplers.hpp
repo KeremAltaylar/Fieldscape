@@ -16,7 +16,7 @@ namespace sampler {
 enum Body { STRING = 0, TUBE = 1, BELL = 2 };
 enum Excite { BOWED = 0, PLUCKED = 1 };
 /* 2b (docs/superpowers/specs/2026-10-02-non-pitch-2b-partials-design.md): which synth, drawn out how, in what time */
-enum Synth { RESONATE = 0, HARMONIC = 1, FORMANT = 2 };
+enum Synth { RESONATE = 0, HARMONIC = 1, FORMANT = 2, PULSAR = 3, FREEZE = 4 };
 enum Method { BANK = 0, SPECTRAL = 1, COMB = 2 };
 enum Mode { DRY = 0, RINGING = 1 };
 static const double BELL_RATIO[4] = { 1.0, 2.76, 5.40, 8.93 };   /* a bar's / bell's modes */

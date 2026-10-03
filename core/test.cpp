@@ -116,6 +116,17 @@ static double tone_peak(int synth, int method, int mode, double focus, double co
     const double d = span * f, lo = std::log(level(f - d)), mid = std::log(level(f)), hi = std::log(level(f + d)), den = lo - 2 * mid + hi;
     return den < 0 ? f + 0.5 * (lo - hi) / den * d : f;
 }
+/* a pure line's frequency: the Hann-windowed DFT magnitude of the last 65536 samples maximised over f (1 +- span),
+   a scan then a golden section (Pulsar and Freeze at Focus 1 are lines) */
+static double line_peak(const std::vector<float> &x, double sr, double f, double span) {
+    const size_t N = 65536, s0 = x.size() - N;
+    auto mag = [&](double q) { double re = 0, im = 0; for (size_t i = 0; i < N; i++) { double w = 0.5 - 0.5 * std::cos(2 * 3.141592653589793 * i / N), ph = 2 * 3.141592653589793 * q * i / sr; re += x[s0 + i] * w * std::cos(ph); im += x[s0 + i] * w * std::sin(ph); } return re * re + im * im; };
+    double step = std::fmax(0.1, f * span / 40), bf = f, bm = -1;
+    for (double q = f * (1 - span); q <= f * (1 + span); q += step) { double m = mag(q); if (m > bm) { bm = m; bf = q; } }
+    double lo = bf - step, hi = bf + step;
+    for (int i = 0; i < 40; i++) { double a = lo + (hi - lo) * 0.382, b = lo + (hi - lo) * 0.618; if (mag(a) > mag(b)) hi = b; else lo = a; }
+    return 0.5 * (lo + hi);
+}
 /* the Hann-windowed DFT magnitude at f over all of x (one window) */
 static double peak_amp(const std::vector<float> &x, double sr, double f) {
     double re = 0, im = 0; const size_t N = x.size();
@@ -1424,6 +1435,20 @@ int main() {
             std::printf("2b method %d: 24 voices started apart, 99.9%% of blocks within %.3f ms\n", m, ms2[(size_t)(ms2.size() * 0.999)]);
             assert(ms2[(size_t)(ms2.size() * 0.999)] < 1.33 * slack);
         }
+    }
+    {   /* 2c guard: the Harmonic filter and the Formant render exactly as in 2b - a hash of every method x mode */
+        const std::vector<float> wind = noise_src(3, 0.5f, 77); const float *p[1] = { wind.data() };
+        uint64_t h = 1469598103934665603ull;
+        for (int syn : { sampler::HARMONIC, sampler::FORMANT }) for (int m = 0; m < 3; m++) for (int mode = 0; mode < 2; mode++) {
+            sampler::Resonator r; r.init(48000); r.set_source(1, (long long)wind.size(), p);
+            r.synth = syn; r.method = m; r.mode = mode; r.focus = 0.7; r.colour = 0.4;
+            r.attack(196, 0, 0.5); r.release(1.2);
+            std::vector<float> a(48000 * 2, 0.0f), b(a.size(), 0.0f);
+            for (size_t i = 0; i < a.size(); i += 128) r.render(a.data() + i, b.data() + i, 128, i / 48000.0);
+            for (float s : a) { uint32_t u; std::memcpy(&u, &s, 4); h = (h ^ u) * 1099511628211ull; }
+        }
+        std::printf("2b hash %016llx\n", (unsigned long long)h);
+        assert(h == 0x0d78bb74e4b92934ull);   /* the em++ -O1 test build */
     }
     {   /* 2b guard: the Resonator renders exactly as in 2a (P5) - a hash of every body x excite */
         const std::vector<float> wind = noise_src(3, 0.5f, 77); const float *p[1] = { wind.data() };
