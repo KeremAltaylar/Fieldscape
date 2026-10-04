@@ -24,11 +24,11 @@
 
 ## Review Focus
 
-1. **A route switching a role between digital and sampler mid-walk** — the old instance releases (the 2.5 s tail), no click. Task 3.
-2. **Recordings arriving after the route started / replaced while playing** — set off the audio thread; sounding notes finish, new notes use the new recording. Task 3.
+1. **A route switching a role between digital and sampler mid-walk** — the old instance releases (the 2.5 s tail), no click. Task 2.
+2. **Recordings arriving after the route started / replaced while playing** — set off the audio thread; sounding notes finish, new notes use the new recording. Task 2.
 3. **Pitch sampler at the recording's end** (one-shot reads past the last sample) — silence, not a wrap click. Task 1.
 4. **Unpitched recording on the pitch sampler** (`f0 = 0`) — it plays at speed `f / 261.63` (C4) rather than dividing by zero. Task 1.
-5. **Morph values out of the digital ranges** — clamped. Task 3.
+5. **Morph values out of the digital ranges** — clamped. Task 2.
 
 ---
 
