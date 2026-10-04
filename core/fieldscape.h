@@ -176,6 +176,10 @@ int fs_piece_chord_notes(fs_device *d, float *notes5, float *root);   /* the cho
 /* The tuning a route plays in when its patch does not say (0 equal - the default - or 1 just).
    Only the lab sets it; the live site and the apps keep equal temperament (sample harmony, D1/D8). */
 void fs_piece_default_tuning(fs_device *d, int tuning);
+/* sample harmony 3a: a sampler role's recording (role 0 voice, 1 sections, 2 third voice; mixed to mono and normalised)
+   and its analysis (fs_analyse's JSON) - copied; the audio thread takes them at its next block */
+void fs_piece_role_source(fs_device *d, int role, int channels, long long frames, const float *const *pcm);
+void fs_piece_role_analysis(fs_device *d, int role, const char *analysis_json);
 /* A route's progression for the lab's audition bench: each chord's notes (MIDI) and their frequencies
    in the given tuning (0 equal, 1 just), plus the scale of one section's mode. JSON into out; returns
    the length needed, and writes nothing if size is too small. */

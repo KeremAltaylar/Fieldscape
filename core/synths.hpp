@@ -7,12 +7,16 @@
 
 namespace tone {
 
-enum SynthType { FM, AM, DUO, MONO, SIMPLE, PLUCK, METAL, MEMBRANE, WAVETABLE, COMB, FORMANT, NSYNTH };
-static const char *const SYNTH_NAMES[NSYNTH] = { "fm", "am", "duo", "mono", "simple", "pluck", "metal", "membrane", "wavetable", "comb", "formant" };
+/* the digital synths, then (sample harmony 3a) the sampler synths: sampler::Resonator playing a role's recording */
+enum SynthType { FM, AM, DUO, MONO, SIMPLE, PLUCK, METAL, MEMBRANE, WAVETABLE, COMB, FORMANT,
+                 S_RETUNE, S_RESONATOR, S_HARMONIC, S_FORMANT, S_PULSAR, S_FREEZE, NSYNTH };
+static const char *const SYNTH_NAMES[NSYNTH] = { "fm", "am", "duo", "mono", "simple", "pluck", "metal", "membrane", "wavetable", "comb", "formant",
+    "s-retune", "s-resonator", "s-harmonic", "s-formant", "s-pulsar", "s-freeze" };
 /* SYNTH_TRIM, dB */
-static const double SYNTH_TRIM[NSYNTH] = { 0, 5.5, -14.5, -10, -11, -9, -2, -12.5, -9, -0.5, -2 };
+static const double SYNTH_TRIM[NSYNTH] = { 0, 5.5, -14.5, -10, -11, -9, -2, -12.5, -9, -0.5, -2,
+    0, 0, 0, 0, 0, 0 };   /* the samplers: measured against fm (3a Task 3) */
 static const bool PERCUSSIVE[NSYNTH] = { 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0 };
-static const bool SELF_VOICED[NSYNTH] = { 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1 };
+static const bool SELF_VOICED[NSYNTH] = { 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 };
 
 /* SYNTH_PARAMS: each instrument's two timbre controls (range for the morphs to span). */
 struct TimbreRange { double min, max; };
@@ -28,6 +32,8 @@ static const TimbreRange SYNTH_PARAMS[NSYNTH][2] = {
     { { 0, 1 }, { 0, 1 } },          /* wavetable: table, brightness */
     { { 0, 1 }, { 0, 1 } },          /* comb: damping, resonance */
     { { 0, 1 }, { 0, 1 } },          /* formant: vowel, shift */
+    { { 0, 1 }, { 0, 1 } }, { { 0, 1 }, { 0, 1 } }, { { 0, 1 }, { 0, 1 } },   /* the samplers: Focus, Colour */
+    { { 0, 1 }, { 0, 1 } }, { { 0, 1 }, { 0, 1 } }, { { 0, 1 }, { 0, 1 } },
 };
 
 struct EnvSpec { double a, d, s, r; bool aexp, rexp; };

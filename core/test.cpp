@@ -1694,6 +1694,91 @@ int main() {
           int on = 0; for (int i = 0; i < sampler::Resonator::VOICES; i++) on += r.v[i].active;
           std::printf("3a retune: 8 notes on 6 voices -> %d voices in use\n", on); assert(on == 6); }
     }
+    {   /* 3a: the route engine plays sampler synths per role (spec 3a "How we know it works") */
+        const double SR = 48000;
+        struct TNote { int role; double f, dur, t; };
+        struct TLog { std::vector<TNote> n; };
+        auto logger = [](void *p, int role, double f, double dur, double t, double) { ((TLog *)p)->n.push_back({ role, f, dur, t }); };
+        auto rms_db = [](const std::vector<float> &x, size_t a, size_t z) { double e = 0; for (size_t i = a; i < z && i < x.size(); i++) e += (double)x[i] * x[i]; return 10 * std::log10(e / std::max<size_t>(1, z - a) + 1e-30); };
+        std::vector<float> nz = noise_src(20, 0.5f, 61); const float *nzp[1] = { nz.data() };
+        std::vector<float> tone20((size_t)(20 * SR)); for (size_t i = 0; i < tone20.size(); i++) { double v = 0; for (int k = 1; k <= 6; k++) v += std::sin(2 * 3.141592653589793 * 440 * k * i / SR) / k; tone20[i] = (float)(0.3 * v); }
+        const float *tnp[1] = { tone20.data() };
+        std::string tjson = "{\"f0\":440,\"hop_s\":0.02,\"track\":["; for (int k = 0; k < 1000; k++) tjson += std::string(k ? "," : "") + "[440,0.95,0]"; tjson += "]}";
+        auto run = [&](const char *patch, bool rec, double secs, TLog &log, std::vector<float> &out) {
+            unsigned seed = 4242; fs_device *d = fs_create("piece"); fs_prepare(d, 48000, 128);
+            fs_piece_test_hooks(d, fixed_draw, &seed, logger, &log);
+            fs_piece_default_tuning(d, 1);
+            if (rec) { fs_piece_role_source(d, 2, 1, (long long)tone20.size(), tnp); fs_piece_role_analysis(d, 2, tjson.c_str()); }
+            int r = fs_piece_add_route(d, patch); fs_piece_walk(d, r, 0.3, 0);
+            for (int i = 0; i < (int)(secs * SR / 128); i++) { fs_process(d, 128); const float *l = fs_out(d, 0); out.insert(out.end(), l, l + 128); }
+            fs_destroy(d); };
+        const char *only_v3 = "{\"version\":17,\"prog\":[{\"r\":0,\"q\":\"m9\"},{\"r\":5,\"q\":\"maj7#11\"},{\"r\":10,\"q\":\"maj9\"},{\"r\":3,\"q\":\"6/9\"}],\"bed\":{\"on\":false},\"voice\":{\"on\":false},\"sect\":{\"on\":false},\"zones\":{\"on\":false},\"v3\":{\"synth\":\"s-retune\",\"warp\":0,\"drive\":0,\"sampler\":{\"colour\":1}}}";
+        /* the route with the Third voice off: other layers of a route still sound (-26 dB, measured) - the baseline */
+        TLog l0; std::vector<float> base; run("{\"version\":17,\"prog\":[{\"r\":0,\"q\":\"m9\"},{\"r\":5,\"q\":\"maj7#11\"},{\"r\":10,\"q\":\"maj9\"},{\"r\":3,\"q\":\"6/9\"}],\"bed\":{\"on\":false},\"voice\":{\"on\":false},\"sect\":{\"on\":false},\"zones\":{\"on\":false},\"v3\":{\"on\":false}}", false, 40, l0, base);
+        const double base_db = rms_db(base, 0, base.size());
+        /* no recording: the Third voice's notes are played (logged) but silent; finite */
+        { TLog log; std::vector<float> o; run(only_v3, false, 20, log, o);
+          int n3 = 0; for (auto &e : log.n) n3 += e.role == 3; bool fin = true; for (float v : o) fin = fin && std::isfinite(v);
+          std::printf("3a route: no recording - %d Third-voice notes, output %.2f dB (the route without it %.2f)\n", n3, rms_db(o, 0, o.size()), rms_db(base, 0, o.size()));
+          assert(n3 > 0 && fin && std::fabs(rms_db(o, 0, o.size()) - rms_db(base, 0, o.size())) < 0.05); }
+        /* a recording: the Third voice's own sound (the render minus the same walk without it - fixed draws, so the rest
+           is identical) - each long note on the engine's Hz within 1 cent */
+        { TLog log, l2; std::vector<float> o, q; run(only_v3, true, 40, log, o); run(only_v3, false, 40, l2, q);
+          std::vector<float> v3(o.size()); for (size_t i = 0; i < o.size(); i++) v3[i] = o[i] - q[i];
+          int checked = 0; double worst = 0;
+          for (auto &e : log.n) if (e.role == 3 && e.dur >= 2.0 && e.t + 1.9 < v3.size() / SR && checked < 4) {
+              const size_t z = (size_t)((e.t + 1.9) * SR); std::vector<float> w(v3.begin() + (long)(z - 65536), v3.begin() + (long)z);
+              const double got = line_peak(w, SR, e.f, 0.01);
+              worst = std::max(worst, std::fabs(1200 * std::log2(got / e.f))); checked++; }
+          std::printf("3a route: the sampler Third voice alone at %.1f dB; %d notes checked, worst %.3f cents off the engine's Hz\n", rms_db(v3, 0, v3.size()), checked, worst);
+          assert(checked >= 2 && worst <= 1 && rms_db(v3, 0, v3.size()) > -70); }
+        /* consonance: a digital triangle root and a sampled fifth (the pitch sampler on a steady harmonic tone) - in Just the
+           root's 3rd partial and the fifth's 2nd coincide (flat envelope); in Equal they beat */
+        { std::vector<float> tone((size_t)(4 * SR)); for (size_t i = 0; i < tone.size(); i++) { double v = 0; for (int k = 1; k <= 6; k++) v += std::sin(2 * 3.141592653589793 * 440 * k * i / SR) / k; tone[i] = (float)(0.3 * v); }
+          std::vector<float> tf(200, 440.0f), tc(200, 0.95f);
+          auto fluct = [&](double fifth) {
+              tone::SimpleSynth dg; dg.init(SR); sampler::Resonator sm; sm.init(SR); const float *p[1] = { tone.data() }; sm.set_source(1, (long long)tone.size(), p);
+              sm.set_track(440, 0.02, tf.data(), tc.data(), 200); sm.synth = sampler::RETUNE; sm.nv = 6;
+              dg.attack(220, 0, 0.5); sm.attack(fifth, 0, 0.5);
+              std::vector<float> L((size_t)(4 * SR), 0.0f), R(L.size(), 0.0f);
+              for (size_t i = 0; i < L.size(); i += 128) { dg.render(L.data() + i, R.data() + i, 128, i / SR); sm.render(L.data() + i, R.data() + i, 128, i / SR); }
+              double lo = 1e9, hi = -1e9; for (double t = 1; t < 3.5; t += 0.05) { std::vector<float> w(L.begin() + (long)(t * SR), L.begin() + (long)((t + 0.05) * SR)); const double a = 20 * std::log10(peak_amp(w, SR, 660)); lo = std::min(lo, a); hi = std::max(hi, a); }
+              return hi - lo; };
+          const double just = fluct(330), equal = fluct(220 * std::pow(2.0, 7 / 12.0));
+          std::printf("3a consonance: the 660 Hz meeting partial fluctuates %.2f dB in Just, %.2f dB in Equal\n", just, equal);
+          assert(just < 1 && equal > 3); }
+        /* a role switched digital -> sampler -> digital mid-walk: no step beyond what either sound makes on its own */
+        { const char *dig = "{\"version\":17,\"prog\":[{\"r\":0,\"q\":\"m9\"},{\"r\":5,\"q\":\"maj7#11\"},{\"r\":10,\"q\":\"maj9\"},{\"r\":3,\"q\":\"6/9\"}],\"bed\":{\"on\":false},\"voice\":{\"on\":false},\"sect\":{\"on\":false},\"zones\":{\"on\":false},\"v3\":{\"synth\":\"am\"}}";
+          auto walk = [&](int sw1, int sw2) {   /* switch to the sampler at block sw1, back at sw2 (-1: never) */
+              std::vector<float> o; unsigned seed = 9; TLog log; fs_device *d = fs_create("piece"); fs_prepare(d, 48000, 128);
+              fs_piece_test_hooks(d, fixed_draw, &seed, logger, &log); fs_piece_role_source(d, 2, 1, (long long)tone20.size(), tnp); fs_piece_role_analysis(d, 2, tjson.c_str());
+              int r = fs_piece_add_route(d, sw1 == 0 ? only_v3 : dig); fs_piece_walk(d, r, 0.3, 0);
+              for (int i = 0; i < (int)(30 * SR / 128); i++) {
+                  if (sw1 > 0 && i == sw1) fs_piece_set_route(d, r, only_v3);
+                  if (sw2 > 0 && i == sw2) fs_piece_set_route(d, r, dig);
+                  fs_process(d, 128); const float *l = fs_out(d, 0); o.insert(o.end(), l, l + 128); }
+              fs_destroy(d);
+              double step = 0; bool fin = true; for (size_t i = 1; i < o.size(); i++) { step = std::max(step, (double)std::fabs(o[i] - o[i - 1])); fin = fin && std::isfinite(o[i]); }
+              return fin ? step : 1e9; };
+          const double sw = walk((int)(10 * SR / 128), (int)(20 * SR / 128)), dig_only = walk(-1, -1), smp_only = walk(0, -1);
+          std::printf("3a route: switching the Third voice digital -> sampler -> digital, largest step %.4f (digital alone %.4f, sampler alone %.4f)\n", sw, dig_only, smp_only);
+          assert(sw <= 1.1 * std::max(dig_only, smp_only)); }
+        /* budget: every role a Freeze (the costliest) with recordings, chords starting */
+        { const char *all = "{\"version\":17,\"prog\":[{\"r\":0,\"q\":\"m9\"},{\"r\":5,\"q\":\"maj7#11\"},{\"r\":10,\"q\":\"maj9\"},{\"r\":3,\"q\":\"6/9\"}],\"bed\":{\"on\":false},\"zones\":{\"on\":false},\"voice\":{\"synth\":\"s-freeze\"},\"sect\":{\"synth\":\"s-freeze\"},\"v3\":{\"synth\":\"s-freeze\"}}";
+          unsigned seed = 5; TLog log; fs_device *d = fs_create("piece"); fs_prepare(d, 48000, 128); fs_piece_test_hooks(d, fixed_draw, &seed, logger, &log);
+          for (int ro = 0; ro < 3; ro++) fs_piece_role_source(d, ro, 1, (long long)nz.size(), nzp);
+          int r = fs_piece_add_route(d, all); fs_piece_walk(d, r, 0.3, 0);
+          std::vector<double> ms;
+          for (int i = 0; i < (int)(30 * SR / 128); i++) { auto c0 = std::chrono::steady_clock::now(); fs_process(d, 128); if (i > 400) ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - c0).count()); }
+          fs_destroy(d); std::sort(ms.begin(), ms.end());
+#ifdef FS_TEST_O1
+          const double slack = 1.5;
+#else
+          const double slack = 1;
+#endif
+          std::printf("3a route: every role a Freeze, 99.9%% of blocks within %.3f ms, worst %.3f (budget %.2f)\n", ms[(size_t)(ms.size() * 0.999)], ms.back(), 1.33 * slack);
+          assert(ms[(size_t)(ms.size() * 0.999)] < 1.33 * slack); }
+    }
     {   /* 2c guard: the Harmonic filter and the Formant render exactly as in 2b - a hash of every method x mode */
         const std::vector<float> wind = noise_src(3, 0.5f, 77); const float *p[1] = { wind.data() };
         uint64_t h = 1469598103934665603ull;

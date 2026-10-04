@@ -148,6 +148,7 @@ struct Resonator : tone::Synth {
     /* the pitch sampler (3a): voices in use (a route role: 6), the recording's pitch (analysis f0) and its track - f0 and
        confidence every thop s - and its clearest moment (the most confident frame within 50 cents of f0) */
     int nv = VOICES; double tf0 = 0, thop = 0.02, kglide = 0; long long tclear = 0; std::vector<float> tf, tc;
+    const float *tfp = nullptr, *tcp = nullptr; int tn = 0;      /* the track as read (a copy's, or a host's buffers) */
     long long freeze_at = -1; const void *freeze_src = nullptr; double freeze_tp = 0;   /* ...and which moment it is */
 
     static double t60(double focus) { return 0.2 * std::pow(50.0, std::fmin(1.0, std::fmax(0.0, focus))); }
@@ -162,9 +163,15 @@ struct Resonator : tone::Synth {
         win.resize(SPN); for (int j = 0; j < SPN; j++) win[j] = (float)(0.5 - 0.5 * std::cos(2 * PI * j / SPN));
     }
     void set_track(double f0, double hop_s, const float *f0s, const float *confs, int n) {
-        tf0 = f0 > 0 ? f0 : 0; thop = hop_s > 0 ? hop_s : 0.02; tf.assign(f0s, f0s + std::max(0, n)); tc.assign(confs, confs + std::max(0, n));
+        n = f0s && confs ? std::max(0, n) : 0;
+        tf.assign(f0s, f0s + n); tc.assign(confs, confs + n);
+        set_track_view(f0, hop_s, tf.data(), tc.data(), n);
+    }
+    /* no copy, no allocation: the host keeps the buffers alive (the route engine, on its audio thread) */
+    void set_track_view(double f0, double hop_s, const float *f0s, const float *confs, int n) {
+        tf0 = f0 > 0 ? f0 : 0; thop = hop_s > 0 ? hop_s : 0.02; tfp = f0s; tcp = confs; tn = f0s && confs ? std::max(0, n) : 0;
         int best = -1; float bc = 0;
-        for (int i = 0; i < n; i++) if (tf[i] > 0 && tc[i] > bc && tf0 > 0 && std::fabs(1200 * std::log2(tf[i] / tf0)) < 50) { best = i; bc = tc[i]; }
+        for (int i = 0; i < tn; i++) if (tfp[i] > 0 && tcp[i] > bc && tf0 > 0 && std::fabs(1200 * std::log2(tfp[i] / tf0)) < 50) { best = i; bc = tcp[i]; }
         tclear = best < 0 ? 0 : (long long)(best * thop * sr);
     }
     void set_source(int ch, long long n, const float *const *p) {
@@ -242,8 +249,8 @@ struct Resonator : tone::Synth {
         const double left = (double)x.rend - 2 - x.rpos;
         if (left <= 0) return 0;
         const double ft = x.rpos / sr / thop - 0.5; const int fr = (int)std::floor(ft);   /* frame centres at (k + 0.5) thop */
-        if (fr >= 0 && fr + 1 < (int)tf.size() && tc[fr] >= 0.8f && tc[fr + 1] >= 0.8f && tf[fr] > 0 && tf[fr + 1] > 0) x.rf0 = tf[fr] + (tf[fr + 1] - tf[fr]) * (ft - fr);
-        else if (fr >= 0 && fr < (int)tf.size() && tc[fr] >= 0.8f && tf[fr] > 0) x.rf0 = tf[fr];
+        if (fr >= 0 && fr + 1 < tn && tcp[fr] >= 0.8f && tcp[fr + 1] >= 0.8f && tfp[fr] > 0 && tfp[fr + 1] > 0) x.rf0 = tfp[fr] + (tfp[fr + 1] - tfp[fr]) * (ft - fr);
+        else if (fr >= 0 && fr < tn && tcp[fr] >= 0.8f && tfp[fr] > 0) x.rf0 = tfp[fr];
         x.rspd += (std::pow(x.sf / x.rf0, tune) - x.rspd) * kglide;
         const long long i = (long long)x.rpos; const double u = x.rpos - (double)i;
         const double y0 = src.at(i - 1), y1 = src.at(i), y2 = src.at(i + 1), y3 = src.at(i + 2);

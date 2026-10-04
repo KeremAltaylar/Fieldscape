@@ -17,6 +17,7 @@
 #include "json.hpp"
 #include "synths.hpp"
 #include "harmony.hpp"
+#include "samplers.hpp"
 
 #include <cstdio>
 #include <cstring>
@@ -156,6 +157,8 @@ struct FxCfg { Div delayDiv; double delayWet, delayFb, revWet, revDecay; };
 struct VoiceCfg { bool on; double gain, density, bass, top, index, harm, drive, warp; int synth; };
 struct SectCfg { bool on; int n; double gain; Div rhythm; double chordPull, harm, index, drive, warp; int synth; };
 struct V3Cfg { bool on; double gain; Div rhythm; int synth; double harm, index, drive, warp; };
+/* a sampler role's settings (3a): the bench's controls; Focus / Colour are its two timbre slots (morphs drive them) */
+struct SamplerCfg { int body = 0, excite = 0, method = 0, mode = 0; double focus = 0.5, colour = 0.5, tune = 1; };
 struct RfxCfg { double cutoff, drive; Div delayDiv; double delayWet, delayFb, revWet, revDecay; };
 struct Patch {
     double tempo = 72; int key = 50, key2 = 55;
@@ -166,7 +169,16 @@ struct Patch {
     Morph morph[24]; int nmorph = 0;
     Sector sectors[32]; int nsectors = 0;
     int tuning = -1;   /* "just" 1, "equal" 0, absent -1: the piece's default (sample harmony) */
+    SamplerCfg smp[3];  /* voice, sect, v3: their "sampler" object (3a) */
 };
+static SamplerCfg smp_of(const Json *role) {
+    SamplerCfg c; const Json *j = role ? role->get("sampler") : nullptr;
+    if (!j) return c;
+    c.body = (int)j->n("body", c.body); c.excite = (int)j->n("excite", c.excite); c.method = (int)j->n("method", c.method);
+    c.mode = (int)j->n("mode", c.mode); c.focus = j->n("focus", c.focus); c.colour = j->n("colour", c.colour); c.tune = j->n("tune", c.tune);
+    return c;
+}
+static bool is_sampler(int type) { return type >= S_RETUNE && type < NSYNTH; }
 
 static FxCfg fx_of(const Json *j, const char *div, double wet, double fb, double rw, double rd) {
     FxCfg f;
@@ -230,6 +242,7 @@ static void patch_of(const Json *p, Patch &P) {
         div_of(s ? s->s("rhythm", "4n.") : "4n."), s ? s->n("chordPull", 0.35) : 0.35, s ? s->n("harm", 2.02) : 2.02,
         s ? s->n("index", 7.5) : 7.5, s ? s->n("drive", 0.18) : 0.18, s ? s->n("warp", 0.14) : 0.14,
         find_synth(s ? s->s("synth", "fm") : "fm", FM) };
+    P.smp[0] = smp_of(v); P.smp[1] = smp_of(s); P.smp[2] = smp_of(v3);
 
     const Json *m = p ? p->get("morph") : nullptr;
     P.nmorph = 0;
@@ -462,6 +475,7 @@ struct Role {
     std::unique_ptr<Synth> inst[NSYNTH];
     double until[NSYNTH] = {};
     int cur = -1;
+    int rec = -1;                     /* which role recording a sampler here plays: 0 voice, 1 sect, 2 v3 (3a) */
     Settings st;
     double extra_db = 0;
     Synth *sy() { return cur >= 0 ? inst[cur].get() : nullptr; }
@@ -511,6 +525,8 @@ struct Rhythm {
 };
 
 /* ------------------------------------------------------------------ the device */
+/* a role's recording (3a): mono, normalised; its pitch track (f0, confidence every hop s) */
+struct RoleRec { float *pcm = nullptr; long long n = 0; float *tf = nullptr, *tc = nullptr; int tn = 0; double f0 = 0, hop = 0.02; };
 struct Inbox {
     bool walk = false; int route = -1; double t = 0, dist = 1e300;
     bool sector = false; int sector_v = -1;
@@ -518,6 +534,7 @@ struct Inbox {
     int zones[8]; int nzones = 0;
     bool solo_set = false; int solo_v = -1;    /* Listen on a rhythm point: that handle alone (-1: everything) */
     struct ROp { int op = 0; RhythmCfg cfg; bool grains = false; bool gain = false; float g = 0; Src src[4]; bool src_set[4] = {}; } r[FS_MAX_VOICES];
+    RoleRec rrec[3]; bool rrec_set[3] = {};   /* role recordings for the audio thread (3a) */
     std::vector<short *> trash;       /* buffers the audio thread let go of */
     bool freed[FS_MAX_VOICES] = {};
     std::vector<Patch> routes;        /* registered, read by the audio thread only under the lock */
@@ -568,6 +585,17 @@ struct Piece : Device {
     struct { bool have_last = false; int last = 0; long tick = 0; } T3;
 
     Role bass, top, sectr, v3r;
+    /* the role recordings (3a): the host's, normalised, owned here for the device's life (ponytail: never freed before
+       the device - a replaced recording may still be read by a sounding note; a lab uses a few). known: the calling
+       thread's latest, bound to sampler instances made there; live: what the audio thread has taken from the inbox. */
+    RoleRec known[3], live[3];
+    struct Keep { std::vector<float *> b; ~Keep() { for (float *q : b) std::free(q); } } keep;
+    static void bind(Synth *s, const RoleRec &k) {
+        auto *r = static_cast<sampler::Resonator *>(s);
+        if (k.pcm) { const float *pp[1] = { k.pcm }; r->set_source(1, k.n, pp); }
+        r->set_track_view(k.f0, k.hop, k.tf, k.tc, k.tn);
+    }
+    void bind_role(Role &r, const RoleRec &k) { for (int t = S_RETUNE; t < NSYNTH; t++) if (r.inst[t]) bind(r.inst[t].get(), k); }
     Ctl bass_g, top_g;
     Layer pad, sectL, v3L;
     FxChain fx, fx2, fx3, rfx;
@@ -602,6 +630,12 @@ struct Piece : Device {
     /* ---- building (calling thread) ---- */
     Synth *make(int type) {
         Synth *s;
+        if (is_sampler(type)) {           /* 3a: the sampler synths, 6 voices a role */
+            static const int MAP[6] = { sampler::RETUNE, sampler::RESONATE, sampler::HARMONIC, sampler::FORMANT, sampler::PULSAR, sampler::FREEZE };
+            auto *r = new sampler::Resonator(); r->synth = MAP[type - S_RETUNE]; r->nv = 6;
+            r->init(sr);
+            return r;
+        }
         switch (type) {
         case AM: { auto *m = new ModSynth(); m->am = true; s = m; break; }
         case DUO: s = new DuoSynth(); break;
@@ -618,7 +652,11 @@ struct Piece : Device {
         s->init(sr);
         return s;
     }
-    void need(Role &r, int type) { if (!r.inst[type]) r.inst[type].reset(make(type)); }
+    void need(Role &r, int type) {
+        if (r.inst[type]) return;
+        r.inst[type].reset(make(type));
+        if (is_sampler(type) && r.rec >= 0) bind(r.inst[type].get(), known[r.rec]);
+    }
     void need_all(const Patch &p) { need(bass, p.voice.synth); need(top, p.voice.synth); need(sectr, p.sect.synth); need(v3r, p.v3.synth); }
 
     static Settings role_settings(double harm, double index, int osc, int mod, EnvSpec env, EnvSpec menv) { return Settings{ harm, index, osc, mod, env, menv }; }
@@ -643,6 +681,7 @@ struct Piece : Device {
     void prepare(float s, int) override {
         sr = s;
         basic_wave(SINE); custom_wave(0); pink_noise(0);
+        bass.rec = top.rec = 0; sectr.rec = 1; v3r.rec = 2;
         Patch d; patch_of(nullptr, d);
         patch = d;
         need_all(d);
@@ -799,6 +838,11 @@ struct Piece : Device {
     void note(int role, Synth *sy, double f, double dur, double t, double vel) {
         if (on_note) on_note(note_ctx, role, f, dur, t, vel);
         if (!sy) return;
+        Role *rr = role == 0 ? &bass : role == 1 ? &top : role == 2 ? &sectr : role == 3 ? &v3r : nullptr;
+        if (rr && is_sampler(rr->cur) && sy == rr->sy()) {   /* a sampler role: its settings for this note (3a) */
+            auto *rs = static_cast<sampler::Resonator *>(sy); const SamplerCfg &c = patch.smp[role <= 1 ? 0 : role - 1];
+            rs->body = c.body; rs->excite = c.excite; rs->method = c.method; rs->mode = c.mode; rs->tune = c.tune;
+        }
         if (dur < 0) sy->attack(f, t, vel); else sy->attack_release(f, dur, t, vel);
     }
 
@@ -823,8 +867,9 @@ struct Piece : Device {
         double density = std::max(0.05, std::min(0.95, p.voice.density * (0.35 + std::min(2.5, onsets) / 2.5)));
         double T = time, m;
         pad.g1.p.linearRampTo(morph(M_VOICE_GAIN, T, m) ? 0.25 + 0.75 * m : 1, 0.25, T);
-        timbre(bass.sy(), p.voice.synth, p.voice.harm, M_VOICE_HARM, p.voice.index, M_VOICE_INDEX, 0.4, T);
-        timbre(top.sy(), p.voice.synth, p.voice.harm, M_VOICE_HARM, p.voice.index, M_VOICE_INDEX, 0.4, T);
+        const bool vs = is_sampler(p.voice.synth);   /* a sampler role's two timbre numbers are its Focus and Colour */
+        timbre(bass.sy(), p.voice.synth, vs ? p.smp[0].focus : p.voice.harm, M_VOICE_HARM, vs ? p.smp[0].colour : p.voice.index, M_VOICE_INDEX, 0.4, T);
+        timbre(top.sy(), p.voice.synth, vs ? p.smp[0].focus : p.voice.harm, M_VOICE_HARM, vs ? p.smp[0].colour : p.voice.index, M_VOICE_INDEX, 0.4, T);
         pad.drive(morph(M_VOICE_DRIVE, T, m) ? m : p.voice.drive, 11, 3.2, T);
         double wp = morph(M_VOICE_WARP, T, m) ? m : p.voice.warp;
         pad.warp.wet.p.linearRampTo(wp * 0.85, 0.3, T); pad.warp.depth = (float)(0.15 + wp * 0.85);
@@ -867,7 +912,7 @@ struct Piece : Device {
         if (!p.sect.on) return;
         double T = time, m;
         sectL.cutoff.p.exponentialRampTo(morph(M_SECT_CUTOFF, T, m) ? 900 * std::pow(10, m) : 9000, 0.2, T);
-        timbre(sectr.sy(), p.sect.synth, p.sect.harm, M_SECT_HARM, p.sect.index, M_SECT_INDEX, 0.3, T);
+        timbre(sectr.sy(), p.sect.synth, is_sampler(p.sect.synth) ? p.smp[1].focus : p.sect.harm, M_SECT_HARM, is_sampler(p.sect.synth) ? p.smp[1].colour : p.sect.index, M_SECT_INDEX, 0.3, T);
         sectL.drive(morph(M_SECT_DRIVE, T, m) ? m : p.sect.drive, 13, 3.6, T);
         double w2 = morph(M_SECT_WARP, T, m) ? m : p.sect.warp;
         sectL.warp.wet.p.linearRampTo(w2 * 0.85, 0.3, T); sectL.warp.depth = (float)(0.2 + w2 * 0.8);
@@ -941,7 +986,7 @@ struct Piece : Device {
         if (!p.v3.on) return;
         double T = time, m;
         Synth *sy = v3r.sy();
-        timbre(sy, p.v3.synth, p.v3.harm, M_V3_HARM, p.v3.index, M_V3_INDEX, 0.4, T);
+        timbre(sy, p.v3.synth, is_sampler(p.v3.synth) ? p.smp[2].focus : p.v3.harm, M_V3_HARM, is_sampler(p.v3.synth) ? p.smp[2].colour : p.v3.index, M_V3_INDEX, 0.4, T);
         v3L.drive(morph(M_V3_DRIVE, T, m) ? m : p.v3.drive, 11, 3.2, T);
         double wv = morph(M_V3_WARP, T, m) ? m : p.v3.warp;
         v3L.warp.wet.p.linearRampTo(wv * 0.85, 0.3, T); v3L.warp.depth = (float)(0.15 + wv * 0.85);
@@ -1174,6 +1219,10 @@ struct Piece : Device {
     /* ---- the inbox ---- */
     void take_inbox(double now) {
         if (!mu.try_lock()) return;
+        for (int i = 0; i < 3; i++) if (in.rrec_set[i]) {   /* a role's recording (3a): its sampler instances read it now */
+            in.rrec_set[i] = false; live[i] = in.rrec[i];
+            for (Role *r : { &bass, &top, &sectr, &v3r }) if (r->rec == i) bind_role(*r, live[i]);
+        }
         while (routes.size() < in.routes.size()) routes.push_back(in.routes[routes.size()]);
         for (size_t i = 0; i < routes.size() && i < 64; i++) if (in.route_dirty[i]) {
             in.route_dirty[i] = false;
@@ -1415,6 +1464,40 @@ int fs_piece_add_route(fs_device *d, const char *patch_json) {
     if (p->in.routes.size() >= 64) return -1;     /* ponytail: 64 routes; the vector must not move under the audio thread */
     p->in.routes.push_back(pt);
     return (int)p->in.routes.size() - 1;
+}
+
+/* sample harmony 3a: a role's recording (0 voice, 1 sections, 2 third voice) - mixed to mono and normalised to -20 dBFS
+   RMS over its sounding part (50 ms blocks within 40 dB of the loudest), so every recording plays at one level - and its
+   analysis (fs_analyse's JSON: f0, hop_s, track). The audio thread takes them at its next block. */
+void fs_piece_role_source(fs_device *d, int role, int channels, long long frames, const float *const *pcm) {
+    Piece *p = P(d); if (!p || role < 0 || role > 2 || !pcm || frames <= 0 || channels < 1) return;
+    float *m = (float *)std::malloc(sizeof(float) * (size_t)frames); if (!m) return;
+    const int ch = channels > 1 ? 2 : 1;
+    for (long long i = 0; i < frames; i++) { double v = 0; for (int c = 0; c < ch; c++) v += pcm[c][i]; m[i] = (float)(v / ch); }
+    const long long B = 2400; double top = 0; std::vector<double> e;
+    for (long long a = 0; a < frames; a += B) { const long long z = std::min(frames, a + B); double s = 0; for (long long i = a; i < z; i++) s += (double)m[i] * m[i]; e.push_back(s / (double)(z - a)); top = std::max(top, e.back()); }
+    double sum = 0; long cnt = 0; for (double s : e) if (s >= top * 1e-4) { sum += s; cnt++; }
+    const double rms = cnt ? std::sqrt(sum / cnt) : 0, gain = rms > 1e-9 ? 0.1 / rms : 0;
+    for (long long i = 0; i < frames; i++) m[i] = (float)(m[i] * gain);
+    std::lock_guard<std::mutex> g(p->mu); sweep(p);
+    p->keep.b.push_back(m);
+    p->known[role].pcm = m; p->known[role].n = frames;
+    p->in.rrec[role] = p->known[role]; p->in.rrec_set[role] = true;
+}
+void fs_piece_role_analysis(fs_device *d, int role, const char *json) {
+    Piece *p = P(d); if (!p || role < 0 || role > 2 || !json) return;
+    Json j = Json::parse(json);
+    const Json *tr = j.get("track"); const int n = tr ? (int)tr->size() : 0;
+    float *tf = n ? (float *)std::malloc(sizeof(float) * n) : nullptr, *tc = n ? (float *)std::malloc(sizeof(float) * n) : nullptr;
+    for (int i = 0; i < n && tf && tc; i++) {
+        const Json *fr = tr->at(i); const Json *a = fr ? fr->at(0) : nullptr, *b = fr ? fr->at(1) : nullptr;
+        tf[i] = a ? (float)a->num : 0; tc[i] = b ? (float)b->num : 0;
+    }
+    std::lock_guard<std::mutex> g(p->mu); sweep(p);
+    if (tf) p->keep.b.push_back(tf); if (tc) p->keep.b.push_back(tc);
+    RoleRec &k = p->known[role];
+    k.f0 = j.n("f0", 0); k.hop = j.n("hop_s", 0.02); k.tf = tf && tc ? tf : nullptr; k.tc = tf && tc ? tc : nullptr; k.tn = tf && tc ? n : 0;
+    p->in.rrec[role] = k; p->in.rrec_set[role] = true;
 }
 
 /* A setter changed route i's patch: it replaces the registered one, and is heard at once if that route plays. */
