@@ -16,7 +16,7 @@ namespace sampler {
 enum Body { STRING = 0, TUBE = 1, BELL = 2 };
 enum Excite { BOWED = 0, PLUCKED = 1 };
 /* 2b (docs/superpowers/specs/2026-10-02-non-pitch-2b-partials-design.md): which synth, drawn out how, in what time */
-enum Synth { RESONATE = 0, HARMONIC = 1, FORMANT = 2, PULSAR = 3, FREEZE = 4 };
+enum Synth { RESONATE = 0, HARMONIC = 1, FORMANT = 2, PULSAR = 3, FREEZE = 4, RETUNE = 5 };
 enum Method { BANK = 0, SPECTRAL = 1, COMB = 2 };
 enum Mode { DRY = 0, RINGING = 1 };
 static const double BELL_RATIO[4] = { 1.0, 2.76, 5.40, 8.93 };   /* a bar's / bell's modes */
@@ -127,6 +127,8 @@ struct Voice {
        now sounding, the refresh interval (-1: never) */
     double pP = 1, pD = 1; long long pr = 0, plast = 0, pk = -1, prefresh = -1;
     double vfocus = 0.5, fpow = 0; uint32_t rng = 1;             /* Freeze (2c): the note's Focus, the moment's power, jitter */
+    /* the pitch sampler (3a): read place and speed, the recording's pitch there, its brightness filter, the end */
+    double rpos = 0, rspd = 1, rf0 = 261.63, rlp = 0, rlpa = 0; long long rend = 0;
 };
 
 struct Resonator : tone::Synth {
@@ -143,18 +145,27 @@ struct Resonator : tone::Synth {
     std::vector<double> tune_buf;                                 /* per block; sized once to the largest block */
     RFFT rf; std::vector<float> xin, Xr, Xi, yout, win;           /* Spectral: one transform shared by the voices */
     std::vector<double> freeze_pw;                                /* Freeze: the moment's averaged power spectrum */
+    /* the pitch sampler (3a): voices in use (a route role: 6), the recording's pitch (analysis f0) and its track - f0 and
+       confidence every thop s - and its clearest moment (the most confident frame within 50 cents of f0) */
+    int nv = VOICES; double tf0 = 0, thop = 0.02, kglide = 0; long long tclear = 0; std::vector<float> tf, tc;
     long long freeze_at = -1; const void *freeze_src = nullptr; double freeze_tp = 0;   /* ...and which moment it is */
 
     static double t60(double focus) { return 0.2 * std::pow(50.0, std::fmin(1.0, std::fmax(0.0, focus))); }
 
     void init(double s) override {
-        sr = s;
+        sr = s; kglide = 1 - std::exp(-1.0 / (0.01 * sr));
         for (auto &x : v) {
             x.line.assign(MASK + 1, 0.0f);
             x.ola.assign(SPN, 0.0f); x.hold.assign(SPN / 2 + 1, 0.0f); x.ph.assign(SPN / 2 + 1, 0.0f); x.mask.assign(SPN / 2 + 1, 0.0f); x.owner.assign(SPN / 2 + 1, 0);
         }
         rf.init(SPN); freeze_pw.assign(SPN / 2 + 1, 0.0); xin.assign(SPN, 0.0f); Xr.assign(SPN / 2 + 1, 0.0f); Xi.assign(SPN / 2 + 1, 0.0f); yout.assign(SPN, 0.0f);
         win.resize(SPN); for (int j = 0; j < SPN; j++) win[j] = (float)(0.5 - 0.5 * std::cos(2 * PI * j / SPN));
+    }
+    void set_track(double f0, double hop_s, const float *f0s, const float *confs, int n) {
+        tf0 = f0 > 0 ? f0 : 0; thop = hop_s > 0 ? hop_s : 0.02; tf.assign(f0s, f0s + std::max(0, n)); tc.assign(confs, confs + std::max(0, n));
+        int best = -1; float bc = 0;
+        for (int i = 0; i < n; i++) if (tf[i] > 0 && tc[i] > bc && tf0 > 0 && std::fabs(1200 * std::log2(tf[i] / tf0)) < 50) { best = i; bc = tc[i]; }
+        tclear = best < 0 ? 0 : (long long)(best * thop * sr);
     }
     void set_source(int ch, long long n, const float *const *p) {
         src = Source(); freeze_at = -1;   /* a new recording: no frozen moment carried over */ if (!p || n <= 0) return;
@@ -178,6 +189,7 @@ struct Resonator : tone::Synth {
            every register without swallowing the fundamental - a fixed filter killed high notes in milliseconds */
         const double col = std::fmin(1.0, std::fmax(0.0, colour));
         x.a = col >= 0.999 ? 0 : std::exp(-2 * PI * std::fmin(f * (1.5 + 30 * col * col), 0.45 * sr) / sr);
+        if (synth == RETUNE) { start_retune(x, f); return; }
         if (synth == PULSAR) { start_pulsar(x, f); return; }
         if (synth == FREEZE) { start_freeze(x, f); return; }
         if (synth != RESONATE) { start_partials(x, f, T); return; }
@@ -214,6 +226,33 @@ struct Resonator : tone::Synth {
         const double lpd = lp_delay(x.a, w) + dc_delay(LOOP_R, w);
         int N = (int)std::floor(P - lpd - 0.2); N = std::max(1, std::min(N, (int)MASK - 2));
         x.N = N; x.c = solve_ap(P - N - lpd, w);
+    }
+
+    /* The pitch sampler (3a): the recording read at (f / its own pitch there)^Tune - the pitch track's f0 at the read place,
+       between frames linearly, where confident (>= 0.8), else the last confident; the speed glides over 10 ms. From the
+       clearest moment (or Position); a one-shot fades out over its last 5 ms. Brightness (Colour): a low-pass following
+       the note. No level matching - the recording's own dynamics. */
+    void start_retune(Voice &x, double f) {
+        x.rpos = offset_s > 0 ? offset_s * sr : (double)tclear; x.rend = src.frames;
+        x.rf0 = tf0 > 0 ? tf0 : 261.63; x.sf = f; x.rspd = std::pow(f / x.rf0, tune);
+        const double b = std::fmin(1.0, std::fmax(0.0, colour));
+        x.rlpa = b >= 0.999 ? 0 : std::exp(-2 * PI * std::fmin(f * (1.5 + 30 * b * b), 0.45 * sr) / sr); x.rlp = 0; x.agc = 1;
+    }
+    double retune(Voice &x) {
+        const double left = (double)x.rend - 2 - x.rpos;
+        if (left <= 0) return 0;
+        const double ft = x.rpos / sr / thop - 0.5; const int fr = (int)std::floor(ft);   /* frame centres at (k + 0.5) thop */
+        if (fr >= 0 && fr + 1 < (int)tf.size() && tc[fr] >= 0.8f && tc[fr + 1] >= 0.8f && tf[fr] > 0 && tf[fr + 1] > 0) x.rf0 = tf[fr] + (tf[fr + 1] - tf[fr]) * (ft - fr);
+        else if (fr >= 0 && fr < (int)tf.size() && tc[fr] >= 0.8f && tf[fr] > 0) x.rf0 = tf[fr];
+        x.rspd += (std::pow(x.sf / x.rf0, tune) - x.rspd) * kglide;
+        const long long i = (long long)x.rpos; const double u = x.rpos - (double)i;
+        const double y0 = src.at(i - 1), y1 = src.at(i), y2 = src.at(i + 1), y3 = src.at(i + 2);
+        const double c1 = 0.5 * (y2 - y0), c2 = y0 - 2.5 * y1 + 2 * y2 - 0.5 * y3, c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
+        double y = ((c3 * u + c2) * u + c1) * u + y1;
+        const double fade = 0.005 * sr * x.rspd; if (left < fade) y *= left / fade;   /* the end, faded: no click */
+        x.rpos += x.rspd;
+        x.rlp = (1 - x.rlpa) * y + x.rlpa * x.rlp; if (std::fabs(x.rlp) < 1e-20) x.rlp = 0;
+        return x.rlp;
     }
 
     /* Pulsar (2c): a grain of the recording every period - fractional, so the repetition rate is the note exactly -
@@ -480,14 +519,14 @@ struct Resonator : tone::Synth {
 
     void attack(double f, double t, double vel) override {
         int q = -1;
-        for (int i = 0; i < VOICES; i++) if (!v[i].active) { q = i; break; }
+        for (int i = 0; i < nv; i++) if (!v[i].active) { q = i; break; }
         if (q >= 0) { start(v[q], f, t, vel); last = q; return; }
         /* the quietest gives way (A-5): first a voice already fading out, then the quietest sounding one - never one
            holding a waiting note or about to start its own, which would be lost (final review: a scale lost its
            first note, a re-pressed chord half its notes - a not-yet-started voice reads as silent) */
         auto rank = [](const Voice &x) { return x.stealing ? -1.0 : !x.started ? 2.0 : x.env; };
-        for (int i = 0; i < VOICES; i++) if (!v[i].has_next && (q < 0 || rank(v[i]) < rank(v[q]))) q = i;
-        if (q < 0) { q = 0; for (int i = 1; i < VOICES; i++) if (v[i].env < v[q].env) q = i; }
+        for (int i = 0; i < nv; i++) if (!v[i].has_next && (q < 0 || rank(v[i]) < rank(v[q]))) q = i;
+        if (q < 0) { q = 0; for (int i = 1; i < nv; i++) if (v[i].env < v[q].env) q = i; }
         Voice &x = v[q];
         if (!x.stealing) { x.steal_at = t - STEAL_S; x.fade = 1.0 / (STEAL_S * sr); }   /* one already fading keeps fading */
         x.stealing = true; x.has_next = true; x.nf = f; x.nt = t; x.nvel = vel; x.noff = 1e300; last = q;
@@ -502,6 +541,7 @@ struct Resonator : tone::Synth {
     void stop_all() { for (auto &x : v) if (x.active) { x.stealing = true; x.has_next = false; x.steal_at = 0; x.fade = 1.0 / (STOP_S * sr); } }
 
     double resonate(Voice &x, double in) {
+        if (x.synth == RETUNE) return retune(x);
         if (x.synth == PULSAR) return pulsar(x);
         if (x.synth == FREEZE) return spectral(x);
         if (x.synth != RESONATE) return x.method == SPECTRAL ? spectral(x) : x.method == COMB ? comb(x, in) : bank(x, in);
@@ -560,7 +600,7 @@ struct Resonator : tone::Synth {
                    loop's level starts near the recording's and the automatic gain below only fine-tunes it */
                 const bool fed = part ? x.method == COMB && x.mode == RINGING : x.excite == BOWED && x.body != BELL;   /* a feedback loop fed continuously */
                 double wet = resonate(x, fed ? exc * std::sqrt(std::fmax(0.0, 1 - x.g60 * x.g60)) : exc);
-                if (part || x.excite == BOWED) {                      /* the bowed level follows the recording's */
+                if ((part || x.excite == BOWED) && x.synth != RETUNE) {   /* the bowed level follows the recording's (not Retune's: its own dynamics) */
                     /* partial synths: 3 s, so gusts keep their shape. Freeze matches a fixed power, the moment's - the
                        recording moving on underneath must not move a frozen note - at the 0.3 s rate */
                     const bool frz = x.synth == FREEZE;
@@ -573,7 +613,8 @@ struct Resonator : tone::Synth {
                     if (x.rin > 1e-10) { double tgt = x.rout > 1e-14 ? std::fmin(1000.0, std::sqrt(x.rin / x.rout)) : 1; if (!part || x.rout > 1e-14) x.agc += (tgt - x.agc) * k; }
                     wet *= x.agc;
                 }
-                const double o = x.env * x.vel * vol * ((1 - tu[(size_t)i]) * exc + tu[(size_t)i] * wet);
+                const double mix = x.synth == RETUNE ? 1 : tu[(size_t)i];   /* Retune's Tune bends its speed, not a dry blend */
+                const double o = x.env * x.vel * vol * ((1 - mix) * exc + mix * wet);
                 L[i] += (float)o; R[i] += (float)o;
             }
         }

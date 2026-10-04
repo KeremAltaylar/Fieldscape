@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <functional>
 
 /* Every note the route engine plays over a 60 s walk, hashed (frequencies to 1 mHz), with fixed draws. */
 #define ROUTE_NOTES_HASH 11448281553059379543ULL   /* today's engine, captured 2026-09-30 before the harmony core */
@@ -1633,6 +1634,65 @@ int main() {
         }
         std::printf("2c review: Freeze's start against its settled level, worst %.2f dB (%s)\n", worst, wcase.c_str());
         assert(std::fabs(worst) <= 1);
+    }
+    {   /* 3a: the pitch sampler (RETUNE) - a recording read at (target / its own pitch at that moment), from the analysis */
+        const double SR = 48000;
+        auto sine_rec = [&](double secs, std::function<double(double)> fhz, double amp) {   /* a sine whose pitch follows fhz(t) */
+            std::vector<float> x((size_t)(secs * SR)); double ph = 0; for (size_t i = 0; i < x.size(); i++) { ph += 2 * 3.141592653589793 * fhz(i / SR) / SR; x[i] = (float)(amp * std::sin(ph)); } return x; };
+        auto track_of = [&](double secs, std::function<double(double)> fhz, std::function<double(double)> conf, std::vector<float> &tf, std::vector<float> &tc) {
+            tf.clear(); tc.clear(); for (double t = 0.01; t < secs; t += 0.02) { tf.push_back((float)fhz(t)); tc.push_back((float)conf(t)); } };
+        auto play = [&](const std::vector<float> &rec, double f0, const std::vector<float> &tf, const std::vector<float> &tc, double f, double secs, double colour = 1, int nv = 24) {
+            sampler::Resonator r; r.init(SR); const float *p[1] = { rec.data() }; r.set_source(1, (long long)rec.size(), p);
+            r.set_track(f0, 0.02, tf.data(), tc.data(), (int)tf.size()); r.synth = sampler::RETUNE; r.colour = colour; r.nv = nv; r.att = 0.02; r.rel = 0.03;
+            r.attack(f, 0, 0.5); std::vector<float> L((size_t)(secs * SR), 0.0f), R(L.size(), 0.0f);
+            for (size_t i = 0; i < L.size(); i += 128) r.render(L.data() + i, R.data() + i, (int)std::min<size_t>(128, L.size() - i), i / SR);
+            return L; };
+        /* the frequency of a sine-like signal over [a, z) s: upward zero crossings, interpolated */
+        auto freq = [&](const std::vector<float> &x, double a, double z) {
+            size_t i0 = (size_t)(a * SR), i1 = (size_t)(z * SR); double first = -1, last = -1; int n = 0;
+            for (size_t i = i0 + 1; i < i1; i++) if (x[i - 1] < 0 && x[i] >= 0) { double t = (i - 1) + x[i - 1] / (x[i - 1] - x[i]); if (first < 0) first = t; last = t; n++; }
+            return n > 1 ? (n - 1) * SR / (last - first) : 0.0; };
+        std::vector<float> tf, tc;
+        /* steady: a harmonic tone at 440 */
+        std::vector<float> tone((size_t)(4 * SR)); for (size_t i = 0; i < tone.size(); i++) { double v = 0; for (int n = 1; n <= 8; n++) v += std::sin(2 * 3.141592653589793 * 440 * n * i / SR) / n; tone[i] = (float)(0.3 * v); }
+        track_of(4, [](double) { return 440.0; }, [](double) { return 0.95; }, tf, tc);
+        double worst = 0; for (double f : { 220.0, 330.0, 660.0, 880.0 }) { std::vector<float> o = play(tone, 440, tf, tc, f, 2.2); worst = std::max(worst, std::fabs(1200 * std::log2(line_peak(o, SR, f, 0.02) / f))); }
+        std::printf("3a retune: steady recording, worst %.3f cents\n", worst);
+        assert(worst <= 1);
+        /* drifting +-30 cents: the note stays on its pitch */
+        auto drift = [](double t) { return 440.0 * std::pow(2.0, 30.0 / 1200 * std::sin(2 * 3.141592653589793 * 0.5 * t)); };
+        std::vector<float> dr = sine_rec(5, drift, 0.5); track_of(5, drift, [](double) { return 0.95; }, tf, tc);
+        { std::vector<float> o = play(dr, 440, tf, tc, 330, 3.5); double w = 0; for (double t = 1; t < 3; t += 0.05) w = std::max(w, std::fabs(1200 * std::log2(freq(o, t, t + 0.05) / 330)));
+          std::printf("3a retune: drifting recording, worst %.2f cents off the note\n", w); assert(w <= 2); }
+        /* unconfident moments: the track says 600 Hz with confidence 0.3 for 0.5 s - the speed holds */
+        std::vector<float> st = sine_rec(4, [](double) { return 440.0; }, 0.5);
+        track_of(4, [](double t) { return t > 0.75 && t < 1.25 ? 600.0 : 440.0; }, [](double t) { return t > 0.75 && t < 1.25 ? 0.3 : 0.95; }, tf, tc);
+        { std::vector<float> o = play(st, 440, tf, tc, 330, 2.5); double w = 0; for (double t = 0.3; t < 2.2; t += 0.05) w = std::max(w, std::fabs(1200 * std::log2(freq(o, t, t + 0.05) / 330)));
+          std::printf("3a retune: through unconfident moments, worst %.2f cents\n", w); assert(w <= 2); }
+        /* unpitched: no pitch, no track - it still plays */
+        { std::vector<float> nz = noise_src(3, 0.5f, 5), e1, e2; std::vector<float> o = play(nz, 0, e1, e2, 330, 1.5); double e = 0; bool fin = true;
+          for (float v : o) { e += (double)v * v; fin = fin && std::isfinite(v); } const double db = 10 * std::log10(e / o.size() + 1e-30);
+          std::printf("3a retune: an unpitched recording plays at %.1f dB\n", db); assert(fin && db > -40); }
+        /* a one-shot's end: silence, faded (no step bigger than the tone's own) */
+        { std::vector<float> sh = sine_rec(0.3, [](double) { return 440.0; }, 0.5); track_of(0.3, [](double) { return 440.0; }, [](double) { return 0.95; }, tf, tc);
+          std::vector<float> o = play(sh, 440, tf, tc, 330, 1.0); double own = 0, all = 0, tail = 0;
+          for (size_t i = 1; i < o.size(); i++) { const double d = std::fabs(o[i] - o[i - 1]); all = std::max(all, d); if (i > 2400 && i < 9600) own = std::max(own, d); if (i > (size_t)(0.5 * SR)) tail = std::max(tail, (double)std::fabs(o[i])); }
+          std::printf("3a retune: one-shot end: largest step %.4f (the tone's own %.4f), after it %.2g\n", all, own, tail);
+          assert(all <= 1.2 * own && tail < 1e-6); }
+        /* brightness: Colour 0 darkens partials 4-8 against the fundamental by >= 10 dB */
+        auto bal = [&](double col) { std::vector<float> o = play(tone, 440, tf, tc, 330, 2.2, col); std::vector<float> t(o.end() - 65536, o.end());
+            double hi = 0; for (int n = 4; n <= 8; n++) hi += 20 * std::log10(peak_amp(t, SR, 330.0 * n)) / 5; return hi - 20 * std::log10(peak_amp(t, SR, 330)); };
+        track_of(4, [](double) { return 440.0; }, [](double) { return 0.95; }, tf, tc);
+        const double b0 = bal(0), b1 = bal(1);
+        std::printf("3a retune: partials 4-8 vs fundamental %.1f dB dark, %.1f bright\n", b0, b1);
+        assert(b1 - b0 >= 10);
+        /* six voices: eight notes, six sound */
+        { sampler::Resonator r; r.init(SR); const float *p[1] = { tone.data() }; r.set_source(1, (long long)tone.size(), p);
+          r.set_track(440, 0.02, tf.data(), tc.data(), (int)tf.size()); r.synth = sampler::RETUNE; r.nv = 6;
+          for (int k = 0; k < 8; k++) r.attack(220 * std::pow(2.0, k / 12.0), 0, 0.3);
+          std::vector<float> L(4800), R(4800); r.render(L.data(), R.data(), 4800, 0);
+          int on = 0; for (int i = 0; i < sampler::Resonator::VOICES; i++) on += r.v[i].active;
+          std::printf("3a retune: 8 notes on 6 voices -> %d voices in use\n", on); assert(on == 6); }
     }
     {   /* 2c guard: the Harmonic filter and the Formant render exactly as in 2b - a hash of every method x mode */
         const std::vector<float> wind = noise_src(3, 0.5f, 77); const float *p[1] = { wind.data() };
