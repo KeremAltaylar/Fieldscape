@@ -36,6 +36,26 @@ class FieldscapeCore extends AudioWorkletProcessor {
       }
       else if (m.type === "note") { x.fs_bench_note(this.dev, m.hz, x.fs_bench_time(this.dev) + m.in, m.dur, m.vel); }
       else if (m.type === "stop") { x.fs_bench_stop(this.dev); }
+      /* the lab's Route panel (sample harmony 3a), device "piece": a route's patch, the walk along it, a role's recording and
+         its analysis, the chord playing. Strings arrive as UTF-8 bytes (no TextEncoder in this scope). */
+      else if (m.type === "route") { const p = this.str(m.bytes); x.fs_piece_default_tuning(this.dev, m.tuning); this.route = x.fs_piece_add_route(this.dev, p); x.free(p); }
+      else if (m.type === "patch") { const p = this.str(m.bytes); x.fs_piece_set_route(this.dev, this.route, p); x.free(p); }
+      else if (m.type === "walk") { x.fs_piece_walk(this.dev, m.off ? -1 : this.route, m.t || 0, m.off ? 1e9 : 0); }
+      else if (m.type === "role") {
+        const n = m.channels[0].length, ptrs = x.malloc(4 * m.channels.length);
+        const bufs = m.channels.map((c) => { const p = x.malloc(4 * n); new Float32Array(x.memory.buffer, p, n).set(c); return p; });
+        new Uint32Array(x.memory.buffer, ptrs, bufs.length).set(bufs);
+        x.fs_piece_role_source(this.dev, m.role, bufs.length, BigInt(n), ptrs);
+        bufs.forEach((p) => x.free(p)); x.free(ptrs);
+      }
+      else if (m.type === "analysis") { const p = this.str(m.bytes); x.fs_piece_role_analysis(this.dev, m.role, p); x.free(p); }
+      else if (m.type === "chord") {
+        const cnt = x.malloc(4), lab = x.malloc(64), i = x.fs_piece_chord(this.dev, cnt, lab, 64);
+        const count = new Int32Array(x.memory.buffer, cnt, 1)[0], b = new Uint8Array(x.memory.buffer, lab, 64);
+        let e = 0; while (e < 64 && b[e]) { e++; }
+        const label = b.slice(0, e); x.free(cnt); x.free(lab);
+        this.port.postMessage({ type: "chord", i, count, label }, [label.buffer]);
+      }
       else if (m.type === "ring") {             /* a copy only; the page does the measuring */
         if (!this.ring) { this.ring = x.malloc(4 * 65536); }
         const n = x.fs_bench_ring(this.dev, this.ring), a = new Float32Array(n);
@@ -49,6 +69,10 @@ class FieldscapeCore extends AudioWorkletProcessor {
           maxMs: v.getFloat32(8, true), frames: Number(v.getBigInt64(16, true)), wraps: v.getInt32(24, true) });
       }
     };
+  }
+  str(u8) {      /* a NUL-terminated copy in wasm memory; free it after the call */
+    const p = this.x.malloc(u8.length + 1), v = new Uint8Array(this.x.memory.buffer, p, u8.length + 1);
+    v.set(u8); v[u8.length] = 0; return p;
   }
   /* Copies the recording into wasm memory once; the device reads it from there (host-owned). */
   setSource(channels) {

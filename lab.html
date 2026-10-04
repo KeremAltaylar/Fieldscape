@@ -39,6 +39,14 @@
   <div class="row"><label>Chord <select id="lab-step"></select></label></div>
 </section>
 <section>
+  <h2>Route</h2>
+  <p style="color: var(--dim); margin: 4px 0;">The route above, played by the real route engine. Each role: Digital (as the route has it, or another) or Sampler (the recording loaded above, with the controls below).</p>
+  <div class="row"><label>Voice <select id="lab-rt-voice"></select></label><label>Sections <select id="lab-rt-sect"></select></label><label>Third voice <select id="lab-rt-v3"></select></label></div>
+  <div class="row"><button id="lab-rt-play">Play route</button><button id="lab-rt-stop">Stop route</button>
+    <label>A walk of <input type="range" id="lab-rt-pace" min="1" max="10" step="0.5" value="3"> <span id="lab-rt-pace-l">3 min</span></label></div>
+  <p id="lab-rt-now" aria-live="polite" style="min-height: 1.45em; margin: 4px 0;"></p>
+</section>
+<section>
   <h2>Play</h2>
   <div class="row"><button data-play="note" disabled>Note</button><button data-play="scale" disabled>Scale</button><button data-play="chord" disabled>Chord</button><button data-play="progression" disabled>Progression</button><button id="lab-stop">Stop</button></div>
   <p id="lab-why">Load a pitched recording first.</p>

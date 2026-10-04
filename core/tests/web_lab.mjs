@@ -234,6 +234,21 @@ try {
   const fl = await ev("(document.querySelector('#lab-colour-label') || {}).textContent || ''");
   check("Colour reads Partial 5 for the Formant at 0.27", /Partial 5/.test(fl), fl);
   await ev("(function(){ var s = document.querySelector('#lab-colour'); s.value = '0.5'; s.dispatchEvent(new Event('input')); return 1; })()");
+  /* 3a: a route played by the real route engine, each role Digital or Sampler */
+  check("the Route panel offers Digital and Sampler sounds for each role", await ev("['voice','sect','v3'].every(function (r) { var s = document.querySelector('#lab-rt-' + r); return s && s.querySelector(\"optgroup[label='Digital'] option[value='fm']\") && s.querySelectorAll(\"optgroup[label='Sampler'] option\").length === 6; })"), null);
+  await ev(`fsLab.load(${NOISE}).then(function () { return 1; })`);
+  await ev("(function(){ var s = document.querySelector('#lab-rt-v3'); s.value = 's-harmonic'; s.dispatchEvent(new Event('change')); return 1; })()");
+  await ev("document.querySelector('#lab-rt-play').click(), 0");
+  let rtl = -120; for (let i = 0; i < 20; i++) { await sleep(200); rtl = Math.max(rtl, await ev("fsLab.level()")); }
+  const rtNow = await ev("document.querySelector('#lab-rt-now').textContent");
+  check("Play route: the route engine plays (above -40 dBFS) and shows its chord", rtl > -40 && /Chord \d+ of \d+/.test(rtNow), [rtl, rtNow]);
+  await ev("(function(){ var s = document.querySelector('#lab-rt-v3'); s.value = 'fm'; s.dispatchEvent(new Event('change')); return 1; })()");
+  let rtl2 = -120; for (let i = 0; i < 10; i++) { await sleep(200); rtl2 = Math.max(rtl2, await ev("fsLab.level()")); }
+  check("... a role switched Sampler -> Digital while it plays keeps sounding", rtl2 > -40, rtl2);
+  await ev("document.querySelector('#lab-rt-stop').click(), 0");
+  await sleep(3500);
+  const rtq = await ev("fsLab.level()");
+  check("Stop route: silence", rtq < -60, rtq);
   /* 2c: Pulsar and Freeze on the bench */
   check("the Synth menu offers Pulsar and Freeze", await ev("['pulsar','freeze'].every(function (v) { return !!document.querySelector(\"#lab-synth option[value='\" + v + \"']\"); })"), null);
   const setv = (id, v, evn) => ev(`(function(){ var s = document.querySelector('#${id}'); s.value = '${v}'; s.dispatchEvent(new Event('${evn || "input"}')); return 1; })()`);

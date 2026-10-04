@@ -416,6 +416,82 @@
       (ctx.state !== "running" ? " — tap a play button to start it" : "");
   }, 250);
 
+  /* The Route panel (sample harmony 3a): the route above played by the real route engine (device "piece", a second node
+     beside the bench), each role Digital or Sampler. A sampler role plays the loaded recording with the controls below
+     (Body, Excite, Method, Mode, Focus, Colour, Tune). The walk is simulated: once along the route in the chosen minutes. */
+  var DIGITAL = [["fm", "FM"], ["am", "AM"], ["duo", "Duo"], ["mono", "Mono"], ["simple", "Simple"], ["pluck", "Pluck"], ["metal", "Metal"],
+    ["membrane", "Membrane"], ["wavetable", "Wavetable"], ["comb", "Comb"], ["formant", "Formant"]];
+  var SAMPLER = [["s-retune", "Retune"], ["s-resonator", "Resonator"], ["s-harmonic", "Harmonic filter"], ["s-formant", "Formant"],
+    ["s-pulsar", "Pulsar"], ["s-freeze", "Freeze"]];
+  var ROLES = [["voice", 0], ["sect", 1], ["v3", 2]], pnode = null, pready = null, rtT = 0, rtTimer = null, rtChord = null;
+  ROLES.forEach(function (r) {
+    var sel = $("#lab-rt-" + r[0]); if (!sel) { return; }
+    var html = "<option value=''>As the route</option><optgroup label='Digital'>" + DIGITAL.map(function (d) { return "<option value='" + d[0] + "'>" + d[1] + "</option>"; }).join("") +
+      "</optgroup><optgroup label='Sampler'>" + SAMPLER.map(function (d) { return "<option value='" + d[0] + "'>" + d[1] + "</option>"; }).join("") + "</optgroup>";
+    sel.innerHTML = html;
+    sel.addEventListener("change", function () { if (rtTimer) { sendRolesAndPatch(false); } });
+  });
+  function utf8(str) { return new TextEncoder().encode(str); }
+  function ensurePiece() {
+    if (pready) { return pready; }
+    pready = ensureEngine().then(function () {
+      pnode = new AudioWorkletNode(audio(), "fieldscape-core", { numberOfInputs: 0, outputChannelCount: [2], processorOptions: { wasm: wasmBytes, device: "piece", params: [] } });
+      pnode.connect(bus);
+      pnode.port.onmessage = function (e) {
+        var m = e.data; if (!m || m.type !== "chord") { return; }
+        $("#lab-rt-now").textContent = m.i >= 0 ? "Chord " + (m.i + 1) + " of " + m.count + ": " + new TextDecoder().decode(m.label) + " · " + Math.round(rtT * 100) + "% along" : "";
+      };
+    });
+    return pready;
+  }
+  /* the route's patch with the roles as chosen here */
+  function rtPatch() {
+    var p = JSON.parse(JSON.stringify((route && route.patch) || {}));
+    var smp = { body: +$("#lab-body").value, excite: +$("#lab-excite").value, method: +$("#lab-method").value, mode: +$("#lab-mode").value,
+      focus: +$("#lab-focus").value, colour: +$("#lab-colour").value, tune: +$("#lab-tune").value };
+    ROLES.forEach(function (r) {
+      var v = $("#lab-rt-" + r[0]).value; if (!v) { return; }
+      p[r[0]] = p[r[0]] || {}; p[r[0]].synth = v; p[r[0]].on = true;
+      if (v.indexOf("s-") === 0) { p[r[0]].sampler = smp; }
+    });
+    return p;
+  }
+  function sendRolesAndPatch(first) {
+    var c = audio();
+    ROLES.forEach(function (r) {
+      var v = $("#lab-rt-" + r[0]).value;
+      if (v.indexOf("s-") !== 0 || !buffer) { return; }
+      var ch = []; for (var k = 0; k < buffer.numberOfChannels; k++) { ch.push(buffer.getChannelData(k).slice(0)); }
+      pnode.port.postMessage({ type: "role", role: r[1], channels: ch });
+      if (analysis) { pnode.port.postMessage({ type: "analysis", role: r[1], bytes: utf8(JSON.stringify(analysis)) }); }
+    });
+    pnode.port.postMessage({ type: first ? "route" : "patch", bytes: utf8(JSON.stringify(rtPatch())), tuning: tuning ? 1 : 0 });
+    if (c.state === "suspended") { c.resume(); }
+  }
+  function rtPlay() {
+    if (!route) { $("#lab-rt-now").textContent = "Routes are still loading."; return; }
+    ensurePiece().then(function () {
+      rtStop(true);
+      sendRolesAndPatch(true); rtT = 0;
+      pnode.port.postMessage({ type: "walk", t: 0 });
+      rtTimer = setInterval(function () {
+        rtT += 0.25 / (60 * +$("#lab-rt-pace").value); if (rtT > 1) { rtT -= 1; }
+        pnode.port.postMessage({ type: "walk", t: rtT });
+      }, 250);
+      rtChord = setInterval(function () { pnode.port.postMessage({ type: "chord" }); }, 500);
+    });
+  }
+  function rtStop(quiet) {
+    clearInterval(rtTimer); clearInterval(rtChord); rtTimer = rtChord = null;
+    if (pnode) { pnode.port.postMessage({ type: "walk", off: true }); }
+    if (!quiet) { $("#lab-rt-now").textContent = ""; }
+  }
+  if ($("#lab-rt-play")) {
+    $("#lab-rt-play").addEventListener("click", rtPlay);
+    $("#lab-rt-stop").addEventListener("click", function () { rtStop(false); });
+    $("#lab-rt-pace").addEventListener("input", function () { $("#lab-rt-pace-l").textContent = $("#lab-rt-pace").value + " min"; });
+  }
+
   window.fsLab = { ready: ready, load: load, get analysis() { return analysis; }, get routes() { return routes; }, setRoute: setRoute, play: play, stop: stop,
     get peak() { return peak; }, level: levelDb,
     peakOut: function () { if (!meter) { return 0; } var a = new Float32Array(meter.fftSize), m = 0; meter.getFloatTimeDomainData(a); for (var i = 0; i < a.length; i++) { m = Math.max(m, Math.abs(a[i])); } return m; }, peakHz: peakHz, get bufferSeconds() { return buffer ? buffer.duration : 0; },
