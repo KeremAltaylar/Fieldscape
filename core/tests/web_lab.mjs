@@ -239,6 +239,17 @@ try {
      digital, ignoring the roles. The panel's patch always carries them. */
   const rp = await ev("(function(){ fsLab.routes.push({ id: 'bare', name: 'Bare', patch: {} }); fsLab.setRoute('bare'); ['voice','sect','v3'].forEach(function (r) { var s = document.querySelector('#lab-rt-' + r); s.value = 's-freeze'; }); var p = fsLab.rtPatch(); fsLab.routes.pop(); fsLab.setRoute(fsLab.routes[0].id); ['voice','sect','v3'].forEach(function (r) { document.querySelector('#lab-rt-' + r).value = ''; }); return p; })()");
   check("a bare route's patch still carries the chosen sampler roles (a version and a progression added)", rp && rp.version >= 4 && rp.version <= 17 && rp.prog && rp.prog.length > 0 && rp.voice.synth === "s-freeze" && rp.sect.synth === "s-freeze" && rp.v3.synth === "s-freeze", rp);
+  /* Kerem 2026-10-04: "I want to control the voice, sections and third voice parameters as well when I select the synths" -
+     each role its own controls for the synth chosen, written into the route's patch (the same fields the route editor saves) */
+  const setRole = (r, v) => ev(`(function(){ var s = document.querySelector('#lab-rt-${r}'); s.value = '${v}'; s.dispatchEvent(new Event('change')); return 1; })()`);
+  const setCtl = (id, v, e) => ev(`(function(){ var s = document.querySelector('#${id}'); if (!s) return 0; s.value = '${v}'; s.dispatchEvent(new Event('${e || "input"}')); return 1; })()`);
+  await setRole("voice", "s-resonator"); await setRole("sect", "fm"); await setRole("v3", "s-harmonic");
+  const ctl = await ev("(function(){ var q = function (id) { return !!document.querySelector('#' + id); }; return { voiceBody: q('lab-rt-voice-body'), voiceMethod: q('lab-rt-voice-method'), v3Method: q('lab-rt-v3-method'), v3Body: q('lab-rt-v3-body'), sectHarm: q('lab-rt-sect-harm'), sectFocus: q('lab-rt-sect-focus'), gains: q('lab-rt-voice-gain') && q('lab-rt-sect-gain') && q('lab-rt-v3-gain') }; })()");
+  check("each role shows the controls of its own synth (Resonator: Body; Harmonic filter: Method; FM: its two timbres; all: Gain)", ctl.voiceBody && !ctl.voiceMethod && ctl.v3Method && !ctl.v3Body && ctl.sectHarm && !ctl.sectFocus && ctl.gains, ctl);
+  await setCtl("lab-rt-voice-focus", 0.2); await setCtl("lab-rt-v3-focus", 0.9); await setCtl("lab-rt-v3-mode", 1, "change"); await setCtl("lab-rt-sect-harm", 2); await setCtl("lab-rt-sect-gain", 0.3);
+  const rp2 = await ev("fsLab.rtPatch()");
+  check("... each role keeps its own values in the route's patch", rp2.voice.sampler.focus === 0.2 && rp2.v3.sampler.focus === 0.9 && rp2.v3.sampler.mode === 1 && rp2.sect.harm === 2 && rp2.sect.gain === 0.3 && !rp2.sect.sampler, rp2);
+  await setRole("voice", ""); await setRole("sect", ""); await setRole("v3", "");
   /* 3a: a route played by the real route engine, each role Digital or Sampler */
   check("the Route panel offers Digital and Sampler sounds for each role", await ev("['voice','sect','v3'].every(function (r) { var s = document.querySelector('#lab-rt-' + r); return s && s.querySelector(\"optgroup[label='Digital'] option[value='fm']\") && s.querySelectorAll(\"optgroup[label='Sampler'] option\").length === 6; })"), null);
   await ev(`fsLab.load(${NOISE}).then(function () { return 1; })`);
@@ -256,6 +267,11 @@ try {
   await sleep(300);
   const sent = await ev("fsLab.rtSent");
   check("switching roles does not re-send the recording (sent once)", sent === 1, sent);
+  const sentBefore = await ev("fsLab.rtPatchSent");
+  await ev("(function(){ var s = document.querySelector('#lab-rt-v3-focus'); s.value = '0.7'; s.dispatchEvent(new Event('input')); return 1; })()");
+  await sleep(400);
+  const afterSent = await ev("fsLab.rtPatchSent");
+  check("moving a role's control while the route plays sends the new patch", afterSent > sentBefore, [sentBefore, afterSent]);
   await ev("document.querySelector('#lab-rt-stop').click(), 0");
   await sleep(3500);
   const rtq = await ev("fsLab.level()");

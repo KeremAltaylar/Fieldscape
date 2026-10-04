@@ -40,8 +40,13 @@
 </section>
 <section>
   <h2>Route</h2>
-  <p style="color: var(--dim); margin: 4px 0;">The route above, played by the real route engine. Each role: Digital (as the route has it, or another) or Sampler (the recording loaded above, with the controls below).</p>
-  <div class="row"><label>Voice <select id="lab-rt-voice"></select></label><label>Sections <select id="lab-rt-sect"></select></label><label>Third voice <select id="lab-rt-v3"></select></label></div>
+  <p style="color: var(--dim); margin: 4px 0;">The route above, played by the real route engine. Each role: Digital (as the route has it, or another) or Sampler (the recording loaded above), with its own controls - written into the route's patch, as the route editor will save them.</p>
+  <div class="row"><label>Voice <select id="lab-rt-voice"></select></label></div>
+  <div class="row lab-rt-ctl" id="lab-rt-voice-ctl"></div>
+  <div class="row"><label>Sections <select id="lab-rt-sect"></select></label></div>
+  <div class="row lab-rt-ctl" id="lab-rt-sect-ctl"></div>
+  <div class="row"><label>Third voice <select id="lab-rt-v3"></select></label></div>
+  <div class="row lab-rt-ctl" id="lab-rt-v3-ctl"></div>
   <div class="row"><button id="lab-rt-play">Play route</button><button id="lab-rt-stop">Stop route</button>
     <label>A walk of <input type="range" id="lab-rt-pace" min="1" max="10" step="0.5" value="3"> <span id="lab-rt-pace-l">3 min</span></label></div>
   <p id="lab-rt-now" aria-live="polite" style="min-height: 1.45em; margin: 4px 0;"></p>

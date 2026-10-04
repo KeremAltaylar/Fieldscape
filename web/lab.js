@@ -423,13 +423,76 @@
     ["membrane", "Membrane"], ["wavetable", "Wavetable"], ["comb", "Comb"], ["formant", "Formant"]];
   var SAMPLER = [["s-retune", "Retune"], ["s-resonator", "Resonator"], ["s-harmonic", "Harmonic filter"], ["s-formant", "Formant"],
     ["s-pulsar", "Pulsar"], ["s-freeze", "Freeze"]];
+  /* each role's controls (Kerem 2026-10-04: "control the voice, sections and third voice parameters ... when I select the
+     synths"): the digital synths' two timbres over their morph ranges (core/synths.hpp SYNTH_PARAMS), the samplers' own,
+     and the role's gain - kept per role, written into the patch */
+  var TIMBRE = { fm: [["Ratio", 0.25, 4], ["Depth", 0, 16]], am: [["Ratio", 0.25, 4], ["Depth", 0, 16]], duo: [["Detune", 0.25, 4], ["Vibrato", 0, 1]],
+    mono: [["Resonance", 0.5, 14], ["Filter env", 0, 7]], simple: [["Detune c", -24, 24], ["Release", 0.2, 6]], pluck: [["Damping", 300, 8000], ["Resonance", 0.5, 0.99]],
+    metal: [["Harmonicity", 1, 12], ["Octaves", 0.4, 4]], membrane: [["Pitch decay", 0.01, 0.4], ["Octaves", 1, 8]], wavetable: [["Table", 0, 1], ["Brightness", 0, 1]],
+    comb: [["Damping", 0, 1], ["Resonance", 0, 1]], formant: [["Vowel", 0, 1], ["Shift", 0, 1]] };
+  var ROLE_DEF = { voice: { synth: "fm", gain: 0.45, harm: 1, index: 4 }, sect: { synth: "fm", gain: 0.8, harm: 2.02, index: 7.5 }, v3: { synth: "am", gain: 0.55, harm: 1.5, index: 3 } };
+  var rtState = {}, rtPatchSent = 0, rtSendTimer = null;
+  function roleState(role) {
+    if (!rtState[role]) {
+      var rp = (route && route.patch && route.patch[role]) || {}, d = ROLE_DEF[role];
+      rtState[role] = { gain: rp.gain != null ? rp.gain : d.gain, harm: rp.harm != null ? rp.harm : d.harm, index: rp.index != null ? rp.index : d.index,
+        body: 0, excite: 0, method: 0, mode: 0, focus: 0.5, colour: 0.5, tune: 1 };
+    }
+    return rtState[role];
+  }
+  function colourName(syn, c) {
+    if (syn === "s-retune") { return "Brightness"; }
+    if (syn === "s-harmonic") { return "Overtones"; }
+    if (syn === "s-formant") { return "Partial " + Math.round(1 + 15 * c); }
+    if (syn === "s-pulsar") { return "Grain " + Math.round(100 * (0.05 + 0.95 * c)) + " %"; }
+    if (syn === "s-freeze") { var s = buffer ? Math.max(0, c * (buffer.duration - 2048 / buffer.sampleRate)) : 0; return "Moment " + Math.floor(s / 60) + ":" + ("0" + Math.floor(s % 60)).slice(-2); }
+    return "Colour";
+  }
+  function roleSynth(role) {
+    var v = $("#lab-rt-" + role).value;
+    return v || ((route && route.patch && route.patch[role] && route.patch[role].synth) || ROLE_DEF[role].synth);
+  }
+  function buildRoleCtl(role) {
+    var box = $("#lab-rt-" + role + "-ctl"); if (!box) { return; }
+    var st = roleState(role), syn = roleSynth(role), html = "", id = function (k) { return "lab-rt-" + role + "-" + k; };
+    var slider = function (k, label, lo, hi, step, v) { return "<label><span id='" + id(k) + "-l'>" + label + "</span> <input type='range' id='" + id(k) + "' min='" + lo + "' max='" + hi + "' step='" + step + "' value='" + v + "'></label>"; };
+    var menu = function (k, label, opts, v) { return "<label>" + label + " <select id='" + id(k) + "'>" + opts.map(function (o, i) { return "<option value='" + i + "'" + (i === v ? " selected" : "") + ">" + o + "</option>"; }).join("") + "</select></label>"; };
+    html += slider("gain", "Gain", 0, 1, 0.01, st.gain);
+    if (syn.indexOf("s-") === 0) {
+      if (syn === "s-resonator") { html += menu("body", "Body", ["String", "Tube", "Bell"], st.body) + menu("excite", "Excite", ["Bowed", "Plucked"], st.excite); }
+      if (syn === "s-harmonic" || syn === "s-formant") { html += menu("method", "Method", ["Bank", "Spectral", "Comb"], st.method) + menu("mode", "Mode", ["Dry", "Ringing"], st.mode); }
+      if (syn !== "s-retune") { html += slider("focus", "Focus", 0, 1, 0.01, st.focus); }
+      html += slider("colour", colourName(syn, st.colour), 0, 1, 0.0001, st.colour) + slider("tune", "Tune", 0, 1, 0.01, st.tune);
+    } else {
+      var t = TIMBRE[syn] || TIMBRE.fm;
+      /* step "any": an even step over an odd range snapped a ratio of 2 to 1.99375 */
+      html += slider("harm", t[0][0], t[0][1], t[0][2], "any", Math.min(t[0][2], Math.max(t[0][1], st.harm)));
+      html += slider("index", t[1][0], t[1][1], t[1][2], "any", Math.min(t[1][2], Math.max(t[1][1], st.index)));
+    }
+    box.innerHTML = html;
+    ["gain", "focus", "colour", "tune", "harm", "index"].forEach(function (k) {
+      var el = $("#" + id(k)); if (!el) { return; }
+      el.addEventListener("input", function () { st[k] = +el.value; if (k === "colour") { $("#" + id(k) + "-l").textContent = colourName(syn, st.colour); } rtChanged(); });
+    });
+    ["body", "excite", "method", "mode"].forEach(function (k) {
+      var el = $("#" + id(k)); if (!el) { return; }
+      el.addEventListener("change", function () { st[k] = +el.value; rtChanged(); });
+    });
+  }
+  /* a control moved: the patch goes to the engine within ~0.1 s while the route plays */
+  function rtChanged() {
+    if (!rtTimer || !pnode) { return; }
+    clearTimeout(rtSendTimer);
+    rtSendTimer = setTimeout(function () { pnode.port.postMessage({ type: "patch", bytes: utf8(JSON.stringify(rtPatch())), tuning: tuning ? 1 : 0 }); rtPatchSent++; }, 100);
+  }
   var ROLES = [["voice", 0], ["sect", 1], ["v3", 2]], pnode = null, pready = null, rtT = 0, rtTimer = null, rtChord = null, rtSent = 0, recId = 0, sentRec = [-1, -1, -1];   /* which loaded recording each role has */
   ROLES.forEach(function (r) {
     var sel = $("#lab-rt-" + r[0]); if (!sel) { return; }
     var html = "<option value=''>As the route</option><optgroup label='Digital'>" + DIGITAL.map(function (d) { return "<option value='" + d[0] + "'>" + d[1] + "</option>"; }).join("") +
       "</optgroup><optgroup label='Sampler'>" + SAMPLER.map(function (d) { return "<option value='" + d[0] + "'>" + d[1] + "</option>"; }).join("") + "</optgroup>";
     sel.innerHTML = html;
-    sel.addEventListener("change", function () { if (rtTimer) { sendRolesAndPatch(false); } });
+    sel.addEventListener("change", function () { buildRoleCtl(r[0]); if (rtTimer) { sendRolesAndPatch(false); } });
+    buildRoleCtl(r[0]);
   });
   function utf8(str) { return new TextEncoder().encode(str); }
   function ensurePiece() {
@@ -453,12 +516,13 @@
     var p = JSON.parse(JSON.stringify((route && route.patch) || {}));
     if (!(p.version >= 4 && p.version <= 17)) { p.version = 17; }
     if (!(p.prog && p.prog.length)) { p.prog = DEFAULT_PROG.map(function (c) { return { r: c[0], q: c[1] }; }); }
-    var smp = { body: +$("#lab-body").value, excite: +$("#lab-excite").value, method: +$("#lab-method").value, mode: +$("#lab-mode").value,
-      focus: +$("#lab-focus").value, colour: +$("#lab-colour").value, tune: +$("#lab-tune").value };
     ROLES.forEach(function (r) {
-      var v = $("#lab-rt-" + r[0]).value; if (!v) { return; }
-      p[r[0]] = p[r[0]] || {}; p[r[0]].synth = v; p[r[0]].on = true;
-      if (v.indexOf("s-") === 0) { p[r[0]].sampler = smp; }
+      var v = $("#lab-rt-" + r[0]).value, st = roleState(r[0]);
+      p[r[0]] = p[r[0]] || {}; p[r[0]].gain = st.gain;
+      const syn = roleSynth(r[0]);                  /* "As the route": the route's own synth, with this role's controls */
+      if (v) { p[r[0]].synth = v; p[r[0]].on = true; }
+      if (syn.indexOf("s-") === 0) { p[r[0]].sampler = { body: st.body, excite: st.excite, method: st.method, mode: st.mode, focus: st.focus, colour: st.colour, tune: st.tune }; delete p[r[0]].harm; delete p[r[0]].index; }
+      else { p[r[0]].harm = st.harm; p[r[0]].index = st.index; delete p[r[0]].sampler; }
     });
     return p;
   }
@@ -501,7 +565,7 @@
   }
 
   window.fsLab = { ready: ready, load: load, get analysis() { return analysis; }, get routes() { return routes; }, setRoute: setRoute, play: play, stop: stop,
-    get peak() { return peak; }, level: levelDb, get rtSent() { return rtSent; }, rtPatch: function () { return rtPatch(); },
+    get peak() { return peak; }, level: levelDb, get rtSent() { return rtSent; }, get rtPatchSent() { return rtPatchSent; }, rtPatch: function () { return rtPatch(); },
     peakOut: function () { if (!meter) { return 0; } var a = new Float32Array(meter.fftSize), m = 0; meter.getFloatTimeDomainData(a); for (var i = 0; i < a.length; i++) { m = Math.max(m, Math.abs(a[i])); } return m; }, peakHz: peakHz, get bufferSeconds() { return buffer ? buffer.duration : 0; },
     now: function () { return ctx ? ctx.currentTime : 0; },
     voices: function () { return last.map(function (v) { return { start: v.start, stopAt: v.stopAt, offset: v.offset, hz: v.hz }; }); },
