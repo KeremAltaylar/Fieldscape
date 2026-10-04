@@ -17,10 +17,10 @@
     if (!ctx) {
       ctx = new AudioContext();
       bus = ctx.createGain(); meter = ctx.createAnalyser(); meter.fftSize = 2048;
-      /* the master: x2 (+6 dB; Kerem 2026-10-01 "too low") and a 5 ms look-ahead limiter to -1 dBFS (core-worklet.js
+      /* the master: x2.5 (+8 dB; Kerem 2026-10-01 and 2026-10-04 "too low") and a 5 ms look-ahead limiter to -1 dBFS (core-worklet.js
          fs-limiter; Kerem 2026-10-02 heard clicks and clips where an oversampled curve rang past full scale). Until the
          module loads, a plain x2 stands in; the meter reads what leaves */
-      var x2 = ctx.createGain(); x2.gain.value = 2;
+      var x2 = ctx.createGain(); x2.gain.value = 2.5;
       bus.connect(x2); x2.connect(meter); x2.connect(ctx.destination);
       limReady = ctx.audioWorklet.addModule("web/core-worklet.js?v=" + Date.now()).then(function () {
         var lim = new AudioWorkletNode(ctx, "fs-limiter", { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2] });

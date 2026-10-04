@@ -213,8 +213,9 @@ try {
   await sleep(1200);
   let ol = -120; for (let i = 0; i < 5; i++) { await sleep(60); ol = Math.max(ol, await ev("fsLab.level()")); }
   await ev("fsLab.stop()");
-  const want = 20 * Math.log10(2 * one.g * one.peak / Math.SQRT2);
-  check("the master output is twice the voice's level (+6 dB, within 1.5 dB)", Math.abs(ol - want) < 1.5, [ol, want]);
+  /* Kerem 2026-10-04: "general volume can be x2.5 since it's too low" */
+  const want = 20 * Math.log10(2.5 * one.g * one.peak / Math.SQRT2);
+  check("the master output is 2.5x the voice's level (+8 dB, within 1 dB)", Math.abs(ol - want) < 1, [ol, want]);
   /* 2b: the Harmonic filter and the Formant on the bench */
   await ev(`fsLab.load(${NOISE}).then(function () { return 1; })`);
   check("the Synth menu offers the Harmonic filter and the Formant", await ev("['harmonic','formant'].every(function (v) { return !!document.querySelector(\"#lab-synth option[value='\" + v + \"']\"); })"), null);

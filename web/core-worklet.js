@@ -164,10 +164,10 @@ class FieldscapeEngine extends AudioWorkletProcessor {
 }
 registerProcessor("fieldscape-engine", FieldscapeEngine);
 
-/* The lab's master (sample harmony 2b): x2, then a 5 ms look-ahead limiter to -1 dBFS. Kerem heard "clicks and clips"
+/* The lab's master (sample harmony 2b): x2.5 (2c listening: x2 still "too low"), then a 5 ms look-ahead limiter to -1 dBFS. Kerem heard "clicks and clips"
    on dense Dry progressions: the oversampled curve before this rang past full scale (output peaks 1.14). Here the gain
    falls over the 5 ms before a peak arrives, so nothing passes -1 dBFS and nothing is shaped; quiet passages are
-   exactly x2. Lab only - the walk's FieldscapeEngine never uses it. */
+   exactly x2.5. Lab only - the walk's FieldscapeEngine never uses it. */
 class FsLimiter extends AudioWorkletProcessor {
   constructor() {
     super();
@@ -177,7 +177,7 @@ class FsLimiter extends AudioWorkletProcessor {
   }
   process(inputs, outputs) {
     const inp = inputs[0] || [], out = outputs[0], n = out[0].length, C = 0.891, L = this.L;
-    const src = (c, i) => 2 * (((inp[c] || inp[0]) || [])[i] || 0);
+    const src = (c, i) => 2.5 * (((inp[c] || inp[0]) || [])[i] || 0);   /* x2.5 (Kerem 2026-10-04: "too low") */
     for (let i = 0; i < n; i++) {
       let p = 0; for (let c = 0; c < out.length; c++) p = Math.max(p, Math.abs(src(c, i)));
       this.peaks[this.w] = p;
