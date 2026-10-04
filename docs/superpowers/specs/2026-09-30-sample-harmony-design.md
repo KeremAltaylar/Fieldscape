@@ -265,3 +265,17 @@ What the session found, and what changed because of it:
 
 **Verdict (Kerem):** *"it worked very well"*. The Harmonic filter and the Formant, all three methods, are accepted
 beside the Resonator. Next: 2c, Pulsar grains and Spectral freeze, on the same bench.
+
+### Session 2c — 2026-10-04, Pulsar and Freeze (lab2), Kerem
+
+Material: Kerem's recordings; Pulsar and Freeze beside the four earlier synths.
+
+What the session found, and what changed because of it:
+- "General volume can be ×2.5 since it's too low" → the master went ×2 → ×2.5 (+8 dB), the −1 dBFS limiter kept.
+- "Freeze can be more since the outcome sound is low in volume" → Freeze plays 3 dB over its moment; Pulsar's start now
+  counts the in-between read's loss (it crept up over 3 s, longer than a lab chord). Measured: on chords every synth
+  already reaches the ceiling, so chord loudness follows each synth's crest factor (Resonator 8.9 dB … Pulsar 14.6 dB);
+  a loudness control was offered and left — Kerem: "it works great".
+
+**Verdict (Kerem):** *"it works great"*. Pulsar and Freeze are accepted; sub-project 2 (the non-pitch sampler: Resonator,
+Harmonic filter, Formant, Pulsar, Freeze) is complete. Next: sub-project 3, the pitch sampler and instruments.
