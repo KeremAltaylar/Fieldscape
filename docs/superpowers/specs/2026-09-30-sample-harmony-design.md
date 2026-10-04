@@ -279,3 +279,17 @@ What the session found, and what changed because of it:
 
 **Verdict (Kerem):** *"it works great"*. Pulsar and Freeze are accepted; sub-project 2 (the non-pitch sampler: Resonator,
 Harmonic filter, Formant, Pulsar, Freeze) is complete. Next: sub-project 3, the pitch sampler and instruments.
+
+### Session 3a — 2026-10-04, routes play sampler synths (lab2), Kerem
+
+Material: Kerem's recordings on his routes; each role (Voice, Sections, Third voice) Digital or Sampler, in the Route panel.
+
+What the session found, and what changed because of it:
+- "When I add for voice, sections and third voice still digital synths play" → lab2's offline default route had an empty patch,
+  which the engine reads as an old one (its default, digital): the panel now adds a version and the default progression.
+- "I want to control the voice, sections and third voice parameters as well when I select the synths" → each role its own
+  controls for its synth (digital timbres over their morph ranges; sampler Body/Excite, Method/Mode, Focus, Colour, Tune;
+  every role Gain), written into the route's patch in the format the route editor will save.
+
+**Verdict (Kerem):** *"this is working good"*. Routes playing sampler and digital synths together, in superconsonance, are
+accepted. Next: merge 3a, then 3b (the recordings library, unpublished drafts in the database).
