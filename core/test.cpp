@@ -1475,7 +1475,8 @@ int main() {
             std::vector<float> o = part_render(sampler::PULSAR, 0, 0, 0.5, 0.5, 1, 220, 15, wind), dry = part_render(sampler::PULSAR, 0, 0, 0.5, 0.5, 0, 220, 15, wind);
             const double set = rms(o, 10, 14), ref = rms(dry, 10, 14), onset = rms(o, 0, 3), early = rms(o, 0.25, 2);
             std::printf("2c pulsar: level %.2f dB vs the recording %.2f, first 3 s %.2f, 0.25-2 s %.2f\n", set, ref, onset, early);
-            assert(std::fabs(set - ref) <= 1 && onset <= set + 3 && early >= set - 2);
+            /* the start within 1 dB: a lab chord lasts ~2.7 s, so a 3 s creep is heard as "low" (Kerem 2026-10-04) */
+            assert(std::fabs(set - ref) <= 1 && onset <= set + 3 && early >= set - 1);
         }
         /* stability: every Focus x Colour, extreme notes, full-scale noise and a 0.3 s looped file */
         const std::vector<float> loud = noise_src(2, 1.0f, 9), shortf = noise_src(0.3, 1.0f, 4);
@@ -1556,7 +1557,9 @@ int main() {
         { std::vector<float> o = part_render(sampler::FREEZE, 0, 0, 0.5, 0.3, 1, 220, 12, wind), dry = part_render(sampler::FREEZE, 0, 0, 0.5, 0.3, 0, 220, 12, wind);
           const double set = rms(o, 8, 11), ref = rms(dry, 8, 11), onset = rms(o, 0, 3), early = rms(o, 0.25, 2);
           std::printf("2c freeze: level %.2f dB vs the recording %.2f, first 3 s %.2f, 0.25-2 s %.2f\n", set, ref, onset, early);
-          assert(std::fabs(set - ref) <= 1 && onset <= set + 3 && early >= set - 2); }
+          /* 3 dB over the moment (Kerem 2026-10-04: "Freeze can be more ... the outcome sound is low in volume"; the lab measured it
+             3 dB under the Resonator on the same chord) */
+          assert(std::fabs(set - ref - 3) <= 1 && onset <= set + 3 && early >= set - 2); }
         /* a silent moment stays silent */
         { std::vector<float> sil(48000 * 4, 0.0f); for (size_t i = 48000 * 2; i < sil.size(); i++) sil[i] = wind[i];
           std::vector<float> o = part_render(sampler::FREEZE, 0, 0, 0.5, 0.0, 1, 220, 3, sil);

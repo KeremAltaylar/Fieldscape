@@ -223,7 +223,10 @@ struct Resonator : tone::Synth {
         x.pP = sr / f; x.pD = std::fmax(4.0, d * x.pP); x.sk = 0; x.pk = -1;
         x.pr = x.pos; x.plast = 0;
         x.prefresh = focus >= 0.999 ? -1 : (long long)std::llround(0.001 * std::pow(10.0, 4 * std::fmax(0.0, focus)) * sr);
-        x.agc = std::fmin(1000.0, 1 / std::sqrt(0.375 * std::fmin(1.0, x.pD / x.pP)));   /* a Hann grain of duty d: 0.375 d of the power */
+        /* a Hann grain of duty d passes 0.375 d of the power, and reading between samples keeps 2/3 of white noise's
+           (all of a dark recording's): 5/6, between - the start within ~0.8 dB either way (it crept up 1.2 dB over 3 s, and
+           a lab chord lasts ~2.7 s: Kerem heard it as low, 2026-10-04) */
+        x.agc = std::fmin(1000.0, 1 / std::sqrt(0.375 * std::fmin(1.0, x.pD / x.pP) * 5.0 / 6.0));
     }
     double pulsar(Voice &x) {
         const double n = (double)x.sk++;
@@ -259,7 +262,9 @@ struct Resonator : tone::Synth {
             }
             freeze_at = at; freeze_src = sid; freeze_tp = tp;
         }
-        x.fpow = freeze_tp / (4.0 * SPN);                              /* the moment's own power: the level it keeps */
+        /* the level it keeps: the moment's own power, +3 dB (Kerem 2026-10-04: "Freeze can be more since the outcome sound
+           is low in volume" - on the same chord it played 3 dB under the Resonator, measured in the lab) */
+        x.fpow = 2 * freeze_tp / (4.0 * SPN);
         const double bin = sr / SPN, fo = std::fmin(1.0, std::fmax(0.0, focus)), h = 1 + 3 * (1 - fo);
         int npart = 0;
         for (int n = 1; n <= PARTIALS && n * f < 0.45 * sr; n++, npart++) {
