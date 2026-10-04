@@ -538,6 +538,8 @@ struct Resonator : tone::Synth {
         if (!x.stealing) { x.steal_at = t - STEAL_S; x.fade = 1.0 / (STEAL_S * sr); }   /* one already fading keeps fading */
         x.stealing = true; x.has_next = true; x.nf = f; x.nt = t; x.nvel = vel; x.noff = 1e300; last = q;
     }
+    /* every voice to its release at t (a role switched away: none frozen until the 2.5 s cut - final review 3a I1) */
+    void release_all(double t) { for (auto &x : v) if (x.active) { if (x.has_next) x.noff = std::fmin(x.noff, t); else x.off_t = std::fmin(x.off_t, t); } }
     void release(double t) override {
         if (last < 0) return;
         Voice &x = v[last];

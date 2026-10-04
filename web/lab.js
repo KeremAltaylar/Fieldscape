@@ -110,7 +110,7 @@
         for (var i = 0; i < n; i++) { mono[i] += d[i] / b.numberOfChannels; peak = Math.max(peak, Math.abs(d[i])); }
       }
       var p = x.malloc(n * 4); new Float32Array(x.memory.buffer, p, n).set(mono);
-      analysis = call(x.fs_analyse, [p, BigInt(n), sr]); x.free(p);
+      analysis = call(x.fs_analyse, [p, BigInt(n), sr]); x.free(p); recId++;
       $("#lab-note").textContent = file.name + (b.length > n ? " — only the first 30 s analysed" : "") +
         (analysis.f0 > 0 ? "" : " — unpitched: Retune has no pitch to move; the Resonator plays it");
       /* where the Resonator starts reading: the loudest 100 ms (an unpitched file has no "clear moment") */
@@ -423,7 +423,7 @@
     ["membrane", "Membrane"], ["wavetable", "Wavetable"], ["comb", "Comb"], ["formant", "Formant"]];
   var SAMPLER = [["s-retune", "Retune"], ["s-resonator", "Resonator"], ["s-harmonic", "Harmonic filter"], ["s-formant", "Formant"],
     ["s-pulsar", "Pulsar"], ["s-freeze", "Freeze"]];
-  var ROLES = [["voice", 0], ["sect", 1], ["v3", 2]], pnode = null, pready = null, rtT = 0, rtTimer = null, rtChord = null;
+  var ROLES = [["voice", 0], ["sect", 1], ["v3", 2]], pnode = null, pready = null, rtT = 0, rtTimer = null, rtChord = null, rtSent = 0, recId = 0, sentRec = [-1, -1, -1];   /* which loaded recording each role has */
   ROLES.forEach(function (r) {
     var sel = $("#lab-rt-" + r[0]); if (!sel) { return; }
     var html = "<option value=''>As the route</option><optgroup label='Digital'>" + DIGITAL.map(function (d) { return "<option value='" + d[0] + "'>" + d[1] + "</option>"; }).join("") +
@@ -460,9 +460,11 @@
     var c = audio();
     ROLES.forEach(function (r) {
       var v = $("#lab-rt-" + r[0]).value;
-      if (v.indexOf("s-") !== 0 || !buffer) { return; }
+      /* once per recording and role: each send is mixed and kept by the engine, on its audio thread (final review 3a I2/I3) */
+      if (v.indexOf("s-") !== 0 || !buffer || sentRec[r[1]] === recId) { return; }
+      sentRec[r[1]] = recId;
       var ch = []; for (var k = 0; k < buffer.numberOfChannels; k++) { ch.push(buffer.getChannelData(k).slice(0)); }
-      pnode.port.postMessage({ type: "role", role: r[1], channels: ch });
+      pnode.port.postMessage({ type: "role", role: r[1], channels: ch }); rtSent++;
       if (analysis) { pnode.port.postMessage({ type: "analysis", role: r[1], bytes: utf8(JSON.stringify(analysis)) }); }
     });
     pnode.port.postMessage({ type: first ? "route" : "patch", bytes: utf8(JSON.stringify(rtPatch())), tuning: tuning ? 1 : 0 });
@@ -493,7 +495,7 @@
   }
 
   window.fsLab = { ready: ready, load: load, get analysis() { return analysis; }, get routes() { return routes; }, setRoute: setRoute, play: play, stop: stop,
-    get peak() { return peak; }, level: levelDb,
+    get peak() { return peak; }, level: levelDb, get rtSent() { return rtSent; },
     peakOut: function () { if (!meter) { return 0; } var a = new Float32Array(meter.fftSize), m = 0; meter.getFloatTimeDomainData(a); for (var i = 0; i < a.length; i++) { m = Math.max(m, Math.abs(a[i])); } return m; }, peakHz: peakHz, get bufferSeconds() { return buffer ? buffer.duration : 0; },
     now: function () { return ctx ? ctx.currentTime : 0; },
     voices: function () { return last.map(function (v) { return { start: v.start, stopAt: v.stopAt, offset: v.offset, hz: v.hz }; }); },

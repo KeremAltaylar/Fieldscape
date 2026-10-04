@@ -43,7 +43,12 @@ class FieldscapeCore extends AudioWorkletProcessor {
       else if (m.type === "walk") { x.fs_piece_walk(this.dev, m.off ? -1 : this.route, m.t || 0, m.off ? 1e9 : 0); }
       else if (m.type === "role") {
         const n = m.channels[0].length, ptrs = x.malloc(4 * m.channels.length);
-        const bufs = m.channels.map((c) => { const p = x.malloc(4 * n); new Float32Array(x.memory.buffer, p, n).set(c); return p; });
+        const bufs = m.channels.map(() => x.malloc(4 * n));
+        if (!ptrs || bufs.some((p) => !p)) {      /* out of memory: say so, never write at address 0 */
+          bufs.forEach((p) => p && x.free(p)); if (ptrs) { x.free(ptrs); }
+          this.port.postMessage({ type: "error", where: "role", message: "out of memory" }); return;
+        }
+        bufs.forEach((p, k) => new Float32Array(x.memory.buffer, p, n).set(m.channels[k]));
         new Uint32Array(x.memory.buffer, ptrs, bufs.length).set(bufs);
         x.fs_piece_role_source(this.dev, m.role, bufs.length, BigInt(n), ptrs);
         bufs.forEach((p) => x.free(p)); x.free(ptrs);

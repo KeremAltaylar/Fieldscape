@@ -245,6 +245,12 @@ try {
   await ev("(function(){ var s = document.querySelector('#lab-rt-v3'); s.value = 'fm'; s.dispatchEvent(new Event('change')); return 1; })()");
   let rtl2 = -120; for (let i = 0; i < 10; i++) { await sleep(200); rtl2 = Math.max(rtl2, await ev("fsLab.level()")); }
   check("... a role switched Sampler -> Digital while it plays keeps sounding", rtl2 > -40, rtl2);
+  /* final review 3a I2/I3: a recording goes to the engine once - switching roles does not re-send it (each send was mixed on
+     the audio thread, 50-130 ms, and kept for good) */
+  await ev("(function(){ var s = document.querySelector('#lab-rt-v3'); s.value = 's-harmonic'; s.dispatchEvent(new Event('change')); return 1; })()");
+  await sleep(300);
+  const sent = await ev("fsLab.rtSent");
+  check("switching roles does not re-send the recording (sent once)", sent === 1, sent);
   await ev("document.querySelector('#lab-rt-stop').click(), 0");
   await sleep(3500);
   const rtq = await ev("fsLab.level()");

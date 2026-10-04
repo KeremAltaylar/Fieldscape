@@ -669,7 +669,11 @@ struct Piece : Device {
     /* swapSynth */
     void swap(Role &r, int type, double now) {
         if (r.cur == type && r.cur >= 0) return;
-        if (r.cur >= 0) { r.inst[r.cur]->release(now); r.until[r.cur] = now + 2.5; }
+        if (r.cur >= 0) {
+            if (is_sampler(r.cur)) static_cast<sampler::Resonator *>(r.inst[r.cur].get())->release_all(now);   /* every voice (3a I1) */
+            else r.inst[r.cur]->release(now);
+            r.until[r.cur] = now + 2.5;
+        }
         Synth *s = r.inst[type].get();
         if (!s) return;
         s->set(r.st);              /* a SELF_VOICED synth reads only the two numbers */
@@ -842,6 +846,9 @@ struct Piece : Device {
         if (rr && is_sampler(rr->cur) && sy == rr->sy()) {   /* a sampler role: its settings for this note (3a) */
             auto *rs = static_cast<sampler::Resonator *>(sy); const SamplerCfg &c = patch.smp[role <= 1 ? 0 : role - 1];
             rs->body = c.body; rs->excite = c.excite; rs->method = c.method; rs->mode = c.mode; rs->tune = c.tune;
+            /* a held note (the bass) ends the one before it: a one-voice digital synth retriggers, a sampler would keep
+               every earlier bass sounding (final review 3a C1: six old bass notes piled up) */
+            if (dur < 0) rs->release_all(t);
         }
         if (dur < 0) sy->attack(f, t, vel); else sy->attack_release(f, dur, t, vel);
     }

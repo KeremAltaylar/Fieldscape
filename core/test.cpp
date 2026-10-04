@@ -1779,6 +1779,73 @@ int main() {
           std::printf("3a route: every role a Freeze, 99.9%% of blocks within %.3f ms, worst %.3f (budget %.2f)\n", ms[(size_t)(ms.size() * 0.999)], ms.back(), 1.33 * slack);
           assert(ms[(size_t)(ms.size() * 0.999)] < 1.33 * slack); }
     }
+    {   /* 3a final review: a sampler Voice role releases its held bass (C1: old bass notes piled up to six), and a switch
+           away from a sampler releases every voice (I1: the others froze at full level and were cut 2.5 s later) */
+        const double SR = 48000;
+        std::vector<float> tone20((size_t)(20 * SR)); for (size_t i = 0; i < tone20.size(); i++) { double v = 0; for (int k = 1; k <= 6; k++) v += std::sin(2 * 3.141592653589793 * 440 * k * i / SR) / k; tone20[i] = (float)(0.3 * v); }
+        const float *tnp[1] = { tone20.data() };
+        std::string tjson = "{\"f0\":440,\"hop_s\":0.02,\"track\":["; for (int k = 0; k < 1000; k++) tjson += std::string(k ? "," : "") + "[440,0.95,0]"; tjson += "]}";
+        struct TNote { int role; double f, dur, t; };
+        struct TLog { std::vector<TNote> n; };
+        auto logger = [](void *p, int role, double f, double dur, double t, double) { ((TLog *)p)->n.push_back({ role, f, dur, t }); };
+        const std::string pre = "{\"version\":17,\"prog\":[{\"r\":0,\"q\":\"m9\"},{\"r\":5,\"q\":\"maj7#11\"},{\"r\":10,\"q\":\"maj9\"},{\"r\":3,\"q\":\"6/9\"}],\"bed\":{\"on\":false},\"sect\":{\"on\":false},\"zones\":{\"on\":false},\"v3\":{\"on\":false},";
+        const std::string smp = pre + "\"voice\":{\"synth\":\"s-retune\",\"warp\":0,\"drive\":0,\"top\":0,\"sampler\":{\"colour\":1}}}";
+        const std::string dig = pre + "\"voice\":{\"synth\":\"fm\",\"warp\":0,\"drive\":0,\"top\":0}}";
+        /* C1: after several chord changes, every earlier bass note (not among the notes of the last 4 s) is >= 40 dB under the
+           bass note now sounding */
+        { TLog log; std::vector<float> o; unsigned seed = 3; fs_device *d = fs_create("piece"); fs_prepare(d, 48000, 128);
+          fs_piece_test_hooks(d, fixed_draw, &seed, logger, &log); fs_piece_role_source(d, 0, 1, (long long)tone20.size(), tnp); fs_piece_role_analysis(d, 0, tjson.c_str());
+          int r = fs_piece_add_route(d, smp.c_str()); fs_piece_walk(d, r, 0.3, 0);
+          for (int i = 0; i < (int)(120 * SR / 128); i++) { if (i % 375 == 0) fs_piece_walk(d, r, 0.3 + 0.6 * i / (120 * SR / 128), 0); fs_process(d, 128); const float *l = fs_out(d, 0); o.insert(o.end(), l, l + 128); }
+          fs_destroy(d);
+          int nb = 0; for (auto &e : log.n) nb += e.role == 0; std::printf("3a review C1: %d bass notes in 120 s walking\n", nb);
+          const double tend = o.size() / SR; std::vector<float> w(o.end() - 65536, o.end());
+          double now_f = 0; for (auto &e : log.n) if (e.role == 0 && e.t < tend - 1.5) now_f = e.f;
+          std::vector<double> recent; for (auto &e : log.n) if (e.t > tend - 6) recent.push_back(e.f);
+          double worst = -200; int old = 0;
+          for (auto &e : log.n) if (e.role == 0 && e.t < tend - 6) {
+              bool near = std::fabs(1200 * std::log2(now_f / e.f)) < 30; for (double q : recent) near = near || std::fabs(1200 * std::log2(q / e.f)) < 30;
+              if (near) continue; old++;
+              worst = std::max(worst, 20 * std::log10(peak_amp(w, SR, e.f) / peak_amp(w, SR, now_f))); }
+          std::printf("3a review C1: %d earlier bass notes, the loudest %.1f dB against the bass now\n", old, worst);
+          assert(old >= 2 && worst <= -40); }
+        /* I1: a long Third-voice sampler note (its release past the switch + 2.5 s) when the role switches to fm: it fades
+           with its release - 1.2-2.4 s later >= 40 dB under where it was (not frozen at full level until the 2.5 s cut) */
+        { const std::string v3s = pre.substr(0, pre.find("\"v3\":{\"on\":false},")) + pre.substr(pre.find("\"v3\":{\"on\":false},") + std::string("\"v3\":{\"on\":false},").size());
+          const std::string smp3 = v3s + "\"fx\":{\"delayWet\":0,\"revWet\":0},\"fx2\":{\"delayWet\":0,\"revWet\":0},\"fx3\":{\"delayWet\":0,\"revWet\":0},\"voice\":{\"on\":false},\"v3\":{\"synth\":\"s-retune\",\"warp\":0,\"drive\":0,\"sampler\":{\"colour\":1}}}";
+          const std::string dig3 = v3s + "\"fx\":{\"delayWet\":0,\"revWet\":0},\"fx2\":{\"delayWet\":0,\"revWet\":0},\"fx3\":{\"delayWet\":0,\"revWet\":0},\"voice\":{\"on\":false},\"v3\":{\"synth\":\"fm\",\"warp\":0,\"drive\":0}}";
+          auto walk = [&](double ts, TLog &log, std::vector<float> &o, bool rec = true) {
+              unsigned seed = 3; fs_device *d = fs_create("piece"); fs_prepare(d, 48000, 128);
+              fs_piece_test_hooks(d, fixed_draw, &seed, logger, &log);
+              if (rec) { fs_piece_role_source(d, 2, 1, (long long)tone20.size(), tnp); fs_piece_role_analysis(d, 2, tjson.c_str()); }
+              int r = fs_piece_add_route(d, smp3.c_str()); fs_piece_walk(d, r, 0.3, 0);
+              const int sw = ts > 0 ? (int)(ts * SR / 128) : -1;
+              for (int i = 0; i < (int)(30 * SR / 128); i++) { if (i == sw) fs_piece_set_route(d, r, dig3.c_str()); fs_process(d, 128); const float *l = fs_out(d, 0); o.insert(o.end(), l, l + 128); }
+              fs_destroy(d); };
+          TLog l0; std::vector<float> o0; walk(-1, l0, o0);
+          double ts = -1, nf = 0; for (auto &e : l0.n) if (e.role == 3 && e.dur > 2.75 && e.t > 4 && e.t < 20) { ts = e.t + 0.1; nf = e.f; break; }
+          assert(ts > 0);
+          /* the sampler alone: the same walk and switch with its role silent (no recording) - fixed draws, so the rest is identical */
+          TLog log, lq; std::vector<float> o, q; walk(ts, log, o); walk(ts, lq, q, false);
+          std::vector<float> smp(o.size()); for (size_t i = 0; i < o.size(); i++) smp[i] = o[i] - q[i];
+          auto rmsw = [&](double a0, double z) { double e2 = 0; for (size_t i = (size_t)(a0 * SR); i < (size_t)(z * SR); i++) e2 += (double)smp[i] * smp[i]; return 10 * std::log10(e2 / ((z - a0) * SR) + 1e-30); };
+          const double drop = rmsw(ts + 1.2, ts + 2.4) - rmsw(ts - 0.7, ts - 0.05);
+          std::printf("3a review I1: switch 0.1 s into a %.0f Hz sampler note; the sampler 1.2-2.4 s later is %.1f dB against before\n", nf, drop);
+          assert(drop <= -40); }
+        /* I1 at the synth: three long notes sounding when the role is switched away - release() (the last note only) leaves
+           two at full level until the engine's 2.5 s cut; release_all() releases all three */
+        { auto after = [&](bool all) {
+              sampler::Resonator r; r.init(SR); r.set_source(1, (long long)tone20.size(), tnp); std::vector<float> tf(1000, 440.0f), tc(1000, 0.95f);
+              r.set_track(440, 0.02, tf.data(), tc.data(), 1000); r.synth = sampler::RETUNE; r.nv = 6;
+              for (double f : { 220.0, 277.18, 329.63 }) { r.attack(f, 0, 0.3); r.release(10); }
+              std::vector<float> L((size_t)(3 * SR), 0.0f), R(L.size(), 0.0f);
+              for (size_t i = 0; i < L.size(); i += 128) { if (i == (size_t)(1 * SR / 128) * 128) { if (all) r.release_all(1.0); else r.release(1.0); } r.render(L.data() + i, R.data() + i, 128, i / SR); }
+              double e0 = 0, e1 = 0; for (size_t i = (size_t)(0.5 * SR); i < (size_t)(0.9 * SR); i++) e0 += (double)L[i] * L[i]; for (size_t i = (size_t)(2.2 * SR); i < (size_t)(2.6 * SR); i++) e1 += (double)L[i] * L[i];
+              return 10 * std::log10((e1 + 1e-30) / (e0 + 1e-30)); };
+          const double one = after(false), all = after(true);
+          std::printf("3a review I1: three long notes 1.2-1.6 s after the switch: %.1f dB with release(), %.1f dB with release_all()\n", one, all);
+          assert(one > -20 && all <= -60); }
+    }
     {   /* 3a: swapping a role between a digital synth (fm) and any sampler synth stays within 1 dB (the sampler trims) */
         const double SR = 48000;
         std::vector<float> nz = noise_src(20, 0.5f, 61); const float *nzp[1] = { nz.data() };
