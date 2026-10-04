@@ -1779,6 +1779,27 @@ int main() {
           std::printf("3a route: every role a Freeze, 99.9%% of blocks within %.3f ms, worst %.3f (budget %.2f)\n", ms[(size_t)(ms.size() * 0.999)], ms.back(), 1.33 * slack);
           assert(ms[(size_t)(ms.size() * 0.999)] < 1.33 * slack); }
     }
+    {   /* 3a: swapping a role between a digital synth (fm) and any sampler synth stays within 1 dB (the sampler trims) */
+        const double SR = 48000;
+        std::vector<float> nz = noise_src(20, 0.5f, 61); const float *nzp[1] = { nz.data() };
+        std::vector<float> tone20((size_t)(20 * SR)); for (size_t i = 0; i < tone20.size(); i++) { double v = 0; for (int k = 1; k <= 6; k++) v += std::sin(2 * 3.141592653589793 * 440 * k * i / SR) / k; tone20[i] = (float)(0.3 * v); }
+        const float *tnp[1] = { tone20.data() };
+        std::string tjson = "{\"f0\":440,\"hop_s\":0.02,\"track\":["; for (int k = 0; k < 1000; k++) tjson += std::string(k ? "," : "") + "[440,0.95,0]"; tjson += "]}";
+        auto level = [&](const char *synth) {
+            std::string patch = std::string("{\"version\":17,\"prog\":[{\"r\":0,\"q\":\"m9\"},{\"r\":5,\"q\":\"maj7#11\"},{\"r\":10,\"q\":\"maj9\"},{\"r\":3,\"q\":\"6/9\"}],")
+                + "\"bed\":{\"on\":false},\"sect\":{\"on\":false},\"zones\":{\"on\":false},\"v3\":{\"on\":false},\"voice\":{\"synth\":\"" + synth + "\"}}";
+            unsigned seed = 31; fs_device *d = fs_create("piece"); fs_prepare(d, 48000, 128); fs_piece_test_hooks(d, fixed_draw, &seed, nullptr, nullptr);
+            if (std::string(synth) == "s-retune") { fs_piece_role_source(d, 0, 1, (long long)tone20.size(), tnp); fs_piece_role_analysis(d, 0, tjson.c_str()); }
+            else fs_piece_role_source(d, 0, 1, (long long)nz.size(), nzp);
+            int r = fs_piece_add_route(d, patch.c_str()); fs_piece_walk(d, r, 0.3, 0);
+            double e = 0; long n = 0;
+            for (int i = 0; i < (int)(30 * SR / 128); i++) { fs_process(d, 128); if (i > (int)(5 * SR / 128)) { const float *l = fs_out(d, 0); for (int k = 0; k < 128; k++) { e += (double)l[k] * l[k]; n++; } } }
+            fs_destroy(d); return 10 * std::log10(e / n + 1e-30); };
+        const double ref = level("fm"); double worst = 0;
+        for (const char *sy : { "s-retune", "s-resonator", "s-harmonic", "s-formant", "s-pulsar", "s-freeze" }) {
+            const double l = level(sy); std::printf("3a level: %-12s %+.2f dB against fm (%.1f)\n", sy, l - ref, ref); worst = std::max(worst, std::fabs(l - ref)); }
+        assert(worst <= 1);
+    }
     {   /* 2c guard: the Harmonic filter and the Formant render exactly as in 2b - a hash of every method x mode */
         const std::vector<float> wind = noise_src(3, 0.5f, 77); const float *p[1] = { wind.data() };
         uint64_t h = 1469598103934665603ull;

@@ -14,7 +14,7 @@ static const char *const SYNTH_NAMES[NSYNTH] = { "fm", "am", "duo", "mono", "sim
     "s-retune", "s-resonator", "s-harmonic", "s-formant", "s-pulsar", "s-freeze" };
 /* SYNTH_TRIM, dB */
 static const double SYNTH_TRIM[NSYNTH] = { 0, 5.5, -14.5, -10, -11, -9, -2, -12.5, -9, -0.5, -2,
-    0, 0, 0, 0, 0, 0 };   /* the samplers: measured against fm (3a Task 3) */
+    2.6, 6.1, 0, 0, 6.3, -2.6 };   /* the samplers: measured against fm on a route's Voice, a -20 dBFS recording (3a) */
 static const bool PERCUSSIVE[NSYNTH] = { 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0 };
 static const bool SELF_VOICED[NSYNTH] = { 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 };
 
