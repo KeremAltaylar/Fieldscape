@@ -444,9 +444,15 @@
     });
     return pready;
   }
-  /* the route's patch with the roles as chosen here */
+  /* the route's patch with the roles as chosen here. A patch without a version and a progression is read by the engine as an
+     old one - its default, digital, the roles ignored (Kerem 2026-10-04: "still digital synths play") - so they are added:
+     the engine's own default progression */
+  var DEFAULT_PROG = [[0, "m9"], [0, "m11"], [5, "maj7#11"], [5, "6/9"], [10, "maj9"], [10, "maj7"], [3, "maj7#11"], [3, "6/9"],
+    [8, "maj9"], [8, "13"], [1, "maj7"], [1, "maj9"], [2, "m7b5"], [7, "7alt"], [0, "m9"], [0, "m6"]];
   function rtPatch() {
     var p = JSON.parse(JSON.stringify((route && route.patch) || {}));
+    if (!(p.version >= 4 && p.version <= 17)) { p.version = 17; }
+    if (!(p.prog && p.prog.length)) { p.prog = DEFAULT_PROG.map(function (c) { return { r: c[0], q: c[1] }; }); }
     var smp = { body: +$("#lab-body").value, excite: +$("#lab-excite").value, method: +$("#lab-method").value, mode: +$("#lab-mode").value,
       focus: +$("#lab-focus").value, colour: +$("#lab-colour").value, tune: +$("#lab-tune").value };
     ROLES.forEach(function (r) {
@@ -495,7 +501,7 @@
   }
 
   window.fsLab = { ready: ready, load: load, get analysis() { return analysis; }, get routes() { return routes; }, setRoute: setRoute, play: play, stop: stop,
-    get peak() { return peak; }, level: levelDb, get rtSent() { return rtSent; },
+    get peak() { return peak; }, level: levelDb, get rtSent() { return rtSent; }, rtPatch: function () { return rtPatch(); },
     peakOut: function () { if (!meter) { return 0; } var a = new Float32Array(meter.fftSize), m = 0; meter.getFloatTimeDomainData(a); for (var i = 0; i < a.length; i++) { m = Math.max(m, Math.abs(a[i])); } return m; }, peakHz: peakHz, get bufferSeconds() { return buffer ? buffer.duration : 0; },
     now: function () { return ctx ? ctx.currentTime : 0; },
     voices: function () { return last.map(function (v) { return { start: v.start, stopAt: v.stopAt, offset: v.offset, hz: v.hz }; }); },

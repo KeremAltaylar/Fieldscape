@@ -234,6 +234,11 @@ try {
   const fl = await ev("(document.querySelector('#lab-colour-label') || {}).textContent || ''");
   check("Colour reads Partial 5 for the Formant at 0.27", /Partial 5/.test(fl), fl);
   await ev("(function(){ var s = document.querySelector('#lab-colour'); s.value = '0.5'; s.dispatchEvent(new Event('input')); return 1; })()");
+  /* Kerem 2026-10-04: "when I add for voice, sections and third voice still digital synths play" - a route whose patch has no
+     version / progression (lab2's offline default route, an old route) was read by the engine as an old patch: its default,
+     digital, ignoring the roles. The panel's patch always carries them. */
+  const rp = await ev("(function(){ fsLab.routes.push({ id: 'bare', name: 'Bare', patch: {} }); fsLab.setRoute('bare'); ['voice','sect','v3'].forEach(function (r) { var s = document.querySelector('#lab-rt-' + r); s.value = 's-freeze'; }); var p = fsLab.rtPatch(); fsLab.routes.pop(); fsLab.setRoute(fsLab.routes[0].id); ['voice','sect','v3'].forEach(function (r) { document.querySelector('#lab-rt-' + r).value = ''; }); return p; })()");
+  check("a bare route's patch still carries the chosen sampler roles (a version and a progression added)", rp && rp.version >= 4 && rp.version <= 17 && rp.prog && rp.prog.length > 0 && rp.voice.synth === "s-freeze" && rp.sect.synth === "s-freeze" && rp.v3.synth === "s-freeze", rp);
   /* 3a: a route played by the real route engine, each role Digital or Sampler */
   check("the Route panel offers Digital and Sampler sounds for each role", await ev("['voice','sect','v3'].every(function (r) { var s = document.querySelector('#lab-rt-' + r); return s && s.querySelector(\"optgroup[label='Digital'] option[value='fm']\") && s.querySelectorAll(\"optgroup[label='Sampler'] option\").length === 6; })"), null);
   await ev(`fsLab.load(${NOISE}).then(function () { return 1; })`);
