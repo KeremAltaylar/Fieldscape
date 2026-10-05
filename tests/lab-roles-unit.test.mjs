@@ -64,3 +64,37 @@ test("lab-roles: a save for a route other than the one loaded is refused, even a
   assert.equal(upserts[0].route_id, "B");
   assert.deepEqual(s.lastSaved, upserts[0].roles);
 });
+
+/* 3c.1 F1: the silence of a recording cut out (50 ms blocks, -40 dB of the loudest, gaps under 0.25 s kept) */
+const calls = (sr) => {      /* three 0.3 s calls of a 5 kHz tone, 2 s of silence between, 0.5 s of silence first */
+  const n = Math.round(sr * 7.4), x = new Float32Array(n);
+  for (const s0 of [0.5, 2.8, 5.1]) for (let i = 0; i < 0.3 * sr; i++) x[Math.round(s0 * sr) + i] = 0.5 * Math.sin(2 * Math.PI * 5000 * i / sr);
+  return x;
+};
+test("lab-roles: compactData keeps the calls, joined, and drops the silence between", () => {
+  const sr = 48000, x = calls(sr);
+  const track = Array.from({ length: Math.round(7.4 / 0.02) }, (_, i) => [i, 0.9, 5000]);   /* hop i carries its own index */
+  const c = FsRoles.compactData([x], sr, { f0: 5000, hop_s: 0.02, track, frames: x.length });
+  const secs = c.channels[0].length / sr;
+  assert.ok(secs > 0.85 && secs < 1.25, String(secs));                       /* ~0.9 s of calls (+ block rounding) */
+  let peak = 0; for (const v of c.channels[0]) peak = Math.max(peak, Math.abs(v));
+  assert.ok(peak > 0.45);
+  let step = 0; for (let i = 1; i < c.channels[0].length; i++) step = Math.max(step, Math.abs(c.channels[0][i] - c.channels[0][i - 1]));
+  /* faded, no click: no step larger than the 5 kHz tone's own (2*pi*5000/sr * 0.5); an unfaded cut jumps up to 1.0 */
+  assert.ok(step <= 1.02 * 2 * Math.PI * 5000 / sr * 0.5, "a join steps by " + step);
+  assert.equal(c.analysis.frames, c.channels[0].length);
+  /* the track keeps the hops inside kept blocks, in order: hop 25 (0.5 s) is the first call's first hop */
+  assert.equal(c.analysis.track[0][0], 25);
+  assert.ok(c.analysis.track.length > 40 && c.analysis.track.length < 65, String(c.analysis.track.length));
+  assert.equal(x.length, Math.round(sr * 7.4));                               /* the input untouched */
+});
+test("lab-roles: compactData keeps a gap under 0.25 s, and leaves an all-silent or tiny buffer whole", () => {
+  const sr = 48000, x = new Float32Array(sr * 2);
+  for (let i = 0; i < 0.4 * sr; i++) x[i] = 0.5 * Math.sin(i / 3);
+  for (let i = Math.round(0.6 * sr); i < sr; i++) x[i] = 0.5 * Math.sin(i / 3);   /* a 0.2 s gap, then 0.4 s more */
+  assert.ok(FsRoles.compactData([x], sr, null).channels[0].length >= sr * 0.95);
+  const z = new Float32Array(sr); assert.equal(FsRoles.compactData([z], sr, null).channels[0].length, sr);
+  const click = new Float32Array(sr); click[24000] = 0.9;
+  const cc = FsRoles.compactData([click], sr, null).channels[0];
+  assert.ok(cc.length > 0 && cc.length <= sr);
+});

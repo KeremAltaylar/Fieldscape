@@ -42,11 +42,67 @@
     });
     return p;
   }
+  /* 3c.1 F1: the sounding parts of a recording, in order. 50 ms blocks; a block sounds when its energy is at least the
+     loudest block's -40 dB (the analyser's silence rule); a silent run under 0.25 s is kept (the breath in a call) */
+  var BLOCK_S = 0.05, KEEP_GAP_S = 0.25, FADE_S = 0.005;
+  function compactPlan(chs, sr) {
+    var B = Math.max(1, Math.round(BLOCK_S * sr)), n = chs[0].length, nb = Math.ceil(n / B), e = new Float64Array(nb), top = 0;
+    for (var b = 0; b < nb; b++) {
+      var s = 0, z = Math.min(n, (b + 1) * B);
+      for (var c = 0; c < chs.length; c++) { var d = chs[c]; for (var i = b * B; i < z; i++) { s += d[i] * d[i]; } }
+      e[b] = s / ((z - b * B) * chs.length); if (e[b] > top) { top = e[b]; }
+    }
+    var kept = new Uint8Array(nb);
+    for (b = 0; b < nb; b++) { kept[b] = top > 0 && e[b] >= top * 1e-4 ? 1 : 0; }
+    if (top <= 0) { kept.fill(1); }
+    var gap = Math.ceil(KEEP_GAP_S / BLOCK_S);          /* silent runs shorter than this between sounding blocks: kept */
+    for (b = 0; b < nb; b++) {
+      if (kept[b]) { continue; }
+      var r = b; while (r < nb && !kept[r]) { r++; }
+      if (b > 0 && r < nb && r - b < gap) { for (var k = b; k < r; k++) { kept[k] = 1; } }
+      b = r;
+    }
+    var segs = [];
+    for (b = 0; b < nb; b++) { if (kept[b] && (b === 0 || !kept[b - 1])) { var q = b; while (q < nb && kept[q]) { q++; } segs.push([b * B, Math.min(n, q * B)]); } }
+    return { block: B, kept: kept, segments: segs };
+  }
+  function compactData(chs, sr, analysis) {
+    var plan = compactPlan(chs, sr), n = 0, F = Math.max(1, Math.round(FADE_S * sr));
+    plan.segments.forEach(function (sg) { n += sg[1] - sg[0]; });
+    var whole = plan.segments.length === 1 && plan.segments[0][0] === 0 && plan.segments[0][1] === chs[0].length;
+    var out = chs.map(function () { return new Float32Array(n); });
+    var o = 0;
+    plan.segments.forEach(function (sg, si) {
+      var len = sg[1] - sg[0];
+      for (var c = 0; c < chs.length; c++) {
+        out[c].set(chs[c].subarray(sg[0], sg[1]), o);
+        if (whole) { continue; }
+        for (var i = 0; i < Math.min(F, len); i++) {
+          var g = 0.5 - 0.5 * Math.cos(Math.PI * (i + 0.5) / F);       /* raised cosine: no step at a join */
+          if (si > 0 || sg[0] > 0) { out[c][o + i] *= g; }
+          if (si < plan.segments.length - 1 || sg[1] < chs[0].length) { out[c][o + len - 1 - i] *= g; }
+        }
+      }
+      o += len;
+    });
+    var a = analysis ? JSON.parse(JSON.stringify(analysis)) : null;
+    if (a && a.track && a.hop_s) {
+      a.track = a.track.filter(function (fr, i) { var b = Math.floor(i * a.hop_s * sr / plan.block); return b < plan.kept.length && plan.kept[b]; });
+    }
+    if (a) { a.frames = n; }
+    return { channels: out, analysis: a, kept: plan.kept, block: plan.block };
+  }
+  function prepare(ctx, b, analysis) {
+    var chs = []; for (var c = 0; c < b.numberOfChannels; c++) { chs.push(b.getChannelData(c)); }
+    var cd = compactData(chs, b.sampleRate, analysis), out = ctx.createBuffer(chs.length, Math.max(1, cd.channels[0].length), b.sampleRate);
+    for (c = 0; c < chs.length; c++) { out.copyToChannel(cd.channels[c], c); }
+    return { buf: out, analysis: cd.analysis, raw: b, kept: cd.kept, block: cd.block };
+  }
   function decodeSample(sb, ctx, smp) {
     return sb.storage.from("recordings").download(smp.path).then(function (d) {
       if (d.error || !d.data) { throw new Error((d.error && d.error.message) || "not found"); }
       return d.data.arrayBuffer();
-    }).then(function (ab) { return ctx.decodeAudioData(ab); }).then(function (b) { return trimmed(ctx, b); });
+    }).then(function (ab) { return ctx.decodeAudioData(ab); }).then(function (b) { return prepare(ctx, trimmed(ctx, b), smp.analysis || null); });
   }
   function fetchRoute(sb, ctx, id) {
     return sb.from("lab_route_roles").select("roles").eq("route_id", id).maybeSingle().then(function (q) {
@@ -56,7 +112,7 @@
       return Promise.all(ROLES.map(function (r) {
         var rr = roles[r]; if (!rr || !isSampler(rr.synth)) { return null; }
         if (!rr.sample || !rr.sample.path) { buf[r] = silence(ctx); ana[r] = null; return null; }
-        return decodeSample(sb, ctx, rr.sample).then(function (b) { buf[r] = b; ana[r] = rr.sample.analysis || null; },
+        return decodeSample(sb, ctx, rr.sample).then(function (p) { buf[r] = p.buf; ana[r] = p.analysis; },
           function () { buf[r] = silence(ctx); ana[r] = null; });
       })).then(function () { return { roles: roles, buf: buf, ana: ana }; });
     });
@@ -69,13 +125,18 @@
   function session(o) {
     var s = { defaults: { voice: { gain: 0.45, harm: 1, index: 4 }, sect: { gain: 0.8, harm: 2.02, index: 7.5 }, v3: { gain: 0.55, harm: 1.5, index: 3 } },
       gen: 0, loading: false, failed: false, loadedFor: null };
-    var st = {}, bufs = {}, anas = {}, recIds = { voice: 0, sect: 0, v3: 0 }, uploading = [];
+    var st = {}, bufs = {}, anas = {}, raws = {}, kepts = {}, blocks = {}, recIds = { voice: 0, sect: 0, v3: 0 }, uploading = [];
+    var keep = function (r, p) { bufs[r] = p.buf; anas[r] = p.analysis; raws[r] = p.raw; kepts[r] = p.kept; blocks[r] = p.block; };
     var changed = function (r) { if (o.onChange) { o.onChange(r); } };
     s.state = function (r) {
       if (!st[r]) { var d = s.defaults[r]; st[r] = { synth: "", gain: d.gain, harm: d.harm, index: d.index, body: 0, excite: 0, method: 0, mode: 0, focus: 0.5, colour: 0.5, tune: 1, sample: null, sampleNote: "" }; }
       return st[r];
     };
     s.buf = function (r) { return bufs[r] || null; };
+    /* the waveform's: the sample as recorded (trimmed), which 50 ms blocks were kept, and the block length (3c.1) */
+    s.raw = function (r) { return raws[r] || null; };
+    s.kept = function (r) { return kepts[r] || null; };
+    s.block = function (r) { return blocks[r] || 0; };
     s.ana = function (r) { return anas[r] || null; };
     s.recId = function (r) { return recIds[r]; };
     s.json = function () {
@@ -88,7 +149,7 @@
     };
     /* each route choice is a generation: a load or upload from an earlier one never lands on the route now shown (3b I2/I5) */
     s.load = function (id) {
-      st = {}; bufs = {}; anas = {}; var gen = ++s.gen; s.failed = false; s.loadedFor = null;
+      st = {}; bufs = {}; anas = {}; raws = {}; kepts = {}; blocks = {}; var gen = ++s.gen; s.failed = false; s.loadedFor = null;
       if (!o.sb || !id) { s.loading = false; changed(null); return Promise.resolve(); }
       s.loading = true; changed(null);
       return o.sb.from("lab_route_roles").select("roles").eq("route_id", id).maybeSingle().then(function (q) {
@@ -105,9 +166,9 @@
           x.sample = rr.sample || null; x.sampleNote = rr.sample ? "loading…" : "";
           if (rr.sample && rr.sample.path) {
             decodeSample(o.sb, o.ctx(), rr.sample).then(function (b) {
-              if (gen !== s.gen) { return; } bufs[r] = b; anas[r] = rr.sample.analysis; recIds[r]++; x.sampleNote = ""; changed(r);
+              if (gen !== s.gen) { return; } keep(r, b); recIds[r]++; x.sampleNote = ""; changed(r);
             }, function (e) {
-              if (gen !== s.gen) { return; } bufs[r] = silence(o.ctx()); anas[r] = null; recIds[r]++;
+              if (gen !== s.gen) { return; } bufs[r] = silence(o.ctx()); anas[r] = null; raws[r] = null; kepts[r] = null; recIds[r]++;
               x.sampleNote = "sample missing (" + (e && e.message || e) + ") - this role is silent"; changed(r);
             });
           }
@@ -123,7 +184,7 @@
         return Promise.resolve(o.analyse(mono, buf.sampleRate)).then(function (a) { return { buf: buf, analysis: a }; });
       }).then(function (res) {
         if (gen !== s.gen) { return; }
-        bufs[r] = res.buf; anas[r] = res.analysis; recIds[r]++;
+        keep(r, prepare(o.ctx(), res.buf, res.analysis)); recIds[r]++;   /* the silence cut out; the upload stays as recorded */
         x.sample = { path: null, name: file.name, analysis: res.analysis };
         if (!o.sb || !id) { x.sampleNote = "not saved: log in as a setter on the site to save"; changed(r); return; }
         var path = "lab/" + id + "/" + r + "-" + Date.now() + ".wav";
@@ -159,6 +220,6 @@
   }
   var api = { ROLES: ROLES, ROLE_INDEX: ROLE_INDEX, MAX_S: MAX_S, SAMPLER: SAMPLER, NAMES: NAMES, isSampler: isSampler, esc: esc,
     sampleLabel: sampleLabel, colourName: colourName, wavBytes: wavBytes, wav: wav, trimmed: trimmed, overlay: overlay,
-    fetchRoute: fetchRoute, sendRole: sendRole, session: session, decodeSample: decodeSample, silence: silence };
+    fetchRoute: fetchRoute, sendRole: sendRole, session: session, decodeSample: decodeSample, silence: silence, compactPlan: compactPlan, compactData: compactData, prepare: prepare };
   root.FsRoles = api;
 })(typeof globalThis !== "undefined" ? globalThis : self);

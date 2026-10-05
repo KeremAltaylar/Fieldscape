@@ -8344,9 +8344,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var key = "p:" + path;
       if (labKey[r] === key || labKey[r] === key + " loading") { return; }
       labKey[r] = key + " loading";
-      (labSound[path] = labSound[path] || FsRoles.decodeSample(sb, ctx, rr.sample)).then(function (b) {
+      (labSound[path] = labSound[path] || FsRoles.decodeSample(sb, ctx, rr.sample)).then(function (p) {
         if (labSentFor !== id || !core || !core.node || core.node.port !== port || labKey[r] !== key + " loading") { return; }
-        labKey[r] = key; labSend(port, r, b, rr.sample.analysis || null);
+        labKey[r] = key; labSend(port, r, p.buf, p.analysis);       /* the silence cut out (3c.1) */
       }, function (e) {
         delete labSound[path];
         if (labKey[r] === key + " loading") { labKey[r] = null; silence(r); }
