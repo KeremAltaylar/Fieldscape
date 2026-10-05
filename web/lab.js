@@ -94,6 +94,7 @@
 
   function setRoute(id) {
     route = routes.filter(function (r) { return r.id === id; })[0] || null;
+    roleDefaults();
     var p = cstr(JSON.stringify(route ? route.patch : {}));
     prog = call(x.fs_harmony_progression, [p, tuning, 0]); x.free(p);
     gate();
@@ -431,23 +432,18 @@
     metal: [["Harmonicity", 1, 12], ["Octaves", 0.4, 4]], membrane: [["Pitch decay", 0.01, 0.4], ["Octaves", 1, 8]], wavetable: [["Table", 0, 1], ["Brightness", 0, 1]],
     comb: [["Damping", 0, 1], ["Resonance", 0, 1]], formant: [["Vowel", 0, 1], ["Shift", 0, 1]] };
   var ROLE_DEF = { voice: { synth: "fm", gain: 0.45, harm: 1, index: 4 }, sect: { synth: "fm", gain: 0.8, harm: 2.02, index: 7.5 }, v3: { synth: "am", gain: 0.55, harm: 1.5, index: 3 } };
-  var rtState = {}, rtPatchSent = 0, rtSendTimer = null;
-  function roleState(role) {
-    if (!rtState[role]) {
-      var rp = (route && route.patch && route.patch[role]) || {}, d = ROLE_DEF[role];
-      rtState[role] = { gain: rp.gain != null ? rp.gain : d.gain, harm: rp.harm != null ? rp.harm : d.harm, index: rp.index != null ? rp.index : d.index,
-        body: 0, excite: 0, method: 0, mode: 0, focus: 0.5, colour: 0.5, tune: 1 };
-    }
-    return rtState[role];
+  var rtPatchSent = 0, rtSendTimer = null;
+  /* the site's login (3b) and the role setups (web/lab-roles.js): made before the role controls are first built below */
+  var sb = typeof supabase !== "undefined" ? supabase.createClient(SUPA, ANON, { auth: { persistSession: true, autoRefreshToken: true } }) : null, me = null;
+  var roles = FsRoles.session({ sb: sb, ctx: audio, analyse: analyseMono, onChange: onRolesChange });
+  function roleState(role) { return roles.state(role); }
+  function roleDefaults() {
+    ["voice", "sect", "v3"].forEach(function (r) {
+      var rp = (route && route.patch && route.patch[r]) || {}, d = ROLE_DEF[r];
+      roles.defaults[r] = { gain: rp.gain != null ? rp.gain : d.gain, harm: rp.harm != null ? rp.harm : d.harm, index: rp.index != null ? rp.index : d.index };
+    });
   }
-  function colourName(syn, c) {
-    if (syn === "s-retune") { return "Brightness"; }
-    if (syn === "s-harmonic") { return "Overtones"; }
-    if (syn === "s-formant") { return "Partial " + Math.round(1 + 15 * c); }
-    if (syn === "s-pulsar") { return "Grain " + Math.round(100 * (0.05 + 0.95 * c)) + " %"; }
-    if (syn === "s-freeze") { var s = buffer ? Math.max(0, c * (buffer.duration - 2048 / buffer.sampleRate)) : 0; return "Moment " + Math.floor(s / 60) + ":" + ("0" + Math.floor(s % 60)).slice(-2); }
-    return "Colour";
-  }
+  function colourName(syn, c, role) { var b = (role && roles.buf(role)) || buffer; return FsRoles.colourName(syn, c, b ? b.duration : 0); }
   function roleSynth(role) {
     var v = $("#lab-rt-" + role).value;
     return v || ((route && route.patch && route.patch[role] && route.patch[role].synth) || ROLE_DEF[role].synth);
@@ -462,9 +458,9 @@
       if (syn === "s-resonator") { html += menu("body", "Body", ["String", "Tube", "Bell"], st.body) + menu("excite", "Excite", ["Bowed", "Plucked"], st.excite); }
       if (syn === "s-harmonic" || syn === "s-formant") { html += menu("method", "Method", ["Bank", "Spectral", "Comb"], st.method) + menu("mode", "Mode", ["Dry", "Ringing"], st.mode); }
       if (syn !== "s-retune") { html += slider("focus", "Focus", 0, 1, 0.01, st.focus); }
-      html += slider("colour", colourName(syn, st.colour), 0, 1, 0.0001, st.colour) + slider("tune", "Tune", 0, 1, 0.01, st.tune);
+      html += slider("colour", colourName(syn, st.colour, role), 0, 1, 0.0001, st.colour) + slider("tune", "Tune", 0, 1, 0.01, st.tune);
       html += "<label>Sample <input type='file' accept='audio/*' id='" + id("file") + "'></label> <span id='" + id("sample") + "'>" +
-        (st.sample ? esc(sampleLabel(st.sample.name, st.sample.analysis, st.sampleNote || "")) : "the recording loaded above") + "</span>";
+        (st.sample ? FsRoles.esc(FsRoles.sampleLabel(st.sample.name, st.sample.analysis, st.sampleNote || "")) : "the recording loaded above") + "</span>";
     } else {
       var t = TIMBRE[syn] || TIMBRE.fm;
       /* step "any": an even step over an odd range snapped a ratio of 2 to 1.99375 */
@@ -474,7 +470,7 @@
     box.innerHTML = html;
     ["gain", "focus", "colour", "tune", "harm", "index"].forEach(function (k) {
       var el = $("#" + id(k)); if (!el) { return; }
-      el.addEventListener("input", function () { st[k] = +el.value; if (k === "colour") { $("#" + id(k) + "-l").textContent = colourName(syn, st.colour); } rtChanged(); });
+      el.addEventListener("input", function () { st[k] = +el.value; if (k === "colour") { $("#" + id(k) + "-l").textContent = colourName(syn, st.colour, role); } rtChanged(); });
     });
     ["body", "excite", "method", "mode"].forEach(function (k) {
       var el = $("#" + id(k)); if (!el) { return; }
@@ -495,7 +491,7 @@
     var html = "<option value=''>As the route</option><optgroup label='Digital'>" + DIGITAL.map(function (d) { return "<option value='" + d[0] + "'>" + d[1] + "</option>"; }).join("") +
       "</optgroup><optgroup label='Sampler'>" + SAMPLER.map(function (d) { return "<option value='" + d[0] + "'>" + d[1] + "</option>"; }).join("") + "</optgroup>";
     sel.innerHTML = html;
-    sel.addEventListener("change", function () { buildRoleCtl(r[0]); if (rtTimer) { sendRolesAndPatch(false); } });
+    sel.addEventListener("change", function () { roles.state(r[0]).synth = sel.value; buildRoleCtl(r[0]); if (rtTimer) { sendRolesAndPatch(false); } });
     buildRoleCtl(r[0]);
   });
   function utf8(str) { return new TextEncoder().encode(str); }
@@ -533,15 +529,13 @@
   function sendRolesAndPatch(first) {
     var c = audio();
     ROLES.forEach(function (r) {
-      var v = roleSynth(r[0]), own = roleBuf[r[0]], buf = own || buffer || audio().createBuffer(1, 128, audio().sampleRate),
-        ana = own ? roleAna[r[0]] : buffer ? analysis : null, key = own ? "r" + roleRecId[r[0]] : buffer ? "g" + recId : "none";
+      var v = roleSynth(r[0]), own = roles.buf(r[0]), buf = own || buffer || audio().createBuffer(1, 128, audio().sampleRate),
+        ana = own ? roles.ana(r[0]) : buffer ? analysis : null, key = own ? "r" + roles.recId(r[0]) : buffer ? "g" + recId : "none";
       /* once per recording and role: each send is mixed and kept by the engine, on its audio thread (final review 3a I2/I3).
          A role's own sample (3b) goes in place of the recording loaded above */
       if (v.indexOf("s-") !== 0 || sentRec[r[1]] === key) { return; }
       sentRec[r[1]] = key;
-      var ch = []; for (var k = 0; k < buf.numberOfChannels; k++) { ch.push(buf.getChannelData(k).slice(0)); }
-      pnode.port.postMessage({ type: "role", role: r[1], channels: ch }); rtSent++;
-      if (ana) { pnode.port.postMessage({ type: "analysis", role: r[1], bytes: utf8(JSON.stringify(ana)) }); }
+      FsRoles.sendRole(pnode.port, r[1], buf, ana); rtSent++;
     });
     pnode.port.postMessage({ type: first ? "route" : "patch", bytes: utf8(JSON.stringify(rtPatch())), tuning: tuning ? 1 : 0 });
     if (c.state === "suspended") { c.resume(); }
@@ -573,10 +567,6 @@
   /* Sample harmony 3b: the site's own login (the browser session index.html keeps), a sample per sampler role uploaded to
      recordings/lab/<route id>/, and the route's role setups saved in lab_route_roles - never into the route's own row, which
      the live site and apps read (docs/superpowers/specs/2026-10-04-samples-3b-role-samples-design.md). */
-  var sb = typeof supabase !== "undefined" ? supabase.createClient(SUPA, ANON, { auth: { persistSession: true, autoRefreshToken: true } }) : null, me = null;
-  var roleBuf = {}, roleAna = {}, roleRecId = { voice: 0, sect: 0, v3: 0 }, uploading = [];   /* Save waits for these */
-  /* each route choice is a generation: a load or upload from an earlier one never lands on the route now shown (final review I2/I5) */
-  var rolesGen = 0, rolesLoading = false, rolesFailed = false, rolesFor = null;
   function rtMsg(t) { if ($("#lab-rt-msg")) { $("#lab-rt-msg").textContent = t; } }
   function refreshMe() {
     if (!sb) { return Promise.resolve(null); }
@@ -599,128 +589,33 @@
     });
   }
   ready.then(refreshMe).then(refreshRoutes);
-  function esc(t) { return String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/'/g, "&#39;").replace(/"/g, "&quot;"); }
-  function sampleLabel(name, a, note) { return name + " · " + (a && a.f0 > 0 ? Math.round(a.f0) + " Hz" : "unpitched") + (note ? " · " + note : ""); }
-  function trimmed(b) {   /* the first 30 s, as analysed */
-    var n = Math.min(b.length, Math.round(MAX_S * b.sampleRate)), t = audio().createBuffer(b.numberOfChannels, n, b.sampleRate);
-    for (var c = 0; c < b.numberOfChannels; c++) { t.copyToChannel(b.getChannelData(c).subarray(0, n), c); }
-    return t;
-  }
-  function analyseFile(file) {
-    return ready.then(function () { return file.arrayBuffer(); }).then(function (ab) { return audio().decodeAudioData(ab); }).then(function (b) {
-      var buf = trimmed(b), n = buf.length, mono = new Float32Array(n);
-      for (var c = 0; c < buf.numberOfChannels; c++) { var d = buf.getChannelData(c); for (var i = 0; i < n; i++) { mono[i] += d[i] / buf.numberOfChannels; } }
-      var p = x.malloc(n * 4); new Float32Array(x.memory.buffer, p, n).set(mono);
-      var a = call(x.fs_analyse, [p, BigInt(n), buf.sampleRate]); x.free(p);
-      return { buf: buf, analysis: a };
+  /* the role setups and their samples: the shared module (web/lab-roles.js, 3c), as the site's patch panel uses it */
+  function analyseMono(mono, sr) {
+    return ready.then(function () {
+      var n = mono.length, p = x.malloc(n * 4); new Float32Array(x.memory.buffer, p, n).set(mono);
+      var a = call(x.fs_analyse, [p, BigInt(n), sr]); x.free(p);
+      return a;
     });
   }
-  /* the 30 s the engine uses as a 16-bit WAV: a long field recording stays under the upload limit (final review I4) */
-  function wav(b) {   /* ponytail: 16-bit; 24-bit if quiet samples ever sound grainy */
-    var ch = b.numberOfChannels, n = b.length, v = new DataView(new ArrayBuffer(44 + n * ch * 2));
-    var w = function (o, t) { for (var i = 0; i < t.length; i++) { v.setUint8(o + i, t.charCodeAt(i)); } };
-    w(0, "RIFF"); v.setUint32(4, 36 + n * ch * 2, true); w(8, "WAVEfmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, ch, true);
-    v.setUint32(24, b.sampleRate, true); v.setUint32(28, b.sampleRate * ch * 2, true); v.setUint16(32, ch * 2, true); v.setUint16(34, 16, true); w(36, "data"); v.setUint32(40, n * ch * 2, true);
-    var d = []; for (var c = 0; c < ch; c++) { d.push(b.getChannelData(c)); }
-    for (var i = 0, o = 44; i < n; i++) { for (c = 0; c < ch; c++, o += 2) { v.setInt16(o, Math.round(32767 * Math.max(-1, Math.min(1, d[c][i]))), true); } }
-    return new Blob([v.buffer], { type: "audio/wav" });
+  function onRolesChange(role) {
+    if (role) { buildRoleCtl(role); rtResend(); return; }
+    ROLES.forEach(function (r) { var sel = $("#lab-rt-" + r[0]); if (sel) { sel.value = roles.state(r[0]).synth || ""; } buildRoleCtl(r[0]); });
+    if (roles.failed) { rtMsg("Could not load the route's saved roles: " + roles.loadError); }
+    rtResend();
   }
   function rtResend() { if (rtTimer && pnode) { sendRolesAndPatch(false); } }
-  function onRoleFile(role, file) {
-    var st = roleState(role), el = function () { return $("#lab-rt-" + role + "-sample"); }, gen = rolesGen;
-    if (el()) { el().textContent = "Reading " + file.name + "…"; }
-    analyseFile(file).then(function (r) {
-      if (gen !== rolesGen) { return; }
-      roleBuf[role] = r.buf; roleAna[role] = r.analysis; roleRecId[role]++;
-      st.sample = { path: null, name: file.name, analysis: r.analysis };
-      if (!(sb && me && route)) { st.sampleNote = "not saved: log in as a setter on the site to save"; if (el()) { el().textContent = sampleLabel(file.name, r.analysis, st.sampleNote); } rtResend(); return; }
-      var path = "lab/" + route.id + "/" + role + "-" + Date.now() + ".wav";
-      st.sampleNote = "uploading…"; if (el()) { el().textContent = sampleLabel(file.name, r.analysis, st.sampleNote); }
-      rtResend();
-      var up = sb.storage.from("recordings").upload(path, wav(r.buf), { upsert: false, contentType: "audio/wav" }).then(function (u) {
-        if (u.error) { st.sampleNote = "upload failed: " + u.error.message; }
-        else { st.sample.path = path; st.sampleNote = "uploaded - Save route to keep it"; }
-        if (el()) { el().textContent = sampleLabel(file.name, r.analysis, st.sampleNote); }
-      });
-      uploading.push(up);
-      return up;
-    }).catch(function (e) { if (el()) { el().textContent = "Could not read " + file.name + ": " + (e && e.message || e); } });
-  }
-  function rolesJson() {
-    var out = {};
-    ROLES.forEach(function (r) {
-      var st = roleState(r[0]);
-      out[r[0]] = { synth: $("#lab-rt-" + r[0]).value, gain: st.gain, harm: st.harm, index: st.index,
-        sampler: { body: st.body, excite: st.excite, method: st.method, mode: st.mode, focus: st.focus, colour: st.colour, tune: st.tune },
-        sample: st.sample && st.sample.path ? { path: st.sample.path, name: st.sample.name, analysis: st.sample.analysis } : null };
-    });
-    return out;
-  }
+  function onRoleFile(role, file) { return roles.upload(role, file, sb && me && route ? route.id : null); }
   function saveRoute() {
-    if (!sb || !me) { rtMsg("Log in as a setter on the site to save."); return Promise.resolve(); }
-    if (!route) { rtMsg("Choose a route first."); return Promise.resolve(); }
-    /* never over a route's saved setups it has not shown yet (final review I2) */
-    if (rolesLoading) { rtMsg("Not saved: the route's saved roles are still loading - try again in a moment."); return Promise.resolve(); }
-    if (rolesFailed) { rtMsg("Not saved: the route's saved roles did not load, so saving could overwrite them - choose the route again."); return Promise.resolve(); }
-    var id = route.id, name = route.name, gen = rolesGen;
-    rtMsg(uploading.length ? "Finishing the upload, then saving…" : "Saving…");
-    /* a Save pressed while a sample still uploads waits for it - else the role would be saved without its sample */
-    var waiting = uploading.slice(); uploading = [];
-    return Promise.all(waiting).then(function () {
-      if (gen !== rolesGen) { return { error: { message: "the route changed while the sample uploaded" } }; }
-      /* a sample that did not upload: saving would drop the role's saved one (final review I3) */
-      var bad = ROLES.filter(function (r) { var st = roleState(r[0]); return st.sample && !st.sample.path; })[0];
-      if (bad) { return { error: { message: "the " + { voice: "Voice", sect: "Sections", v3: "Third voice" }[bad[0]] + " sample did not upload - choose it again" } }; }
-      return sb.from("lab_route_roles").upsert({ route_id: id, roles: rolesJson(), updated_by: me.id });
-    }).then(function (r) {
-      rtMsg(r.error ? "Not saved: " + r.error.message : "Saved - " + name + "'s roles and samples (the live route is unchanged).");
-    }).catch(function (e) { rtMsg("Not saved: " + (e && e.message || e)); });
+    var name = route && route.name;
+    rtMsg("Saving…");
+    return roles.save(route && route.id, me && me.id).then(function (m) { rtMsg(m || "Saved - " + name + "'s roles and samples (the live route is unchanged)."); });
   }
-  /* a route chosen: its saved role setups, and each saved sample downloaded and sent to the engine */
-  function loadRoles(id) {
-    rtState = {}; roleBuf = {}; roleAna = {};
-    var gen = ++rolesGen; rolesFailed = false; rolesFor = null;
-    ROLES.forEach(function (r) { $("#lab-rt-" + r[0]).value = ""; buildRoleCtl(r[0]); });
-    rtMsg("");
-    if (!sb || !me) { rolesLoading = false; return Promise.resolve(); }
-    rolesLoading = true;
-    return sb.from("lab_route_roles").select("roles").eq("route_id", id).maybeSingle().then(function (q) {
-      if (gen !== rolesGen) { return; }
-      rolesLoading = false;
-      if (q.error) { rolesFailed = true; rtMsg("Could not load the route's saved roles: " + q.error.message); return; }
-      rolesFor = id;
-      if (!q.data) { return; }
-      var roles = q.data.roles || {};
-      ROLES.forEach(function (r) {
-        var rr = roles[r[0]]; if (!rr) { return; }
-        $("#lab-rt-" + r[0]).value = rr.synth || "";
-        var st = roleState(r[0]);
-        ["gain", "harm", "index"].forEach(function (k) { if (rr[k] != null) { st[k] = rr[k]; } });
-        if (rr.sampler) { Object.keys(rr.sampler).forEach(function (k) { st[k] = rr.sampler[k]; }); }
-        st.sample = rr.sample || null; st.sampleNote = rr.sample ? "loading…" : "";
-        buildRoleCtl(r[0]);
-        if (rr.sample && rr.sample.path) { loadSample(r[0], rr.sample); }
-      });
-      rtMsg("Loaded " + route.name + "'s saved roles.");
-    });
-  }
-  function loadSample(role, smp) {
-    var st = roleState(role), gen = rolesGen, show = function (note) { st.sampleNote = note; var el = $("#lab-rt-" + role + "-sample"); if (el) { el.textContent = sampleLabel(smp.name, smp.analysis, note); } };
-    /* a missing sample: the role plays silence, not the recording above or an earlier route's sample (final review I5) */
-    var missing = function (why) { if (gen !== rolesGen) { return; } roleBuf[role] = audio().createBuffer(1, 128, audio().sampleRate); roleAna[role] = null; roleRecId[role]++; show("sample missing (" + why + ") - this role is silent"); rtResend(); };
-    return sb.storage.from("recordings").download(smp.path).then(function (d) {
-      if (d.error || !d.data) { missing((d.error && d.error.message) || "not found"); return; }
-      return d.data.arrayBuffer().then(function (ab) { return audio().decodeAudioData(ab); }).then(function (b) {
-        if (gen !== rolesGen) { return; }
-        roleBuf[role] = trimmed(b); roleAna[role] = smp.analysis; roleRecId[role]++;
-        show(""); rtResend();
-      });
-    }).catch(function (e) { missing(e && e.message || e); });
-  }
+  /* a route chosen: its saved role setups (signed in), each saved sample downloaded and sent to the engine */
+  function loadRoles(id) { rtMsg(""); return roles.load(sb && me ? id : null); }
   if ($("#lab-rt-save")) { $("#lab-rt-save").addEventListener("click", saveRoute); }
 
   window.fsLab = { ready: ready, load: load, get analysis() { return analysis; }, get routes() { return routes; }, setRoute: setRoute, play: play, stop: stop,
-    get peak() { return peak; }, level: levelDb, get rtSent() { return rtSent; }, get rolesFor() { return rolesFor; }, get rtPatchSent() { return rtPatchSent; },
+    get peak() { return peak; }, level: levelDb, get rtSent() { return rtSent; }, get rolesFor() { return roles.loadedFor; }, get rtPatchSent() { return rtPatchSent; },
     /* tests: sign in as a setter (Kerem signs in on the site; the lab shares that session) */
     signIn: function (email, password) {
       if (!sb) { return Promise.resolve("no client"); }

@@ -461,6 +461,31 @@ int main() {
         assert(fs_engine_morphs(e, o, 24, &clock, &root, &shown) == -1);   /* 8 km away: nothing playing */
         fs_engine_destroy(e);
     }
+    {   /* 3c: a route's sampler role, played by the whole engine, reads the role recording it is given; the state
+           names the route by id */
+        auto run = [&](bool give) {
+            fs_engine *e = fs_engine_create(SR, B);
+            fs_engine_features(e, "{\"type\":\"FeatureCollection\",\"features\":[{\"type\":\"Feature\","
+                "\"geometry\":{\"type\":\"LineString\",\"coordinates\":[[29.0,41.0],[29.002,41.0]]},"
+                "\"properties\":{\"id\":\"r1\",\"kind\":\"route\",\"name\":\"R\",\"patch\":{\"version\":17,"
+                "\"prog\":[{\"r\":0,\"q\":\"m9\"},{\"r\":5,\"q\":\"maj7#11\"}],\"bed\":{\"on\":false},\"sect\":{\"on\":false},"
+                "\"zones\":{\"on\":false},\"v3\":{\"on\":false},\"voice\":{\"synth\":\"s-freeze\"}}}}]}");
+            std::vector<float> nz = noise_src(20, 0.5f, 7); const float *np[1] = { nz.data() };
+            if (give) fs_engine_role_source(e, 0, 1, (long long)nz.size(), np);
+            double en = 0; long n = 0;
+            for (int b = 0; b < (int)(6.0 * SR / B); b++) {
+                if (b % 40 == 0) fs_engine_step(e, 29.001, 41.0);
+                fs_engine_process(e, B);
+                if (b > (int)(2.0 * SR / B)) { const float *l = fs_engine_out(e, 0); for (int k = 0; k < B; k++) { en += (double)l[k] * l[k]; n++; } }
+            }
+            std::string st = fs_engine_state(e);
+            fs_engine_destroy(e);
+            return std::make_pair(10 * std::log10(en / n + 1e-30), st);
+        };
+        const auto off = run(false), on = run(true);
+        std::printf("3c engine role source: %.1f dB without, %.1f dB with | %s\n", off.first, on.first, on.second.c_str());
+        assert(on.first > off.first + 20 && on.second.find("\"route_id\":\"r1\"") != std::string::npos);
+    }
     {   /* Listen (fs_engine_solo): one point alone at its full level from any distance */
         fs_engine *e = fs_engine_create(SR, B);
         fs_engine_features(e, "{\"type\":\"FeatureCollection\",\"features\":["

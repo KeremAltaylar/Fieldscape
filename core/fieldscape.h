@@ -237,6 +237,10 @@ int fs_engine_route(fs_engine *e);
 /* Listen: that point (stretch or rhythm) alone at its full level from any distance, the route's synths and every
    other point resting; "" lets go. The next fs_engine_step applies it. */
 void fs_engine_solo(fs_engine *e, const char *id);
+/* Sample harmony 3c: a role's recording and its analysis for the engine's route sound (lab mode). role 0 voice,
+   1 second voice, 2 third voice; the page sends the walker's route's samples when that route changes. */
+void fs_engine_role_source(fs_engine *e, int role, int channels, long long frames, const float *const *pcm);
+void fs_engine_role_analysis(fs_engine *e, int role, const char *analysis_json);
 
 /* Whole-recording resampling at load (core/resample.cpp): windowed sinc, 16-bit in and out. */
 long long fs_resample_length(long long frames, double from_rate, double to_rate);
