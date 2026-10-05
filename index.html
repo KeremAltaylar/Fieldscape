@@ -1919,9 +1919,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   <div id="patchpanel" hidden>
     <div class="viewerbar">
       <span id="pp-title">Patch</span>
+      <button type="button" id="pp-lab" class="ghost" aria-pressed="false" hidden title="Sampler synths on this route, for you only - saved apart from the live patch">Samplers (lab)</button>
       <button type="button" id="pp-reset" class="ghost">Reset to default</button>
       <button type="button" id="pp-close">Close</button>
     </div>
+    <p id="pp-lab-msg" class="hint warn" aria-live="polite" hidden></p>
     <div id="pp-body"></div>
   </div>
 
@@ -1991,6 +1993,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      the AudioWorklet as a Blob at run time. The browser ignores an unknown script type. -->
 <script src="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.js"></script>
 <script src="https://unpkg.com/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script src="web/lab-roles.js"></script>
 <!-- Module scripts are deferred: FA_PENDING does not exist at the main script's parse time.
      Nothing below may call it at parse time — only Publish (Task 4) calls it, on a click.
 
@@ -3977,6 +3980,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   });
   window.__fa = { map: map, errors: [] };   // debug hook — inspect state from the console
   window.__fa.sb = sb;   /* null offline, a client otherwise — measurable either way */
+  /* tests (3c): lab mode's state (they sign in through __fa.sb; this page never asks for a password) */
+  Object.defineProperty(window.__fa, "labMode", { get: function () { return labOn(); } });
+  Object.defineProperty(window.__fa, "labRolesFor", { get: function () { return labRoles ? labRoles.loadedFor : null; } });
   window.__fa.fetchPublished = fetchPublished;
   window.__fa.mergeRemote = mergeRemote;
   window.__fa.offline = { version: placeVersion, sameVersion: sameVersion,
@@ -12074,7 +12080,15 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        in the same place every time the panel opens, and nothing can move while you are
        touching it. */
     var sections = [], cur = null, totalRows = 0;
-    PATCH_FIELDS.forEach(function (fl) {
+    var lab = labOn();
+    $("#pp-lab").hidden = !setter.signedIn;
+    $("#pp-lab").setAttribute("aria-pressed", String(lab));
+    if (lab) {
+      var S = labSession();
+      ["voice", "sect", "v3"].forEach(function (r) { var q = patch[r] || {}; S.defaults[r] = { gain: q.gain, harm: q.harm, index: q.index }; });
+      if (S.loadedFor !== f.properties.id && !(S.loading && S.loadingFor === f.properties.id)) { S.loadingFor = f.properties.id; S.load(f.properties.id); }
+    }
+    (lab ? labFields(PATCH_FIELDS, patch, f) : PATCH_FIELDS).forEach(function (fl) {
       if (fl.sec) { cur = { title: fl.sec, col: fl.col, rows: [] }; sections.push(cur); return; }
       if (!cur) { cur = { title: "", rows: [] }; sections.push(cur); }
       cur.rows.push(fl);
@@ -12138,7 +12152,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         h.textContent = sc.title;
         host.appendChild(h);
       }
-      sc.rows.forEach(function (fl) { host.appendChild(buildRow(fl, patch, f)); });
+      sc.rows.forEach(function (fl) { host.appendChild(fl.sampleRow ? labSampleRow(fl.sampleRow, f) : buildRow(fl, patch, f)); });
     });
 
     renderProgression(f, patch, body);
@@ -12171,7 +12185,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         input.type = "button";
         input.className = "ghost";
         var setT = function () {
-          var on = !!pget(patch, fl.k);
+          var on = !!(fl.get ? fl.get() : pget(patch, fl.k));
           input.setAttribute("aria-pressed", String(on));
           input.textContent = on ? "on" : "off";
         };
@@ -12180,21 +12194,31 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           pset(patch, fl.k, !pget(patch, fl.k));
           setT(); commitPatch(f, patch);
         });
-      } else if (fl.options) {
+      } else if (fl.options || fl.groups) {
         input = document.createElement("select");
-        fl.options().forEach(function (o) {
-          var op = document.createElement("option");
-          op.value = o;
-          op.textContent = fl.fmt ? fl.fmt(o, patch) : o;
-          input.appendChild(op);
-        });
-        input.value = pget(patch, fl.k);
+        input.dataset.k = fl.k;
+        if (fl.groups) {
+          fl.groups.forEach(function (g) {
+            var og = document.createElement("optgroup"); og.label = g[0];
+            g[1].forEach(function (o) { var op = document.createElement("option"); op.value = o[0]; op.textContent = o[1]; og.appendChild(op); });
+            input.appendChild(og);
+          });
+        } else {
+          fl.options().forEach(function (o) {
+            var op = document.createElement("option");
+            op.value = o;
+            op.textContent = fl.fmt ? fl.fmt(o, patch) : o;
+            input.appendChild(op);
+          });
+        }
+        input.value = fl.get ? fl.get() : pget(patch, fl.k);
         /* A division and its length in seconds do not both fit in a select at five
            columns: measured, "1/8 dotted · 0.42 s" truncated to "1/8 dotted · ◂".
            The name stays in the select; the seconds go to the readout column, which for a
            select row was empty. */
         if (fl.side) { val.textContent = fl.side(input.value, patch); }
         input.addEventListener("change", function () {
+          if (fl.set) { fl.set(input.value); return; }
           pset(patch, fl.k, input.value);
           /* A ratio of 2.02 is a sensible FM ratio and a nonsensical pluck damping. When the
              instrument changes its two controls go to that instrument's defaults rather than
@@ -12210,7 +12234,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         input = document.createElement("input");
         input.type = "range";
         input.min = fl.min; input.max = fl.max; input.step = fl.step;
-        input.value = pget(patch, fl.k);
+        input.value = fl.get ? fl.get() : pget(patch, fl.k);
         input.dataset.k = fl.k;             /* which patch field: the knob over it carries it */
         try {
           input.dataset.def = fl.def === undefined ? pget(defaultPatch(), fl.k) : fl.def;
@@ -12223,6 +12247,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         };
         show();
         input.addEventListener("input", function () {
+          if (fl.set) { fl.set(+input.value); show(); return; }
           pset(patch, fl.k, +input.value); show(); commitPatch(f, patch);
         });
         if (fl.k === "tempo") {
@@ -12712,6 +12737,106 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     counter.tick = 0;   /* heard on the next sixteenth rather than whenever the old phase lands */
   }
 
+  /* Sample harmony 3c: samplers on this panel, setters only, apart from the live patch (lab_route_roles + recordings/lab/),
+     docs/superpowers/specs/2026-10-05-samples-3c-patch-screen-design.md. Off: the panel is exactly as before. */
+  var LAB_KEY = "fs-lab-mode", labWanted = false, labRoles = null, labSaveTimer = null, labAnalyse = null, labRoutes = {};
+  try { labWanted = localStorage.getItem(LAB_KEY) === "1"; } catch (e) { /* none */ }
+  function labOn() { return labWanted && setter.signedIn && !!sb && typeof FsRoles !== "undefined"; }
+  function labMsg(t) { var m = $("#pp-lab-msg"); if (m) { m.textContent = t || ""; m.hidden = !t; } }
+  function labChanged() { if (typeof labEngineSync === "function") { labEngineSync(); } }    /* the sound (Task 4) */
+  function labRoutesSet(id, roles) { labRoutes[id] = roles; labChanged(); }
+  function labCtx() { if (!labCtx.c) { labCtx.c = new (window.AudioContext || window.webkitAudioContext)(); } return labCtx.c; }
+  function labSession() {
+    if (!labRoles) {
+      labRoles = FsRoles.session({ sb: sb, ctx: labCtx, analyse: labAnalyseMono, onChange: function () {
+        if (!$("#patchpanel").hidden) { renderPatchPanel(); }
+        if (labRoles.failed) { labMsg("Samplers (lab): the route's saved roles did not load - " + labRoles.loadError); }
+      } });
+    }
+    return labRoles;
+  }
+  /* the analyser runs on this page from the lab build (fs_analyse), loaded on the first upload only */
+  function labAnalyseMono(mono, sr) {
+    if (!labAnalyse) {
+      var stub = function () { return new Proxy({}, { get: function () { return function () { return 0; }; } }); };
+      labAnalyse = fetch("web/core-lab.wasm").then(function (r) { return r.arrayBuffer(); }).then(function (b) {
+        return WebAssembly.instantiate(b, { env: stub(), wasi_snapshot_preview1: stub() });
+      }).then(function (r) { var x = r.instance.exports; if (x._initialize) { x._initialize(); } return x; });
+    }
+    return labAnalyse.then(function (x) {
+      var n = mono.length, p = x.malloc(n * 4); new Float32Array(x.memory.buffer, p, n).set(mono);
+      var need = x.fs_analyse(p, BigInt(n), sr, 0, 0), out = x.malloc(need + 1);
+      x.fs_analyse(p, BigInt(n), sr, out, need + 1);
+      var a = JSON.parse(new TextDecoder().decode(new Uint8Array(x.memory.buffer, out, need))); x.free(out); x.free(p);
+      return a;
+    });
+  }
+  function labSaveSoon(f) {
+    clearTimeout(labSaveTimer);
+    var id = f.properties.id;
+    labSaveTimer = setTimeout(function () {
+      labSession().save(id, setter.signedIn ? setter.id : null).then(function (m) { labMsg(m); if (!m) { labRoutesSet(id, labSession().json()); } });
+    }, 600);
+    labChanged();
+  }
+  /* the role rows in lab mode: the instrument menu in two groups; a sampler role's own controls in place of its two
+     timbres; a Sample row. Everything else is the live patch's, as with lab mode off */
+  function labFields(fields, patch, f) {
+    var S = labSession(), out = [];
+    fields.forEach(function (fl) {
+      var m = fl.k && /^(voice|sect|v3)\.(synth|harm|index)$/.exec(fl.k);
+      if (!m) { out.push(fl); return; }
+      var role = m[1], st = S.state(role), smp = FsRoles.isSampler(st.synth);
+      if (m[2] !== "synth") { if (!smp) { out.push(fl); } return; }
+      out.push({ k: fl.k, label: "instrument",
+        groups: [["Digital", SYNTH_TYPES.map(function (t) { return [t, SYNTH_LABEL[t] || t]; })], ["Sampler", FsRoles.SAMPLER]],
+        get: function () { return smp ? st.synth : patch[role].synth; },
+        set: function (v) {
+          st.synth = v;
+          if (!FsRoles.isSampler(v)) {                 /* digital: the live patch, exactly as with lab mode off */
+            pset(patch, role + ".synth", v); var P = paramsFor(v);
+            if (P.harm) { pset(patch, role + ".harm", P.harm.def); } if (P.index) { pset(patch, role + ".index", P.index.def); }
+            st.harm = pget(patch, role + ".harm"); st.index = pget(patch, role + ".index");
+            commitPatch(f, patch);
+          }
+          labSaveSoon(f); renderPatchPanel();
+        } });
+      if (!smp) { return; }
+      var lab = function (k, label, min, max, step, fmt) { return { k: role + "." + k, label: label, min: min, max: max, step: step, fmt: fmt, def: k === "tune" ? 1 : 0.5,
+        get: function () { return st[k]; }, set: function (v) { st[k] = +v; labSaveSoon(f); } }; };
+      var NAMES = { body: ["String", "Tube", "Bell"], excite: ["Bowed", "Plucked"], method: ["Bank", "Spectral", "Comb"], mode: ["Dry", "Ringing"] };
+      var menu = function (k) { return { k: role + "." + k, label: k, options: function () { return NAMES[k].map(function (x, i) { return String(i); }); },
+        fmt: function (v) { return NAMES[k][+v]; }, get: function () { return String(st[k]); }, set: function (v) { st[k] = +v; labSaveSoon(f); } }; };
+      if (st.synth === "s-resonator") { out.push(menu("body"), menu("excite")); }
+      if (st.synth === "s-harmonic" || st.synth === "s-formant") { out.push(menu("method"), menu("mode")); }
+      if (st.synth !== "s-retune") { out.push(lab("focus", "focus", 0, 1, 0.01)); }
+      out.push(lab("colour", "colour", 0, 1, 0.0001, function (v) { var b = S.buf(role); return FsRoles.colourName(st.synth, v, b ? b.duration : 0); }));
+      out.push(lab("tune", "tune", 0, 1, 0.01));
+      out.push({ sampleRow: role });
+    });
+    return out;
+  }
+  function labSampleRow(role, f) {
+    var S = labSession(), st = S.state(role), row = document.createElement("label");
+    row.className = "pprow";
+    var name = document.createElement("span"); name.textContent = "sample"; row.appendChild(name);
+    var input = document.createElement("input"); input.type = "file"; input.accept = "audio/*"; input.id = "pp-" + role + "-file";
+    input.addEventListener("change", function () { if (input.files[0]) { S.upload(role, input.files[0], f.properties.id).then(function () { labSaveSoon(f); }); } });
+    row.appendChild(input);
+    var val = document.createElement("i"); val.id = "pp-" + role + "-sample";
+    /* text, never markup: a sample's name comes from a file or the database (3b I6) */
+    val.textContent = st.sample ? FsRoles.sampleLabel(st.sample.name, st.sample.analysis, st.sampleNote) : "no sample - this role is silent";
+    row.appendChild(val);
+    return row;
+  }
+  function labToggle() {
+    labWanted = !labWanted;
+    try { localStorage.setItem(LAB_KEY, labWanted ? "1" : "0"); } catch (e) { /* none */ }
+    labMsg("");
+    if (!labOn() && labRoles) { labRoles.loadedFor = null; }
+    renderPatchPanel(); labChanged();
+  }
+
   function commitPatch(f, patch) {
     claimEdit(f);     /* the one funnel every patch-panel control already goes through */
     save();
@@ -12733,6 +12858,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     }
   }
 
+  $("#pp-lab").addEventListener("click", labToggle);
   $("#pp-close").addEventListener("click", function () {
     $("#patchpanel").hidden = true;
     if (traceRAF) { cancelAnimationFrame(traceRAF); traceRAF = null; }
