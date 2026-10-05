@@ -86,6 +86,8 @@
 <!-- always the newest script: GitHub Pages caches files 10 minutes, and a plain reload kept an old lab.js
      under a new page (Kerem, 2026-09-30: the Octave menu was there but did nothing) -->
 <script src="https://unpkg.com/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
-<script>(function () { var s = document.createElement("script"); s.src = "web/lab.js?v=" + Date.now(); document.body.appendChild(s); })();</script>
+<script>(function () { var v = Date.now(), r = document.createElement("script"); r.src = "web/lab-roles.js?v=" + v;
+  r.onload = function () { var s = document.createElement("script"); s.src = "web/lab.js?v=" + v; document.body.appendChild(s); };
+  document.body.appendChild(r); })();</script>
 </body>
 </html>
