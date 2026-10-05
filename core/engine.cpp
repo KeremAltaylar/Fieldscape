@@ -407,7 +407,8 @@ const char *fs_engine_step(fs_engine *e, double lon, double lat) {
         char g[64]; std::snprintf(g, sizeof g, ",\"level\":%.4f,\"dist\":%.1f}", fs_point_gain(bd[bp[i]], e->beats[bp[i]].radius, 1), bd[bp[i]]);
         bl += (bl.empty() ? "" : ",") + std::string("{\"id\":") + esc(e->beats[bp[i]].id) + g;
     }
-    e->state = "{\"route\":" + esc(e->route_name) + ",\"place\":" + esc(e->park >= 0 ? e->parks[e->park].name : "") +
+    const std::string rid = e->route_name.empty() || r < 0 || r >= (int)e->route_ids.size() ? "" : e->route_ids[r];
+    e->state = "{\"route\":" + esc(e->route_name) + ",\"route_id\":" + esc(rid) + ",\"place\":" + esc(e->park >= 0 ? e->parks[e->park].name : "") +
                ",\"rows\":[" + rows + "],\"rhythms\":[" + rh + "],\"beats\":[" + bl + "]}";
     return e->loads.c_str();
 }
@@ -441,6 +442,8 @@ void fs_engine_process(fs_engine *e, int frames) { fs_mix_process(e->mix, frames
 float *fs_engine_out(fs_engine *e, int ch) { return fs_mix_out(e->mix, ch); }
 const char *fs_engine_state(fs_engine *e) { return e->state.c_str(); }
 void fs_engine_solo(fs_engine *e, const char *id) { e->solo = id ? id : ""; }
+void fs_engine_role_source(fs_engine *e, int role, int channels, long long frames, const float *const *pcm) { fs_piece_role_source(e->piece, role, channels, frames, pcm); }
+void fs_engine_role_analysis(fs_engine *e, int role, const char *json) { fs_piece_role_analysis(e->piece, role, json); }
 int fs_engine_route(fs_engine *e) { return e->route_name.empty() ? -1 : fs_piece_route(e->piece); }
 int fs_engine_chord(fs_engine *e, int *count, char *label, int size) {
     feed_chord(e);   /* the screen reads this 30 times a second: a walker standing still still hears the chord change */
