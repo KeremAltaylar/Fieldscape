@@ -8214,9 +8214,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       return core.ctx.resume().then(function () { coreRamp(1, SOUND_FADE_IN); coreButton(true); coreMove(); });
     }
     var ctx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 0.05 });
-    core = { ctx: ctx, on: true, pending: {} };
+    /* lab mode (3c): the same core with the sampler synths, for this setter only; the public's stays web/core.wasm */
+    var wasmUrl = labOn() ? "web/core-lab.wasm" : "web/core.wasm";
+    core = { ctx: ctx, on: true, pending: {}, wasm: wasmUrl };
+    var me = core;
     return Promise.all([
-      fetch("web/core.wasm").then(function (r) { if (!r.ok) { throw new Error("core.wasm " + r.status); } return r.arrayBuffer(); }),
+      fetch(wasmUrl).then(function (r) { if (!r.ok) { throw new Error(wasmUrl + " " + r.status); } return r.arrayBuffer(); }),
       ctx.audioWorklet.addModule("web/core-worklet.js"),
       ctx.resume()
     ]).then(function (res) {
@@ -8230,13 +8233,15 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var an = ctx.createAnalyser(); an.fftSize = 4096; gain.connect(an);
       var buf = new Float32Array(an.fftSize);
       window.__fa.coreLevel = function () { an.getFloatTimeDomainData(buf); var s = 0; for (var i = 0; i < buf.length; i++) { s += buf[i] * buf[i]; } return 10 * Math.log10(s / buf.length + 1e-12); };
+      if (core !== me) { node.disconnect(); return; }       /* replaced while it loaded (lab mode turned) */
       core.node = node; core.gain = gain;
+      window.__fa.coreWasm = wasmUrl; window.__fa.coreNodes = (window.__fa.coreNodes || 0) + 1;
       node.port.onmessage = coreMessage;
-      var enc = new TextEncoder();
+      var enc = new TextEncoder(), feats = visible().map(coreFeature);
       node.port.postMessage({ type: "places", bytes: enc.encode(JSON.stringify({ type: "FeatureCollection", features: places })) });
-      node.port.postMessage({ type: "features", bytes: enc.encode(JSON.stringify({ type: "FeatureCollection", features: visible() })) });
+      node.port.postMessage({ type: "features", bytes: enc.encode(JSON.stringify({ type: "FeatureCollection", features: feats })) });
       core.sent = {};
-      visible().forEach(function (f) { core.sent[f.properties.id] = JSON.stringify(f); });
+      feats.forEach(function (f) { core.sent[f.properties.id] = JSON.stringify(f); });
       keepAwake(true);
       coreRamp(1, SOUND_FADE_IN);
       coreButton(true);
@@ -8270,7 +8275,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (!core || !core.node || !core.sent) { return; }
     var enc = new TextEncoder(), now = {}, changed = false;
     visible().forEach(function (f) {
-      var id = f.properties.id, s = JSON.stringify(f);
+      var id = f.properties.id, s = JSON.stringify(coreFeature(f));
       now[id] = true;
       if (core.sent[id] !== s) { core.sent[id] = s; core.node.port.postMessage({ type: "upsert", bytes: enc.encode(s) }); changed = true; }
     });
@@ -8280,6 +8285,53 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (changed) { coreMove(); }
   }
   window.__fa.coreSync = coreSync;
+
+  /* Sample harmony 3c, lab mode: each route goes to the engine with its lab role setups laid over its patch (the sampler
+     synth and its controls only; never saved), and the walker's route's role samples follow it */
+  function coreFeature(f) {
+    if (!labOn() || f.properties.kind !== "route" || !labRoutes[f.properties.id]) { return f; }
+    var g = JSON.parse(JSON.stringify(f)); g.properties.patch = FsRoles.overlay(f.properties.patch, labRoutes[f.properties.id]);
+    return g;
+  }
+  window.__fa.coreSentPatch = function (id) { var t = core && core.sent && core.sent[id]; return t ? JSON.stringify(JSON.parse(t).properties.patch) : null; };
+  function labRoutesLoad() {
+    if (!labOn()) { return Promise.resolve(); }
+    return sb.from("lab_route_roles").select("route_id, roles").then(function (q) {
+      if (q.error) { labMsg("Samplers (lab): " + q.error.message); return; }
+      (q.data || []).forEach(function (r) { if (!(r.route_id in labRoutes)) { labRoutes[r.route_id] = r.roles; } });
+      labLoaded = true; labChanged();
+    });
+  }
+  var labSound = {}, labSentFor = null, labLoaded = false;
+  Object.defineProperty(window.__fa, "labSentFor", { get: function () { return labSentFor; } });
+  function labRoleSamples(id) {
+    if (!labOn() || !core || !core.node || core.wasm !== "web/core-lab.wasm") { return; }
+    if (labSentFor === id) { return; }
+    labSentFor = id;
+    var ctx = core.ctx, port = core.node.port;
+    /* first: silence on every role, so the last route's samples never play on this one (Review Focus 1) */
+    FsRoles.ROLES.forEach(function (r) { FsRoles.sendRole(port, FsRoles.ROLE_INDEX[r], ctx.createBuffer(1, 128, ctx.sampleRate), null); });
+    if (!id || !labRoutes[id]) { return; }
+    (labSound[id] = labSound[id] || FsRoles.fetchRoute(sb, ctx, id)).then(function (snd) {
+      if (labSentFor !== id || !core || !core.node || core.node.port !== port) { return; }
+      FsRoles.ROLES.forEach(function (r) { if (snd.buf[r]) { FsRoles.sendRole(port, FsRoles.ROLE_INDEX[r], snd.buf[r], snd.ana[r]); } });
+    }, function (e) { delete labSound[id]; labMsg("Samplers (lab): " + (e && e.message || e)); });
+  }
+  function labEngineSync() {
+    if (labOn() && !labLoaded) { labRoutesLoad(); }
+    if (!core || !core.node) { return; }
+    var want = labOn() ? "web/core-lab.wasm" : "web/core.wasm";
+    if (core.wasm !== want) {                 /* the other build: one engine, restarted (Review Focus 2) */
+      var old = core, wasOn = old.on;
+      old.node.port.onmessage = null; old.node.disconnect(); old.ctx.close();
+      core = null; window.__fa.coreNodes = 0; labSentFor = null;
+      if (wasOn) { coreStart(); }
+      return;
+    }
+    labSentFor = null;                        /* a changed role or sample: send this route's samples again */
+    if (core.state) { labRoleSamples(core.state.route_id || null); }
+    coreSyncSoon();
+  }
   function coreMove() {
     /* open world and place mode alike: the engine picks the route from where the walker is, and in
        place mode the walker is on the route it walks (place mode was silent on the core until now) */
@@ -8359,6 +8411,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     } else if (m.type === "state") {
       var st = JSON.parse(dec.decode(m.bytes));
       core.state = st;
+      labRoleSamples(st.route_id || null);
       fsListen._changed();
       $("#patch-info").textContent = st.rows.length + " voice" + (st.rows.length === 1 ? "" : "s") +
         (st.route ? " · " + st.route : "") + (st.rhythms.length ? " · " + st.rhythms.join(", ") : "");
@@ -12744,7 +12797,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function labOn() { return labWanted && setter.signedIn && !!sb && typeof FsRoles !== "undefined"; }
   function labMsg(t) { var m = $("#pp-lab-msg"); if (m) { m.textContent = t || ""; m.hidden = !t; } }
   function labChanged() { if (typeof labEngineSync === "function") { labEngineSync(); } }    /* the sound (Task 4) */
-  function labRoutesSet(id, roles) { labRoutes[id] = roles; labChanged(); }
+  function labRoutesSet(id, roles) { labRoutes[id] = roles; if (typeof labSound !== "undefined") { delete labSound[id]; } labChanged(); }
   function labCtx() { if (!labCtx.c) { labCtx.c = new (window.AudioContext || window.webkitAudioContext)(); } return labCtx.c; }
   function labSession() {
     if (!labRoles) {

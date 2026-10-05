@@ -27,6 +27,9 @@ userId = u.user.id;
 await db.from("setters").insert({ id: userId, name: "probe-site-lab" });
 const pubRow = (await db.from("features").select("id, place, geometry, properties").eq("kind", "route").is("deleted_at", null).filter("properties->>published", "eq", "true").limit(1)).data[0];
 const PUB = pubRow.id;
+/* a published route with no lab setup (a setter may have saved one on any route, e.g. in 3b) */
+const labbed = new Set(((await db.from("lab_route_roles").select("route_id")).data || []).map((r) => r.route_id));
+const PUB2 = ((await db.from("features").select("id").eq("kind", "route").is("deleted_at", null).filter("properties->>published", "eq", "true")).data || []).map((r) => r.id).find((id) => !labbed.has(id));
 await db.from("features").delete().eq("id", DRAFT);
 /* the site reads only published features from the server: a setter's draft is on their own device (the page's local
    store), with the same id as its row - which lab_route_roles needs */
@@ -124,8 +127,34 @@ try {
   const noV3T = (r) => r.replace(/[^;]*\|v3\.(harm|index)/g, "");     /* the Third voice is Pluck now: its two timbres are named for it */
   check("lab mode off again: the panel's rows are exactly those before", noV3T(rowsOff2) === noV3T(rowsOff), [rowsOff, rowsOff2]);
 
-  /* an expired session: autosave says so and never writes the live patch (Review Focus 4) */
+  /* the site's sound in lab mode: core-lab.wasm, the role's sample heard; lab mode off: core.wasm */
   await ev("document.querySelector('#pp-lab').click(), 0"); await until(`__fa.labRolesFor === '${DRAFT}'`, 8000);
+  await setSel("v3.synth", "s-freeze"); await sleep(2500);
+  const mid = await ev(`(function(){ var c = __fa.features().filter(function (f) { return f.properties.id === '${DRAFT}'; })[0].geometry.coordinates; return c[Math.floor(c.length / 2)]; })()`);
+  await ev("fsListen.sound()");
+  for (let i = 0; i < 40 && !(await ev(`!!(window.__fa.core && __fa.core.route_id === '${DRAFT}')`)); i++) { await ev(`__fa.walkTo(${mid[0]}, ${mid[1]})`); await sleep(400); }
+  check("lab mode on: the site's engine is core-lab.wasm and the walker is on the draft route", (await ev("__fa.coreWasm")) === "web/core-lab.wasm" && (await ev("__fa.core && __fa.core.route_id")) === DRAFT, [await ev("__fa.coreWasm"), await ev("__fa.core && __fa.core.route_id")]);
+  const lvl = async () => { let e = 0; for (let i = 0; i < 16; i++) { await sleep(250); await ev(`__fa.walkTo(${mid[0]}, ${mid[1]})`); e += Math.pow(10, (await ev("__fa.coreLevel ? __fa.coreLevel() : -120")) / 10); } return 10 * Math.log10(e / 16); };
+  await sleep(3000); const withRole = await lvl();
+  await setRange("v3.gain", "0"); await sleep(4000); const muted = await lvl();
+  await setRange("v3.gain", "0.55");
+  check("walking the route, the Freeze role with its sample sounds (muting it drops the level >= 3 dB)", withRole > muted + 3, [withRole, muted]);
+  await ev("document.querySelector('#pp-lab').click(), 0"); await sleep(5000);
+  check("lab mode off while sound plays: the engine is core.wasm again, still sounding", (await ev("__fa.coreWasm")) === "web/core.wasm" && (await ev("__fa.coreLevel()")) > -60, [await ev("__fa.coreWasm"), await ev("__fa.coreLevel()")]);
+  await ev("document.querySelector('#pp-lab').click(), 0"); await sleep(5000);
+  check("... and on again: core-lab.wasm, one engine", (await ev("__fa.coreWasm")) === "web/core-lab.wasm" && (await ev("__fa.coreNodes")) === 1, [await ev("__fa.coreWasm"), await ev("__fa.coreNodes")]);
+  if (!PUB2) { console.log("SKIP every published route has a lab setup: the no-lab-row checks need one without"); } else {
+  /* a route with no lab row: the engine is given its live patch (Review Focus 1, 5) */
+  const pm = await ev(`(function(){ var c = __fa.features().filter(function (f) { return f.properties.id === '${PUB2}'; })[0].geometry.coordinates; return c[Math.floor(c.length / 2)]; })()`);
+  for (let i = 0; i < 40 && !(await ev(`!!(window.__fa.core && __fa.core.route_id === '${PUB2}')`)); i++) { await ev(`__fa.walkTo(${pm[0]}, ${pm[1]})`); await sleep(400); }
+  check("on a route with no lab row, the engine's patch is the live one", await ev(`__fa.coreSentPatch('${PUB2}') === JSON.stringify(__fa.features().filter(function (f) { return f.properties.id === '${PUB2}'; })[0].properties.patch)`), await ev(`__fa.coreSentPatch && __fa.coreSentPatch('${PUB2}') && __fa.coreSentPatch('${PUB2}').slice(0, 120)`));
+  check("... and the walker is on it (its own samples, none: nothing from the draft carried over)", (await ev("__fa.core && __fa.core.route_id")) === PUB2 && (await ev("__fa.labSentFor")) === PUB2, [await ev("__fa.core && __fa.core.route_id"), await ev("__fa.labSentFor")]);
+  }
+  await ev("fsListen.sound()");    /* off */
+
+  /* an expired session: autosave says so and never writes the live patch (Review Focus 4) */
+  if (!(await ev("__fa.labMode"))) { await ev("document.querySelector('#pp-lab').click(), 0"); }
+  await openPanel(DRAFT); await until(`__fa.labRolesFor === '${DRAFT}'`, 8000);
   await ev("__fa.sb.auth.signOut({ scope: 'local' }).then(function () { return 1; })"); await sleep(500);
   await setSel("v3.synth", "s-pulsar"); await sleep(2500);
   const page3 = await livePatch(DRAFT);
