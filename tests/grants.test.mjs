@@ -114,6 +114,9 @@ test("authenticated holds exactly the four tables' intended privileges, and no T
     "features:INSERT",
     "features:SELECT",
     "features:UPDATE",
+    "lab_route_roles:INSERT",       /* 3b: setters save role setups (RLS: is_setter); no DELETE - soft, as everywhere */
+    "lab_route_roles:SELECT",
+    "lab_route_roles:UPDATE",
     "public_features:SELECT",
     "recordings:DELETE",
     "recordings:INSERT",
