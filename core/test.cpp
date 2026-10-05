@@ -1846,7 +1846,7 @@ int main() {
           std::printf("3a review I1: three long notes 1.2-1.6 s after the switch: %.1f dB with release(), %.1f dB with release_all()\n", one, all);
           assert(one > -20 && all <= -60); }
     }
-    {   /* 3a: swapping a role between a digital synth (fm) and any sampler synth stays within 1 dB (the sampler trims) */
+    {   /* 3a: each sampler synth sits its set amount over a digital synth (fm), within 1 dB (the sampler trims) */
         const double SR = 48000;
         std::vector<float> nz = noise_src(20, 0.5f, 61); const float *nzp[1] = { nz.data() };
         std::vector<float> tone20((size_t)(20 * SR)); for (size_t i = 0; i < tone20.size(); i++) { double v = 0; for (int k = 1; k <= 6; k++) v += std::sin(2 * 3.141592653589793 * 440 * k * i / SR) / k; tone20[i] = (float)(0.3 * v); }
@@ -1862,9 +1862,10 @@ int main() {
             double e = 0; long n = 0;
             for (int i = 0; i < (int)(30 * SR / 128); i++) { fs_process(d, 128); if (i > (int)(5 * SR / 128)) { const float *l = fs_out(d, 0); for (int k = 0; k < 128; k++) { e += (double)l[k] * l[k]; n++; } } }
             fs_destroy(d); return 10 * std::log10(e / n + 1e-30); };
-        const double ref = level("fm"); double worst = 0;
+        /* Kerem 2026-10-05: the samplers raised over fm, "x2 or more" (measured offsets, each at least ~6 dB) */
+        const double ref = level("fm"), OVER[6] = { 8, 6, 6.5, 6.5, 6, 6 }; double worst = 0; int o = 0;
         for (const char *sy : { "s-retune", "s-resonator", "s-harmonic", "s-formant", "s-pulsar", "s-freeze" }) {
-            const double l = level(sy); std::printf("3a level: %-12s %+.2f dB against fm (%.1f)\n", sy, l - ref, ref); worst = std::max(worst, std::fabs(l - ref)); }
+            const double l = level(sy); std::printf("3a level: %-12s %+.2f dB against fm (%.1f), %+.1f wanted\n", sy, l - ref, ref, OVER[o]); worst = std::max(worst, std::fabs(l - ref - OVER[o++])); }
         assert(worst <= 1);
     }
     {   /* 2c guard: the Harmonic filter and the Formant render exactly as in 2b - a hash of every method x mode */

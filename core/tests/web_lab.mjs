@@ -276,6 +276,22 @@ try {
   await sleep(3500);
   const rtq = await ev("fsLab.level()");
   check("Stop route: silence", rtq < -60, rtq);
+  /* Kerem 2026-10-05: "the sampler synths volume is comparatively lower than the digital synths ... x2 or more": on a
+     route's Voice (the other roles muted), each sampler's mean level sits at least 3 dB over FM's */
+  const meanRt = async (syn) => {
+    await setRole("voice", syn);
+    for (let i = 0; i < 150 && (await ev("fsLab.level()")) > -90; i++) await sleep(200);
+    await ev("document.querySelector('#lab-rt-play').click(), 0");
+    await sleep(3000); let e = 0; for (let i = 0; i < 20; i++) { await sleep(200); e += Math.pow(10, (await ev("fsLab.level()")) / 10); }
+    await ev("document.querySelector('#lab-rt-stop').click(), 0");
+    return 10 * Math.log10(e / 20);
+  };
+  await setRole("sect", "fm"); await setRole("v3", "fm");
+  await ev("['sect','v3'].forEach(function (r) { var s = document.querySelector('#lab-rt-' + r + '-gain'); s.value = '0'; s.dispatchEvent(new Event('input')); }), 0");
+  const fmL = await meanRt("fm"), smpL = {};
+  for (const v of ["s-retune", "s-resonator", "s-harmonic", "s-formant", "s-pulsar", "s-freeze"]) smpL[v] = +((await meanRt(v)) - fmL).toFixed(1);
+  check("every sampler on a route's Voice sits >= 3 dB over FM (Kerem: x2 or more)", Object.values(smpL).every((d) => d >= 3), smpL);
+  await setRole("voice", ""); await setRole("sect", ""); await setRole("v3", "");
   /* 2c: Pulsar and Freeze on the bench */
   check("the Synth menu offers Pulsar and Freeze", await ev("['pulsar','freeze'].every(function (v) { return !!document.querySelector(\"#lab-synth option[value='\" + v + \"']\"); })"), null);
   const setv = (id, v, evn) => ev(`(function(){ var s = document.querySelector('#${id}'); s.value = '${v}'; s.dispatchEvent(new Event('${evn || "input"}')); return 1; })()`);
