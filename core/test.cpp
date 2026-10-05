@@ -486,6 +486,37 @@ int main() {
         std::printf("3c engine role source: %.1f dB without, %.1f dB with | %s\n", off.first, on.first, on.second.c_str());
         assert(on.first > off.first + 20 && on.second.find("\"route_id\":\"r1\"") != std::string::npos);
     }
+    {   /* 3c.1 F2: a sampler's note moved by octaves into a band where its recording has energy (pitch class kept); a note
+           in a band that has it, and every note of a broadband recording, as played */
+        auto played = [&](const std::vector<float> &src, double note) {
+            sampler::Resonator r; r.synth = sampler::HARMONIC; r.init(SR);
+            const float *p[1] = { src.data() }; r.set_source(1, (long long)src.size(), p);
+            r.have_bands = sampler::octave_bands(src.data(), (long long)src.size(), SR, r.bands);
+            std::vector<float> L(B), R(B); r.attack(note, 0, 0.5); double f[4] = {}; r.render(L.data(), R.data(), B, 0);
+            return r.sounding(f, 4) > 0 ? f[0] : 0.0;
+        };
+        std::vector<float> bird((size_t)(5 * SR)); for (size_t i = 0; i < bird.size(); i++) bird[i] = (float)(0.4 * std::sin(2 * 3.141592653589793 * 5000 * i / SR));
+        std::vector<float> nz = noise_src(5, 0.5f, 3);
+        const double hi = played(bird, 110), as = played(bird, 5000 * 0.98), wide = played(nz, 110);
+        std::printf("3c.1 fold: on a 5 kHz recording 110 Hz -> %.1f Hz, 4900 Hz -> %.1f Hz; on noise 110 Hz -> %.1f Hz\n", hi, as, wide);
+        assert(std::fabs(hi - 3520) < 1e-6 && std::fabs(as - 4900) < 1e-6 && std::fabs(wide - 110) < 1e-6);
+    }
+    {   /* 3c.1 F4: each role's level and sounding notes, from the whole engine */
+        fs_engine *e = fs_engine_create(SR, B);
+        fs_engine_features(e, "{\"type\":\"FeatureCollection\",\"features\":[{\"type\":\"Feature\","
+            "\"geometry\":{\"type\":\"LineString\",\"coordinates\":[[29.0,41.0],[29.002,41.0]]},"
+            "\"properties\":{\"id\":\"r1\",\"kind\":\"route\",\"name\":\"R\",\"patch\":{\"version\":17,"
+            "\"prog\":[{\"r\":0,\"q\":\"m9\"},{\"r\":5,\"q\":\"maj7#11\"}],\"bed\":{\"on\":false},\"sect\":{\"on\":false},"
+            "\"zones\":{\"on\":false},\"v3\":{\"on\":false},\"voice\":{\"synth\":\"s-freeze\"}}}}]}");
+        std::vector<float> nz = noise_src(20, 0.5f, 7); const float *np[1] = { nz.data() };
+        fs_engine_role_source(e, 0, 1, (long long)nz.size(), np);
+        for (int b = 0; b < (int)(5.0 * SR / B); b++) { if (b % 40 == 0) fs_engine_step(e, 29.001, 41.0); fs_engine_process(e, B); }
+        float out[3 * (2 + 6)] = {};
+        const int w = fs_engine_roles(e, out, 6);
+        std::printf("3c.1 roles: voice %.1f dB %d notes (%.1f Hz), sect %.1f dB, v3 %.1f dB\n", out[0], (int)out[1], out[2], out[8], out[16]);
+        assert(w == 24 && out[0] > -60 && out[1] >= 1 && out[2] > 20 && out[8] <= -100 && out[16] <= -100);
+        fs_engine_destroy(e);
+    }
     {   /* Listen (fs_engine_solo): one point alone at its full level from any distance */
         fs_engine *e = fs_engine_create(SR, B);
         fs_engine_features(e, "{\"type\":\"FeatureCollection\",\"features\":["
@@ -1753,8 +1784,11 @@ int main() {
           int checked = 0; double worst = 0;
           for (auto &e : log.n) if (e.role == 3 && e.dur >= 2.0 && e.t + 1.9 < v3.size() / SR && checked < 4) {
               const size_t z = (size_t)((e.t + 1.9) * SR); std::vector<float> w(v3.begin() + (long)(z - 65536), v3.begin() + (long)z);
-              const double got = line_peak(w, SR, e.f, 0.01);
-              worst = std::max(worst, std::fabs(1200 * std::log2(got / e.f))); checked++; }
+              /* 3c.1 F2: the note moved by octaves into a band where the recording has energy - the engine's own rule */
+              sampler::Resonator fr; fr.have_bands = sampler::octave_bands(tone20.data(), (long long)tone20.size(), SR, fr.bands);
+              const double ef = fr.fold(e.f);
+              const double got = line_peak(w, SR, ef, 0.01);
+              worst = std::max(worst, std::fabs(1200 * std::log2(got / ef))); checked++; }
           std::printf("3a route: the sampler Third voice alone at %.1f dB; %d notes checked, worst %.3f cents off the engine's Hz\n", rms_db(v3, 0, v3.size()), checked, worst);
           assert(checked >= 2 && worst <= 1 && rms_db(v3, 0, v3.size()) > -70); }
         /* consonance: a digital triangle root and a sampled fifth (the pitch sampler on a steady harmonic tone) - in Just the
@@ -1825,15 +1859,19 @@ int main() {
           fs_destroy(d);
           int nb = 0; for (auto &e : log.n) nb += e.role == 0; std::printf("3a review C1: %d bass notes in 120 s walking\n", nb);
           const double tend = o.size() / SR; std::vector<float> w(o.end() - 65536, o.end());
-          double now_f = 0; for (auto &e : log.n) if (e.role == 0 && e.t < tend - 1.5) now_f = e.f;
-          std::vector<double> recent; for (auto &e : log.n) if (e.t > tend - 6) recent.push_back(e.f);
+          /* 3c.1 F2: each note sounds moved into a band where the recording has energy - looked for there (the engine's rule) */
+          sampler::Resonator fr; fr.have_bands = sampler::octave_bands(tone20.data(), (long long)tone20.size(), SR, fr.bands);
+          auto fold = [&](double f) { return fr.fold(f); };
+          double now_f = 0; for (auto &e : log.n) if (e.role == 0 && e.t < tend - 1.5) now_f = fold(e.f);
+          std::vector<double> recent; for (auto &e : log.n) if (e.t > tend - 6) recent.push_back(fold(e.f));
           double worst = -200; int old = 0;
           for (auto &e : log.n) if (e.role == 0 && e.t < tend - 6) {
-              bool near = std::fabs(1200 * std::log2(now_f / e.f)) < 30; for (double q : recent) near = near || std::fabs(1200 * std::log2(q / e.f)) < 30;
+              const double ef = fold(e.f);
+              bool near = std::fabs(1200 * std::log2(now_f / ef)) < 30; for (double q : recent) near = near || std::fabs(1200 * std::log2(q / ef)) < 30;
               if (near) continue; old++;
-              worst = std::max(worst, 20 * std::log10(peak_amp(w, SR, e.f) / peak_amp(w, SR, now_f))); }
+              worst = std::max(worst, 20 * std::log10(peak_amp(w, SR, ef) / peak_amp(w, SR, now_f))); }
           std::printf("3a review C1: %d earlier bass notes, the loudest %.1f dB against the bass now\n", old, worst);
-          assert(old >= 2 && worst <= -40); }
+          assert(old >= 1 && worst <= -40); }   /* 3c.1: folded, the walk's 3 bass notes meet on fewer distinct pitches */
         /* I1: a long Third-voice sampler note (its release past the switch + 2.5 s) when the role switches to fm: it fades
            with its release - 1.2-2.4 s later >= 40 dB under where it was (not frozen at full level until the 2.5 s cut) */
         { const std::string v3s = pre.substr(0, pre.find("\"v3\":{\"on\":false},")) + pre.substr(pre.find("\"v3\":{\"on\":false},") + std::string("\"v3\":{\"on\":false},").size());
@@ -1888,7 +1926,7 @@ int main() {
             for (int i = 0; i < (int)(30 * SR / 128); i++) { fs_process(d, 128); if (i > (int)(5 * SR / 128)) { const float *l = fs_out(d, 0); for (int k = 0; k < 128; k++) { e += (double)l[k] * l[k]; n++; } } }
             fs_destroy(d); return 10 * std::log10(e / n + 1e-30); };
         /* Kerem 2026-10-05: the samplers raised over fm, "x2 or more" (measured offsets, each at least ~6 dB) */
-        const double ref = level("fm"), OVER[6] = { 8, 6, 6.5, 6.5, 6, 6 }; double worst = 0; int o = 0;
+        const double ref = level("fm"), OVER[6] = { 11.5, 6, 6.5, 6.5, 6, 6 }; double worst = 0; int o = 0;
         for (const char *sy : { "s-retune", "s-resonator", "s-harmonic", "s-formant", "s-pulsar", "s-freeze" }) {
             const double l = level(sy); std::printf("3a level: %-12s %+.2f dB against fm (%.1f), %+.1f wanted\n", sy, l - ref, ref, OVER[o]); worst = std::max(worst, std::fabs(l - ref - OVER[o++])); }
         assert(worst <= 1);

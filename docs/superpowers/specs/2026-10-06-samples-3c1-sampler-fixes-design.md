@@ -54,11 +54,17 @@ D1 holds: the public keeps `web/core.wasm` and the live patch; everything here i
 
 ### F2 — fold into the sample (`core/samplers.hpp`, `core/piece.cpp`)
 
-- The role's analysis gives a centre: `f0` when the sample is pitched, else `centroid_hz`; none (0) → no folding.
-- `sampler::Resonator` gains `fold_c` (Hz, 0 = off). In `start()`, before anything else: while `f < fold_c / sqrt 2`,
-  `f *= 2`; while `f > fold_c * sqrt 2`, `f /= 2`. The note's pitch class is kept, so it stays in the chord; only its
-  octave follows the sample. Every sampler synth (Retune too: the smallest speed change sounds best).
-- `fs_piece_role_analysis` reads `f0`/`centroid_hz` into `RoleRec.fold_c`; `bind()` passes it to the instance.
+- When a role's recording arrives (`fs_piece_role_source`, on the calling thread), its energy is measured in ten octave
+  bands (centres 31.25 · 2^k Hz, k = 0…9; up to 48 Hann frames of 2048), in dB under the strongest band.
+- In `sampler::Resonator::start`, a note whose octave band is within 30 dB of the strongest keeps its octave; a note in a
+  band without energy moves to the nearest octave (up or down) that has it. Pitch class kept, so it stays in the chord.
+  Every sampler synth.
+- So a broadband recording (wind, rain, noise) leaves every note as played; a 5 kHz bird call moves low notes up into its
+  band; a pitched recording with overtones keeps notes in its range and moves the rest into it.
+- (First built as a fold toward the analysis' f0/centroid: measured, it pushed every note of a broadband recording up to
+  8-16 kHz, thin and quiet - replaced, 2026-10-06.)
+- Retune's level, re-measured with folding (its notes now land near the recording's own pitch): its trim lowered so it
+  sits ≥ 3 dB over FM in the lab (a pitched recording with overtones) - 6.7 dB; the core's reference reads +11.5.
 
 ### F3 and the panel (`index.html`)
 

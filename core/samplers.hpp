@@ -68,6 +68,11 @@ inline double band_hz(int mode, double f, double focus, double T60) { return mod
 /* A real transform of N points as one N/2-point complex transform plus an untangling step: half the work of a full
    complex FFT (24 Spectral voices ran 2.23 ms a block on full transforms, over budget). inverse() returns N x the
    signal, like a forward transform's inverse. Checked against the full transform to float precision. */
+/* 3c.1 F2: a recording's energy per octave band (centres 31.25 * 2^k Hz, k = 0..9), dB under the strongest; up to 48 Hann
+   frames of 2048 spread over it. All -120 (and false) for silence */
+static const double FOLD_DB = 30;
+struct RFFT;
+inline bool octave_bands(const float *x, long long n, double sr, float out[10]);
 struct RFFT {
     int N = 0; FFT h; std::vector<float> zr, zi, br, bi, twr, twi;
     void init(int n) {
@@ -131,6 +136,26 @@ struct Voice {
     double rpos = 0, rspd = 1, rf0 = 261.63, rlp = 0, rlpa = 0; long long rend = 0;
 };
 
+inline bool octave_bands(const float *x, long long n, double sr, float out[10]) {
+    for (int k = 0; k < 10; k++) out[k] = -120;
+    const int N = 2048; if (!x || n < N) return false;
+    RFFT rf; rf.init(N); std::vector<float> w(N), Xr(N / 2 + 1), Xi(N / 2 + 1); double e[10] = {};
+    const int F = (int)std::min<long long>(48, n / N);
+    for (int fr = 0; fr < F; fr++) {
+        const long long a = (n - N) * fr / std::max(1, F - 1);
+        for (int j = 0; j < N; j++) w[j] = x[a + j] * (float)(0.5 - 0.5 * std::cos(2 * PI * j / N));
+        rf.forward(w.data(), Xr.data(), Xi.data());
+        for (int b = 1; b < N / 2; b++) {
+            const long k = std::lround(std::log2(b * sr / N / 31.25)); if (k < 0 || k > 9) continue;
+            e[k] += (double)Xr[b] * Xr[b] + (double)Xi[b] * Xi[b];
+        }
+    }
+    double top = 0; for (double v : e) top = std::max(top, v);
+    if (top <= 0) return false;
+    for (int k = 0; k < 10; k++) out[k] = (float)std::fmax(-120.0, 10 * std::log10(e[k] / top + 1e-30));
+    return true;
+}
+
 struct Resonator : tone::Synth {
     /* 24: three overlapping chords of up to 8 notes - a long release rings under the next chords instead of being
        stolen (Kerem 2026-10-01: "smooth cloudy transitions when release is longer than the note") */
@@ -147,6 +172,9 @@ struct Resonator : tone::Synth {
     std::vector<double> freeze_pw;                                /* Freeze: the moment's averaged power spectrum */
     /* the pitch sampler (3a): voices in use (a route role: 6), the recording's pitch (analysis f0) and its track - f0 and
        confidence every thop s - and its clearest moment (the most confident frame within 50 cents of f0) */
+    /* 3c.1 F2: the sample's energy in ten octave bands (31.25 Hz ... 16 kHz, dB under its strongest). A note in a band within
+       FOLD_DB keeps its octave; one in a band without energy moves to the nearest octave that has it (pitch class kept) */
+    float bands[10] = {}; bool have_bands = false;
     int nv = VOICES; double tf0 = 0, thop = 0.02, kglide = 0; long long tclear = 0; std::vector<float> tf, tc;
     const float *tfp = nullptr, *tcp = nullptr; int tn = 0;      /* the track as read (a copy's, or a host's buffers) */
     long long freeze_at = -1; const void *freeze_src = nullptr; double freeze_tp = 0;   /* ...and which moment it is */
@@ -168,6 +196,15 @@ struct Resonator : tone::Synth {
         set_track_view(f0, hop_s, tf.data(), tc.data(), n);
     }
     /* no copy, no allocation: the host keeps the buffers alive (the route engine, on its audio thread) */
+    double fold(double f) const {
+        if (!have_bands) return f;
+        auto ok = [&](double g) { const long k = std::lround(std::log2(g / 31.25)); return k >= 0 && k <= 9 && bands[k] > -FOLD_DB; };
+        if (ok(f)) return f;
+        for (int s = 1; s <= 9; s++) { const double p = std::ldexp(1.0, s); if (ok(f * p)) return f * p; if (ok(f / p)) return f / p; }
+        return f;
+    }
+    /* 3c.1 F4: the notes sounding now (active, not releasing), up to max */
+    int sounding(double *f, int max) const { int k = 0; for (int i = 0; i < nv && k < max; i++) if (v[i].active && !v[i].releasing) f[k++] = v[i].f; return k; }
     void set_track_view(double f0, double hop_s, const float *f0s, const float *confs, int n) {
         tf0 = f0 > 0 ? f0 : 0; thop = hop_s > 0 ? hop_s : 0.02; tfp = f0s; tcp = confs; tn = f0s && confs ? std::max(0, n) : 0;
         int best = -1; float bc = 0;
@@ -185,6 +222,7 @@ struct Resonator : tone::Synth {
 
     /* a voice made ready for a note: the loop tuned to f (String/Tube) or the modes set (Bell) */
     void start(Voice &x, double f, double t, double vel) {
+        f = fold(f);
         std::fill(x.line.begin(), x.line.end(), 0.0f);
         f = std::fmin(std::fmax(f, 6.0), 0.45 * sr);                 /* extreme octaves: clamped, never unstable */
         x.active = true; x.started = false; x.releasing = false; x.stealing = false; x.has_next = false;
