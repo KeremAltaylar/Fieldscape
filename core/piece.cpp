@@ -526,7 +526,7 @@ struct Rhythm {
 
 /* ------------------------------------------------------------------ the device */
 /* a role's recording (3a): mono, normalised; its pitch track (f0, confidence every hop s) */
-struct RoleRec { float *pcm = nullptr; long long n = 0; float *tf = nullptr, *tc = nullptr; int tn = 0; double f0 = 0, hop = 0.02; float bands[10] = {}; bool have_bands = false; };
+struct RoleRec { float *pcm = nullptr; long long n = 0; float *tf = nullptr, *tc = nullptr; int tn = 0; double f0 = 0, hop = 0.02; float *spec = nullptr; int spec_n = 0; };
 struct Inbox {
     bool walk = false; int route = -1; double t = 0, dist = 1e300;
     bool sector = false; int sector_v = -1;
@@ -594,7 +594,7 @@ struct Piece : Device {
         auto *r = static_cast<sampler::Resonator *>(s);
         if (k.pcm) { const float *pp[1] = { k.pcm }; r->set_source(1, k.n, pp); }
         r->set_track_view(k.f0, k.hop, k.tf, k.tc, k.tn);
-        std::copy(k.bands, k.bands + 10, r->bands); r->have_bands = k.have_bands;   /* 3c.1 F2: notes into the sample's bands */
+        r->spec = k.spec; r->spec_n = k.spec_n;   /* 3c.1 F2: notes into the recording's energy (kept with the recording) */
     }
     void bind_role(Role &r, const RoleRec &k) { for (int t = S_RETUNE; t < NSYNTH; t++) if (r.inst[t]) bind(r.inst[t].get(), k); }
     Ctl bass_g, top_g;
@@ -1494,11 +1494,14 @@ void fs_piece_role_source(fs_device *d, int role, int channels, long long frames
     double sum = 0; long cnt = 0; for (double s : e) if (s >= top * 1e-4) { sum += s; cnt++; }
     const double rms = cnt ? std::sqrt(sum / cnt) : 0, gain = rms > 1e-9 ? 0.1 / rms : 0;
     for (long long i = 0; i < frames; i++) m[i] = (float)(m[i] * gain);
-    float bands[10]; const bool hb = sampler::octave_bands(m, frames, p->sr, bands);   /* 3c.1 F2, before the lock */
+    std::vector<float> sp; sampler::spectrum_of(m, frames, p->sr, sp);                 /* 3c.1 F2, before the lock */
+    float *spec = sp.empty() ? nullptr : (float *)std::malloc(sizeof(float) * sp.size());
+    if (spec) std::copy(sp.begin(), sp.end(), spec);
     std::lock_guard<std::mutex> g(p->mu); sweep(p);
     p->keep.b.push_back(m);
     p->known[role].pcm = m; p->known[role].n = frames;
-    std::copy(bands, bands + 10, p->known[role].bands); p->known[role].have_bands = hb;
+    if (spec) p->keep.b.push_back(spec);
+    p->known[role].spec = spec; p->known[role].spec_n = spec ? (int)sp.size() : 0;
     p->in.rrec[role] = p->known[role]; p->in.rrec_set[role] = true;
 }
 void fs_piece_role_analysis(fs_device *d, int role, const char *json) {

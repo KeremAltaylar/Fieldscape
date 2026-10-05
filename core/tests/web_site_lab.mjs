@@ -125,11 +125,21 @@ try {
   const row = (await db.from("lab_route_roles").select("roles").eq("route_id", DRAFT).maybeSingle()).data;
   check("autosaved: the lab row has Freeze, Focus 0.77 and the sample", !!(row && row.roles.v3.synth === "s-freeze" && row.roles.v3.sampler.focus === 0.77 && row.roles.v3.sample && row.roles.v3.sample.path.indexOf(`lab/${DRAFT}/v3-`) === 0), row);
   check("uploaded: the name inside its column, no warning, the waveform drawn", /probe-site\.wav/.test(await ev("(document.querySelector('#pp-v3-name') || {}).textContent || ''")) && (await inCol("#pp-v3-name")) && !(await ev("(document.querySelector('#pp-v3-warn') || {}).textContent || ''")) && (await ev("(function(){ var c = document.querySelector('#pp-v3-wave'); if (!c || c.width < 100) return false; var d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data, n = 0; for (var i = 3; i < d.length; i += 4) if (d[i]) n++; return n > 200; })()")), [await ev("(document.querySelector('#pp-v3-name') || {}).textContent"), await ev("(document.querySelector('#pp-v3-warn') || {}).textContent")]);
+  const fill = await ev("(function(){ var c = document.querySelector('#pp-v3-wave'), d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data, best = 0; for (var x = 0; x < c.width; x++) { var n = 0; for (var y = 0; y < c.height; y++) if (d[(y * c.width + x) * 4 + 3]) n++; if (n < c.height) best = Math.max(best, n); } return best / c.height; })()");
+  check("the waveform is scaled to the sample's own peak (its tallest bar near full height) (final review 3c.1)", fill > 0.8, fill);
   const col0 = await ev("+document.querySelector('#pp-body input[data-k=\"v3.colour\"]').value");
   await ev("(function(){ var c = document.querySelector('#pp-v3-wave'), b = c.getBoundingClientRect(); ['pointerdown','pointerup'].forEach(function (t) { c.dispatchEvent(new PointerEvent(t, { clientX: b.left + b.width * 0.8, clientY: b.top + b.height / 2, bubbles: true })); }); return 1; })()");
   await sleep(300);
   const col1 = await ev("+document.querySelector('#pp-body input[data-k=\"v3.colour\"]').value");
   check("a click on Freeze's waveform moves its Moment (Colour)", col1 > 0.6 && col1 !== col0, [col0, col1]);
+  const mk0 = await ev("+document.querySelector('#pp-v3-wave').dataset.moment");
+  await setRange("v3.colour", "0.2"); await sleep(300);
+  const mk1 = await ev("+document.querySelector('#pp-v3-wave').dataset.moment");
+  check("the Moment marker follows the slider (final review 3c.1)", mk1 < mk0 - 10, [mk0, mk1]);
+  await ev("(function(){ var c = document.querySelector('#pp-v3-wave'), b = c.getBoundingClientRect(), y = b.top + b.height / 2; c.dispatchEvent(new PointerEvent('pointerdown', { clientX: b.left + b.width * 0.3, clientY: y, buttons: 1, pointerId: 1, bubbles: true })); c.dispatchEvent(new PointerEvent('pointermove', { clientX: b.left + b.width * 0.75, clientY: y, buttons: 1, pointerId: 1, bubbles: true })); c.dispatchEvent(new PointerEvent('pointerup', { clientX: b.left + b.width * 0.75, clientY: y, pointerId: 1, bubbles: true })); return 1; })()");
+  await sleep(300);
+  const col2 = await ev("+document.querySelector('#pp-body input[data-k=\"v3.colour\"]').value");
+  check("dragging on Freeze's waveform moves its Moment (final review 3c.1)", col2 > 0.6, col2);
   await setSel("v3.synth", "s-retune"); await sleep(400);
   check("Retune with an unpitched sample warns", /Retune needs a pitched sample/i.test(await ev("(document.querySelector('#pp-v3-warn') || {}).textContent || ''")), await ev("(document.querySelector('#pp-v3-warn') || {}).textContent"));
   await setSel("v3.synth", "s-freeze"); await sleep(400);
@@ -228,9 +238,10 @@ try {
     [await ev("(document.querySelector('#pp-v3-notes') || {}).textContent"), await ev("(document.querySelector('#pp-v3-meter') || { dataset: {} }).dataset.db")]);
   await setRange("v3.gain", "0"); await sleep(2500);
   check("... muted, its meter falls", (await ev("+((document.querySelector('#pp-v3-meter') || { dataset: {} }).dataset.db)")) < -70, await ev("(document.querySelector('#pp-v3-meter') || { dataset: {} }).dataset.db"));
-  await setRange("v3.gain", "0.55");
+  await setRange("v3.gain", "0.55"); await sleep(1500);
 
   await ev("fsListen.sound()"); await sleep(1500);
+  check("Stop clears the live notes and meters (final review 3c.1)", !(await ev("/[A-G]/.test((document.querySelector('#pp-v3-notes') || {}).textContent || '')")) && (await ev("+((document.querySelector('#pp-v3-meter') || { dataset: {} }).dataset.db)")) <= -120, [await ev("(document.querySelector('#pp-v3-notes') || {}).textContent"), await ev("(document.querySelector('#pp-v3-meter') || { dataset: {} }).dataset.db")]);
   await ev("document.querySelector('#pp-lab').click(), 0"); await sleep(500);
   await ev("(function(){ fsListen.sound(); document.querySelector('#pp-lab').click(); return 0; })()");
   await sleep(6000);

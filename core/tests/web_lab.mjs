@@ -332,6 +332,14 @@ try {
   await ev("(function(){ var s = document.querySelector('#lab-release'); s.value = '0.6'; s.dispatchEvent(new Event('input')); s = document.querySelector('#lab-colour'); s.value = '0.5'; s.dispatchEvent(new Event('input')); s = document.querySelector('#lab-method'); s.value = '0'; s.dispatchEvent(new Event('change')); return 1; })()");
   await ev("(function(){ var s = document.querySelector('#lab-mode'); s.value = '0'; s.dispatchEvent(new Event('change')); return 1; })()");
   await ev("fsLab.setSynth('retune'), 0");
+  /* final review 3c.1: the recording loaded above reaches a route's sampler roles with its silence cut out (as the site's) */
+  const SPARSE = WAV(5000, 12, 48000).replace("Math.round(12000 * Math.sin(2 * Math.PI * 5000 * i / sr))", "Math.round(12000 * ((i / sr) % 2.5 < 0.35 ? Math.sin(2 * Math.PI * 5000 * i / sr) : 0))");
+  await ev(`fsLab.load(${SPARSE}).then(function () { return 1; })`);
+  await ev("(function(){ ['voice','sect'].forEach(function (r) { var s = document.querySelector('#lab-rt-' + r); s.value = ''; s.dispatchEvent(new Event('change')); }); var s = document.querySelector('#lab-rt-v3'); s.value = 's-freeze'; s.dispatchEvent(new Event('change')); return 1; })()");
+  await ev("document.querySelector('#lab-rt-play').click(), 0"); await sleep(2500);
+  const sentFrames = await ev("fsLab.lastRoleFrames || 0"), fullFrames = Math.round((await ev("fsLab.bufferSeconds")) * (await ev("fsLab.now() >= 0 ? (window.__labRate || 48000) : 48000")));
+  await ev("document.querySelector('#lab-rt-stop').click(), 0");
+  check("lab: the recording above reaches a sampler role compacted (silence cut out)", sentFrames > 0 && sentFrames < 0.4 * fullFrames, [sentFrames, fullFrames]);
   check("no page errors", errors.length === 0, errors);
 } finally { ch.kill(); }
 process.exit(failed ? 1 : 0);

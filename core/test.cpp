@@ -491,15 +491,17 @@ int main() {
         auto played = [&](const std::vector<float> &src, double note) {
             sampler::Resonator r; r.synth = sampler::HARMONIC; r.init(SR);
             const float *p[1] = { src.data() }; r.set_source(1, (long long)src.size(), p);
-            r.have_bands = sampler::octave_bands(src.data(), (long long)src.size(), SR, r.bands);
+            std::vector<float> sp; sampler::spectrum_of(src.data(), (long long)src.size(), SR, sp); r.spec = sp.empty() ? nullptr : sp.data(); r.spec_n = (int)sp.size(); r.spec_sr = SR;
             std::vector<float> L(B), R(B); r.attack(note, 0, 0.5); double f[4] = {}; r.render(L.data(), R.data(), B, 0);
             return r.sounding(f, 4) > 0 ? f[0] : 0.0;
         };
         std::vector<float> bird((size_t)(5 * SR)); for (size_t i = 0; i < bird.size(); i++) bird[i] = (float)(0.4 * std::sin(2 * 3.141592653589793 * 5000 * i / SR));
         std::vector<float> nz = noise_src(5, 0.5f, 3);
-        const double hi = played(bird, 110), as = played(bird, 5000 * 0.98), wide = played(nz, 110);
-        std::printf("3c.1 fold: on a 5 kHz recording 110 Hz -> %.1f Hz, 4900 Hz -> %.1f Hz; on noise 110 Hz -> %.1f Hz\n", hi, as, wide);
-        assert(std::fabs(hi - 3520) < 1e-6 && std::fabs(as - 4900) < 1e-6 && std::fabs(wide - 110) < 1e-6);
+        /* on a 5 kHz recording: 156.25 Hz has no overtone (of 8) near 5 kHz; its octaves 625 (8th), 1250 (4th), 2500 (2nd)
+           and 5000 (itself) do - the nearest, 625; 1250 keeps its own; on noise every note keeps its own */
+        const double up = played(bird, 156.25), keep = played(bird, 1250), wide = played(nz, 110);
+        std::printf("3c.1 fold: on a 5 kHz recording 156.25 Hz -> %.2f Hz, 1250 Hz -> %.2f Hz; on noise 110 Hz -> %.2f Hz\n", up, keep, wide);
+        assert(std::fabs(up - 625) < 1e-6 && std::fabs(keep - 1250) < 1e-6 && std::fabs(wide - 110) < 1e-6);
     }
     {   /* 3c.1: Freeze's Moment on a call's soft edge freezes the loudest moment within +-85 ms, not the edge (a bird call
            fades in and out; a frozen edge was a whole silent note) */
@@ -1809,7 +1811,7 @@ int main() {
           for (auto &e : log.n) if (e.role == 3 && e.dur >= 2.0 && e.t + 1.9 < v3.size() / SR && checked < 4) {
               const size_t z = (size_t)((e.t + 1.9) * SR); std::vector<float> w(v3.begin() + (long)(z - 65536), v3.begin() + (long)z);
               /* 3c.1 F2: the note moved by octaves into a band where the recording has energy - the engine's own rule */
-              sampler::Resonator fr; fr.have_bands = sampler::octave_bands(tone20.data(), (long long)tone20.size(), SR, fr.bands);
+              sampler::Resonator fr; std::vector<float> sp; sampler::spectrum_of(tone20.data(), (long long)tone20.size(), SR, sp); fr.spec = sp.data(); fr.spec_n = (int)sp.size(); fr.spec_sr = SR;
               const double ef = fr.fold(e.f);
               const double got = line_peak(w, SR, ef, 0.01);
               worst = std::max(worst, std::fabs(1200 * std::log2(got / ef))); checked++; }
@@ -1884,7 +1886,7 @@ int main() {
           int nb = 0; for (auto &e : log.n) nb += e.role == 0; std::printf("3a review C1: %d bass notes in 120 s walking\n", nb);
           const double tend = o.size() / SR; std::vector<float> w(o.end() - 65536, o.end());
           /* 3c.1 F2: each note sounds moved into a band where the recording has energy - looked for there (the engine's rule) */
-          sampler::Resonator fr; fr.have_bands = sampler::octave_bands(tone20.data(), (long long)tone20.size(), SR, fr.bands);
+          sampler::Resonator fr; std::vector<float> sp; sampler::spectrum_of(tone20.data(), (long long)tone20.size(), SR, sp); fr.spec = sp.data(); fr.spec_n = (int)sp.size(); fr.spec_sr = SR;
           auto fold = [&](double f) { return fr.fold(f); };
           double now_f = 0; for (auto &e : log.n) if (e.role == 0 && e.t < tend - 1.5) now_f = fold(e.f);
           std::vector<double> recent; for (auto &e : log.n) if (e.t > tend - 6) recent.push_back(fold(e.f));
@@ -1950,7 +1952,7 @@ int main() {
             for (int i = 0; i < (int)(30 * SR / 128); i++) { fs_process(d, 128); if (i > (int)(5 * SR / 128)) { const float *l = fs_out(d, 0); for (int k = 0; k < 128; k++) { e += (double)l[k] * l[k]; n++; } } }
             fs_destroy(d); return 10 * std::log10(e / n + 1e-30); };
         /* Kerem 2026-10-05: the samplers raised over fm, "x2 or more" (measured offsets, each at least ~6 dB) */
-        const double ref = level("fm"), OVER[6] = { 11.5, 6, 6.5, 6.5, 6, 6 }; double worst = 0; int o = 0;
+        const double ref = level("fm"), OVER[6] = { 8, 6, 6.5, 6.5, 6, 6 }; double worst = 0; int o = 0;
         for (const char *sy : { "s-retune", "s-resonator", "s-harmonic", "s-formant", "s-pulsar", "s-freeze" }) {
             const double l = level(sy); std::printf("3a level: %-12s %+.2f dB against fm (%.1f), %+.1f wanted\n", sy, l - ref, ref, OVER[o]); worst = std::max(worst, std::fabs(l - ref - OVER[o++])); }
         assert(worst <= 1);

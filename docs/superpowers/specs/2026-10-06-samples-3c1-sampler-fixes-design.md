@@ -54,17 +54,17 @@ D1 holds: the public keeps `web/core.wasm` and the live patch; everything here i
 
 ### F2 — fold into the sample (`core/samplers.hpp`, `core/piece.cpp`)
 
-- When a role's recording arrives (`fs_piece_role_source`, on the calling thread), its energy is measured in ten octave
-  bands (centres 31.25 · 2^k Hz, k = 0…9; up to 48 Hann frames of 2048), in dB under the strongest band.
-- In `sampler::Resonator::start`, a note whose octave band is within 30 dB of the strongest keeps its octave; a note in a
-  band without energy moves to the nearest octave (up or down) that has it. Pitch class kept, so it stays in the chord.
-  Every sampler synth.
-- So a broadband recording (wind, rain, noise) leaves every note as played; a 5 kHz bird call moves low notes up into its
-  band; a pitched recording with overtones keeps notes in its range and moves the rest into it.
-- (First built as a fold toward the analysis' f0/centroid: measured, it pushed every note of a broadband recording up to
-  8-16 kHz, thin and quiet - replaced, 2026-10-06.)
-- Retune's level, re-measured with folding (its notes now land near the recording's own pitch): its trim lowered so it
-  sits ≥ 3 dB over FM in the lab (a pitched recording with overtones) - 6.7 dB; the core's reference reads +11.5.
+- When a role's recording arrives (`fs_piece_role_source`), its average power spectrum is measured (2048-point Hann frames,
+  up to 48, DC removed), kept with the recording.
+- A note's score in an octave: its first 8 overtones, each the strongest bin within a quarter tone of n·f, weighted 1/n.
+  In `sampler::Resonator::start`, a note keeps its octave when its score is within 30 dB of the best octave's (±6 octaves);
+  otherwise it moves to the nearest octave (up or down) that is. Pitch class kept, so it stays in the chord. Every sampler.
+- So a broadband recording (wind, rain, noise) leaves every note as played; a narrow 5 kHz call moves a note to the nearest
+  octave whose overtones meet the call (156 Hz → 625 Hz, its 8th overtone at 5 kHz); a pitched recording keeps notes whose
+  overtones meet its partials.
+- History (2026-10-06, measured): a fold toward f0/centroid pushed broadband recordings to 8–16 kHz (thin, quiet); an
+  octave-band rule kept notes in a band with energy whose overtones still missed a narrow call (a G#7 Freeze note at −73 dB).
+  Both replaced. Retune's trim stays at its 3c value (its notes keep their octave on a pitched recording).
 
 ### F3 and the panel (`index.html`)
 

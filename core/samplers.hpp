@@ -68,11 +68,12 @@ inline double band_hz(int mode, double f, double focus, double T60) { return mod
 /* A real transform of N points as one N/2-point complex transform plus an untangling step: half the work of a full
    complex FFT (24 Spectral voices ran 2.23 ms a block on full transforms, over budget). inverse() returns N x the
    signal, like a forward transform's inverse. Checked against the full transform to float precision. */
-/* 3c.1 F2: a recording's energy per octave band (centres 31.25 * 2^k Hz, k = 0..9), dB under the strongest; up to 48 Hann
-   frames of 2048 spread over it. All -120 (and false) for silence */
+/* 3c.1 F2: a recording's average power spectrum (2048-point Hann frames, up to 48 spread over it), normalised to its
+   strongest bin; empty for silence or a recording shorter than a frame. FOLD_DB: how far under the best octave a note's own
+   octave may score and still be kept */
 static const double FOLD_DB = 30;
 struct RFFT;
-inline bool octave_bands(const float *x, long long n, double sr, float out[10]);
+inline bool spectrum_of(const float *x, long long n, double sr, std::vector<float> &out);
 struct RFFT {
     int N = 0; FFT h; std::vector<float> zr, zi, br, bi, twr, twi;
     void init(int n) {
@@ -136,23 +137,21 @@ struct Voice {
     double rpos = 0, rspd = 1, rf0 = 261.63, rlp = 0, rlpa = 0; long long rend = 0;
 };
 
-inline bool octave_bands(const float *x, long long n, double sr, float out[10]) {
-    for (int k = 0; k < 10; k++) out[k] = -120;
+inline bool spectrum_of(const float *x, long long n, double sr, std::vector<float> &out) {
+    (void)sr; out.clear();
     const int N = 2048; if (!x || n < N) return false;
-    RFFT rf; rf.init(N); std::vector<float> w(N), Xr(N / 2 + 1), Xi(N / 2 + 1); double e[10] = {};
+    RFFT rf; rf.init(N); std::vector<float> w(N), Xr(N / 2 + 1), Xi(N / 2 + 1); std::vector<double> e(N / 2 + 1, 0.0);
     const int F = (int)std::min<long long>(48, n / N);
     for (int fr = 0; fr < F; fr++) {
         const long long a = (n - N) * fr / std::max(1, F - 1);
-        for (int j = 0; j < N; j++) w[j] = x[a + j] * (float)(0.5 - 0.5 * std::cos(2 * PI * j / N));
+        double mean = 0; for (int j = 0; j < N; j++) mean += x[a + j]; mean /= N;          /* no DC in the low bins */
+        for (int j = 0; j < N; j++) w[j] = (float)((x[a + j] - mean) * (0.5 - 0.5 * std::cos(2 * PI * j / N)));
         rf.forward(w.data(), Xr.data(), Xi.data());
-        for (int b = 1; b < N / 2; b++) {
-            const long k = std::lround(std::log2(b * sr / N / 31.25)); if (k < 0 || k > 9) continue;
-            e[k] += (double)Xr[b] * Xr[b] + (double)Xi[b] * Xi[b];
-        }
+        for (int b = 0; b <= N / 2; b++) e[b] += (double)Xr[b] * Xr[b] + (double)Xi[b] * Xi[b];
     }
     double top = 0; for (double v : e) top = std::max(top, v);
     if (top <= 0) return false;
-    for (int k = 0; k < 10; k++) out[k] = (float)std::fmax(-120.0, 10 * std::log10(e[k] / top + 1e-30));
+    out.resize(e.size()); for (size_t b = 0; b < e.size(); b++) out[b] = (float)(e[b] / top);
     return true;
 }
 
@@ -172,9 +171,9 @@ struct Resonator : tone::Synth {
     std::vector<double> freeze_pw;                                /* Freeze: the moment's averaged power spectrum */
     /* the pitch sampler (3a): voices in use (a route role: 6), the recording's pitch (analysis f0) and its track - f0 and
        confidence every thop s - and its clearest moment (the most confident frame within 50 cents of f0) */
-    /* 3c.1 F2: the sample's energy in ten octave bands (31.25 Hz ... 16 kHz, dB under its strongest). A note in a band within
-       FOLD_DB keeps its octave; one in a band without energy moves to the nearest octave that has it (pitch class kept) */
-    float bands[10] = {}; bool have_bands = false;
+    /* 3c.1 F2: the recording's power spectrum (spectrum_of; not owned). A note keeps its octave when its overtones meet the
+       recording's energy within FOLD_DB of the best octave; otherwise it moves to the nearest octave that does (pitch class kept) */
+    const float *spec = nullptr; int spec_n = 0; double spec_sr = 48000;
     int nv = VOICES; double tf0 = 0, thop = 0.02, kglide = 0; long long tclear = 0; std::vector<float> tf, tc;
     const float *tfp = nullptr, *tcp = nullptr; int tn = 0;      /* the track as read (a copy's, or a host's buffers) */
     long long freeze_at = -1; const void *freeze_src = nullptr; double freeze_tp = 0;   /* ...and which moment it is */
@@ -197,11 +196,25 @@ struct Resonator : tone::Synth {
         set_track_view(f0, hop_s, tf.data(), tc.data(), n);
     }
     /* no copy, no allocation: the host keeps the buffers alive (the route engine, on its audio thread) */
+    /* how much of the recording's energy a note at g can resonate: its first 8 overtones, each the strongest bin within a
+       quarter tone of n*g, weighted 1/n */
+    double fold_score(double g) const {
+        const double bin = spec_sr / 2048; double sc = 0;
+        for (int n = 1; n <= 8; n++) {
+            const double c = n * g; if (c >= 0.45 * spec_sr) break;
+            const int lo = std::max(1, (int)std::floor(c * 0.9715 / bin)), hi = std::min(spec_n - 1, (int)std::ceil(c * 1.0293 / bin));
+            float m = 0; for (int b = lo; b <= hi; b++) m = std::max(m, spec[b]);
+            sc += m / n;
+        }
+        return sc;
+    }
     double fold(double f) const {
-        if (!have_bands) return f;
-        auto ok = [&](double g) { const long k = std::lround(std::log2(g / 31.25)); return k >= 0 && k <= 9 && bands[k] > -FOLD_DB; };
-        if (ok(f)) return f;
-        for (int s = 1; s <= 9; s++) { const double p = std::ldexp(1.0, s); if (ok(f * p)) return f * p; if (ok(f / p)) return f / p; }
+        if (!spec || spec_n < 2 || !(f > 0)) return f;
+        double best = 0; for (int k = -6; k <= 6; k++) { const double g = std::ldexp(f, k); if (g >= 20 && g < 0.45 * spec_sr) best = std::max(best, fold_score(g)); }
+        if (best <= 0) return f;
+        const double floor_ = best * std::pow(10.0, -FOLD_DB / 10);
+        if (fold_score(f) >= floor_) return f;
+        for (int s = 1; s <= 6; s++) for (int d : { s, -s }) { const double g = std::ldexp(f, d); if (g >= 20 && g < 0.45 * spec_sr && fold_score(g) >= floor_) return g; }
         return f;
     }
     /* 3c.1 F4: the notes sounding now (active, not releasing), up to max */
