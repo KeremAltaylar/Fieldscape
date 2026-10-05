@@ -1325,12 +1325,17 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 .ppcol > .pxmod:first-child h2 { margin-top: 0; }
 #pp-body h2:first-child { margin-top: 0; }
 /* 3c.1: a sampler role's sample - upload, name, warning, waveform - the full width of its column */
-#pp-body .ppsample { display: grid; gap: 4px; margin: 2px 0 var(--s-1); min-width: 0; }
+#pp-body .ppsample { display: grid; gap: 4px; margin: 2px 0 var(--s-1); min-width: 0; flex: 0 0 100%; box-sizing: border-box; }   /* a full row in the phone's wrapping columns too */
+#pp-body .ppsample-top > span { font-family: var(--font-mono); font-size: var(--t-xs); letter-spacing: 0.04em; text-transform: uppercase; color: var(--faint); }
+#pp-body .ppsample-top button { padding: 1px var(--s-1); font-size: var(--t-xs); }
 #pp-body .ppsample-top { display: flex; align-items: center; justify-content: space-between; gap: var(--s-1); min-width: 0; }
 #pp-body .ppsample-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; font-size: var(--t-xs); color: var(--dim); }
 #pp-body .ppsample-warn:empty { display: none; }
 #pp-body .ppsample-warn { color: var(--lamp); font-size: var(--t-xs); }
 #pp-body .ppsample-wave { width: 100%; height: 40px; display: block; cursor: pointer; }
+#pp-body .pplive-notes { font-size: var(--t-xs); min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+#pp-body .pplive-meter { display: block; height: 6px; background: var(--hairline); border-radius: 3px; overflow: hidden; }
+#pp-body .pplive-meter b { display: block; height: 100%; width: 0; background: var(--accent); transition: width 80ms linear; }
 .pprow {
   display: grid; grid-template-columns: 6.4rem 1fr 3.6rem; align-items: center;
   gap: var(--s-2); margin-bottom: var(--s-1);
@@ -8469,6 +8474,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       if (m.chord.step !== harmony.chord) { harmony.chord = m.chord.step; drawProgSegments(); }
       core.live = m;
       window.__fa.coreLive = m;
+      if (m.roles) { labLiveUpdate(m.roles); }       /* 3c.1 F4: each sampler role's notes and level, in lab mode */
       fsListen._changed();
     } else if (m.type === "error") {
       console.error("core engine: " + m.message);
@@ -12251,7 +12257,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         h.textContent = sc.title;
         host.appendChild(h);
       }
-      sc.rows.forEach(function (fl) { host.appendChild(fl.sampleRow ? labSampleBlock(fl.sampleRow, f) : buildRow(fl, patch, f)); });
+      sc.rows.forEach(function (fl) { host.appendChild(fl.sampleRow ? labSampleBlock(fl.sampleRow, f) : fl.liveRow ? labLiveRow(fl.liveRow) : buildRow(fl, patch, f)); });
     });
 
     renderProgression(f, patch, body);
@@ -12901,6 +12907,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           labSaveSoon(f); renderPatchPanel();
         } });
       if (!smp) { return; }
+      out.push({ liveRow: role });                     /* 3c.1 F4: its notes and level, while sound plays */
       var lab = function (k, label, min, max, step, fmt) { return { k: role + "." + k, label: label, min: min, max: max, step: step, fmt: fmt, def: k === "tune" ? 1 : 0.5,
         get: function () { return st[k]; }, set: function (v) { st[k] = +v; labSaveSoon(f); } }; };
       var NAMES = { body: ["String", "Tube", "Bell"], excite: ["Bowed", "Plucked"], method: ["Bank", "Spectral", "Comb"], mode: ["Dry", "Ringing"] };
@@ -12993,6 +13000,29 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var mx = labMomentSeconds(role, st.colour) / raw.duration * w;
       g.fillStyle = css.getPropertyValue("--lamp").trim() || "#e0b25b"; g.fillRect(Math.round(mx) - 1, 0, 2, h);
     }
+  }
+  function labLiveRow(role) {
+    var row = document.createElement("div"); row.className = "pprow pplive"; row.dataset.role = role;
+    var name = document.createElement("span"); name.textContent = "now"; row.appendChild(name);
+    var notes = document.createElement("span"); notes.className = "pplive-notes"; notes.id = "pp-" + role + "-notes"; row.appendChild(notes);
+    var meter = document.createElement("i"); meter.className = "pplive-meter"; meter.id = "pp-" + role + "-meter"; meter.dataset.db = "-120";
+    var bar = document.createElement("b"); meter.appendChild(bar); row.appendChild(meter);
+    return row;
+  }
+  /* the engine's roles, ~30 a second (core-lab only): notes by name, the meter -60 … 0 dB */
+  var LAB_ROLE_AT = { voice: 0, sect: 1, v3: 2 };
+  function labLiveUpdate(roles) {
+    if (!labOn() || $("#patchpanel").hidden) { return; }
+    ["voice", "sect", "v3"].forEach(function (r) {
+      var nEl = document.getElementById("pp-" + r + "-notes"), mEl = document.getElementById("pp-" + r + "-meter");
+      if (!nEl || !mEl) { return; }
+      var o = LAB_ROLE_AT[r] * 8, on = roles && core && core.state && core.state.route_id === selected;
+      var db = on ? roles[o] : -120, cnt = on ? roles[o + 1] : 0, names = [];
+      for (var i = 0; i < cnt; i++) { names.push(noteName(Math.round(69 + 12 * Math.log2(roles[o + 2 + i] / 440)))); }
+      nEl.textContent = names.join(" ");
+      mEl.dataset.db = String(Math.round(db));
+      mEl.firstChild.style.width = Math.max(0, Math.min(100, (db + 60) / 60 * 100)) + "%";
+    });
   }
   function labToggle() {
     labWanted = !labWanted; labEngineFailed = false;

@@ -178,6 +178,7 @@ struct Resonator : tone::Synth {
     int nv = VOICES; double tf0 = 0, thop = 0.02, kglide = 0; long long tclear = 0; std::vector<float> tf, tc;
     const float *tfp = nullptr, *tcp = nullptr; int tn = 0;      /* the track as read (a copy's, or a host's buffers) */
     long long freeze_at = -1; const void *freeze_src = nullptr; double freeze_tp = 0;   /* ...and which moment it is */
+    long long seek_from = -1, seek_got = 0; const void *seek_src = nullptr;          /* 3c.1: the loudest-nearby search, once per Moment */
 
     static double t60(double focus) { return 0.2 * std::pow(50.0, std::fmin(1.0, std::fmax(0.0, focus))); }
 
@@ -212,11 +213,11 @@ struct Resonator : tone::Synth {
         tclear = best < 0 ? 0 : (long long)(best * thop * sr);
     }
     void set_source(int ch, long long n, const float *const *p) {
-        src = Source(); freeze_at = -1;   /* a new recording: no frozen moment carried over */ if (!p || n <= 0) return;
+        src = Source(); freeze_at = -1; seek_from = -1;   /* a new recording: no frozen moment carried over */ if (!p || n <= 0) return;
         src.nch = std::min(ch, 2); for (int k = 0; k < src.nch; k++) src.f[k] = p[k]; src.frames = n;
     }
     void set_source_i16(int ch, long long n, const int16_t *const *p) {
-        src = Source(); freeze_at = -1;   /* a new recording: no frozen moment carried over */ if (!p || n <= 0) return;
+        src = Source(); freeze_at = -1; seek_from = -1;   /* a new recording: no frozen moment carried over */ if (!p || n <= 0) return;
         src.nch = std::min(ch, 2); for (int k = 0; k < src.nch; k++) src.s[k] = p[k]; src.frames = n;
     }
 
@@ -334,7 +335,20 @@ struct Resonator : tone::Synth {
     void start_freeze(Voice &x, double f) {
         std::fill(x.ola.begin(), x.ola.end(), 0.0f); std::fill(x.ph.begin(), x.ph.end(), 0.0f);
         std::fill(x.mask.begin(), x.mask.end(), 0.0f); std::fill(x.owner.begin(), x.owner.end(), 0);
-        const long long len = std::max<long long>(src.frames, 1), at = (long long)(std::fmin(1.0, std::fmax(0.0, colour)) * (double)std::max<long long>(0, len - SPN));
+        const long long len = std::max<long long>(src.frames, 1), at0 = (long long)(std::fmin(1.0, std::fmax(0.0, colour)) * (double)std::max<long long>(0, len - SPN));
+        /* 3c.1: the loudest moment within +-85 ms (8 hops) of the Moment - a bird call fades in and out, and a frozen soft
+           edge was a whole near-silent note */
+        const void *sid0 = src.f[0] ? (const void *)src.f[0] : (const void *)src.s[0];
+        if (at0 != seek_from || sid0 != seek_src) {      /* a chord's notes share the Moment: searched once (the 2c budget) */
+            long long best = at0; double be = -1;
+            for (int k = -8; k <= 8; k++) {
+                const long long a = at0 + (long long)k * SPH; if (a < 0 || a > std::max<long long>(0, len - SPN)) continue;
+                double e = 0; for (int j = 0; j < 3 * SPH + SPN; j += 4) { const float v = src.at(a + j); e += (double)v * v; }
+                if (e > be * 1.0001) { be = e; best = a; }
+            }
+            seek_from = at0; seek_src = sid0; seek_got = best;
+        }
+        const long long at = seek_got;
         /* a chord's notes freeze the same moment: it is analysed once (an 8-note chord start cost 2.99 ms, measured) */
         const void *sid = src.f[0] ? (const void *)src.f[0] : (const void *)src.s[0];
         if (at != freeze_at || sid != freeze_src) {

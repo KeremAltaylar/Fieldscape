@@ -501,6 +501,17 @@ int main() {
         std::printf("3c.1 fold: on a 5 kHz recording 110 Hz -> %.1f Hz, 4900 Hz -> %.1f Hz; on noise 110 Hz -> %.1f Hz\n", hi, as, wide);
         assert(std::fabs(hi - 3520) < 1e-6 && std::fabs(as - 4900) < 1e-6 && std::fabs(wide - 110) < 1e-6);
     }
+    {   /* 3c.1: Freeze's Moment on a call's soft edge freezes the loudest moment within +-85 ms, not the edge (a bird call
+           fades in and out; a frozen edge was a whole silent note) */
+        std::vector<float> src((size_t)(3 * SR));
+        for (size_t i = 0; i < src.size(); i++) { const double t = i / SR; src[i] = (float)((t >= 1.0 && t < 1.3 ? 0.5 : 0.002) * std::sin(2 * 3.141592653589793 * 3000 * t)); }
+        sampler::Resonator fz; fz.synth = sampler::FREEZE; fz.init(SR); const float *p[1] = { src.data() }; fz.set_source(1, (long long)src.size(), p);
+        fz.colour = (0.94 * SR) / (double)(src.size() - 2048);    /* the Moment 60 ms before the call */
+        std::vector<float> L(B), R(B); fz.attack(3000, 0, 0.5); fz.render(L.data(), R.data(), B, 0);
+        double pw = 0; for (int i = 0; i < fz.nv; i++) if (fz.v[i].active) pw = std::max(pw, fz.v[i].fpow);
+        std::printf("3c.1 freeze: the Moment 60 ms before a call holds power %.4f (the call's own 0.25)\n", pw);
+        assert(pw > 0.1);
+    }
     {   /* 3c.1 F4: each role's level and sounding notes, from the whole engine */
         fs_engine *e = fs_engine_create(SR, B);
         fs_engine_features(e, "{\"type\":\"FeatureCollection\",\"features\":[{\"type\":\"Feature\","
@@ -516,6 +527,19 @@ int main() {
         std::printf("3c.1 roles: voice %.1f dB %d notes (%.1f Hz), sect %.1f dB, v3 %.1f dB\n", out[0], (int)out[1], out[2], out[8], out[16]);
         assert(w == 24 && out[0] > -60 && out[1] >= 1 && out[2] > 20 && out[8] <= -100 && out[16] <= -100);
         fs_engine_destroy(e);
+        /* the level is what the role puts out, after its gain: muted, it reads silent (its notes still play) */
+        fs_engine *m = fs_engine_create(SR, B);
+        fs_engine_features(m, "{\"type\":\"FeatureCollection\",\"features\":[{\"type\":\"Feature\","
+            "\"geometry\":{\"type\":\"LineString\",\"coordinates\":[[29.0,41.0],[29.002,41.0]]},"
+            "\"properties\":{\"id\":\"r1\",\"kind\":\"route\",\"name\":\"R\",\"patch\":{\"version\":17,"
+            "\"prog\":[{\"r\":0,\"q\":\"m9\"},{\"r\":5,\"q\":\"maj7#11\"}],\"bed\":{\"on\":false},\"sect\":{\"on\":false},"
+            "\"zones\":{\"on\":false},\"v3\":{\"on\":false},\"voice\":{\"synth\":\"s-freeze\",\"gain\":0}}}}]}");
+        fs_engine_role_source(m, 0, 1, (long long)nz.size(), np);
+        for (int b = 0; b < (int)(5.0 * SR / B); b++) { if (b % 40 == 0) fs_engine_step(m, 29.001, 41.0); fs_engine_process(m, B); }
+        fs_engine_roles(m, out, 6);
+        std::printf("3c.1 roles: the voice muted %.1f dB, %d notes\n", out[0], (int)out[1]);
+        assert(out[0] <= -90 && out[1] >= 1);
+        fs_engine_destroy(m);
     }
     {   /* Listen (fs_engine_solo): one point alone at its full level from any distance */
         fs_engine *e = fs_engine_create(SR, B);

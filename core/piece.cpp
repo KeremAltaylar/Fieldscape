@@ -1414,14 +1414,15 @@ struct Piece : Device {
         }
         run_role(sectr, sectL.L, sectL.R);
         run_role(v3r, v3L.L, v3L.R);
-        {   /* 3c.1 F4: each role's own output (before its effects), ~0.1 s mean square */
-            const double k = 1 - std::exp(-n / (0.1 * sr));
-            float *Ls[3] = { pad.L, sectL.L, v3L.L }, *Rs[3] = { pad.R, sectL.R, v3L.R };
-            for (int q = 0; q < 3; q++) { double s = 0; for (int i = 0; i < n; i++) s += 0.5 * ((double)Ls[q][i] * Ls[q][i] + (double)Rs[q][i] * Rs[q][i]); lvl[q] += (s / n - lvl[q]) * k; }
-        }
         pad.process(fx.L, fx.R, n, te);
         sectL.process(fx2.L, fx2.R, n, te);
         v3L.process(fx3.L, fx3.R, n, te);
+        {   /* 3c.1 F4: what each role puts out - after its drive, warp and gain, before its effects (each layer alone in its
+               chain's input here: the chains clear after every block, and the one-shots are added below), ~0.1 s mean square */
+            const double k = 1 - std::exp(-n / (0.1 * sr));
+            float *Ls[3] = { fx.L, fx2.L, fx3.L }, *Rs[3] = { fx.R, fx2.R, fx3.R };
+            for (int q = 0; q < 3; q++) { double s = 0; for (int i = 0; i < n; i++) s += 0.5 * ((double)Ls[q][i] * Ls[q][i] + (double)Rs[q][i] * Rs[q][i]); lvl[q] += (s / n - lvl[q]) * k; }
+        }
         for (auto &o : shots) if (o.free_at > t0) { if (o.noise) o.ns.render(fx.L, fx.R, n, t0); else o.s.render(fx.L, fx.R, n, t0); }
         fx.process(oL, oR, n, te); fx2.process(oL, oR, n, te); fx3.process(oL, oR, n, te);
         synth_level.block(te); route_solo.block(te);
