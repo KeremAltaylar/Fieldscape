@@ -1324,6 +1324,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 /* A column that opens on a module lines its heading up with the plain headings beside it. */
 .ppcol > .pxmod:first-child h2 { margin-top: 0; }
 #pp-body h2:first-child { margin-top: 0; }
+/* 3c.1: a sampler role's sample - upload, name, warning, waveform - the full width of its column */
+#pp-body .ppsample { display: grid; gap: 4px; margin: 2px 0 var(--s-1); min-width: 0; }
+#pp-body .ppsample-top { display: flex; align-items: center; justify-content: space-between; gap: var(--s-1); min-width: 0; }
+#pp-body .ppsample-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; font-size: var(--t-xs); color: var(--dim); }
+#pp-body .ppsample-warn:empty { display: none; }
+#pp-body .ppsample-warn { color: var(--lamp); font-size: var(--t-xs); }
+#pp-body .ppsample-wave { width: 100%; height: 40px; display: block; cursor: pointer; }
 .pprow {
   display: grid; grid-template-columns: 6.4rem 1fr 3.6rem; align-items: center;
   gap: var(--s-2); margin-bottom: var(--s-1);
@@ -12244,7 +12251,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         h.textContent = sc.title;
         host.appendChild(h);
       }
-      sc.rows.forEach(function (fl) { host.appendChild(fl.sampleRow ? labSampleRow(fl.sampleRow, f) : buildRow(fl, patch, f)); });
+      sc.rows.forEach(function (fl) { host.appendChild(fl.sampleRow ? labSampleBlock(fl.sampleRow, f) : buildRow(fl, patch, f)); });
     });
 
     renderProgression(f, patch, body);
@@ -12902,24 +12909,90 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       if (st.synth === "s-resonator") { out.push(menu("body"), menu("excite")); }
       if (st.synth === "s-harmonic" || st.synth === "s-formant") { out.push(menu("method"), menu("mode")); }
       if (st.synth !== "s-retune") { out.push(lab("focus", "focus", 0, 1, 0.01)); }
-      out.push(lab("colour", "colour", 0, 1, 0.0001, function (v) { var b = S.buf(role); return FsRoles.colourName(st.synth, v, b ? b.duration : 0); }));
+      out.push(lab("colour", colourWord(st.synth), 0, 1, 0.0001, function (v) { return colourValue(st.synth, v, role); }));
       out.push(lab("tune", "tune", 0, 1, 0.01));
       out.push({ sampleRow: role });
     });
     return out;
   }
-  function labSampleRow(role, f) {
-    var S = labSession(), st = S.state(role), row = document.createElement("label");
-    row.className = "pprow";
-    var name = document.createElement("span"); name.textContent = "sample"; row.appendChild(name);
-    var input = document.createElement("input"); input.type = "file"; input.accept = "audio/*"; input.id = "pp-" + role + "-file";
+  function colourWord(syn) { return { "s-retune": "brightness", "s-harmonic": "overtones", "s-formant": "partial", "s-pulsar": "grain", "s-freeze": "moment" }[syn] || "colour"; }
+  function colourValue(syn, v, role) {
+    if (syn === "s-formant") { return String(Math.round(1 + 15 * v)); }
+    if (syn === "s-pulsar") { return Math.round(100 * (0.05 + 0.95 * v)) + " %"; }
+    if (syn === "s-freeze") { var t = labMomentSeconds(role, v); return Math.floor(t / 60) + ":" + ("0" + Math.floor(t % 60)).slice(-2); }
+    return Math.round(100 * v) + " %";
+  }
+  /* Freeze's Moment: Colour across the compacted sample (core: at = colour · (len − 2048)), shown at its time in the recording */
+  function labMomentSeconds(role, v) {
+    var S = labSession(), b = S.buf(role), kept = S.kept(role), B = S.block(role), raw = S.raw(role);
+    if (!b || !kept || !raw) { return 0; }
+    var pos = Math.max(0, Math.round(v * Math.max(0, b.length - 2048))), acc = 0;
+    for (var k = 0; k < kept.length; k++) { if (!kept[k]) { continue; } var len = Math.min(B, raw.length - k * B); if (pos < acc + len) { return (k * B + (pos - acc)) / raw.sampleRate; } acc += len; }
+    return raw.duration;
+  }
+  function labMomentColour(role, seconds) {      /* the inverse, for a click on the waveform: the nearest sounding moment */
+    var S = labSession(), b = S.buf(role), kept = S.kept(role), B = S.block(role), raw = S.raw(role);
+    if (!b || !kept || !raw) { return null; }
+    var at = Math.round(seconds * raw.sampleRate), acc = 0, best = null;
+    for (var k = 0; k < kept.length; k++) {
+      if (!kept[k]) { continue; }
+      var s0 = k * B, len = Math.min(B, raw.length - s0);
+      if (at >= s0 && at < s0 + len) { best = acc + (at - s0); break; }
+      if (s0 > at) { best = acc; break; }
+      acc += len; best = acc - 1;
+    }
+    return Math.min(1, Math.max(0, best / Math.max(1, b.length - 2048)));
+  }
+  function labSampleBlock(role, f) {
+    var S = labSession(), st = S.state(role), box = document.createElement("div");
+    box.className = "ppsample"; box.dataset.role = role;
+    var top = document.createElement("div"); top.className = "ppsample-top";
+    var label = document.createElement("span"); label.textContent = "sample"; top.appendChild(label);
+    var input = document.createElement("input"); input.type = "file"; input.accept = "audio/*"; input.id = "pp-" + role + "-file"; input.hidden = true;
+    var btn = document.createElement("button"); btn.type = "button"; btn.className = "ghost"; btn.id = "pp-" + role + "-upload";
+    btn.textContent = st.sample ? "Replace sample" : "Upload sample";
+    btn.addEventListener("click", function () { input.click(); });
     input.addEventListener("change", function () { if (input.files[0]) { S.upload(role, input.files[0], f.properties.id).then(function () { labSaveSoon(f); }); } });
-    row.appendChild(input);
-    var val = document.createElement("i"); val.id = "pp-" + role + "-sample";
-    /* text, never markup: a sample's name comes from a file or the database (3b I6) */
-    val.textContent = st.sample ? FsRoles.sampleLabel(st.sample.name, st.sample.analysis, st.sampleNote) : "no sample - this role is silent";
-    row.appendChild(val);
-    return row;
+    top.appendChild(btn); top.appendChild(input); box.appendChild(top);
+    var name = document.createElement("div"); name.className = "ppsample-name"; name.id = "pp-" + role + "-name";
+    var nm = st.sample ? FsRoles.sampleLabel(st.sample.name, st.sample.analysis, st.sampleNote) : "";
+    name.textContent = nm; name.title = nm; box.appendChild(name);
+    var warn = document.createElement("div"); warn.className = "ppsample-warn"; warn.id = "pp-" + role + "-warn";
+    warn.textContent = !st.sample ? "no sample - this role is silent"
+      : /missing|failed|could not/.test(st.sampleNote || "") ? st.sampleNote
+      : st.synth === "s-retune" && !(st.sample.analysis && st.sample.analysis.f0 > 0) ? "Retune needs a pitched sample - this one is unpitched" : "";
+    box.appendChild(warn);
+    var cv = document.createElement("canvas"); cv.id = "pp-" + role + "-wave"; cv.className = "ppsample-wave"; box.appendChild(cv);
+    requestAnimationFrame(function () { labDrawWave(cv, role, st); });
+    cv.addEventListener("pointerdown", function (e) {
+      if (st.synth !== "s-freeze" || !S.raw(role)) { return; }
+      var r = cv.getBoundingClientRect(), c = labMomentColour(role, (e.clientX - r.left) / r.width * S.raw(role).duration);
+      if (c === null) { return; }
+      st.colour = c; var inp = $("#pp-body input[data-k='" + role + ".colour']"); if (inp) { inp.value = c; inp.dispatchEvent(new Event("input")); }
+      labDrawWave(cv, role, st);
+    });
+    return box;
+  }
+  function labDrawWave(cv, role, st) {
+    var S = labSession(), raw = S.raw(role), kept = S.kept(role), B = S.block(role);
+    var w = Math.max(100, Math.round(cv.getBoundingClientRect().width || 240)), h = 40, dpr = window.devicePixelRatio || 1;
+    cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+    var g = cv.getContext("2d"); g.scale(dpr, dpr); g.clearRect(0, 0, w, h);
+    if (!raw) { return; }
+    var css = getComputedStyle(document.documentElement), lit = css.getPropertyValue("--accent").trim() || "#cfd8c8", dim = css.getPropertyValue("--dim").trim() || "#6b7468";
+    var d = raw.getChannelData(0), per = d.length / w;
+    for (var x = 0; x < w; x++) {
+      var a = Math.floor(x * per), z = Math.min(d.length, Math.floor((x + 1) * per)), pk = 0;
+      for (var i = a; i < z; i++) { var v = Math.abs(d[i]); if (v > pk) { pk = v; } }
+      var on = kept && kept[Math.min(kept.length - 1, Math.floor(a / Math.max(1, B)))];
+      g.fillStyle = on ? lit : dim; g.globalAlpha = on ? 1 : 0.35;
+      var bh = Math.max(1, pk * (h - 2)); g.fillRect(x, (h - bh) / 2, 1, bh);
+    }
+    g.globalAlpha = 1;
+    if (st.synth === "s-freeze") {
+      var mx = labMomentSeconds(role, st.colour) / raw.duration * w;
+      g.fillStyle = css.getPropertyValue("--lamp").trim() || "#e0b25b"; g.fillRect(Math.round(mx) - 1, 0, 2, h);
+    }
   }
   function labToggle() {
     labWanted = !labWanted; labEngineFailed = false;
