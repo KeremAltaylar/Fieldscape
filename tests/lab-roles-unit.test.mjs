@@ -34,3 +34,33 @@ test("lab-roles: names are escaped, samplers recognised", () => {
   assert.equal(FsRoles.sampleLabel("a.wav", { f0: 220.4 }, "saved"), "a.wav · 220 Hz · saved");
   assert.equal(FsRoles.colourName("s-freeze", 0.5, 62), "Moment 0:30");
 });
+
+/* final review 3c I1: an upload on route A finishing after route B is shown must never save B's roles into A's row */
+test("lab-roles: a save for a route other than the one loaded is refused, even after a slow upload", async () => {
+  const rows = { A: { voice: { synth: "s-freeze", sampler: { focus: 0.9 }, sample: null } }, B: { voice: { synth: "fm" } } };
+  const upserts = [];
+  let releaseUpload;
+  const sb = {
+    from: () => ({
+      select: () => ({ eq: (k, id) => ({ maybeSingle: async () => ({ data: rows[id] ? { roles: rows[id] } : null, error: null }) }) }),
+      upsert: async (row) => { upserts.push(row); return { error: null }; }
+    }),
+    storage: { from: () => ({ upload: () => new Promise((r) => { releaseUpload = () => r({ error: null }); }), download: async () => ({ error: { message: "none" } }) }) }
+  };
+  const chan = new Float32Array(48000);
+  const buf = { numberOfChannels: 1, length: chan.length, sampleRate: 48000, duration: 1, getChannelData: () => chan, copyToChannel() {} };
+  const ctx = { sampleRate: 48000, decodeAudioData: async () => buf, createBuffer: () => buf };
+  const s = FsRoles.session({ sb, ctx: () => ctx, analyse: () => ({ f0: 0 }) });
+  await s.load("A");
+  const up = s.upload("voice", { name: "a.wav", arrayBuffer: async () => new ArrayBuffer(8) }, "A");
+  for (let i = 0; i < 20 && !releaseUpload; i++) await new Promise((r) => setTimeout(r, 5));
+  await s.load("B");                                   /* the setter opens route B while A's sample uploads */
+  releaseUpload(); await up;
+  const m = await s.save("A", "user-1");
+  assert.ok(m && /Not saved/.test(m), m);
+  assert.equal(upserts.length, 0, JSON.stringify(upserts));
+  assert.equal(await s.save("B", "user-1"), null);
+  assert.equal(upserts.length, 1);
+  assert.equal(upserts[0].route_id, "B");
+  assert.deepEqual(s.lastSaved, upserts[0].roles);
+});

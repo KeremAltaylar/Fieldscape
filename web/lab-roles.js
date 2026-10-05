@@ -141,18 +141,24 @@
       if (!id) { return Promise.resolve("Choose a route first."); }
       if (s.loading) { return Promise.resolve("Not saved: the route's saved roles are still loading - try again in a moment."); }
       if (s.failed) { return Promise.resolve("Not saved: the route's saved roles did not load, so saving could overwrite them - choose the route again."); }
+      /* only the route these roles belong to: a save for another (a slow upload's, a timer's) never writes these into it (3c I1) */
+      if (id !== s.loadedFor) { return Promise.resolve("Not saved: another route is open now"); }
       var gen = s.gen, waiting = uploading.slice(); uploading = [];
       return Promise.all(waiting).then(function () {
-        if (gen !== s.gen) { return "Not saved: the route changed while the sample uploaded"; }
+        if (gen !== s.gen || id !== s.loadedFor) { return "Not saved: the route changed while the sample uploaded"; }
         var bad = ROLES.filter(function (r) { var x = s.state(r); return x.sample && !x.sample.path; })[0];
         if (bad) { return "Not saved: the " + NAMES[bad] + " sample did not upload - choose it again"; }
-        return o.sb.from("lab_route_roles").upsert({ route_id: id, roles: s.json(), updated_by: userId }).then(function (q) { return q.error ? "Not saved: " + q.error.message : null; });
+        var roles = s.json();
+        return o.sb.from("lab_route_roles").upsert({ route_id: id, roles: roles, updated_by: userId }).then(function (q) {
+          if (q.error) { return "Not saved: " + q.error.message; }
+          s.lastSaved = roles; return null;
+        });
       }).catch(function (e) { return "Not saved: " + (e && e.message || e); });
     };
     return s;
   }
   var api = { ROLES: ROLES, ROLE_INDEX: ROLE_INDEX, MAX_S: MAX_S, SAMPLER: SAMPLER, NAMES: NAMES, isSampler: isSampler, esc: esc,
     sampleLabel: sampleLabel, colourName: colourName, wavBytes: wavBytes, wav: wav, trimmed: trimmed, overlay: overlay,
-    fetchRoute: fetchRoute, sendRole: sendRole, session: session };
+    fetchRoute: fetchRoute, sendRole: sendRole, session: session, decodeSample: decodeSample, silence: silence };
   root.FsRoles = api;
 })(typeof globalThis !== "undefined" ? globalThis : self);

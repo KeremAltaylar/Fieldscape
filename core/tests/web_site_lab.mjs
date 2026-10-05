@@ -53,6 +53,7 @@ try {
   s.on((m) => {
     if (m.method === "Runtime.exceptionThrown") errors.push(JSON.stringify(m.params.exceptionDetails).slice(0, 300));
     if (m.method === "Network.requestWillBeSent") reqs.push(m.params.request.url);
+    if (m.method === "Fetch.requestPaused") s.send("Fetch.failRequest", { requestId: m.params.requestId, errorReason: "Failed" }).catch(() => {});
   });
   await s.send("Runtime.enable"); await s.send("Page.enable"); await s.send("Network.enable");
   await s.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
@@ -110,9 +111,16 @@ try {
   /* reload: lab mode remembered, the role back */
   await open();
   await until(`__fa.features().some(function (f) { return f.properties.id === '${DRAFT}'; })`, 15000);
-  await openPanel(DRAFT);
+  await ev(`fsListen.select('${DRAFT}'), 0`); await sleep(900);
+  const drawn = await ev("(function(){ var b = document.querySelector('#ls-card #f-patch') || document.querySelector('#f-patch'); b.click(); return document.querySelectorAll('#pp-body .ppcols').length; })()");
+  check("opening the panel in lab mode draws it once (final review 3c I6)", drawn === 1, drawn);
+  await until("!document.getElementById('patchpanel').hidden", 5000);
   await until(`__fa.labRolesFor === '${DRAFT}'`, 8000);
   const back = await until("(document.querySelector('#pp-body select[data-k=\"v3.synth\"]') || {}).value === 's-freeze' && +(document.querySelector('#pp-body input[data-k=\"v3.focus\"]') || {}).value === 0.77 && /probe-site\\.wav/.test((document.querySelector('#pp-v3-sample') || {}).textContent || '')", 10000);
+  await ev("fsListen.sound()");
+  const ov = await until(`(__fa.coreSentPatch && __fa.coreSentPatch('${DRAFT}') || '').indexOf('s-freeze') >= 0`, 15000);
+  check("after a reload with lab mode remembered, the engine plays the saved sampler role, untouched (final review 3c I3)", ov, await ev(`__fa.coreWasm + ' ' + (__fa.coreSentPatch && (__fa.coreSentPatch('${DRAFT}') || '').slice(0, 80))`));
+  await ev("fsListen.sound()"); await sleep(1500);
   check("reloaded: lab mode still on, the Third voice Freeze again with its Focus and sample", back, await ev("[(document.querySelector('#pp-body select[data-k=\"v3.synth\"]') || {}).value, (document.querySelector('#pp-v3-sample') || {}).textContent]"));
 
   /* back to digital: written to the live patch as today */
@@ -120,6 +128,13 @@ try {
   const page2 = JSON.parse(await livePatch(DRAFT));
   const row2 = (await db.from("lab_route_roles").select("roles").eq("route_id", DRAFT).maybeSingle()).data;
   check("a digital choice in lab mode reaches the live patch, and the lab row follows (sample kept)", page2.v3.synth === "pluck" && !!(row2 && row2.roles.v3.synth === "pluck" && row2.roles.v3.sample), [page2.v3.synth, row2 && row2.roles.v3]);
+
+  const hmax = await ev("(document.querySelector('#pp-body input[data-k=\"v3.harm\"]') || {}).max");
+  await setRange("v3.harm", hmax); await sleep(300);
+  const h0 = JSON.parse(await livePatch(DRAFT)).v3.harm;
+  await setSel("v3.synth", "s-freeze"); await sleep(400); await setSel("v3.synth", "pluck"); await sleep(400);
+  const h1 = JSON.parse(await livePatch(DRAFT)).v3.harm;
+  check("a sampler tried and the same digital synth chosen again: its live timbres kept (final review 3c I2)", h1 === h0 && String(h0) === String(+hmax), [hmax, h0, h1]);
 
   /* lab mode off: the panel exactly as before */
   await ev("document.querySelector('#pp-lab').click(), 0"); await sleep(600);
@@ -139,10 +154,21 @@ try {
   await setRange("v3.gain", "0"); await sleep(4000); const muted = await lvl();
   await setRange("v3.gain", "0.55");
   check("walking the route, the Freeze role with its sample sounds (muting it drops the level >= 3 dB)", withRole > muted + 3, [withRole, muted]);
+  const sends0 = await ev("__fa.labRoleSends");
+  for (let i = 0; i < 20; i++) { await setRange("v3.focus", (0.30 + i * 0.01).toFixed(2)); await sleep(30); }
+  await sleep(350);
+  check("a sampler control reaches the engine at patch-edit speed, before any save (final review 3c I7)", (await ev(`__fa.coreSentPatch('${DRAFT}') || ''`)).indexOf('"focus":0.49') >= 0, await ev(`(__fa.coreSentPatch('${DRAFT}') || '').slice(0, 200)`));
+  await sleep(3000);
+  check("moving a control and its autosave send no sample to the engine again (final review 3c C1)", (await ev("__fa.labRoleSends")) === sends0, [sends0, await ev("__fa.labRoleSends")]);
   await ev("document.querySelector('#pp-lab').click(), 0"); await sleep(5000);
   check("lab mode off while sound plays: the engine is core.wasm again, still sounding", (await ev("__fa.coreWasm")) === "web/core.wasm" && (await ev("__fa.coreLevel()")) > -60, [await ev("__fa.coreWasm"), await ev("__fa.coreLevel()")]);
   await ev("document.querySelector('#pp-lab').click(), 0"); await sleep(5000);
   check("... and on again: core-lab.wasm, one engine", (await ev("__fa.coreWasm")) === "web/core-lab.wasm" && (await ev("__fa.coreNodes")) === 1, [await ev("__fa.coreWasm"), await ev("__fa.coreNodes")]);
+  await ev("fsListen.sound()"); await sleep(1500);
+  await ev("document.querySelector('#pp-lab').click(), 0"); await sleep(500);
+  await ev("(function(){ fsListen.sound(); document.querySelector('#pp-lab').click(); return 0; })()");
+  await sleep(6000);
+  check("lab mode turned while the engine loads: the build lab mode wants, one engine (final review 3c I4)", (await ev("__fa.coreWasm")) === "web/core-lab.wasm" && (await ev("__fa.coreNodes")) === 1, [await ev("__fa.coreWasm"), await ev("__fa.coreNodes")]);
   if (!PUB2) { console.log("SKIP every published route has a lab setup: the no-lab-row checks need one without"); } else {
   /* a route with no lab row: the engine is given its live patch (Review Focus 1, 5) */
   const pm = await ev(`(function(){ var c = __fa.features().filter(function (f) { return f.properties.id === '${PUB2}'; })[0].geometry.coordinates; return c[Math.floor(c.length / 2)]; })()`);
@@ -150,7 +176,16 @@ try {
   check("on a route with no lab row, the engine's patch is the live one", await ev(`__fa.coreSentPatch('${PUB2}') === JSON.stringify(__fa.features().filter(function (f) { return f.properties.id === '${PUB2}'; })[0].properties.patch)`), await ev(`__fa.coreSentPatch && __fa.coreSentPatch('${PUB2}') && __fa.coreSentPatch('${PUB2}').slice(0, 120)`));
   check("... and the walker is on it (its own samples, none: nothing from the draft carried over)", (await ev("__fa.core && __fa.core.route_id")) === PUB2 && (await ev("__fa.labSentFor")) === PUB2, [await ev("__fa.core && __fa.core.route_id"), await ev("__fa.labSentFor")]);
   }
-  await ev("fsListen.sound()");    /* off */
+  await ev("fsListen.sound()"); await sleep(1500);    /* off */
+  await ev("document.querySelector('#pp-lab').click(), 0"); await sleep(500);
+  await s.send("Network.setCacheDisabled", { cacheDisabled: true });       /* the wasm is cached (and the service worker */
+  await s.send("Network.setBypassServiceWorker", { bypass: true });         /* answers from its own): the request must really go out */
+  await s.send("Fetch.enable", { patterns: [{ urlPattern: "*core-lab.wasm*", requestStage: "Request" }] });
+  await ev("document.querySelector('#pp-lab').click(), 0"); await sleep(300);
+  await ev("fsListen.sound()"); await sleep(6000);
+  check("core-lab.wasm failing: the site stays on core.wasm and says so (final review 3c I5)", (await ev("__fa.coreWasm")) === "web/core.wasm" && (await ev("!!(window.core !== null)")) && /lab engine did not load/.test(await ev("(document.querySelector('#pp-lab-msg') || {}).textContent || ''")), [await ev("__fa.coreWasm"), await ev("(document.querySelector('#pp-lab-msg') || {}).textContent")]);
+  await s.send("Fetch.disable"); await s.send("Network.setCacheDisabled", { cacheDisabled: false }); await s.send("Network.setBypassServiceWorker", { bypass: false });
+  await ev("fsListen.sound()"); await sleep(1500);    /* off */
 
   /* an expired session: autosave says so and never writes the live patch (Review Focus 4) */
   if (!(await ev("__fa.labMode"))) { await ev("document.querySelector('#pp-lab').click(), 0"); }
