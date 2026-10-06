@@ -9,6 +9,7 @@
    weighted stages and spread over the first half of the current hop, so no single callback carries
    a whole frame (see NOTES.md). A window or shape change starts a second Voice at the new size and
    crossfades to it; nothing allocates after prepare. */
+#include "../harmony.hpp"
 #include "../device.hpp"
 #include "fft.hpp"
 #include "../json.hpp"
@@ -53,6 +54,7 @@ struct Controls {
     double log_s; bool freeze; float onset, width;
     bool shaping; double transpose; float tune, focus, partials, layers, harmony, glide, drift, blur, start, end;
     float chord[5], root;
+    float follow; const float *tf, *tc; int tn; double thop;   /* 5: the recording's pitch track, and how far it follows the chord */
 };
 
 enum Stage { S_WIN, S_TWID, S_GAIN, S_READ, S_FWD, S_MAG, S_ONSET, S_BINC, S_COMB, S_SH_IN, S_SH_T, S_SH_L, S_SH_NORM, S_PHASE, S_INV, S_OUT, S_FINISH };
@@ -69,6 +71,7 @@ struct Voice {
     std::vector<float> win, hc, ar, ai, br, bi, mag[2], prev[2], tail[2], hop[2][2];
 
     double pos = 0, log_s = 0;       /* read position of the next frame; smoothed log stretch */
+    double fpos = 0, folog = 0;      /* 5: the frame's place in the recording (its centre); the follow, in cents, glided */
     int cur = 0, play = 0;           /* hop[cur] is playing, at index play */
     long long frames = 0;
     int wraps = 0, late = 0;
@@ -237,6 +240,7 @@ struct Voice {
             set_region(len);
             const long long r0 = region0, rl = region1 - region0;
             long long idx = r0 + ((((long long)(pos + drift_off) - r0 + a) % rl) + rl) % rl;
+            if (a == 0) fpos = (double)(r0 + ((idx - r0 + N / 2) % rl));
             const long long r1 = region1;
             if (src->s16[0]) {
                 const int16_t *x0 = src->s16[0], *x1 = src->s16[1];
@@ -318,6 +322,18 @@ struct Voice {
             if (a == 0) {
                 e0[0] = e0[1] = e1[0] = e1[1] = 0;
                 sh_T = std::pow(2.0, cc.transpose / 12.0);
+                if (cc.follow > 0 && cc.tn > 0) {   /* 5: the recording's pitch here, toward the chord's nearest note, gliding */
+                    const int fi = (int)(fpos / sr / (cc.thop > 0 ? cc.thop : 0.02));
+                    double tgt = 0;
+                    if (fi >= 0 && fi < cc.tn && cc.tc[fi] >= 0.8f && cc.tf[fi] > 0) {
+                        double ch[5]; int m = 0;
+                        for (int i = 0; i < 5; i++) if (gnote[i] >= 0) ch[m++] = 440 * std::pow(2.0, (gnote[i] - 69) / 12);
+                        tgt = 1200 * std::log2(harmony::follow_rate(1.0, cc.tf[fi], ch, m, 1.0));
+                    }
+                    const double gr = 1.0 - std::exp(-5.0 * H / ((cc.glide > 0.05 ? cc.glide : 0.05) * sr));
+                    folog += (tgt - folog) * gr;
+                    sh_T *= std::pow(2.0, cc.follow * folog / 1200);
+                }
                 const int L = (int)std::lround(cc.layers < 0 ? 0 : cc.layers > 4 ? 4 : cc.layers);
                 nr = 0;
                 for (int i = 0; i < 5 && nr < L; i++) {
@@ -509,10 +525,11 @@ static const fs_param STRETCH_PARAMS[] = {
     { "chord3", "Chord note 4", "", -1.0f, 127.0f, -1.0f },
     { "chord4", "Chord note 5", "", -1.0f, 127.0f, -1.0f },
     { "root", "Chord root", "", -1.0f, 127.0f, -1.0f },
+    { "follow", "Follow", "", 0.0f, 1.0f, 0.0f },   /* 5: a pitched recording onto the chord (0 = as recorded) */
 };
 enum { P_STRETCH, P_WINDOW, P_FREEZE, P_ONSET, P_WIDTH, P_SHAPE, P_SEED,
        P_TRANSPOSE, P_TUNE, P_FOCUS, P_PARTIALS, P_LAYERS, P_HARMONY, P_GLIDE, P_DRIFT, P_BLUR, P_START, P_END,
-       P_CHORD0, P_ROOT = P_CHORD0 + 5, P_COUNT };
+       P_CHORD0, P_ROOT = P_CHORD0 + 5, P_FOLLOW, P_COUNT };
 
 struct Stretch : Device {
     float value[P_COUNT];
@@ -527,6 +544,15 @@ struct Stretch : Device {
     float cached_window = -1; int cached_n = 0;
 
     Stretch() { for (int i = 0; i < P_COUNT; i++) value[i] = STRETCH_PARAMS[i].def; }
+    void *cast(const char *kind) override { return std::strcmp(kind, "stretch") ? nullptr : this; }
+    /* 5: the recording's pitch track; the one before is kept a generation (a voice reads it until its next frame) */
+    std::vector<float> trk_f, trk_c, old_f, old_c; double trk_hop = 0.02;
+    void set_track(const float *f0s, const float *confs, int n, double hop) {
+        old_f.swap(trk_f); old_c.swap(trk_c);
+        trk_f.assign(f0s && confs && n > 0 ? f0s : nullptr, f0s && confs && n > 0 ? f0s + n : nullptr);
+        trk_c.assign(f0s && confs && n > 0 ? confs : nullptr, f0s && confs && n > 0 ? confs + n : nullptr);
+        trk_hop = hop > 0 ? hop : 0.02;
+    }
 
     const fs_param *params(int &n) override { n = P_COUNT; return STRETCH_PARAMS; }
     void set_param(int i, float x) override { value[i] = x; }
@@ -544,7 +570,8 @@ struct Stretch : Device {
         if (any) { for (int i = 0; i < 5; i++) last_chord[i] = value[P_CHORD0 + i]; last_root = value[P_ROOT] >= 0 ? value[P_ROOT] : value[P_CHORD0]; }
         for (int i = 0; i < 5; i++) c.chord[i] = last_chord[i];
         c.root = last_root;
-        c.shaping = std::fabs(c.transpose) > 1e-4 || c.tune > 0 || (c.layers >= 0.5f && c.harmony > 0) || c.blur > 0;
+        c.follow = value[P_FOLLOW]; c.tn = (int)trk_f.size(); c.tf = c.tn ? trk_f.data() : nullptr; c.tc = c.tn ? trk_c.data() : nullptr; c.thop = trk_hop;
+        c.shaping = std::fabs(c.transpose) > 1e-4 || c.tune > 0 || (c.layers >= 0.5f && c.harmony > 0) || c.blur > 0 || (c.follow > 0 && c.tn > 0);
         return c;
     }
     int target_n() {
@@ -620,7 +647,7 @@ Device *make_stretch() { return new Stretch(); }
 /* The host's side of the shaping, shared by the web engine and both apps' walks, so every platform
    reads a point the same way. The shaping's own names (properties.sound.shape); anything missing
    takes the parameter's default, which is dry (A-8). */
-static const char *const SHAPE_KEYS[] = { "transpose", "tune", "focus", "partials", "layers", "harmony", "glide", "drift", "blur", "start", "end", "width" };
+static const char *const SHAPE_KEYS[] = { "transpose", "tune", "focus", "partials", "layers", "harmony", "glide", "drift", "blur", "start", "end", "width", "follow" };
 static int stretch_param(const char *id) { for (int i = 0; i < P_COUNT; i++) if (!std::strcmp(STRETCH_PARAMS[i].id, id)) return i; return -1; }
 
 extern "C" void fs_stretch_shape(fs_device *d, const char *shape_json) {
@@ -629,6 +656,12 @@ extern "C" void fs_stretch_shape(fs_device *d, const char *shape_json) {
         const int i = stretch_param(k);
         fs_set_param(d, i, (float)sh.n(k, STRETCH_PARAMS[i].def));
     }
+}
+/* 5: a stretch's recording's pitch track (f0 and confidence every hop s); follow >= 0 also sets how far it follows */
+extern "C" void fs_stretch_track(fs_device *d, const float *f0s, const float *confs, int n, double hop, float follow) {
+    Stretch *s = d ? (Stretch *)fs_device_impl(d)->cast("stretch") : nullptr; if (!s) return;
+    s->set_track(f0s, confs, n, hop);
+    if (follow >= 0) fs_set_param(d, P_FOLLOW, follow);
 }
 extern "C" void fs_stretch_chord(fs_device *d, fs_device *piece) {
     float notes[5] = { -1, -1, -1, -1, -1 }, root = -1;

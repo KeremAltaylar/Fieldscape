@@ -166,6 +166,8 @@ void fs_piece_zone(fs_device *d, const char *icon);                     /* a pla
 int fs_piece_rhythm_add(fs_device *d, const char *rhythm_json, int grains);
 void fs_piece_rhythm_gain(fs_device *d, int handle, float gain);
 void fs_piece_rhythm_source(fs_device *d, int handle, int slot, int channels, long long frames, short *interleaved);
+/* 5: a rhythm source's analysis (f0, hop_s, track [[f0, confidence, ...], ...]): its hits and grains follow the chord */
+void fs_piece_rhythm_track(fs_device *d, int handle, int slot, const char *analysis_json);
 void fs_piece_rhythm_remove(fs_device *d, int handle);
 void fs_piece_rhythm_config(fs_device *d, int handle, const char *rhythm_json);   /* its pattern changed; voice and recordings stay */
 /* the morph cells: 7 doubles a cell (shape, voice, dest, seed, value, per second, phase) into out, at most max;
@@ -207,6 +209,9 @@ int fs_bench_ring(fs_device *d, float *dst);
    changes on the bar, not on a GPS fix). */
 void fs_stretch_shape(fs_device *stretch, const char *shape_json);
 void fs_stretch_chord(fs_device *stretch, fs_device *piece);
+/* Sample harmony 5: a stretch's recording's pitch track (f0 and confidence every hop s); follow >= 0 sets how far a
+   pitched recording follows the chord (0 = as recorded) */
+void fs_stretch_track(fs_device *stretch, const float *f0s, const float *confs, int n, double hop, float follow);
 short *fs_alloc_i16(size_t n);
 /* tests: replace the random stream, and hear every note the steps choose (role 0 bass, 1 top,
    2 sector, 3 third, 4 water zone, 5 zone) */
@@ -229,6 +234,8 @@ void fs_engine_upsert(fs_engine *e, const char *feature_json);
 void fs_engine_remove(fs_engine *e, const char *id);
 const char *fs_engine_step(fs_engine *e, double lon, double lat);
 void fs_engine_source(fs_engine *e, int kind, int index, int sub, const char *id, int channels, long long frames, short *interleaved);
+/* 5: the analysis of a recording the engine asked for (as fs_engine_source's kind/index/sub/id) */
+void fs_engine_source_track(fs_engine *e, int kind, int index, int sub, const char *id, const char *analysis_json);
 void fs_engine_process(fs_engine *e, int frames);
 float *fs_engine_out(fs_engine *e, int channel);
 const char *fs_engine_state(fs_engine *e);

@@ -726,6 +726,52 @@ int main() {
           std::printf("4 budget: 24 Sample FM voices, 99.9%% of blocks within %.3f ms (budget %.2f)\n", ms[(size_t)(ms.size() * 0.999)], 1.33 * slack);
           assert(ms[(size_t)(ms.size() * 0.999)] < 1.33 * slack); }
     }
+    {   /* 5: points follow the chord - a pitched point recording moved toward the nearest chord note by `follow` */
+        const double dm[3] = { 293.66, 349.23, 440.0 };                     /* D minor */
+        const double r1 = harmony::follow_rate(1.0, 330, dm, 3, 1), r0 = harmony::follow_rate(1.0, 330, dm, 3, 0), rh = harmony::follow_rate(1.0, 330, dm, 3, 0.5);
+        std::printf("5 follow_rate: 330 Hz on D minor -> %.2f Hz at 1, %.2f at 0, %.2f at 1/2\n", 330 * r1, 330 * r0, 330 * rh);
+        assert(std::fabs(330 * r1 - 349.23) < 0.01 && r0 == 1.0 && std::fabs(1200 * std::log2(rh) - 0.5 * 1200 * std::log2(349.23 / 330)) < 0.01);
+        assert(harmony::follow_rate(1.5, 0, dm, 3, 1) == 1.5 && harmony::follow_rate(1.5, 330, dm, 0, 1) == 1.5);   /* unpitched, no chord */
+        /* the stretch: a 330 Hz recording with its track, chord D minor (MIDI 62 65 69), follow 1 -> its peak near 349 Hz */
+        auto stretch_peak = [&](double follow) {
+            std::vector<float> rec((size_t)(6 * SR)); for (size_t i = 0; i < rec.size(); i++) rec[i] = (float)(0.3 * std::sin(2 * sampler::PI * 330 * i / SR));
+            fs_device *d = fs_create("stretch"); fs_prepare(d, SR, B);
+            const float *pp[1] = { rec.data() }; fs_set_source(d, 1, (int)rec.size(), pp);
+            fs_set_param(d, 0, 0); fs_set_param(d, 1, 0.25f);                  /* x1, a 0.25 s window */
+            fs_stretch_shape(d, "{\"glide\":0.5}");
+            const float chord[6] = { 62, 65, 69, -1, -1, 62 };
+            for (int k = 0; k < 6; k++) fs_set_param(d, 18 + k, chord[k]);
+            std::vector<float> tf(300, 330.0f), tc(300, 0.95f); fs_stretch_track(d, tf.data(), tc.data(), 300, 0.02, (float)follow);
+            std::vector<float> o;
+            for (int b2 = 0; b2 < (int)(5 * SR / B); b2++) { fs_process(d, B); const float *l = fs_out(d, 0); o.insert(o.end(), l, l + B); }
+            fs_destroy(d);
+            std::vector<float> w(o.end() - (long)(1.5 * SR), o.end());
+            return std::make_pair(peak_amp(w, SR, 349.23), peak_amp(w, SR, 330)); };
+        const auto f1 = stretch_peak(1), f0 = stretch_peak(0);
+        std::printf("5 stretch: follow 1 349 Hz %.3g vs 330 Hz %.3g; follow 0 349 %.3g vs 330 %.3g\n", f1.first, f1.second, f0.first, f0.second);
+        assert(f1.first > 10 * f1.second && f0.second > 10 * f0.first);
+        /* hits (an E-flat, 311 Hz - not in the route's D minor 9): a pitched hit's logged rate lands on a chord note the route plays (within 2 cents, any octave) at follow 1 */
+        auto hits = [&](const char *json) {
+            struct L2 { std::vector<double> chord, hit; } log;
+            auto lg = [](void *p, int role, double f, double, double, double) { L2 *l = (L2 *)p; if (role <= 3) l->chord.push_back(f); else if (role == 10) l->hit.push_back(f); };
+            unsigned seed = 5; fs_device *pc = fs_create("piece"); fs_prepare(pc, SR, B); fs_piece_test_hooks(pc, fixed_draw, &seed, lg, &log);
+            fs_piece_add_route(pc, "{}");
+            const int h = fs_piece_rhythm_add(pc, json, 0);
+            const int n = (int)(0.4 * SR); short *pcm = (short *)std::malloc(sizeof(short) * n);
+            for (int i = 0; i < n; i++) pcm[i] = (short)(8000 * std::sin(2 * sampler::PI * 311 * i / SR) * std::exp(-i / (0.1 * SR)));
+            fs_piece_rhythm_source(pc, h, 0, 1, n, pcm);
+            fs_piece_rhythm_track(pc, h, 0, "{\"f0\":311,\"hop_s\":0.02,\"track\":[[311,0.95,0],[311,0.95,0]]}");
+            for (int b2 = 0; b2 < (int)(12 * SR / B); b2++) { fs_piece_walk(pc, 0, 0.3, 0); fs_process(pc, B); }
+            fs_destroy(pc);
+            double worst = 0; int n_hit = 0;
+            for (double r : log.hit) { const double f = 311 * r; double best = 1e9;
+                for (double c : log.chord) { const double k = std::round(std::log2(f / c)); best = std::min(best, std::fabs(1200 * std::log2(f / (c * std::pow(2.0, k))))); }
+                worst = std::max(worst, best); n_hit++; }
+            return std::make_pair(n_hit, worst); };
+        const auto on = hits("{\"follow\":1}"), off = hits("{}");
+        std::printf("5 hits: follow 1 %d hits, worst %.2f cents off a chord note; follow 0 %d hits, worst %.2f\n", on.first, on.second, off.first, off.second);
+        assert(on.first > 3 && on.second < 2 && off.second > 5);
+    }
     {   /* 3c.1 F4: each role's level and sounding notes, from the whole engine */
         fs_engine *e = fs_engine_create(SR, B);
         fs_engine_features(e, "{\"type\":\"FeatureCollection\",\"features\":[{\"type\":\"Feature\","
