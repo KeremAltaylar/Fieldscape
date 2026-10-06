@@ -9,15 +9,15 @@ namespace tone {
 
 /* the digital synths, then (sample harmony 3a) the sampler synths: sampler::Resonator playing a role's recording */
 enum SynthType { FM, AM, DUO, MONO, SIMPLE, PLUCK, METAL, MEMBRANE, WAVETABLE, COMB, FORMANT,
-                 S_RETUNE, S_RESONATOR, S_HARMONIC, S_FORMANT, S_PULSAR, S_FREEZE, NSYNTH };
+                 S_RETUNE, S_RESONATOR, S_HARMONIC, S_FORMANT, S_PULSAR, S_FREEZE, S_FM, S_AM, NSYNTH };
 static const char *const SYNTH_NAMES[NSYNTH] = { "fm", "am", "duo", "mono", "simple", "pluck", "metal", "membrane", "wavetable", "comb", "formant",
-    "s-retune", "s-resonator", "s-harmonic", "s-formant", "s-pulsar", "s-freeze" };
+    "s-retune", "s-resonator", "s-harmonic", "s-formant", "s-pulsar", "s-freeze", "s-fm", "s-am" };
 /* SYNTH_TRIM, dB */
 static const double SYNTH_TRIM[NSYNTH] = { 0, 5.5, -14.5, -10, -11, -9, -2, -12.5, -9, -0.5, -2,
-    11.6, 13.1, 7, 7, 13.3, 3.4 };   /* the samplers: measured against fm on a route's Voice, a -20 dBFS recording (3a), then
+    11.6, 13.1, 7, 7, 13.3, 3.4, 12.3, 16.3 };   /* 4: Sample AM measured to sit with Retune (+8 dB over fm on a Voice) once its DC is removed (the DC had been 6.4 dB of its level); Sample FM 3 dB more - its sidebands lose more to a route's swept low-pass (lab: +2 dB at 9.3) */   /* the samplers: measured against fm on a route's Voice, a -20 dBFS recording (3a), then
     raised 6-9 dB (Kerem 2026-10-05: "comparatively lower than the digital synths ... x2 or more") */
 static const bool PERCUSSIVE[NSYNTH] = { 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0 };
-static const bool SELF_VOICED[NSYNTH] = { 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 };
+static const bool SELF_VOICED[NSYNTH] = { 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 };
 
 /* SYNTH_PARAMS: each instrument's two timbre controls (range for the morphs to span). */
 struct TimbreRange { double min, max; };
@@ -35,6 +35,7 @@ static const TimbreRange SYNTH_PARAMS[NSYNTH][2] = {
     { { 0, 1 }, { 0, 1 } },          /* formant: vowel, shift */
     { { 0, 1 }, { 0, 1 } }, { { 0, 1 }, { 0, 1 } }, { { 0, 1 }, { 0, 1 } },   /* the samplers: Focus, Colour */
     { { 0, 1 }, { 0, 1 } }, { { 0, 1 }, { 0, 1 } }, { { 0, 1 }, { 0, 1 } },
+    { { 0, 1 }, { 0, 1 } }, { { 0, 1 }, { 0, 1 } },   /* 4: Sample FM / AM: ratio (Focus), depth (Colour) */
 };
 
 struct EnvSpec { double a, d, s, r; bool aexp, rexp; };

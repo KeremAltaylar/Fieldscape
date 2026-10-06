@@ -4,13 +4,14 @@
   "use strict";
   var ROLES = ["voice", "sect", "v3"], ROLE_INDEX = { voice: 0, sect: 1, v3: 2 }, MAX_S = 30;
   var SAMPLER = [["s-retune", "Retune"], ["s-resonator", "Resonator"], ["s-harmonic", "Harmonic filter"], ["s-formant", "Formant"],
-    ["s-pulsar", "Pulsar"], ["s-freeze", "Freeze"]];
+    ["s-pulsar", "Pulsar"], ["s-freeze", "Freeze"], ["s-fm", "Sample FM"], ["s-am", "Sample AM"]];
   var NAMES = { voice: "Voice", sect: "Sections", v3: "Third voice" };
   function isSampler(s) { return typeof s === "string" && s.indexOf("s-") === 0; }
   function esc(t) { return String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/'/g, "&#39;").replace(/"/g, "&quot;"); }
   function sampleLabel(name, a, note) { return name + " · " + (a && a.f0 > 0 ? Math.round(a.f0) + " Hz" : "unpitched") + (note ? " · " + note : ""); }
   function colourName(syn, c, seconds) {
     if (syn === "s-retune") { return "Brightness"; }
+    if (syn === "s-fm" || syn === "s-am") { return "Depth"; }
     if (syn === "s-harmonic") { return "Overtones"; }
     if (syn === "s-formant") { return "Partial " + Math.round(1 + 15 * c); }
     if (syn === "s-pulsar") { return "Grain " + Math.round(100 * (0.05 + 0.95 * c)) + " %"; }

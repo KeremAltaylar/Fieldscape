@@ -12899,7 +12899,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         groups: [["Digital", SYNTH_TYPES.map(function (t) { return [t, SYNTH_LABEL[t] || t]; })], ["Sampler", FsRoles.SAMPLER]],
         get: function () { return smp ? st.synth : patch[role].synth; },
         set: function (v) {
-          if ((v === "s-retune") !== (st.synth === "s-retune")) { st.method = 0; }   /* Method and Model share a field (3d) */
+          if (labPitched(v) !== labPitched(st.synth)) { st.method = 0; }   /* Method and Model share a field (3d) */
           st.synth = v;
           if (!FsRoles.isSampler(v) && v !== patch[role].synth) {   /* digital: the live patch, exactly as with lab mode off */
             pset(patch, role + ".synth", v); var P = paramsFor(v);
@@ -12918,11 +12918,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         fmt: function (v) { return NAMES[k][+v]; }, get: function () { return String(st[k]); }, set: function (v) { st[k] = +v; labSaveSoon(f); } }; };
       if (st.synth === "s-resonator") { out.push(menu("body"), menu("excite")); }
       if (st.synth === "s-harmonic" || st.synth === "s-formant") { out.push(menu("method"), menu("mode")); }
-      if (st.synth !== "s-retune") { out.push(lab("focus", "focus", 0, 1, 0.01)); }
+      if (!labPitched(st.synth)) { out.push(lab("focus", "focus", 0, 1, 0.01)); }
       else {                                            /* 3d: the pitch sampler's model, and where in the recording it reads */
         out.push({ k: role + ".method", label: "model", options: function () { return ["0", "1", "2"]; },
           fmt: function (v) { return ["One-shot", "Looped", "Granular"][+v]; }, get: function () { return String(st.method); }, set: function (v) { st.method = +v; labSaveSoon(f); } });
-        out.push(lab("focus", "position", 0, 1, 0.01, function (v) {
+        if (st.synth !== "s-retune") { out.push(lab("focus", "ratio", 0, 1, 0.01, function (v) { return "x" + (0.25 * Math.pow(16, v)).toFixed(2); })); }   /* 4 */
+        else out.push(lab("focus", "position", 0, 1, 0.01, function (v) {
           var b = S.buf(role); if (!b) { return "0:00"; }
           var t = labCompactToRaw(role, FsRoles.positionFrame(v, b.length, S.ana(role), b.sampleRate));   /* as the core reads it (3d I3) */
           return Math.floor(t / 60) + ":" + ("0" + Math.floor(t % 60)).slice(-2);
@@ -12936,7 +12937,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     });
     return out;
   }
-  function colourWord(syn) { return { "s-retune": "brightness", "s-harmonic": "overtones", "s-formant": "partial", "s-pulsar": "grain", "s-freeze": "moment" }[syn] || "colour"; }
+  function colourWord(syn) { return { "s-retune": "brightness", "s-harmonic": "overtones", "s-formant": "partial", "s-pulsar": "grain", "s-freeze": "moment", "s-fm": "depth", "s-am": "depth" }[syn] || "colour"; }
+  function labPitched(syn) { return syn === "s-retune" || syn === "s-fm" || syn === "s-am"; }   /* the pitch sampler and the two built on it (4) */
   function colourValue(syn, v, role) {
     if (syn === "s-formant") { return String(Math.round(1 + 15 * v)); }
     if (syn === "s-pulsar") { return Math.round(100 * (0.05 + 0.95 * v)) + " %"; }
@@ -12986,7 +12988,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var warn = document.createElement("div"); warn.className = "ppsample-warn"; warn.id = "pp-" + role + "-warn";
     warn.textContent = !st.sample ? "no sample - this role is silent"
       : /missing|failed|could not/.test(st.sampleNote || "") ? st.sampleNote
-      : st.synth === "s-retune" && !(st.sample.analysis && st.sample.analysis.f0 > 0) ? "Retune needs a pitched sample - this one is unpitched" : "";
+      : labPitched(st.synth) && !(st.sample.analysis && st.sample.analysis.f0 > 0) ? (st.synth === "s-retune" ? "Retune" : st.synth === "s-fm" ? "Sample FM" : "Sample AM") + " needs a pitched sample - this one is unpitched" : "";
     box.appendChild(warn);
     var cv = document.createElement("canvas"); cv.id = "pp-" + role + "-wave"; cv.className = "ppsample-wave"; box.appendChild(cv);
     requestAnimationFrame(function () { labDrawWave(cv, role, st); });
