@@ -98,3 +98,14 @@ test("lab-roles: compactData keeps a gap under 0.25 s, and leaves an all-silent 
   const cc = FsRoles.compactData([click], sr, null).channels[0];
   assert.ok(cc.length > 0 && cc.length <= sr);
 });
+
+/* final review 3d I3: Position's place in the (compacted) recording, as the core reads it - from the first confident frame
+   of the pitch track, stopping 0.5 s (or half what is left) short of the end */
+test("lab-roles: positionFrame maps Position as the core does", () => {
+  const sr = 48000, len = 10 * sr;
+  const track = Array.from({ length: 500 }, (_, i) => [220, i < 10 ? 0.3 : 0.9, 1000]);
+  const from = 10 * 0.02 * sr, room = len - from - 2, tail = Math.min(0.5 * sr, 0.5 * room);
+  assert.equal(FsRoles.positionFrame(0, len, { hop_s: 0.02, track }, sr), from);
+  assert.equal(FsRoles.positionFrame(1, len, { hop_s: 0.02, track }, sr), from + room - tail);
+  assert.equal(FsRoles.positionFrame(0.5, len, null, sr), 0.5 * (len - 2 - Math.min(0.5 * sr, 0.5 * (len - 2))));
+});

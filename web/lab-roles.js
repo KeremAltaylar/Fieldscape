@@ -98,6 +98,15 @@
     for (c = 0; c < chs.length; c++) { out.copyToChannel(cd.channels[c], c); }
     return { buf: out, analysis: cd.analysis, raw: b, kept: cd.kept, block: cd.block };
   }
+  /* 3d: Position's place in the (compacted) recording, as the core reads it (samplers.hpp start_retune): from the pitch
+     track's first confident frame, stopping 0.5 s (or half what is left) short of the end */
+  function positionFrame(v, len, analysis, sr) {
+    var from = 0, tr = analysis && analysis.track, hop = (analysis && analysis.hop_s) || 0.02;
+    if (tr) { for (var i = 0; i < tr.length; i++) { if (tr[i][0] > 0 && tr[i][1] >= 0.8) { from = Math.floor(i * hop * sr); break; } } }
+    from = Math.min(from, Math.max(0, len - 2));
+    var room = Math.max(0, len - from - 2), tail = Math.min(0.5 * sr, 0.5 * room);
+    return from + Math.min(1, Math.max(0, v)) * (room - tail);
+  }
   function decodeSample(sb, ctx, smp) {
     return sb.storage.from("recordings").download(smp.path).then(function (d) {
       if (d.error || !d.data) { throw new Error((d.error && d.error.message) || "not found"); }
@@ -220,6 +229,6 @@
   }
   var api = { ROLES: ROLES, ROLE_INDEX: ROLE_INDEX, MAX_S: MAX_S, SAMPLER: SAMPLER, NAMES: NAMES, isSampler: isSampler, esc: esc,
     sampleLabel: sampleLabel, colourName: colourName, wavBytes: wavBytes, wav: wav, trimmed: trimmed, overlay: overlay,
-    fetchRoute: fetchRoute, sendRole: sendRole, session: session, decodeSample: decodeSample, silence: silence, compactPlan: compactPlan, compactData: compactData, prepare: prepare };
+    fetchRoute: fetchRoute, sendRole: sendRole, session: session, decodeSample: decodeSample, silence: silence, compactPlan: compactPlan, compactData: compactData, prepare: prepare, positionFrame: positionFrame };
   root.FsRoles = api;
 })(typeof globalThis !== "undefined" ? globalThis : self);
