@@ -179,7 +179,7 @@ struct Resonator : tone::Synth {
     /* 3c.1 F2: the recording's power spectrum (spectrum_of; not owned). A note keeps its octave when its overtones meet the
        recording's energy within FOLD_DB of the best octave; otherwise it moves to the nearest octave that does (pitch class kept) */
     const float *spec = nullptr; int spec_n = 0; double spec_sr = 48000;
-    int nv = VOICES; double tf0 = 0, thop = 0.02, kglide = 0; long long tclear = 0, tfirst = 0; std::vector<float> tf, tc;
+    int nv = VOICES; double tf0 = 0, thop = 0.02, kglide = 0; long long tclear = 0, tfirst = 0; bool tclear_found = false; std::vector<float> tf, tc;
     const float *tfp = nullptr, *tcp = nullptr; int tn = 0;      /* the track as read (a copy's, or a host's buffers) */
     long long freeze_at = -1; const void *freeze_src = nullptr; double freeze_tp = 0;   /* ...and which moment it is */
     long long seek_from = -1, seek_got = 0; const void *seek_src = nullptr;          /* 3c.1: the loudest-nearby search, once per Moment */
@@ -230,7 +230,7 @@ struct Resonator : tone::Synth {
         tf0 = f0 > 0 ? f0 : 0; thop = hop_s > 0 ? hop_s : 0.02; tfp = f0s; tcp = confs; tn = f0s && confs ? std::max(0, n) : 0;
         int best = -1; float bc = 0;
         for (int i = 0; i < tn; i++) if (tfp[i] > 0 && tcp[i] > bc && tf0 > 0 && std::fabs(1200 * std::log2(tfp[i] / tf0)) < 50) { best = i; bc = tcp[i]; }
-        tclear = best < 0 ? 0 : (long long)(best * thop * sr);
+        tclear = best < 0 ? 0 : (long long)(best * thop * sr); tclear_found = best >= 0;
         /* 3d: Position's origin - the first confident frame (the clearest could sit at the end; final review 3d I2) */
         tfirst = 0; for (int i = 0; i < tn; i++) if (tfp[i] > 0 && tcp[i] >= 0.8f) { tfirst = (long long)(i * thop * sr); break; }
     }
@@ -332,9 +332,11 @@ struct Resonator : tone::Synth {
     std::vector<float> mcyc; const void *mcyc_src = nullptr; double mcyc_f0 = -2; long long mcyc_at = -2;
     void build_modulator() {
         const void *sid = src.f[0] ? (const void *)src.f[0] : (const void *)src.s[0];
-        if (!mcyc.empty() && sid == mcyc_src && tf0 == mcyc_f0 && tclear == mcyc_at) return;
-        mcyc_src = sid; mcyc_f0 = tf0; mcyc_at = tclear; mcyc.assign(256, 0.0f);
-        const double P = tf0 > 0 ? sr / tf0 : 0;
+        const long long key = tclear_found ? tclear : -1;
+        if (!mcyc.empty() && sid == mcyc_src && tf0 == mcyc_f0 && key == mcyc_at) return;
+        mcyc_src = sid; mcyc_f0 = tf0; mcyc_at = key; mcyc.assign(256, 0.0f);
+        /* a cycle only from a clear pitched frame (else the first samples - noise - were cut; final review 4 I6) */
+        const double P = tf0 > 0 && tclear_found ? sr / tf0 : 0;
         long long z = -1;
         if (P > 2 && src.frames > (long long)(3 * P) + 4) {
             const long long a = std::max<long long>(1, std::min<long long>(tclear, src.frames - (long long)(3 * P) - 3));
@@ -356,13 +358,25 @@ struct Resonator : tone::Synth {
         const double P = sr / (tf0 > 0 ? tf0 : 261.63);
         x.mdev = x.synth == SFM ? x.mdep * 2 * P : 0;
         if (x.mdev > 0 && x.method == 0 && x.rpos < x.mdev + 2) x.rpos = x.mdev + 2;   /* the bend stays inside the recording */
+        if (x.mdev > 0 && x.method == 1) {      /* Looped: the loop and its crossfade, bent both ways, inside (60 Hz read at -3198) */
+            const double len = (double)src.frames, lo = 2 * x.mdev + x.rxf + 2, hi = len - 3 - x.rL - 2 * x.mdev;
+            if (x.rls < lo && lo <= hi) { x.rls = lo; x.rpos = lo; }
+            else if (x.rls < lo || x.rls > hi) x.mdev = std::fmax(0.0, std::fmin((x.rls - x.rxf - 2) / 2, (len - 3 - x.rL - x.rls) / 2));
+        }
     }
     double fmam(Voice &x) {
         const int i0 = (int)x.mph; const double u = x.mph - i0;
         const double m = mcyc[(size_t)(i0 & 255)] * (1 - u) + mcyc[(size_t)((i0 + 1) & 255)] * u;
         x.mph += x.mstep; if (x.mph >= 256) x.mph -= 256 * std::floor(x.mph / 256);
-        if (x.synth == SFM) { const double d = x.mdev * m; x.rpos += d - x.mlast; x.mlast = d; return retune(x); }
-        return retune(x) * ((1 - x.mdep) + x.mdep * m);
+        if (x.synth == SFM) {
+            const double d = x.mdev * m, dd = d - x.mlast; x.rpos += dd; x.mlast = d;
+            if (x.method == 2) for (int g = 0; g < 4; g++) if (x.gon[g]) x.gpos[g] += dd;   /* Granular: the grains themselves bend */
+            return retune(x);
+        }
+        /* the product of the carrier and its own cycle has a DC term (0.8 of RMS at ring, measured): the voice's DC blocker */
+        const double y = retune(x) * ((1 - x.mdep) + x.mdep * m), o = y - x.dc_x + 0.995 * x.dc_y;
+        x.dc_x = y; x.dc_y = std::fabs(o) < 1e-20 ? 0 : o;
+        return x.dc_y;
     }
     double track_f0(double pos) const {
         const int fr = (int)std::floor(pos / sr / thop);

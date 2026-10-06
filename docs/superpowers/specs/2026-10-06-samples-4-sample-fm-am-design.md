@@ -26,3 +26,16 @@ Decisions under Kerem's go-ahead of 2026-10-06; each the recommended option.
 | Core | levels against fm on a route's Voice (the 3a level check gains s-fm, s-am) |
 | Browser | both synths in the Sampler group (now 8); their panel rows: model, ratio, depth, tune, sample; each sounds on the Voice |
 | Regression | every suite |
+
+## Known limits (final review, measured 2026-10-06)
+
+- **Ring level depends on the recording.** Sample AM at depth 1 multiplies the carrier by its own cycle; the level change
+  against depth 0 is about −6 dB for a sine, −3.5 dB for a sawtooth, and as much as −38 dB for a waveform that is a burst
+  per cycle. When the pitch track is a few cents off the true pitch, carrier and modulator drift against each other and
+  the level beats (a 14-cent error: 1 Hz beats spanning ~33 dB). This is what ring modulation by a near-unison modulator
+  does; a well-tracked pitched recording is steady.
+- **Sample FM aliases on bright recordings at high ratio and depth** (the bend multiplies each harmonic's deviation by
+  its number; the read is not band-limited): energy off the harmonic grid measured 3.5 % at depth ½ ratio 1, 9.3 % at
+  depth ½ ratio 4, 16.6 % at depth 1 ratio 4 on a 10 kHz-limited sawtooth. Lower depth or ratio keeps it clean.
+- **Sample AM carries no DC** — the product of the carrier and its own cycle has one (0.8 of RMS at ring); the voice's DC
+  blocker removes it, and its trim is set after (16.3 dB).

@@ -666,6 +666,45 @@ int main() {
         std::printf("4: FM depth 0 vs Retune max diff %.2g; FM depth .5 440 Hz %.1f dB (depth 0 %.1f); AM .5 440 %.1f dB; ring 220 %.1f dB\n",
             diff, rel(fm5, 440, c220), rel(fm0, 440, c220), rel(am5, 440, c220), rel(am1, 220, c220));
         assert(diff < 1e-5 && rel(fm5, 440, c220) > -25 && rel(fm0, 440, c220) < -60 && rel(am5, 440, c220) > -13 && rel(am5, 440, c220) < 0 && rel(am1, 220, c220) < -30);
+        /* final review 4 C1: Sample AM carries no DC (a modulator cut from the carrier's own cycle correlates with it) */
+        { double m = 0, e = 0; for (size_t i = (size_t)(0.3 * SR); i < am1.size(); i++) { m += am1[i]; e += (double)am1[i] * am1[i]; }
+          const size_t n = am1.size() - (size_t)(0.3 * SR); const double dc = std::fabs(m / n) / std::sqrt(e / n + 1e-30);
+          double m5 = 0, e5 = 0; for (size_t i = (size_t)(0.3 * SR); i < am5.size(); i++) { m5 += am5[i]; e5 += (double)am5[i] * am5[i]; }
+          const double dc5 = std::fabs(m5 / n) / std::sqrt(e5 / n + 1e-30);
+          std::printf("4: AM DC/RMS ring %.3f, depth 1/2 %.3f\n", dc, dc5);
+          assert(dc < 0.05 && dc5 < 0.05); }
+        /* final review 4 I2: Sample FM in Granular bends its grains (a sideband, as One-shot) */
+        { auto play2 = [&](int model, double colour) {
+              sampler::Resonator r; r.init(SR); r.synth = sampler::SFM; r.nv = 6; r.method = model;
+              const float *p[1] = { sine.data() }; r.set_source(1, (long long)sine.size(), p);
+              std::vector<float> tf(100, 220.0f), tc(100, 0.95f); r.set_track(220, 0.02, tf.data(), tc.data(), 100);
+              r.focus = 0.5; r.colour = colour; r.tune = 1; r.attack(220, 0, 0.5);
+              std::vector<float> L((size_t)SR, 0.0f), R(L.size(), 0.0f);
+              for (size_t i = 0; i < L.size(); i += 128) r.render(L.data() + i, R.data() + i, 128, i / SR);
+              return L; };
+          const std::vector<float> g0 = play2(2, 0), g5 = play2(2, 0.5);
+          const double ref = peak_amp(w(g0), SR, 220);
+          std::printf("4: Granular FM 440 Hz depth 1/2 %.1f dB (depth 0 %.1f)\n", rel(g5, 440, ref), rel(g0, 440, ref));
+          assert(rel(g5, 440, ref) > -25); }
+        /* final review 4 I3: Looped FM on a low recording (60 Hz, depth 1) keeps its reads inside - the loop starts past the bend */
+        { std::vector<float> low((size_t)(2 * SR)); for (size_t i = 0; i < low.size(); i++) low[i] = (float)(0.3 * std::sin(2 * sampler::PI * 60 * i / SR));
+          sampler::Resonator r; r.init(SR); r.synth = sampler::SFM; r.nv = 6; r.method = 1;
+          const float *p[1] = { low.data() }; r.set_source(1, (long long)low.size(), p);
+          std::vector<float> tf(100, 60.0f), tc(100, 0.95f); r.set_track(60, 0.02, tf.data(), tc.data(), 100);
+          r.focus = 0.5; r.colour = 1; r.tune = 1; r.attack(60, 0, 0.5);
+          std::vector<float> L(128), R(128); r.render(L.data(), R.data(), 128, 0);
+          double lo = 1e18; for (int i = 0; i < r.nv; i++) if (r.v[i].active) lo = std::min(lo, r.v[i].rls - 2 * r.v[i].mdev - r.v[i].rxf);
+          std::printf("4: Looped FM on 60 Hz: the loop's lowest read %.0f\n", lo);
+          assert(lo >= 1); }
+        /* final review 4 I6: a pitched recording with no clear frame (no track) gets the sine modulator, not its first noise */
+        { std::vector<float> nn((size_t)(2 * SR)); unsigned rs = 3;
+          for (size_t i = 0; i < nn.size(); i++) { rs = rs * 1664525u + 1013904223u; nn[i] = i < (size_t)(0.5 * SR) ? (float)(0.003 * ((rs >> 8) / 16777216.0 - 0.5)) : (float)(0.3 * std::sin(2 * sampler::PI * 220 * i / SR)); }
+          sampler::Resonator r; r.init(SR); r.synth = sampler::SAM; const float *p[1] = { nn.data() }; r.set_source(1, (long long)nn.size(), p);
+          r.set_track(220, 0.02, nullptr, nullptr, 0); r.focus = 0.5; r.colour = 0.5; r.attack(220, 0, 0.5);
+          double c = 0, a2 = 0; for (int k = 0; k < 256; k++) { const double sn = std::sin(2 * sampler::PI * k / 256); c += r.mcyc[(size_t)k] * sn; a2 += (double)r.mcyc[(size_t)k] * r.mcyc[(size_t)k]; }
+          const double corr = c / std::sqrt(a2 * 128 + 1e-30);
+          std::printf("4: no clear frame - the modulator's correlation with a sine %.2f\n", corr);
+          assert(corr > 0.95); }
         /* an unpitched recording: a sine modulator, finite */
         { const std::vector<float> nz = noise_src(2, 0.3f, 4), o = play(nz, sampler::SFM, 0.5, 0.8, false);
           bool fin = true; double e = 0; for (float v : o) { fin = fin && std::isfinite(v); e += (double)v * v; }
