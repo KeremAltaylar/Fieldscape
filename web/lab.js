@@ -458,6 +458,7 @@
       if (syn === "s-resonator") { html += menu("body", "Body", ["String", "Tube", "Bell"], st.body) + menu("excite", "Excite", ["Bowed", "Plucked"], st.excite); }
       if (syn === "s-harmonic" || syn === "s-formant") { html += menu("method", "Method", ["Bank", "Spectral", "Comb"], st.method) + menu("mode", "Mode", ["Dry", "Ringing"], st.mode); }
       if (syn !== "s-retune") { html += slider("focus", "Focus", 0, 1, 0.01, st.focus); }
+      else { html += menu("method", "Model", ["One-shot", "Looped", "Granular"], st.method) + slider("focus", "Position", 0, 1, 0.01, st.focus); }   /* 3d */
       html += slider("colour", colourName(syn, st.colour, role), 0, 1, 0.0001, st.colour) + slider("tune", "Tune", 0, 1, 0.01, st.tune);
       html += "<label>Sample <input type='file' accept='audio/*' id='" + id("file") + "'></label> <span id='" + id("sample") + "'>" +
         (st.sample ? FsRoles.esc(FsRoles.sampleLabel(st.sample.name, st.sample.analysis, st.sampleNote || "")) : "the recording loaded above") + "</span>";

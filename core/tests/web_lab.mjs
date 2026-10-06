@@ -296,6 +296,16 @@ try {
   /* Retune needs a pitched recording (on noise the panel warns, 3c.1 F3): it is measured on one */
   await ev(`fsLab.load(${RICH(220, 20, 22050)}).then(function () { return 1; })`);
   smpL["s-retune"] = +((await meanRt("s-retune")) - fmL).toFixed(1);
+  /* 3d: the pitch sampler's model and Position in the lab's Route panel; Looped and Granular sound */
+  check("3d lab: Retune shows Model (One-shot, Looped, Granular) and Position",
+    await ev("(function(){ var m = document.querySelector('#lab-rt-voice-method'), p = document.querySelector('#lab-rt-voice-focus-l'); return !!m && [].map.call(m.options, function (o) { return o.textContent; }).join(',') === 'One-shot,Looped,Granular' && !!p && /^Position/.test(p.textContent); })()"), null);
+  const models = {};
+  for (const [mv, name] of [["1", "Looped"], ["2", "Granular"]]) {
+    await ev(`(function(){ var s = document.querySelector('#lab-rt-voice-method'); s.value = '${mv}'; s.dispatchEvent(new Event('change')); return 1; })()`);
+    models[name] = +((await meanRt("s-retune")) - fmL).toFixed(1);
+  }
+  check("3d lab: Looped and Granular Retune sound on the Voice (within 9 dB of FM or louder)", models.Looped > -9 && models.Granular > -9, models);
+  await ev("(function(){ var s = document.querySelector('#lab-rt-voice-method'); s.value = '0'; s.dispatchEvent(new Event('change')); return 1; })()");
   check("every sampler on a route's Voice sits >= 3 dB over FM (Kerem: x2 or more)", Object.values(smpL).every((d) => d >= 3), smpL);
   await setRole("voice", ""); await setRole("sect", ""); await setRole("v3", "");
   /* 2c: Pulsar and Freeze on the bench */

@@ -12918,6 +12918,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       if (st.synth === "s-resonator") { out.push(menu("body"), menu("excite")); }
       if (st.synth === "s-harmonic" || st.synth === "s-formant") { out.push(menu("method"), menu("mode")); }
       if (st.synth !== "s-retune") { out.push(lab("focus", "focus", 0, 1, 0.01)); }
+      else {                                            /* 3d: the pitch sampler's model, and where in the recording it reads */
+        out.push({ k: role + ".method", label: "model", options: function () { return ["0", "1", "2"]; },
+          fmt: function (v) { return ["One-shot", "Looped", "Granular"][+v]; }, get: function () { return String(st.method); }, set: function (v) { st.method = +v; labSaveSoon(f); } });
+        out.push(lab("focus", "position", 0, 1, 0.01, function (v) { var t = labMomentSeconds(role, v); return Math.floor(t / 60) + ":" + ("0" + Math.floor(t % 60)).slice(-2); }));
+      }
       var colourRow = lab("colour", colourWord(st.synth), 0, 1, 0.0001, function (v) { return colourValue(st.synth, v, role); }), colourSet = colourRow.set;
       colourRow.set = function (v) { colourSet(v); var c = document.getElementById("pp-" + role + "-wave"); if (c) { labDrawWave(c, role, st); } };   /* the Moment marker follows */
       out.push(colourRow);
