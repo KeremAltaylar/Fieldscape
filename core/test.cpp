@@ -514,6 +514,54 @@ int main() {
         std::printf("3c.1 freeze: the Moment 60 ms before a call holds power %.4f (the call's own 0.25)\n", pw);
         assert(pw > 0.1);
     }
+    {   /* Kerem 2026-10-06: "harmonic filter on voice one doesn't change any attributes when I twist them" - a sampler's
+           settings were read only when a note started, and the Voice holds its note for the whole chord. A settings change
+           re-voices the sounding notes (a 50 ms crossfade into the same notes with the new settings) */
+        auto bright = [](const std::vector<float> &x, size_t a, size_t z) {   /* the share of high frequencies: E[dx] / E[x] */
+            double e = 0, d = 0; for (size_t i = a + 1; i < z; i++) { e += (double)x[i] * x[i]; const double q = x[i] - x[i - 1]; d += q * q; } return d / (e + 1e-30); };
+        auto run = [&](bool change, int from = 0, int to = 1) {
+            std::vector<float> nz = noise_src(20, 0.5f, 5); const float *np[1] = { nz.data() };
+            unsigned seed = 77; fs_device *d = fs_create("piece"); fs_prepare(d, 48000, 128); fs_piece_test_hooks(d, fixed_draw, &seed, nullptr, nullptr);
+            fs_piece_role_source(d, 0, 1, (long long)nz.size(), np);
+            const std::string pre = "{\"version\":17,\"prog\":[{\"r\":0,\"q\":\"m9\"},{\"r\":5,\"q\":\"maj7#11\"}],\"morph\":{\"on\":false,\"list\":[]},\"bed\":{\"on\":false},\"sect\":{\"on\":false},\"zones\":{\"on\":false},\"v3\":{\"on\":false},\"voice\":{\"synth\":\"s-formant\",\"warp\":0,\"drive\":0,\"sampler\":{\"method\":0,\"colour\":";
+            const int r = fs_piece_add_route(d, (pre + std::to_string(from) + "}}}").c_str()); fs_piece_walk(d, r, 0.3, 0);
+            std::vector<float> o;
+            for (int i = 0; i < (int)(6 * SR / 128); i++) {
+                if (change && i == (int)(3 * SR / 128)) fs_piece_set_route(d, r, (pre + std::to_string(to) + "}}}").c_str());
+                fs_process(d, 128); const float *l = fs_out(d, 0); o.insert(o.end(), l, l + 128); }
+            fs_destroy(d);
+            return std::make_pair(bright(o, (size_t)(2 * SR), (size_t)(3 * SR)), bright(o, (size_t)(4 * SR), (size_t)(5 * SR)));
+        };
+        /* the change heard 1-2 s after it, against a note played with Colour 1 from its start: within 1 dB of it */
+        const auto same = run(false), turned = run(true), bright1 = run(false, 1);
+        const double got = 10 * std::log10(turned.second / same.second), full = 10 * std::log10(bright1.second / same.second);
+        std::printf("3c.1 revoice: Formant Colour 0 -> 1 (the 1st partial to the 16th) on a held Voice note: %+.2f dB brighter (a note at Colour 1 from its start: %+.2f dB)\n", got, full);
+        assert(full > 1.5 && std::fabs(got - full) < 1);
+    }
+    {   /* Kerem 2026-10-06: "Second voice should be louder in general for samplers" - each sampler on the Second voice alone
+           against the same sampler on the Voice alone (the same recording, gain, no effects): the Second voice >= the Voice */
+        auto level = [&](const char *role, const char *synth) {
+            std::vector<float> nz = noise_src(20, 0.5f, 13); const float *np[1] = { nz.data() };
+            unsigned seed = 21; fs_device *d = fs_create("piece"); fs_prepare(d, 48000, 128); fs_piece_test_hooks(d, fixed_draw, &seed, nullptr, nullptr);
+            fs_piece_role_source(d, std::string(role) == "voice" ? 0 : 1, 1, (long long)nz.size(), np);
+            const std::string fx0 = "{\"delayWet\":0,\"revWet\":0}";
+            const std::string pt = std::string("{\"version\":17,\"prog\":[{\"r\":0,\"q\":\"m9\"},{\"r\":5,\"q\":\"maj7#11\"}],\"morph\":{\"on\":false,\"list\":[]},\"bed\":{\"on\":false},\"zones\":{\"on\":false},\"v3\":{\"on\":false},\"fx\":")
+                + fx0 + ",\"fx2\":" + fx0 + ",\"voice\":{\"on\":" + (std::string(role) == "voice" ? "true" : "false") + ",\"gain\":0.8,\"warp\":0,\"drive\":0,\"synth\":\"" + synth + "\"},"
+                + "\"sect\":{\"on\":" + (std::string(role) == "sect" ? "true" : "false") + ",\"gain\":0.8,\"warp\":0,\"drive\":0,\"synth\":\"" + synth + "\"}}";
+            const int r = fs_piece_add_route(d, pt.c_str());
+            double e = 0; long n = 0;
+            for (int i = 0; i < (int)(30 * SR / 128); i++) {
+                if (i % 94 == 0) { fs_piece_walk(d, r, 0.1 + 0.8 * i / (30 * SR / 128), 0); fs_piece_sector(d, (i / 940) % 4); }
+                fs_process(d, 128); if (i > (int)(5 * SR / 128)) { const float *l = fs_out(d, 0); for (int k = 0; k < 128; k++) { e += (double)l[k] * l[k]; n++; } } }
+            fs_destroy(d); return 10 * std::log10(e / n + 1e-30); };
+        double worst = 1e9;
+        for (const char *sy : { "s-resonator", "s-harmonic", "s-formant", "s-pulsar", "s-freeze" }) {
+            const double v = level("voice", sy), sc = level("sect", sy);
+            std::printf("3c.1 sect level: %-12s the Voice %.1f dB, the Second voice %.1f dB (%+.1f)\n", sy, v, sc, sc - v);
+            worst = std::min(worst, sc - v);
+        }
+        assert(worst >= 0);
+    }
     {   /* 3c.1 F4: each role's level and sounding notes, from the whole engine */
         fs_engine *e = fs_engine_create(SR, B);
         fs_engine_features(e, "{\"type\":\"FeatureCollection\",\"features\":[{\"type\":\"Feature\","

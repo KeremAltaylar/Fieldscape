@@ -612,6 +612,19 @@ struct Resonator : tone::Synth {
     }
     /* the two timbre slots the morphs drive (spec D10): Focus and Colour, for the next note */
     void timbre(int which, double val, double, double) override { if (which == 0) focus = val; else colour = val; }
+    /* a setting changed (Kerem 2026-10-06: twisting the Harmonic filter changed nothing - settings were read at a note's
+       start, and a held note never restarts): every sounding note fades out over 50 ms while the same note starts again with
+       the settings now set (a free voice; else the steal path restarts it after its fade). Its planned release is kept */
+    void revoice(double t) {
+        double fs[VOICES], vs[VOICES], ts[VOICES], offs[VOICES]; int n = 0;
+        for (int i = 0; i < nv; i++) {
+            Voice &x = v[i];
+            if (!x.active || x.releasing || x.stealing) continue;
+            fs[n] = x.f; vs[n] = x.vel; ts[n] = std::fmax(t, x.on_t); offs[n] = x.off_t; n++;
+            x.stealing = true; x.has_next = false; x.steal_at = t; x.fade = 1.0 / (STEAL_S * sr);
+        }
+        for (int k = 0; k < n; k++) { attack(fs[k], ts[k], vs[k]); if (offs[k] < 1e299) release(offs[k]); }
+    }
     void stop_all() { for (auto &x : v) if (x.active) { x.stealing = true; x.has_next = false; x.steal_at = 0; x.fade = 1.0 / (STOP_S * sr); } }
 
     double resonate(Voice &x, double in) {
