@@ -31,6 +31,11 @@ const PUB = pubRow.id;
 const labbed = new Set(((await db.from("lab_route_roles").select("route_id")).data || []).map((r) => r.route_id));
 const PUB2 = ((await db.from("features").select("id").eq("kind", "route").is("deleted_at", null).filter("properties->>published", "eq", "true")).data || []).map((r) => r.id).find((id) => !labbed.has(id));
 await db.from("features").delete().eq("id", DRAFT);
+/* 5: a published point with its own recording (the stretched bed), for the follow control; its lab row removed after */
+const PT = ((await db.from("features").select("id, geometry, properties").eq("kind", "point").is("deleted_at", null)
+  .filter("properties->>published", "eq", "true").filter("properties->>has_audio", "eq", "true")).data || [])
+  .find((r) => !["hits", "grains"].includes(r.properties.audio_mode)) || null;
+const ptHadRow = PT ? !!(await db.from("lab_route_roles").select("route_id").eq("route_id", PT.id).maybeSingle()).data : true;
 /* the site reads only published features from the server: a setter's draft is on their own device (the page's local
    store), with the same id as its row - which lab_route_roles needs */
 const draftFeature = { type: "Feature", geometry: { type: "LineString", coordinates: pubRow.geometry.coordinates.map((c) => [c[0], c[1] + 0.01]) },
@@ -276,6 +281,33 @@ try {
   await s.send("Fetch.disable"); await s.send("Network.setCacheDisabled", { cacheDisabled: false }); await s.send("Network.setBypassServiceWorker", { bypass: false });
   await ev("fsListen.sound()"); await sleep(1500);    /* off */
 
+  /* 5: a point's follow (lab) - shown, saved under the point, overlaid for the engine; its recording's pitch track sent */
+  if (!PT) { console.log("SKIP no published point with a recording"); } else {
+    /* the step before failed core-lab.wasm on purpose: lab mode off and on clears that, then sound on the lab engine */
+    await ev("document.querySelector('#pp-lab').click(), 0"); await sleep(300); await ev("document.querySelector('#pp-lab').click(), 0"); await sleep(500);
+    await ev("fsListen.sound()"); await sleep(1500);
+    await ev(`fsListen.select('${PT.id}'), 0`); await sleep(900);
+    await ev("(function(){ var b = document.querySelector('#ls-card #f-rhythm') || document.querySelector('#f-rhythm'); b && b.click(); return 0; })()");
+    await until("!!document.querySelector('#rp-lab-follow')", 6000);
+    check("5: a point's panel in lab mode has follow the chord (lab)", await ev("!!document.querySelector('#rp-lab-follow')"), null);
+    await ev("(function(){ var s = document.querySelector('#rp-lab-follow'); s.value = '0.8'; s.dispatchEvent(new Event('input')); return 1; })()");
+    await sleep(2500);
+    const prow = (await db.from("lab_route_roles").select("roles").eq("route_id", PT.id).maybeSingle()).data;
+    const sent1 = await ev(`__fa.coreSentFeature ? __fa.coreSentFeature('${PT.id}') : null`);
+    check("5: follow is saved under the point and overlaid for the engine (sound.shape.follow, rhythm.follow)",
+      !!(prow && prow.roles.point && prow.roles.point.follow === 0.8) && !!sent1 && JSON.parse(sent1).properties.sound.shape.follow === 0.8 && JSON.parse(sent1).properties.rhythm.follow === 0.8,
+      [prow && prow.roles, sent1 && JSON.parse(sent1).properties.sound]);
+    check("5: the point's own row untouched (no follow in its saved properties)", !("follow" in (((PT.properties.sound || {}).shape) || {})), null);
+    const pc = PT.geometry.coordinates;
+    for (let i = 0; i < 40 && !((await ev("__fa.labTracks || 0")) > 0); i++) { await ev(`__fa.walkTo(${pc[0]}, ${pc[1]})`); await sleep(500); }
+    check("5: walking to it, its recording's pitch track goes to the engine", (await ev("__fa.labTracks || 0")) > 0, await ev("__fa.labTracks"));
+    await ev("(function(){ var s = document.querySelector('#rp-lab-follow'); s.value = '0'; s.dispatchEvent(new Event('input')); return 1; })()");
+    await sleep(2500);
+    check("5: follow 0 - the engine gets the point exactly as saved", await ev(`__fa.coreSentFeature('${PT.id}') === JSON.stringify(__fa.features().filter(function (f) { return f.properties.id === '${PT.id}'; })[0])`), await ev(`(__fa.coreSentFeature('${PT.id}') || '').slice(0, 80)`));
+    await ev("(function(){ var b = document.querySelector('#rp-close'); b && b.click(); return 0; })()");
+    await ev("fsListen.sound()"); await sleep(1500);     /* off */
+  }
+
   /* an expired session: autosave says so and never writes the live patch (Review Focus 4) */
   if (!(await ev("__fa.labMode"))) { await ev("document.querySelector('#pp-lab').click(), 0"); }
   await openPanel(DRAFT); await until(`__fa.labRolesFor === '${DRAFT}'`, 8000);
@@ -289,6 +321,7 @@ try {
   const { data: objs } = await db.storage.from("recordings").list(`lab/${DRAFT}`);
   if (objs && objs.length) await db.storage.from("recordings").remove(objs.map((o) => `lab/${DRAFT}/${o.name}`));
   await db.from("lab_route_roles").delete().eq("route_id", DRAFT);
+  if (PT && !ptHadRow) await db.from("lab_route_roles").delete().eq("route_id", PT.id);
   await db.from("features").delete().eq("id", DRAFT);
   await db.from("audit").delete().eq("setter_id", userId);
   await db.from("setters").delete().eq("id", userId);
