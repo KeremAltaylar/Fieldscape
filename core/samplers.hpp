@@ -330,7 +330,9 @@ struct Resonator : tone::Synth {
     }
     double read(double pos) const {
         const long long i = (long long)std::floor(pos); const double u = pos - (double)i;
-        const double y0 = src.at(i - 1), y1 = src.at(i), y2 = src.at(i + 1), y3 = src.at(i + 2);
+        double y0, y1, y2, y3;
+        if (src.f[0] && src.nch == 1 && i >= 1 && i + 2 < src.frames) { const float *d = src.f[0] + i; y0 = d[-1]; y1 = d[0]; y2 = d[1]; y3 = d[2]; }   /* inside: direct (24 Granular voices sat at the budget's edge) */
+        else { y0 = src.at(i - 1); y1 = src.at(i); y2 = src.at(i + 1); y3 = src.at(i + 2); }
         const double c1 = 0.5 * (y2 - y0), c2 = y0 - 2.5 * y1 + 2 * y2 - 0.5 * y3, c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
         return ((c3 * u + c2) * u + c1) * u + y1;
     }
