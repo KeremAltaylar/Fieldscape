@@ -14,7 +14,7 @@ static const char *const SYNTH_NAMES[NSYNTH] = { "fm", "am", "duo", "mono", "sim
     "s-retune", "s-resonator", "s-harmonic", "s-formant", "s-pulsar", "s-freeze", "s-fm", "s-am" };
 /* SYNTH_TRIM, dB */
 static const double SYNTH_TRIM[NSYNTH] = { 0, 5.5, -14.5, -10, -11, -9, -2, -12.5, -9, -0.5, -2,
-    11.6, 13.1, 7, 7, 13.3, 3.4, 9.3, 9.9 };   /* 4: Sample FM / AM measured to sit with Retune (+8 dB over fm on a Voice) */   /* the samplers: measured against fm on a route's Voice, a -20 dBFS recording (3a), then
+    11.6, 13.1, 7, 7, 13.3, 3.4, 12.3, 9.9 };   /* 4: Sample AM measured to sit with Retune (+8 dB over fm on a Voice); Sample FM 3 dB more - its sidebands lose more to a route's swept low-pass (lab: +2 dB at 9.3) */   /* the samplers: measured against fm on a route's Voice, a -20 dBFS recording (3a), then
     raised 6-9 dB (Kerem 2026-10-05: "comparatively lower than the digital synths ... x2 or more") */
 static const bool PERCUSSIVE[NSYNTH] = { 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0 };
 static const bool SELF_VOICED[NSYNTH] = { 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 };

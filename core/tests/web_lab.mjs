@@ -254,7 +254,7 @@ try {
   check("... each role keeps its own values in the route's patch", rp2.voice.sampler.focus === 0.2 && rp2.v3.sampler.focus === 0.9 && rp2.v3.sampler.mode === 1 && rp2.sect.harm === 2 && rp2.sect.gain === 0.3 && !rp2.sect.sampler, rp2);
   await setRole("voice", ""); await setRole("sect", ""); await setRole("v3", "");
   /* 3a: a route played by the real route engine, each role Digital or Sampler */
-  check("the Route panel offers Digital and Sampler sounds for each role", await ev("['voice','sect','v3'].every(function (r) { var s = document.querySelector('#lab-rt-' + r); return s && s.querySelector(\"optgroup[label='Digital'] option[value='fm']\") && s.querySelectorAll(\"optgroup[label='Sampler'] option\").length === 6; })"), null);
+  check("the Route panel offers Digital and Sampler sounds for each role", await ev("['voice','sect','v3'].every(function (r) { var s = document.querySelector('#lab-rt-' + r); return s && s.querySelector(\"optgroup[label='Digital'] option[value='fm']\") && s.querySelectorAll(\"optgroup[label='Sampler'] option\").length === 8; })"), null);
   await ev(`fsLab.load(${NOISE}).then(function () { return 1; })`);
   await ev("(function(){ var s = document.querySelector('#lab-rt-v3'); s.value = 's-harmonic'; s.dispatchEvent(new Event('change')); return 1; })()");
   await ev("document.querySelector('#lab-rt-play').click(), 0");
@@ -306,6 +306,13 @@ try {
   }
   check("3d lab: Looped and Granular Retune sound on the Voice (within 9 dB of FM or louder)", models.Looped > -9 && models.Granular > -9, models);
   await ev("(function(){ var s = document.querySelector('#lab-rt-voice-method'); s.value = '0'; s.dispatchEvent(new Event('change')); return 1; })()");
+  /* 4: Sample FM and Sample AM on the same pitched recording: their rows, and each >= 3 dB over FM (the Kerem "x2" bar) */
+  for (const v of ["s-fm", "s-am"]) {         /* ratio 1, depth 1/2 - the defaults (earlier steps moved this role's controls) */
+    await setRole("voice", v);
+    await ev("(function(){ ['focus', 'colour'].forEach(function (k) { var s = document.querySelector('#lab-rt-voice-' + k); s.value = '0.5'; s.dispatchEvent(new Event('input')); }); return 1; })()");
+    smpL[v] = +((await meanRt(v)) - fmL).toFixed(1);
+  }
+  check("4 lab: Sample FM shows Model, Ratio and Depth", await ev("(function(){ var s = document.querySelector('#lab-rt-voice'); s.value = 's-fm'; s.dispatchEvent(new Event('change')); return !!document.querySelector('#lab-rt-voice-method') && /^Ratio/.test((document.querySelector('#lab-rt-voice-focus-l') || {}).textContent || '') && /^Depth/.test((document.querySelector('#lab-rt-voice-colour-l') || {}).textContent || ''); })()"), null);
   check("every sampler on a route's Voice sits >= 3 dB over FM (Kerem: x2 or more)", Object.values(smpL).every((d) => d >= 3), smpL);
   await setRole("voice", ""); await setRole("sect", ""); await setRole("v3", "");
   /* 2c: Pulsar and Freeze on the bench */

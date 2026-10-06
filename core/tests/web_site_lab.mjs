@@ -106,7 +106,7 @@ try {
   await ev("document.querySelector('#pp-lab').click(), 0");
   await until(`__fa.labRolesFor === '${DRAFT}'`, 8000);
   check("lab mode on: each role's instrument menu has Digital and Sampler groups",
-    await ev("['voice','sect','v3'].every(function (r) { var s = document.querySelector('#pp-body select[data-k=\"' + r + '.synth\"]'); return s && s.querySelector(\"optgroup[label='Digital'] option[value='fm']\") && s.querySelectorAll(\"optgroup[label='Sampler'] option\").length === 6; })"), null);
+    await ev("['voice','sect','v3'].every(function (r) { var s = document.querySelector('#pp-body select[data-k=\"' + r + '.synth\"]'); return s && s.querySelector(\"optgroup[label='Digital'] option[value='fm']\") && s.querySelectorAll(\"optgroup[label='Sampler'] option\").length === 8; })"), null);
   await setSel("v3.synth", "s-freeze"); await sleep(400);
   check("Freeze on the Third voice: Focus, Colour, Tune and a Sample row; no harm/index row",
     await ev("['v3.focus','v3.colour','v3.tune'].every(function (k) { return !!document.querySelector('#pp-body [data-k=\"' + k + '\"]'); }) && !!document.querySelector('#pp-v3-file') && !document.querySelector('#pp-body [data-k=\"v3.harm\"]') && !document.querySelector('#pp-body [data-k=\"v3.index\"]')"), null);
@@ -147,6 +147,11 @@ try {
   check("3d: Retune shows a model menu (One-shot, Looped, Granular) and a position control",
     await ev("(function(){ var m = document.querySelector('#pp-body select[data-k=\"v3.method\"]'), p = document.querySelector('#pp-body input[data-k=\"v3.focus\"]'); return !!m && [].map.call(m.options, function (o) { return o.textContent; }).join(',') === 'One-shot,Looped,Granular' && !!p && /^position$/i.test(p.closest('.pprow').querySelector('span').textContent.trim()) && /^\\d+:\\d\\d$/.test(p.closest('.pprow').querySelector('i').textContent.trim()); })()"),
     await ev("(function(){ var m = document.querySelector('#pp-body select[data-k=\"v3.method\"]'), p = document.querySelector('#pp-body input[data-k=\"v3.focus\"]'); return [m && [].map.call(m.options, function (o) { return o.textContent; }).join(','), p && p.closest('.pprow').textContent]; })()"));
+  await setSel("v3.synth", "s-fm"); await sleep(400);
+  check("4: Sample FM shows model, ratio (x) and depth, and warns on an unpitched sample",
+    await ev("(function(){ var r = function (k) { var i = document.querySelector('#pp-body [data-k=\"v3.' + k + '\"]'); return i && i.closest('.pprow'); }; return !!r('method') && /^ratio$/i.test(r('focus').querySelector('span').textContent.trim()) && /^x\\d/.test(r('focus').querySelector('i').textContent.trim()) && /^depth$/i.test(r('colour').querySelector('span').textContent.trim()) && /needs a pitched sample/i.test((document.querySelector('#pp-v3-warn') || {}).textContent || ''); })()"),
+    await ev("(function(){ var r = function (k) { var i = document.querySelector('#pp-body [data-k=\"v3.' + k + '\"]'); return i && i.closest('.pprow') && i.closest('.pprow').textContent; }; return [r('method'), r('focus'), r('colour'), (document.querySelector('#pp-v3-warn') || {}).textContent]; })()"));
+  await setSel("v3.synth", "s-retune"); await sleep(400);
   check("Retune with an unpitched sample warns", /Retune needs a pitched sample/i.test(await ev("(document.querySelector('#pp-v3-warn') || {}).textContent || ''")), await ev("(document.querySelector('#pp-v3-warn') || {}).textContent"));
   await setSel("v3.synth", "s-freeze"); await sleep(400);
   await setRange("v3.focus", "0.77"); await sleep(2500);

@@ -423,7 +423,7 @@
   var DIGITAL = [["fm", "FM"], ["am", "AM"], ["duo", "Duo"], ["mono", "Mono"], ["simple", "Simple"], ["pluck", "Pluck"], ["metal", "Metal"],
     ["membrane", "Membrane"], ["wavetable", "Wavetable"], ["comb", "Comb"], ["formant", "Formant"]];
   var SAMPLER = [["s-retune", "Retune"], ["s-resonator", "Resonator"], ["s-harmonic", "Harmonic filter"], ["s-formant", "Formant"],
-    ["s-pulsar", "Pulsar"], ["s-freeze", "Freeze"]];
+    ["s-pulsar", "Pulsar"], ["s-freeze", "Freeze"], ["s-fm", "Sample FM"], ["s-am", "Sample AM"]];
   /* each role's controls (Kerem 2026-10-04: "control the voice, sections and third voice parameters ... when I select the
      synths"): the digital synths' two timbres over their morph ranges (core/synths.hpp SYNTH_PARAMS), the samplers' own,
      and the role's gain - kept per role, written into the patch */
@@ -457,8 +457,8 @@
     if (syn.indexOf("s-") === 0) {
       if (syn === "s-resonator") { html += menu("body", "Body", ["String", "Tube", "Bell"], st.body) + menu("excite", "Excite", ["Bowed", "Plucked"], st.excite); }
       if (syn === "s-harmonic" || syn === "s-formant") { html += menu("method", "Method", ["Bank", "Spectral", "Comb"], st.method) + menu("mode", "Mode", ["Dry", "Ringing"], st.mode); }
-      if (syn !== "s-retune") { html += slider("focus", "Focus", 0, 1, 0.01, st.focus); }
-      else { html += menu("method", "Model", ["One-shot", "Looped", "Granular"], st.method) + slider("focus", "Position", 0, 1, 0.01, st.focus); }   /* 3d */
+      if (syn !== "s-retune" && syn !== "s-fm" && syn !== "s-am") { html += slider("focus", "Focus", 0, 1, 0.01, st.focus); }
+      else { html += menu("method", "Model", ["One-shot", "Looped", "Granular"], st.method) + slider("focus", syn === "s-retune" ? "Position" : "Ratio", 0, 1, 0.01, st.focus); }   /* 3d; 4: Sample FM/AM's ratio */
       html += slider("colour", colourName(syn, st.colour, role), 0, 1, 0.0001, st.colour) + slider("tune", "Tune", 0, 1, 0.01, st.tune);
       html += "<label>Sample <input type='file' accept='audio/*' id='" + id("file") + "'></label> <span id='" + id("sample") + "'>" +
         (st.sample ? FsRoles.esc(FsRoles.sampleLabel(st.sample.name, st.sample.analysis, st.sampleNote || "")) : "the recording loaded above") + "</span>";
@@ -493,7 +493,8 @@
       "</optgroup><optgroup label='Sampler'>" + SAMPLER.map(function (d) { return "<option value='" + d[0] + "'>" + d[1] + "</option>"; }).join("") + "</optgroup>";
     sel.innerHTML = html;
     sel.addEventListener("change", function () {
-      var st = roles.state(r[0]); if ((sel.value === "s-retune") !== (st.synth === "s-retune")) { st.method = 0; }   /* Method and Model share a field (3d) */
+      var st = roles.state(r[0]), pit = function (v) { return v === "s-retune" || v === "s-fm" || v === "s-am"; };
+      if (pit(sel.value) !== pit(st.synth)) { st.method = 0; }   /* Method and Model share a field (3d) */
       st.synth = sel.value; buildRoleCtl(r[0]); if (rtTimer) { sendRolesAndPatch(false); } });
     buildRoleCtl(r[0]);
   });
