@@ -40,6 +40,19 @@ const dbPatch0 = JSON.stringify((await db.from("features").select("properties").
 
 const ch = spawn("C:/Program Files/Google/Chrome/Application/chrome.exe",
   ["--headless=new", "--remote-debugging-port=9274", "--autoplay-policy=no-user-gesture-required", "--window-size=1440,900", "--user-data-dir=" + mkdtempSync(join(tmpdir(), "fs-sitelab-")), "about:blank"]);
+/* 3c.1: bird-like recordings - 0.35 s calls every 2.5 s, energy only high (a 5 kHz whistle, or high-passed noise) */
+const birdish = (kind, name) => `(function(){ var sr = 48000, n = sr * 12, b = new ArrayBuffer(44 + n * 2), v = new DataView(b), r = 11;
+  function s(o, t) { for (var i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); }
+  s(0, "RIFF"); v.setUint32(4, 36 + n * 2, true); s(8, "WAVEfmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, sr, true); v.setUint32(28, sr * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); s(36, "data"); v.setUint32(40, n * 2, true);
+  var y1 = 0, y2 = 0;
+  for (var i = 0; i < n; i++) {
+    var t = i / sr, on = (t % 2.5) < 0.35 ? Math.sin(Math.PI * (t % 2.5) / 0.35) : 0, x;
+    if (${JSON.stringify(kind)} === "tone") { x = on * 0.5 * Math.sin(2 * Math.PI * (5000 * t + 5 * Math.sin(2 * Math.PI * 30 * t))); }
+    else { r ^= r << 13; r >>>= 0; r ^= r >>> 17; r ^= r << 5; r >>>= 0; var w = (r / 4294967296) * 2 - 1; var hp = w - y1; y1 = w; y2 = 0.6 * y2 + 0.4 * hp; x = on * 0.6 * (hp - y2); }
+    v.setInt16(44 + i * 2, Math.max(-32767, Math.min(32767, Math.round(32767 * x))), true);
+  }
+  return new File([b], ${JSON.stringify(name)}, { type: "audio/wav" }); })()`;
 const noise = (sec, name) => `(function(){ var sr = 48000, n = sr * ${sec}, b = new ArrayBuffer(44 + n * 2), v = new DataView(b), r = 7;
   function s(o, t) { for (var i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); }
   s(0, "RIFF"); v.setUint32(4, 36 + n * 2, true); s(8, "WAVEfmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
@@ -98,13 +111,48 @@ try {
   check("Freeze on the Third voice: Focus, Colour, Tune and a Sample row; no harm/index row",
     await ev("['v3.focus','v3.colour','v3.tune'].every(function (k) { return !!document.querySelector('#pp-body [data-k=\"' + k + '\"]'); }) && !!document.querySelector('#pp-v3-file') && !document.querySelector('#pp-body [data-k=\"v3.harm\"]') && !document.querySelector('#pp-body [data-k=\"v3.index\"]')"), null);
 
+  /* 3c.1: the sample block - inside its column, a button, a warning when a role is silent, a waveform */
+  const inCol = (sel) => ev(`(function(){ var e = document.querySelector('${sel}'); if (!e) return false; var c = e.closest('.ppcol').getBoundingClientRect(), b = e.getBoundingClientRect(); return b.width > 0 && b.left >= c.left - 1 && b.right <= c.right + 1; })()`);
+  check("a sampler role's sample block: an Upload button, its name and warning inside its column", (await ev("!!document.querySelector('#pp-v3-upload')")) && (await inCol("#pp-v3-warn")), null);
+  check("no sample yet: the warning says the role is silent", /no sample.*silent/i.test(await ev("(document.querySelector('#pp-v3-warn') || {}).textContent || ''")), await ev("(document.querySelector('#pp-v3-warn') || {}).textContent"));
+  check("Freeze's Colour row is labelled 'moment' and its readout is the time only", await ev("(function(){ var i = document.querySelector('#pp-body input[data-k=\"v3.colour\"]'), r = i && i.closest('.pprow'); return !!r && /^moment$/i.test(r.querySelector('span').textContent.trim()) && /^\\d+:\\d\\d$/.test(r.querySelector('i').textContent.trim()); })()"), await ev("(function(){ var i = document.querySelector('#pp-body input[data-k=\"v3.colour\"]'), r = i && i.closest('.pprow'); return r && [r.querySelector('span').textContent, r.querySelector('i').textContent]; })()"));
+
   /* upload, move Focus: autosaved to the lab row; the live patch unchanged byte for byte */
   await ev(`(function(){ var f = ${noise(3, "probe-site.wav")}, dt = new DataTransfer(); dt.items.add(f); var i = document.querySelector('#pp-v3-file'); i.files = dt.files; i.dispatchEvent(new Event('change')); return 1; })()`);
-  await until("/uploaded|failed/.test((document.querySelector('#pp-v3-sample') || {}).textContent || '')", 15000);
+  await until("/uploaded|failed/.test((document.querySelector('#pp-v3-name') || {}).textContent || '')", 15000);
   await setRange("v3.focus", "0.77");
   await sleep(2500);
   const row = (await db.from("lab_route_roles").select("roles").eq("route_id", DRAFT).maybeSingle()).data;
   check("autosaved: the lab row has Freeze, Focus 0.77 and the sample", !!(row && row.roles.v3.synth === "s-freeze" && row.roles.v3.sampler.focus === 0.77 && row.roles.v3.sample && row.roles.v3.sample.path.indexOf(`lab/${DRAFT}/v3-`) === 0), row);
+  check("uploaded: the name inside its column, no warning, the waveform drawn", /probe-site\.wav/.test(await ev("(document.querySelector('#pp-v3-name') || {}).textContent || ''")) && (await inCol("#pp-v3-name")) && !(await ev("(document.querySelector('#pp-v3-warn') || {}).textContent || ''")) && (await ev("(function(){ var c = document.querySelector('#pp-v3-wave'); if (!c || c.width < 100) return false; var d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data, n = 0; for (var i = 3; i < d.length; i += 4) if (d[i]) n++; return n > 200; })()")), [await ev("(document.querySelector('#pp-v3-name') || {}).textContent"), await ev("(document.querySelector('#pp-v3-warn') || {}).textContent")]);
+  const fill = await ev("(function(){ var c = document.querySelector('#pp-v3-wave'), d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data, best = 0; for (var x = 0; x < c.width; x++) { var n = 0; for (var y = 0; y < c.height; y++) if (d[(y * c.width + x) * 4 + 3]) n++; if (n < c.height) best = Math.max(best, n); } return best / c.height; })()");
+  check("the waveform is scaled to the sample's own peak (its tallest bar near full height) (final review 3c.1)", fill > 0.8, fill);
+  const col0 = await ev("+document.querySelector('#pp-body input[data-k=\"v3.colour\"]').value");
+  await ev("(function(){ var c = document.querySelector('#pp-v3-wave'), b = c.getBoundingClientRect(); ['pointerdown','pointerup'].forEach(function (t) { c.dispatchEvent(new PointerEvent(t, { clientX: b.left + b.width * 0.8, clientY: b.top + b.height / 2, bubbles: true })); }); return 1; })()");
+  await sleep(300);
+  const col1 = await ev("+document.querySelector('#pp-body input[data-k=\"v3.colour\"]').value");
+  check("a click on Freeze's waveform moves its Moment (Colour)", col1 > 0.6 && col1 !== col0, [col0, col1]);
+  const mk0 = await ev("+document.querySelector('#pp-v3-wave').dataset.moment");
+  await setRange("v3.colour", "0.2"); await sleep(300);
+  const mk1 = await ev("+document.querySelector('#pp-v3-wave').dataset.moment");
+  check("the Moment marker follows the slider (final review 3c.1)", mk1 < mk0 - 10, [mk0, mk1]);
+  await ev("(function(){ var c = document.querySelector('#pp-v3-wave'), b = c.getBoundingClientRect(), y = b.top + b.height / 2; c.dispatchEvent(new PointerEvent('pointerdown', { clientX: b.left + b.width * 0.3, clientY: y, buttons: 1, pointerId: 1, bubbles: true })); c.dispatchEvent(new PointerEvent('pointermove', { clientX: b.left + b.width * 0.75, clientY: y, buttons: 1, pointerId: 1, bubbles: true })); c.dispatchEvent(new PointerEvent('pointerup', { clientX: b.left + b.width * 0.75, clientY: y, pointerId: 1, bubbles: true })); return 1; })()");
+  await sleep(300);
+  const col2 = await ev("+document.querySelector('#pp-body input[data-k=\"v3.colour\"]').value");
+  check("dragging on Freeze's waveform moves its Moment (final review 3c.1)", col2 > 0.6, col2);
+  await setSel("v3.synth", "s-retune"); await sleep(400);
+  check("Retune with an unpitched sample warns", /Retune needs a pitched sample/i.test(await ev("(document.querySelector('#pp-v3-warn') || {}).textContent || ''")), await ev("(document.querySelector('#pp-v3-warn') || {}).textContent"));
+  await setSel("v3.synth", "s-freeze"); await sleep(400);
+  await setRange("v3.focus", "0.77"); await sleep(2500);
+  /* phone width: the block fits its column (Review Focus 5) */
+  await s.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(500);
+  await open();                                                   /* a phone opens the page at its own width */
+  await until(`__fa.features().some(function (f) { return f.properties.id === '${DRAFT}'; })`, 15000);
+  await openPanel(DRAFT); await until(`__fa.labRolesFor === '${DRAFT}'`, 8000); await sleep(1500);
+  await ev("(function(){ var t = document.querySelector(\"#pp-tabs [data-tab='voices']\"); t && t.click(); var v = document.querySelector(\"#pp-sub [data-sub='v3']\"); v && v.click(); return 1; })()"); await sleep(500);
+  const phone = await ev("(function(){ var b = document.querySelector('.ppsample[data-role=v3]'), c = b && b.closest('.ppcol'), s = document.querySelector('#pp-body select[data-k=\"v3.synth\"]'); return b && c && s ? { block: Math.round(b.getBoundingClientRect().width), col: Math.round(c.getBoundingClientRect().width), sel: Math.round(s.getBoundingClientRect().width), vw: innerWidth } : null; })()");
+  check("phone width: the sample block fits its column, spans it, and the instrument menu stays usable", (await inCol("#pp-v3-name")) && (await inCol("#pp-v3-wave")) && (await ev("document.documentElement.scrollWidth <= innerWidth + 1")) && !!phone && phone.col > phone.vw * 0.8 && phone.block >= phone.col * 0.95 && phone.sel > 120, phone);
+  await s.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false }); await sleep(1000);
   const page1 = await livePatch(DRAFT), dbPatch1 = JSON.stringify((await db.from("features").select("properties").eq("id", DRAFT).single()).data.properties.patch);
   check("the live patch is unchanged byte for byte, on the page and in the database", page1 === page0 && dbPatch1 === dbPatch0 && !/"s-/.test(page1), [JSON.parse(page0).v3, JSON.parse(page1).v3]);
 
@@ -116,12 +164,12 @@ try {
   check("opening the panel in lab mode draws it once (final review 3c I6)", drawn === 1, drawn);
   await until("!document.getElementById('patchpanel').hidden", 5000);
   await until(`__fa.labRolesFor === '${DRAFT}'`, 8000);
-  const back = await until("(document.querySelector('#pp-body select[data-k=\"v3.synth\"]') || {}).value === 's-freeze' && +(document.querySelector('#pp-body input[data-k=\"v3.focus\"]') || {}).value === 0.77 && /probe-site\\.wav/.test((document.querySelector('#pp-v3-sample') || {}).textContent || '')", 10000);
+  const back = await until("(document.querySelector('#pp-body select[data-k=\"v3.synth\"]') || {}).value === 's-freeze' && +(document.querySelector('#pp-body input[data-k=\"v3.focus\"]') || {}).value === 0.77 && /probe-site\\.wav/.test((document.querySelector('#pp-v3-name') || {}).textContent || '')", 10000);
   await ev("fsListen.sound()");
   const ov = await until(`(__fa.coreSentPatch && __fa.coreSentPatch('${DRAFT}') || '').indexOf('s-freeze') >= 0`, 15000);
   check("after a reload with lab mode remembered, the engine plays the saved sampler role, untouched (final review 3c I3)", ov, await ev(`__fa.coreWasm + ' ' + (__fa.coreSentPatch && (__fa.coreSentPatch('${DRAFT}') || '').slice(0, 80))`));
   await ev("fsListen.sound()"); await sleep(1500);
-  check("reloaded: lab mode still on, the Third voice Freeze again with its Focus and sample", back, await ev("[(document.querySelector('#pp-body select[data-k=\"v3.synth\"]') || {}).value, (document.querySelector('#pp-v3-sample') || {}).textContent]"));
+  check("reloaded: lab mode still on, the Third voice Freeze again with its Focus and sample", back, await ev("[(document.querySelector('#pp-body select[data-k=\"v3.synth\"]') || {}).value, (document.querySelector('#pp-v3-name') || {}).textContent]"));
 
   /* back to digital: written to the live patch as today */
   await setSel("v3.synth", "pluck"); await sleep(2500);
@@ -140,6 +188,7 @@ try {
   await ev("document.querySelector('#pp-lab').click(), 0"); await sleep(600);
   const rowsOff2 = await ev(rowsKey);
   const noV3T = (r) => r.replace(/[^;]*\|v3\.(harm|index)/g, "");     /* the Third voice is Pluck now: its two timbres are named for it */
+  check("lab mode off: no live rows, no sample canvases", await ev("!document.querySelector('[id$=\"-notes\"], .ppsample-wave')"), null);
   check("lab mode off again: the panel's rows are exactly those before", noV3T(rowsOff2) === noV3T(rowsOff), [rowsOff, rowsOff2]);
 
   /* the site's sound in lab mode: core-lab.wasm, the role's sample heard; lab mode off: core.wasm */
@@ -164,7 +213,35 @@ try {
   check("lab mode off while sound plays: the engine is core.wasm again, still sounding", (await ev("__fa.coreWasm")) === "web/core.wasm" && (await ev("__fa.coreLevel()")) > -60, [await ev("__fa.coreWasm"), await ev("__fa.coreLevel()")]);
   await ev("document.querySelector('#pp-lab').click(), 0"); await sleep(5000);
   check("... and on again: core-lab.wasm, one engine", (await ev("__fa.coreWasm")) === "web/core-lab.wasm" && (await ev("__fa.coreNodes")) === 1, [await ev("__fa.coreWasm"), await ev("__fa.coreNodes")]);
+  /* 3c.1: bird-like samples on every role - every non-pitch sampler sounds (the role alone, gain 0.8) */
+  const R = ["voice", "sect", "v3"];
+  for (const [role, kind, name] of [["voice", "noise", "probe-titmouse.wav"], ["sect", "tone", "probe-blackbird.wav"], ["v3", "tone", "probe-blackbird.wav"]]) {
+    await setSel(role + ".synth", "s-resonator"); await sleep(500);
+    await ev(`(function(){ var f = ${birdish(kind, name)}, dt = new DataTransfer(); dt.items.add(f); var i = document.querySelector('#pp-${role}-file'); i.files = dt.files; i.dispatchEvent(new Event('change')); return 1; })()`);
+    await until(`/uploaded|failed/.test((document.querySelector('#pp-${role}-name') || {}).textContent || '')`, 20000);
+  }
+  await sleep(2500);
+  const quiet = {}, heard = {};
+  for (const role of R) {
+    for (const o of R) await setRange(o + ".gain", o === role ? "0.8" : "0");
+    for (const syn of ["s-resonator", "s-harmonic", "s-formant", "s-pulsar", "s-freeze"]) {
+      await setSel(role + ".synth", syn); await sleep(4000);
+      const l = await lvl(); heard[role + " " + syn] = +l.toFixed(1); if (!(l > -45)) quiet[role + " " + syn] = +l.toFixed(1);
+    }
+  }
+  console.log("bird-like levels", JSON.stringify(heard));
+  check("bird-like samples (sparse calls, high band): every sampler sounds on every role (role alone, above -45 dB)", Object.keys(quiet).length === 0, quiet);
+  for (const o of R) await setRange(o + ".gain", "0.55");
+  await setSel("v3.synth", "s-freeze"); await sleep(3000);
+  check("the live row: a sounding sampler role shows its notes and a meter above -60 dB",
+    /[A-G]#?-?\d/.test(await ev("(document.querySelector('#pp-v3-notes') || {}).textContent || ''")) && (await ev("+((document.querySelector('#pp-v3-meter') || { dataset: {} }).dataset.db)")) > -60,
+    [await ev("(document.querySelector('#pp-v3-notes') || {}).textContent"), await ev("(document.querySelector('#pp-v3-meter') || { dataset: {} }).dataset.db")]);
+  await setRange("v3.gain", "0"); await sleep(2500);
+  check("... muted, its meter falls", (await ev("+((document.querySelector('#pp-v3-meter') || { dataset: {} }).dataset.db)")) < -70, await ev("(document.querySelector('#pp-v3-meter') || { dataset: {} }).dataset.db"));
+  await setRange("v3.gain", "0.55"); await sleep(1500);
+
   await ev("fsListen.sound()"); await sleep(1500);
+  check("Stop clears the live notes and meters (final review 3c.1)", !(await ev("/[A-G]/.test((document.querySelector('#pp-v3-notes') || {}).textContent || '')")) && (await ev("+((document.querySelector('#pp-v3-meter') || { dataset: {} }).dataset.db)")) <= -120, [await ev("(document.querySelector('#pp-v3-notes') || {}).textContent"), await ev("(document.querySelector('#pp-v3-meter') || { dataset: {} }).dataset.db")]);
   await ev("document.querySelector('#pp-lab').click(), 0"); await sleep(500);
   await ev("(function(){ fsListen.sound(); document.querySelector('#pp-lab').click(); return 0; })()");
   await sleep(6000);
@@ -174,6 +251,7 @@ try {
   const pm = await ev(`(function(){ var c = __fa.features().filter(function (f) { return f.properties.id === '${PUB2}'; })[0].geometry.coordinates; return c[Math.floor(c.length / 2)]; })()`);
   for (let i = 0; i < 40 && !(await ev(`!!(window.__fa.core && __fa.core.route_id === '${PUB2}')`)); i++) { await ev(`__fa.walkTo(${pm[0]}, ${pm[1]})`); await sleep(400); }
   check("on a route with no lab row, the engine's patch is the live one", await ev(`__fa.coreSentPatch('${PUB2}') === JSON.stringify(__fa.features().filter(function (f) { return f.properties.id === '${PUB2}'; })[0].properties.patch)`), await ev(`__fa.coreSentPatch && __fa.coreSentPatch('${PUB2}') && __fa.coreSentPatch('${PUB2}').slice(0, 120)`));
+  check("walked onto another route: the draft's live notes are not left on screen", !(await ev("/[A-G]#?-?\\d/.test((document.querySelector('#pp-v3-notes') || {}).textContent || '')")), await ev("(document.querySelector('#pp-v3-notes') || {}).textContent"));
   check("... and the walker is on it (its own samples, none: nothing from the draft carried over)", (await ev("__fa.core && __fa.core.route_id")) === PUB2 && (await ev("__fa.labSentFor")) === PUB2, [await ev("__fa.core && __fa.core.route_id"), await ev("__fa.labSentFor")]);
   }
   await ev("fsListen.sound()"); await sleep(1500);    /* off */

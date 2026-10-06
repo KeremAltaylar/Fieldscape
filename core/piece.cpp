@@ -526,7 +526,7 @@ struct Rhythm {
 
 /* ------------------------------------------------------------------ the device */
 /* a role's recording (3a): mono, normalised; its pitch track (f0, confidence every hop s) */
-struct RoleRec { float *pcm = nullptr; long long n = 0; float *tf = nullptr, *tc = nullptr; int tn = 0; double f0 = 0, hop = 0.02; };
+struct RoleRec { float *pcm = nullptr; long long n = 0; float *tf = nullptr, *tc = nullptr; int tn = 0; double f0 = 0, hop = 0.02; float *spec = nullptr; int spec_n = 0; };
 struct Inbox {
     bool walk = false; int route = -1; double t = 0, dist = 1e300;
     bool sector = false; int sector_v = -1;
@@ -594,10 +594,12 @@ struct Piece : Device {
         auto *r = static_cast<sampler::Resonator *>(s);
         if (k.pcm) { const float *pp[1] = { k.pcm }; r->set_source(1, k.n, pp); }
         r->set_track_view(k.f0, k.hop, k.tf, k.tc, k.tn);
+        r->spec = k.spec; r->spec_n = k.spec_n;   /* 3c.1 F2: notes into the recording's energy (kept with the recording) */
     }
     void bind_role(Role &r, const RoleRec &k) { for (int t = S_RETUNE; t < NSYNTH; t++) if (r.inst[t]) bind(r.inst[t].get(), k); }
     Ctl bass_g, top_g;
     Layer pad, sectL, v3L;
+    double lvl[3] = {};               /* 3c.1 F4: each role's own output, ~0.1 s mean square (voice, sect, v3) */
     FxChain fx, fx2, fx3, rfx;
     Layer rdrive;                     /* the rhythm effects' drive and lowpass (no warp) */
     Ctl synth_level;
@@ -677,7 +679,10 @@ struct Piece : Device {
         Synth *s = r.inst[type].get();
         if (!s) return;
         s->set(r.st);              /* a SELF_VOICED synth reads only the two numbers */
-        s->vol = (float)db_to_gain(SYNTH_TRIM[type] + r.extra_db);
+        /* Kerem 2026-10-06: "Second voice should be louder in general for samplers" - on its short sector notes a sampler sat
+           3.4-6.2 dB under the same sampler on the Voice (measured); +7 dB puts every one at or above it */
+        const double smp_db = is_sampler(type) && &r == &sectr ? 7 : 0;
+        s->vol = (float)db_to_gain(SYNTH_TRIM[type] + r.extra_db + smp_db);
         r.cur = type;
         r.until[type] = 0;
     }
@@ -839,6 +844,29 @@ struct Piece : Device {
         sy->timbre(0, morph(mh_dest, t, m) ? SYNTH_PARAMS[type][0].min + m * (SYNTH_PARAMS[type][0].max - SYNTH_PARAMS[type][0].min) : ph, ramp, t);
         sy->timbre(1, morph(mi_dest, t, m) ? SYNTH_PARAMS[type][1].min + m * (SYNTH_PARAMS[type][1].max - SYNTH_PARAMS[type][1].min) : pi, ramp, t);
     }
+    /* a sampler role's Focus and Colour now: its own settings, or a morph aimed at them (as timbre() does each step) */
+    void sampler_timbre(sampler::Resonator *rs, int q, const SamplerCfg &c, double t) {
+        static const int HD[3] = { M_VOICE_HARM, M_SECT_HARM, M_V3_HARM }, ID[3] = { M_VOICE_INDEX, M_SECT_INDEX, M_V3_INDEX };
+        double m; const int type = q == 0 ? patch.voice.synth : q == 1 ? patch.sect.synth : patch.v3.synth;
+        rs->focus = morph(HD[q], t, m) ? SYNTH_PARAMS[type][0].min + m * (SYNTH_PARAMS[type][0].max - SYNTH_PARAMS[type][0].min) : c.focus;
+        rs->colour = morph(ID[q], t, m) ? SYNTH_PARAMS[type][1].min + m * (SYNTH_PARAMS[type][1].max - SYNTH_PARAMS[type][1].min) : c.colour;
+    }
+    static bool same_cfg(const SamplerCfg &a, const SamplerCfg &b) {
+        return a.body == b.body && a.excite == b.excite && a.method == b.method && a.mode == b.mode && a.focus == b.focus && a.colour == b.colour && a.tune == b.tune;
+    }
+    void revoice_changed(const SamplerCfg was[3], double t) {
+        Role *rs[3][2] = { { &bass, &top }, { &sectr, nullptr }, { &v3r, nullptr } };
+        for (int q = 0; q < 3; q++) {
+            if (same_cfg(was[q], patch.smp[q])) continue;
+            const SamplerCfg &c = patch.smp[q];
+            for (Role *r : rs[q]) {
+                if (!r || !is_sampler(r->cur) || !r->inst[r->cur]) continue;
+                auto *s = static_cast<sampler::Resonator *>(r->inst[r->cur].get());
+                s->body = c.body; s->excite = c.excite; s->method = c.method; s->mode = c.mode; s->tune = c.tune; sampler_timbre(s, q, c, t);
+                s->revoice(t);
+            }
+        }
+    }
     void note(int role, Synth *sy, double f, double dur, double t, double vel) {
         if (on_note) on_note(note_ctx, role, f, dur, t, vel);
         if (!sy) return;
@@ -846,6 +874,7 @@ struct Piece : Device {
         if (rr && is_sampler(rr->cur) && sy == rr->sy()) {   /* a sampler role: its settings for this note (3a) */
             auto *rs = static_cast<sampler::Resonator *>(sy); const SamplerCfg &c = patch.smp[role <= 1 ? 0 : role - 1];
             rs->body = c.body; rs->excite = c.excite; rs->method = c.method; rs->mode = c.mode; rs->tune = c.tune;
+            sampler_timbre(rs, role <= 1 ? 0 : role - 1, c, t);   /* Focus and Colour too: a held note started before the step set them */
             /* a held note (the bass) ends the one before it: a one-voice digital synth retriggers, a sampler would keep
                every earlier bass sounding (final review 3a C1: six old bass notes piled up) */
             if (dur < 0) rs->release_all(t);
@@ -1234,7 +1263,12 @@ struct Piece : Device {
         for (size_t i = 0; i < routes.size() && i < 64; i++) if (in.route_dirty[i]) {
             in.route_dirty[i] = false;
             routes[i] = in.routes[i];
-            if ((int)i == route) { patch = routes[i]; apply_patch(now); }   /* heard at once */
+            if ((int)i == route) {
+                /* 3c.1: a sampler role whose settings changed re-voices its sounding notes (they were read only at a note's start) */
+                const SamplerCfg was[3] = { patch.smp[0], patch.smp[1], patch.smp[2] };
+                patch = routes[i]; apply_patch(now);
+                revoice_changed(was, now);
+            }   /* heard at once */
         }
         if (in.walk) { in.walk = false; walk(in.route, in.t, in.dist, now); }
         if (in.sector) { in.sector = false; sector = in.sector_v; }
@@ -1415,6 +1449,12 @@ struct Piece : Device {
         pad.process(fx.L, fx.R, n, te);
         sectL.process(fx2.L, fx2.R, n, te);
         v3L.process(fx3.L, fx3.R, n, te);
+        {   /* 3c.1 F4: what each role puts out - after its drive, warp and gain, before its effects (each layer alone in its
+               chain's input here: the chains clear after every block, and the one-shots are added below), ~0.1 s mean square */
+            const double k = 1 - std::exp(-n / (0.1 * sr));
+            float *Ls[3] = { fx.L, fx2.L, fx3.L }, *Rs[3] = { fx.R, fx2.R, fx3.R };
+            for (int q = 0; q < 3; q++) { double s = 0; for (int i = 0; i < n; i++) s += 0.5 * ((double)Ls[q][i] * Ls[q][i] + (double)Rs[q][i] * Rs[q][i]); lvl[q] += (s / n - lvl[q]) * k; }
+        }
         for (auto &o : shots) if (o.free_at > t0) { if (o.noise) o.ns.render(fx.L, fx.R, n, t0); else o.s.render(fx.L, fx.R, n, t0); }
         fx.process(oL, oR, n, te); fx2.process(oL, oR, n, te); fx3.process(oL, oR, n, te);
         synth_level.block(te); route_solo.block(te);
@@ -1486,9 +1526,14 @@ void fs_piece_role_source(fs_device *d, int role, int channels, long long frames
     double sum = 0; long cnt = 0; for (double s : e) if (s >= top * 1e-4) { sum += s; cnt++; }
     const double rms = cnt ? std::sqrt(sum / cnt) : 0, gain = rms > 1e-9 ? 0.1 / rms : 0;
     for (long long i = 0; i < frames; i++) m[i] = (float)(m[i] * gain);
+    std::vector<float> sp; sampler::spectrum_of(m, frames, p->sr, sp);                 /* 3c.1 F2, before the lock */
+    float *spec = sp.empty() ? nullptr : (float *)std::malloc(sizeof(float) * sp.size());
+    if (spec) std::copy(sp.begin(), sp.end(), spec);
     std::lock_guard<std::mutex> g(p->mu); sweep(p);
     p->keep.b.push_back(m);
     p->known[role].pcm = m; p->known[role].n = frames;
+    if (spec) p->keep.b.push_back(spec);
+    p->known[role].spec = spec; p->known[role].spec_n = spec ? (int)sp.size() : 0;
     p->in.rrec[role] = p->known[role]; p->in.rrec_set[role] = true;
 }
 void fs_piece_role_analysis(fs_device *d, int role, const char *json) {
@@ -1503,8 +1548,27 @@ void fs_piece_role_analysis(fs_device *d, int role, const char *json) {
     std::lock_guard<std::mutex> g(p->mu); sweep(p);
     if (tf) p->keep.b.push_back(tf); if (tc) p->keep.b.push_back(tc);
     RoleRec &k = p->known[role];
-    k.f0 = j.n("f0", 0); k.hop = j.n("hop_s", 0.02); k.tf = tf && tc ? tf : nullptr; k.tc = tf && tc ? tc : nullptr; k.tn = tf && tc ? n : 0;
+    k.f0 = j.n("f0", 0); k.hop = j.n("hop_s", 0.02);
+    k.tf = tf && tc ? tf : nullptr; k.tc = tf && tc ? tc : nullptr; k.tn = tf && tc ? n : 0;
     p->in.rrec[role] = k; p->in.rrec_set[role] = true;
+}
+int fs_piece_roles(fs_device *d, float *out, int max_notes) {
+    Piece *p = P(d); if (!p || !out || max_notes < 0) return 0;
+    Role *rs[3][2] = { { &p->bass, &p->top }, { &p->sectr, nullptr }, { &p->v3r, nullptr } };
+    const int W = 2 + max_notes;
+    for (int q = 0; q < 3; q++) {
+        float *o = out + q * W; o[0] = (float)std::fmax(-120.0, 10 * std::log10(p->lvl[q] + 1e-30)); o[1] = 0;
+        for (int i = 0; i < max_notes; i++) o[2 + i] = 0;
+        int c = 0;
+        for (Role *r : rs[q]) {
+            if (!r || !is_sampler(r->cur) || !r->inst[r->cur] || c >= max_notes) continue;
+            std::vector<double> f((size_t)max_notes);
+            const int got = static_cast<sampler::Resonator *>(r->inst[r->cur].get())->sounding(f.data(), max_notes - c);
+            for (int i = 0; i < got; i++) o[2 + c++] = (float)f[(size_t)i];
+        }
+        o[1] = (float)c;
+    }
+    return 3 * W;
 }
 
 /* A setter changed route i's patch: it replaces the registered one, and is heard at once if that route plays. */

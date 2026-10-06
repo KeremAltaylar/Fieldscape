@@ -20,6 +20,9 @@ const WAV = (hz, secs, sr) => `(function(){ var sr = ${sr}, n = Math.round(sr * 
   v.setUint32(24, sr, true); v.setUint32(28, sr * 4, true); v.setUint16(32, 4, true); v.setUint16(34, 16, true); s(36, "data"); v.setUint32(40, n * 4, true);
   for (var i = 0; i < n; i++) { var x = Math.round(12000 * Math.sin(2 * Math.PI * ${hz} * i / sr)); v.setInt16(44 + i * 4, x, true); v.setInt16(46 + i * 4, x, true); }
   return new File([b], "tone.wav", { type: "audio/wav" }); })()`;
+/* a pitched tone with overtones (1/k, six harmonics) - how a voice or an instrument records; the core's 3a level reference */
+const RICH = (hz, secs, sr) => WAV(hz, secs, sr).replace("Math.sin(2 * Math.PI * " + hz + " * i / sr)",
+  "(function () { var y = 0; for (var k = 1; k <= 6; k++) y += Math.sin(2 * Math.PI * " + hz + " * k * i / sr) / k; return 0.6 * y; })()");
 try {
   let t; for (let i = 0; i < 50 && !t; i++) { try { t = (await targets(9266))[0]; } catch { await sleep(200); } }
   const s = session(t); await s.ready;
@@ -289,7 +292,10 @@ try {
   await setRole("sect", "fm"); await setRole("v3", "fm");
   await ev("['sect','v3'].forEach(function (r) { var s = document.querySelector('#lab-rt-' + r + '-gain'); s.value = '0'; s.dispatchEvent(new Event('input')); }), 0");
   const fmL = await meanRt("fm"), smpL = {};
-  for (const v of ["s-retune", "s-resonator", "s-harmonic", "s-formant", "s-pulsar", "s-freeze"]) smpL[v] = +((await meanRt(v)) - fmL).toFixed(1);
+  for (const v of ["s-resonator", "s-harmonic", "s-formant", "s-pulsar", "s-freeze"]) smpL[v] = +((await meanRt(v)) - fmL).toFixed(1);
+  /* Retune needs a pitched recording (on noise the panel warns, 3c.1 F3): it is measured on one */
+  await ev(`fsLab.load(${RICH(220, 20, 22050)}).then(function () { return 1; })`);
+  smpL["s-retune"] = +((await meanRt("s-retune")) - fmL).toFixed(1);
   check("every sampler on a route's Voice sits >= 3 dB over FM (Kerem: x2 or more)", Object.values(smpL).every((d) => d >= 3), smpL);
   await setRole("voice", ""); await setRole("sect", ""); await setRole("v3", "");
   /* 2c: Pulsar and Freeze on the bench */
@@ -326,6 +332,14 @@ try {
   await ev("(function(){ var s = document.querySelector('#lab-release'); s.value = '0.6'; s.dispatchEvent(new Event('input')); s = document.querySelector('#lab-colour'); s.value = '0.5'; s.dispatchEvent(new Event('input')); s = document.querySelector('#lab-method'); s.value = '0'; s.dispatchEvent(new Event('change')); return 1; })()");
   await ev("(function(){ var s = document.querySelector('#lab-mode'); s.value = '0'; s.dispatchEvent(new Event('change')); return 1; })()");
   await ev("fsLab.setSynth('retune'), 0");
+  /* final review 3c.1: the recording loaded above reaches a route's sampler roles with its silence cut out (as the site's) */
+  const SPARSE = WAV(5000, 12, 48000).replace("Math.round(12000 * Math.sin(2 * Math.PI * 5000 * i / sr))", "Math.round(12000 * ((i / sr) % 2.5 < 0.35 ? Math.sin(2 * Math.PI * 5000 * i / sr) : 0))");
+  await ev(`fsLab.load(${SPARSE}).then(function () { return 1; })`);
+  await ev("(function(){ ['voice','sect'].forEach(function (r) { var s = document.querySelector('#lab-rt-' + r); s.value = ''; s.dispatchEvent(new Event('change')); }); var s = document.querySelector('#lab-rt-v3'); s.value = 's-freeze'; s.dispatchEvent(new Event('change')); return 1; })()");
+  await ev("document.querySelector('#lab-rt-play').click(), 0"); await sleep(2500);
+  const sentFrames = await ev("fsLab.lastRoleFrames || 0"), fullFrames = Math.round((await ev("fsLab.bufferSeconds")) * (await ev("fsLab.now() >= 0 ? (window.__labRate || 48000) : 48000")));
+  await ev("document.querySelector('#lab-rt-stop').click(), 0");
+  check("lab: the recording above reaches a sampler role compacted (silence cut out)", sentFrames > 0 && sentFrames < 0.4 * fullFrames, [sentFrames, fullFrames]);
   check("no page errors", errors.length === 0, errors);
 } finally { ch.kill(); }
 process.exit(failed ? 1 : 0);

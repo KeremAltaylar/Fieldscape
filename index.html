@@ -1324,6 +1324,18 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 /* A column that opens on a module lines its heading up with the plain headings beside it. */
 .ppcol > .pxmod:first-child h2 { margin-top: 0; }
 #pp-body h2:first-child { margin-top: 0; }
+/* 3c.1: a sampler role's sample - upload, name, warning, waveform - the full width of its column */
+#pp-body .ppsample { display: grid; gap: 4px; margin: 2px 0 var(--s-1); min-width: 0; flex: 0 0 100%; box-sizing: border-box; }   /* a full row in the phone's wrapping columns too */
+#pp-body .ppsample-top > span { font-family: var(--font-mono); font-size: var(--t-xs); letter-spacing: 0.04em; text-transform: uppercase; color: var(--faint); }
+#pp-body .ppsample-top button { padding: 1px var(--s-1); font-size: var(--t-xs); }
+#pp-body .ppsample-top { display: flex; align-items: center; justify-content: space-between; gap: var(--s-1); min-width: 0; }
+#pp-body .ppsample-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; font-size: var(--t-xs); color: var(--dim); }
+#pp-body .ppsample-warn:empty { display: none; }
+#pp-body .ppsample-warn { color: var(--lamp); font-size: var(--t-xs); }
+#pp-body .ppsample-wave { width: 100%; height: 40px; display: block; cursor: pointer; }
+#pp-body .pplive-notes { font-size: var(--t-xs); min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+#pp-body .pplive-meter { display: block; height: 6px; background: var(--hairline); border-radius: 3px; overflow: hidden; }
+#pp-body .pplive-meter b { display: block; height: 100%; width: 0; background: var(--accent); transition: width 80ms linear; }
 .pprow {
   display: grid; grid-template-columns: 6.4rem 1fr 3.6rem; align-items: center;
   gap: var(--s-2); margin-bottom: var(--s-1);
@@ -8264,6 +8276,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     core.on = false;
     coreButton(false);
     coreRamp(0, SOUND_FADE_OUT);
+    if (typeof labLiveUpdate === "function") { labLiveUpdate(null); }     /* 3c.1: nothing sounds - no notes, no level */
     setTimeout(function () { if (core && !core.on) { core.ctx.suspend(); releaseAwakeIfUnneeded(); } }, SOUND_FADE_OUT * 1000 + 80);
   }
   function coreRamp(to, seconds) {
@@ -8344,9 +8357,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var key = "p:" + path;
       if (labKey[r] === key || labKey[r] === key + " loading") { return; }
       labKey[r] = key + " loading";
-      (labSound[path] = labSound[path] || FsRoles.decodeSample(sb, ctx, rr.sample)).then(function (b) {
+      (labSound[path] = labSound[path] || FsRoles.decodeSample(sb, ctx, rr.sample)).then(function (p) {
         if (labSentFor !== id || !core || !core.node || core.node.port !== port || labKey[r] !== key + " loading") { return; }
-        labKey[r] = key; labSend(port, r, b, rr.sample.analysis || null);
+        labKey[r] = key; labSend(port, r, p.buf, p.analysis);       /* the silence cut out (3c.1) */
       }, function (e) {
         delete labSound[path];
         if (labKey[r] === key + " loading") { labKey[r] = null; silence(r); }
@@ -8361,6 +8374,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var old = core, wasOn = old.on;
       old.node.port.onmessage = null; old.node.disconnect(); old.ctx.close();
       core = null; window.__fa.coreNodes = 0; labSentFor = null; labKey = {};
+      labLiveUpdate(null);
       if (wasOn) { coreStart().catch(function (e) { labMsg("Sound: " + (e && e.message || e)); }); }
       return;
     }
@@ -8462,6 +8476,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       if (m.chord.step !== harmony.chord) { harmony.chord = m.chord.step; drawProgSegments(); }
       core.live = m;
       window.__fa.coreLive = m;
+      if (m.roles) { labLiveUpdate(m.roles); }       /* 3c.1 F4: each sampler role's notes and level, in lab mode */
       fsListen._changed();
     } else if (m.type === "error") {
       console.error("core engine: " + m.message);
@@ -12244,7 +12259,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         h.textContent = sc.title;
         host.appendChild(h);
       }
-      sc.rows.forEach(function (fl) { host.appendChild(fl.sampleRow ? labSampleRow(fl.sampleRow, f) : buildRow(fl, patch, f)); });
+      sc.rows.forEach(function (fl) { host.appendChild(fl.sampleRow ? labSampleBlock(fl.sampleRow, f) : fl.liveRow ? labLiveRow(fl.liveRow) : buildRow(fl, patch, f)); });
     });
 
     renderProgression(f, patch, body);
@@ -12894,6 +12909,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           labSaveSoon(f); renderPatchPanel();
         } });
       if (!smp) { return; }
+      out.push({ liveRow: role });                     /* 3c.1 F4: its notes and level, while sound plays */
       var lab = function (k, label, min, max, step, fmt) { return { k: role + "." + k, label: label, min: min, max: max, step: step, fmt: fmt, def: k === "tune" ? 1 : 0.5,
         get: function () { return st[k]; }, set: function (v) { st[k] = +v; labSaveSoon(f); } }; };
       var NAMES = { body: ["String", "Tube", "Bell"], excite: ["Bowed", "Plucked"], method: ["Bank", "Spectral", "Comb"], mode: ["Dry", "Ringing"] };
@@ -12902,24 +12918,120 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       if (st.synth === "s-resonator") { out.push(menu("body"), menu("excite")); }
       if (st.synth === "s-harmonic" || st.synth === "s-formant") { out.push(menu("method"), menu("mode")); }
       if (st.synth !== "s-retune") { out.push(lab("focus", "focus", 0, 1, 0.01)); }
-      out.push(lab("colour", "colour", 0, 1, 0.0001, function (v) { var b = S.buf(role); return FsRoles.colourName(st.synth, v, b ? b.duration : 0); }));
+      var colourRow = lab("colour", colourWord(st.synth), 0, 1, 0.0001, function (v) { return colourValue(st.synth, v, role); }), colourSet = colourRow.set;
+      colourRow.set = function (v) { colourSet(v); var c = document.getElementById("pp-" + role + "-wave"); if (c) { labDrawWave(c, role, st); } };   /* the Moment marker follows */
+      out.push(colourRow);
       out.push(lab("tune", "tune", 0, 1, 0.01));
       out.push({ sampleRow: role });
     });
     return out;
   }
-  function labSampleRow(role, f) {
-    var S = labSession(), st = S.state(role), row = document.createElement("label");
-    row.className = "pprow";
-    var name = document.createElement("span"); name.textContent = "sample"; row.appendChild(name);
-    var input = document.createElement("input"); input.type = "file"; input.accept = "audio/*"; input.id = "pp-" + role + "-file";
+  function colourWord(syn) { return { "s-retune": "brightness", "s-harmonic": "overtones", "s-formant": "partial", "s-pulsar": "grain", "s-freeze": "moment" }[syn] || "colour"; }
+  function colourValue(syn, v, role) {
+    if (syn === "s-formant") { return String(Math.round(1 + 15 * v)); }
+    if (syn === "s-pulsar") { return Math.round(100 * (0.05 + 0.95 * v)) + " %"; }
+    if (syn === "s-freeze") { var t = labMomentSeconds(role, v); return Math.floor(t / 60) + ":" + ("0" + Math.floor(t % 60)).slice(-2); }
+    return Math.round(100 * v) + " %";
+  }
+  /* Freeze's Moment: Colour across the compacted sample (core: at = colour · (len − 2048)), shown at its time in the recording */
+  function labMomentSeconds(role, v) {
+    var S = labSession(), b = S.buf(role), kept = S.kept(role), B = S.block(role), raw = S.raw(role);
+    if (!b || !kept || !raw) { return 0; }
+    var pos = Math.max(0, Math.round(v * Math.max(0, b.length - 2048))), acc = 0;
+    for (var k = 0; k < kept.length; k++) { if (!kept[k]) { continue; } var len = Math.min(B, raw.length - k * B); if (pos < acc + len) { return (k * B + (pos - acc)) / raw.sampleRate; } acc += len; }
+    return raw.duration;
+  }
+  function labMomentColour(role, seconds) {      /* the inverse, for a click on the waveform: the nearest sounding moment */
+    var S = labSession(), b = S.buf(role), kept = S.kept(role), B = S.block(role), raw = S.raw(role);
+    if (!b || !kept || !raw) { return null; }
+    var at = Math.round(seconds * raw.sampleRate), acc = 0, best = null;
+    for (var k = 0; k < kept.length; k++) {
+      if (!kept[k]) { continue; }
+      var s0 = k * B, len = Math.min(B, raw.length - s0);
+      if (at >= s0 && at < s0 + len) { best = acc + (at - s0); break; }
+      if (s0 > at) { best = acc; break; }
+      acc += len; best = acc - 1;
+    }
+    return Math.min(1, Math.max(0, best / Math.max(1, b.length - 2048)));
+  }
+  function labSampleBlock(role, f) {
+    var S = labSession(), st = S.state(role), box = document.createElement("div");
+    box.className = "ppsample"; box.dataset.role = role;
+    var top = document.createElement("div"); top.className = "ppsample-top";
+    var label = document.createElement("span"); label.textContent = "sample"; top.appendChild(label);
+    var input = document.createElement("input"); input.type = "file"; input.accept = "audio/*"; input.id = "pp-" + role + "-file"; input.hidden = true;
+    var btn = document.createElement("button"); btn.type = "button"; btn.className = "ghost"; btn.id = "pp-" + role + "-upload";
+    btn.textContent = st.sample ? "Replace sample" : "Upload sample";
+    btn.addEventListener("click", function () { input.click(); });
     input.addEventListener("change", function () { if (input.files[0]) { S.upload(role, input.files[0], f.properties.id).then(function () { labSaveSoon(f); }); } });
-    row.appendChild(input);
-    var val = document.createElement("i"); val.id = "pp-" + role + "-sample";
-    /* text, never markup: a sample's name comes from a file or the database (3b I6) */
-    val.textContent = st.sample ? FsRoles.sampleLabel(st.sample.name, st.sample.analysis, st.sampleNote) : "no sample - this role is silent";
-    row.appendChild(val);
+    top.appendChild(btn); top.appendChild(input); box.appendChild(top);
+    var name = document.createElement("div"); name.className = "ppsample-name"; name.id = "pp-" + role + "-name";
+    var nm = st.sample ? FsRoles.sampleLabel(st.sample.name, st.sample.analysis, st.sampleNote) : "";
+    name.textContent = nm; name.title = nm; box.appendChild(name);
+    var warn = document.createElement("div"); warn.className = "ppsample-warn"; warn.id = "pp-" + role + "-warn";
+    warn.textContent = !st.sample ? "no sample - this role is silent"
+      : /missing|failed|could not/.test(st.sampleNote || "") ? st.sampleNote
+      : st.synth === "s-retune" && !(st.sample.analysis && st.sample.analysis.f0 > 0) ? "Retune needs a pitched sample - this one is unpitched" : "";
+    box.appendChild(warn);
+    var cv = document.createElement("canvas"); cv.id = "pp-" + role + "-wave"; cv.className = "ppsample-wave"; box.appendChild(cv);
+    requestAnimationFrame(function () { labDrawWave(cv, role, st); });
+    var moveTo = function (e) {
+      if (st.synth !== "s-freeze" || !S.raw(role)) { return; }
+      var r = cv.getBoundingClientRect(), c = labMomentColour(role, Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * S.raw(role).duration);
+      if (c === null) { return; }
+      st.colour = c; var inp = $("#pp-body input[data-k='" + role + ".colour']"); if (inp) { inp.value = c; inp.dispatchEvent(new Event("input")); }
+      labDrawWave(cv, role, st);
+    };
+    cv.addEventListener("pointerdown", function (e) { if (cv.setPointerCapture && e.pointerId != null) { try { cv.setPointerCapture(e.pointerId); } catch (x) { /* none */ } } moveTo(e); });
+    cv.addEventListener("pointermove", function (e) { if (e.buttons & 1) { moveTo(e); } });
+    return box;
+  }
+  function labDrawWave(cv, role, st) {
+    var S = labSession(), raw = S.raw(role), kept = S.kept(role), B = S.block(role);
+    var w = Math.max(100, Math.round(cv.getBoundingClientRect().width || 240)), h = 40, dpr = window.devicePixelRatio || 1;
+    cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+    var g = cv.getContext("2d"); g.scale(dpr, dpr); g.clearRect(0, 0, w, h);
+    if (!raw) { return; }
+    var css = getComputedStyle(document.documentElement), lit = css.getPropertyValue("--accent").trim() || "#cfd8c8", dim = css.getPropertyValue("--dim").trim() || "#6b7468";
+    var d = raw.getChannelData(0), per = d.length / w, top = 0;
+    for (var q = 0; q < d.length; q += 4) { var av = Math.abs(d[q]); if (av > top) { top = av; } }
+    var scale = top > 1e-6 ? 1 / top : 1;           /* a field recording peaking at 0.05 still draws full height */
+    for (var x = 0; x < w; x++) {
+      var a = Math.floor(x * per), z = Math.min(d.length, Math.floor((x + 1) * per)), pk = 0;
+      for (var i = a; i < z; i++) { var v = Math.abs(d[i]); if (v > pk) { pk = v; } }
+      var on = kept && kept[Math.min(kept.length - 1, Math.floor(a / Math.max(1, B)))];
+      g.fillStyle = on ? lit : dim; g.globalAlpha = on ? 1 : 0.35;
+      var bh = Math.max(1, Math.min(1, pk * scale) * (h - 2)); g.fillRect(x, (h - bh) / 2, 1, bh);
+    }
+    g.globalAlpha = 1;
+    if (st.synth === "s-freeze") {
+      var mx = labMomentSeconds(role, st.colour) / raw.duration * w;
+      g.fillStyle = css.getPropertyValue("--lamp").trim() || "#e0b25b"; g.fillRect(Math.round(mx) - 1, 0, 2, h);
+      cv.dataset.moment = String(Math.round(mx));
+    }
+  }
+  function labLiveRow(role) {
+    var row = document.createElement("div"); row.className = "pprow pplive"; row.dataset.role = role;
+    var name = document.createElement("span"); name.textContent = "now"; row.appendChild(name);
+    var notes = document.createElement("span"); notes.className = "pplive-notes"; notes.id = "pp-" + role + "-notes"; row.appendChild(notes);
+    var meter = document.createElement("i"); meter.className = "pplive-meter"; meter.id = "pp-" + role + "-meter"; meter.dataset.db = "-120";
+    var bar = document.createElement("b"); meter.appendChild(bar); row.appendChild(meter);
     return row;
+  }
+  /* the engine's roles, ~30 a second (core-lab only): notes by name, the meter -60 … 0 dB */
+  var LAB_ROLE_AT = { voice: 0, sect: 1, v3: 2 };
+  function labLiveUpdate(roles) {
+    if (!labOn() || $("#patchpanel").hidden) { return; }
+    ["voice", "sect", "v3"].forEach(function (r) {
+      var nEl = document.getElementById("pp-" + r + "-notes"), mEl = document.getElementById("pp-" + r + "-meter");
+      if (!nEl || !mEl) { return; }
+      var o = LAB_ROLE_AT[r] * 8, on = roles && core && core.on && core.state && core.state.route_id === selected;
+      var db = on ? roles[o] : -120, cnt = on ? roles[o + 1] : 0, names = [];
+      for (var i = 0; i < cnt; i++) { names.push(noteName(Math.round(69 + 12 * Math.log2(roles[o + 2 + i] / 440)))); }
+      nEl.textContent = names.join(" ");
+      mEl.dataset.db = String(Math.round(db));
+      mEl.firstChild.style.width = Math.max(0, Math.min(100, (db + 60) / 60 * 100)) + "%";
+    });
   }
   function labToggle() {
     labWanted = !labWanted; labEngineFailed = false;

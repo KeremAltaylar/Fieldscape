@@ -444,6 +444,7 @@ const char *fs_engine_state(fs_engine *e) { return e->state.c_str(); }
 void fs_engine_solo(fs_engine *e, const char *id) { e->solo = id ? id : ""; }
 void fs_engine_role_source(fs_engine *e, int role, int channels, long long frames, const float *const *pcm) { fs_piece_role_source(e->piece, role, channels, frames, pcm); }
 void fs_engine_role_analysis(fs_engine *e, int role, const char *json) { fs_piece_role_analysis(e->piece, role, json); }
+int fs_engine_roles(fs_engine *e, float *out, int max_notes) { return fs_piece_roles(e->piece, out, max_notes); }
 int fs_engine_route(fs_engine *e) { return e->route_name.empty() ? -1 : fs_piece_route(e->piece); }
 int fs_engine_chord(fs_engine *e, int *count, char *label, int size) {
     feed_chord(e);   /* the screen reads this 30 times a second: a walker standing still still hears the chord change */

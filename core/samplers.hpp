@@ -68,6 +68,12 @@ inline double band_hz(int mode, double f, double focus, double T60) { return mod
 /* A real transform of N points as one N/2-point complex transform plus an untangling step: half the work of a full
    complex FFT (24 Spectral voices ran 2.23 ms a block on full transforms, over budget). inverse() returns N x the
    signal, like a forward transform's inverse. Checked against the full transform to float precision. */
+/* 3c.1 F2: a recording's average power spectrum (2048-point Hann frames, up to 48 spread over it), normalised to its
+   strongest bin; empty for silence or a recording shorter than a frame. FOLD_DB: how far under the best octave a note's own
+   octave may score and still be kept */
+static const double FOLD_DB = 30;
+struct RFFT;
+inline bool spectrum_of(const float *x, long long n, double sr, std::vector<float> &out);
 struct RFFT {
     int N = 0; FFT h; std::vector<float> zr, zi, br, bi, twr, twi;
     void init(int n) {
@@ -131,6 +137,24 @@ struct Voice {
     double rpos = 0, rspd = 1, rf0 = 261.63, rlp = 0, rlpa = 0; long long rend = 0;
 };
 
+inline bool spectrum_of(const float *x, long long n, double sr, std::vector<float> &out) {
+    (void)sr; out.clear();
+    const int N = 2048; if (!x || n < N) return false;
+    RFFT rf; rf.init(N); std::vector<float> w(N), Xr(N / 2 + 1), Xi(N / 2 + 1); std::vector<double> e(N / 2 + 1, 0.0);
+    const int F = (int)std::min<long long>(48, n / N);
+    for (int fr = 0; fr < F; fr++) {
+        const long long a = (n - N) * fr / std::max(1, F - 1);
+        double mean = 0; for (int j = 0; j < N; j++) mean += x[a + j]; mean /= N;          /* no DC in the low bins */
+        for (int j = 0; j < N; j++) w[j] = (float)((x[a + j] - mean) * (0.5 - 0.5 * std::cos(2 * PI * j / N)));
+        rf.forward(w.data(), Xr.data(), Xi.data());
+        for (int b = 0; b <= N / 2; b++) e[b] += (double)Xr[b] * Xr[b] + (double)Xi[b] * Xi[b];
+    }
+    double top = 0; for (double v : e) top = std::max(top, v);
+    if (top <= 0) return false;
+    out.resize(e.size()); for (size_t b = 0; b < e.size(); b++) out[b] = (float)(e[b] / top);
+    return true;
+}
+
 struct Resonator : tone::Synth {
     /* 24: three overlapping chords of up to 8 notes - a long release rings under the next chords instead of being
        stolen (Kerem 2026-10-01: "smooth cloudy transitions when release is longer than the note") */
@@ -147,9 +171,13 @@ struct Resonator : tone::Synth {
     std::vector<double> freeze_pw;                                /* Freeze: the moment's averaged power spectrum */
     /* the pitch sampler (3a): voices in use (a route role: 6), the recording's pitch (analysis f0) and its track - f0 and
        confidence every thop s - and its clearest moment (the most confident frame within 50 cents of f0) */
+    /* 3c.1 F2: the recording's power spectrum (spectrum_of; not owned). A note keeps its octave when its overtones meet the
+       recording's energy within FOLD_DB of the best octave; otherwise it moves to the nearest octave that does (pitch class kept) */
+    const float *spec = nullptr; int spec_n = 0; double spec_sr = 48000;
     int nv = VOICES; double tf0 = 0, thop = 0.02, kglide = 0; long long tclear = 0; std::vector<float> tf, tc;
     const float *tfp = nullptr, *tcp = nullptr; int tn = 0;      /* the track as read (a copy's, or a host's buffers) */
     long long freeze_at = -1; const void *freeze_src = nullptr; double freeze_tp = 0;   /* ...and which moment it is */
+    long long seek_from = -1, seek_got = 0; const void *seek_src = nullptr;          /* 3c.1: the loudest-nearby search, once per Moment */
 
     static double t60(double focus) { return 0.2 * std::pow(50.0, std::fmin(1.0, std::fmax(0.0, focus))); }
 
@@ -168,6 +196,29 @@ struct Resonator : tone::Synth {
         set_track_view(f0, hop_s, tf.data(), tc.data(), n);
     }
     /* no copy, no allocation: the host keeps the buffers alive (the route engine, on its audio thread) */
+    /* how much of the recording's energy a note at g can resonate: its first 8 overtones, each the strongest bin within a
+       quarter tone of n*g, weighted 1/n */
+    double fold_score(double g) const {
+        const double bin = spec_sr / 2048; double sc = 0;
+        for (int n = 1; n <= 8; n++) {
+            const double c = n * g; if (c >= 0.45 * spec_sr) break;
+            const int lo = std::max(1, (int)std::floor(c * 0.9715 / bin)), hi = std::min(spec_n - 1, (int)std::ceil(c * 1.0293 / bin));
+            float m = 0; for (int b = lo; b <= hi; b++) m = std::max(m, spec[b]);
+            sc += m / n;
+        }
+        return sc;
+    }
+    double fold(double f) const {
+        if (!spec || spec_n < 2 || !(f > 0)) return f;
+        double best = 0; for (int k = -6; k <= 6; k++) { const double g = std::ldexp(f, k); if (g >= 20 && g < 0.45 * spec_sr) best = std::max(best, fold_score(g)); }
+        if (best <= 0) return f;
+        const double floor_ = best * std::pow(10.0, -FOLD_DB / 10);
+        if (fold_score(f) >= floor_) return f;
+        for (int s = 1; s <= 6; s++) for (int d : { s, -s }) { const double g = std::ldexp(f, d); if (g >= 20 && g < 0.45 * spec_sr && fold_score(g) >= floor_) return g; }
+        return f;
+    }
+    /* 3c.1 F4: the notes sounding now (active, not releasing), up to max */
+    int sounding(double *f, int max) const { int k = 0; for (int i = 0; i < nv && k < max; i++) if (v[i].active && !v[i].releasing) f[k++] = v[i].f; return k; }
     void set_track_view(double f0, double hop_s, const float *f0s, const float *confs, int n) {
         tf0 = f0 > 0 ? f0 : 0; thop = hop_s > 0 ? hop_s : 0.02; tfp = f0s; tcp = confs; tn = f0s && confs ? std::max(0, n) : 0;
         int best = -1; float bc = 0;
@@ -175,16 +226,17 @@ struct Resonator : tone::Synth {
         tclear = best < 0 ? 0 : (long long)(best * thop * sr);
     }
     void set_source(int ch, long long n, const float *const *p) {
-        src = Source(); freeze_at = -1;   /* a new recording: no frozen moment carried over */ if (!p || n <= 0) return;
+        src = Source(); freeze_at = -1; seek_from = -1;   /* a new recording: no frozen moment carried over */ if (!p || n <= 0) return;
         src.nch = std::min(ch, 2); for (int k = 0; k < src.nch; k++) src.f[k] = p[k]; src.frames = n;
     }
     void set_source_i16(int ch, long long n, const int16_t *const *p) {
-        src = Source(); freeze_at = -1;   /* a new recording: no frozen moment carried over */ if (!p || n <= 0) return;
+        src = Source(); freeze_at = -1; seek_from = -1;   /* a new recording: no frozen moment carried over */ if (!p || n <= 0) return;
         src.nch = std::min(ch, 2); for (int k = 0; k < src.nch; k++) src.s[k] = p[k]; src.frames = n;
     }
 
     /* a voice made ready for a note: the loop tuned to f (String/Tube) or the modes set (Bell) */
     void start(Voice &x, double f, double t, double vel) {
+        f = fold(f);
         std::fill(x.line.begin(), x.line.end(), 0.0f);
         f = std::fmin(std::fmax(f, 6.0), 0.45 * sr);                 /* extreme octaves: clamped, never unstable */
         x.active = true; x.started = false; x.releasing = false; x.stealing = false; x.has_next = false;
@@ -296,7 +348,20 @@ struct Resonator : tone::Synth {
     void start_freeze(Voice &x, double f) {
         std::fill(x.ola.begin(), x.ola.end(), 0.0f); std::fill(x.ph.begin(), x.ph.end(), 0.0f);
         std::fill(x.mask.begin(), x.mask.end(), 0.0f); std::fill(x.owner.begin(), x.owner.end(), 0);
-        const long long len = std::max<long long>(src.frames, 1), at = (long long)(std::fmin(1.0, std::fmax(0.0, colour)) * (double)std::max<long long>(0, len - SPN));
+        const long long len = std::max<long long>(src.frames, 1), at0 = (long long)(std::fmin(1.0, std::fmax(0.0, colour)) * (double)std::max<long long>(0, len - SPN));
+        /* 3c.1: the loudest moment within +-85 ms (8 hops) of the Moment - a bird call fades in and out, and a frozen soft
+           edge was a whole near-silent note */
+        const void *sid0 = src.f[0] ? (const void *)src.f[0] : (const void *)src.s[0];
+        if (at0 != seek_from || sid0 != seek_src) {      /* a chord's notes share the Moment: searched once (the 2c budget) */
+            long long best = at0; double be = -1;
+            for (int k = -8; k <= 8; k++) {
+                const long long a = at0 + (long long)k * SPH; if (a < 0 || a > std::max<long long>(0, len - SPN)) continue;
+                double e = 0; for (int j = 0; j < 3 * SPH + SPN; j += 4) { const float v = src.at(a + j); e += (double)v * v; }
+                if (e > be * 1.0001) { be = e; best = a; }
+            }
+            seek_from = at0; seek_src = sid0; seek_got = best;
+        }
+        const long long at = seek_got;
         /* a chord's notes freeze the same moment: it is analysed once (an 8-note chord start cost 2.99 ms, measured) */
         const void *sid = src.f[0] ? (const void *)src.f[0] : (const void *)src.s[0];
         if (at != freeze_at || sid != freeze_src) {
@@ -547,6 +612,19 @@ struct Resonator : tone::Synth {
     }
     /* the two timbre slots the morphs drive (spec D10): Focus and Colour, for the next note */
     void timbre(int which, double val, double, double) override { if (which == 0) focus = val; else colour = val; }
+    /* a setting changed (Kerem 2026-10-06: twisting the Harmonic filter changed nothing - settings were read at a note's
+       start, and a held note never restarts): every sounding note fades out over 50 ms while the same note starts again with
+       the settings now set (a free voice; else the steal path restarts it after its fade). Its planned release is kept */
+    void revoice(double t) {
+        double fs[VOICES], vs[VOICES], ts[VOICES], offs[VOICES]; int n = 0;
+        for (int i = 0; i < nv; i++) {
+            Voice &x = v[i];
+            if (!x.active || x.releasing || x.stealing) continue;
+            fs[n] = x.f; vs[n] = x.vel; ts[n] = std::fmax(t, x.on_t); offs[n] = x.off_t; n++;
+            x.stealing = true; x.has_next = false; x.steal_at = t; x.fade = 1.0 / (STEAL_S * sr);
+        }
+        for (int k = 0; k < n; k++) { attack(fs[k], ts[k], vs[k]); if (offs[k] < 1e299) release(offs[k]); }
+    }
     void stop_all() { for (auto &x : v) if (x.active) { x.stealing = true; x.has_next = false; x.steal_at = 0; x.fade = 1.0 / (STOP_S * sr); } }
 
     double resonate(Voice &x, double in) {

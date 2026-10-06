@@ -432,7 +432,7 @@
     metal: [["Harmonicity", 1, 12], ["Octaves", 0.4, 4]], membrane: [["Pitch decay", 0.01, 0.4], ["Octaves", 1, 8]], wavetable: [["Table", 0, 1], ["Brightness", 0, 1]],
     comb: [["Damping", 0, 1], ["Resonance", 0, 1]], formant: [["Vowel", 0, 1], ["Shift", 0, 1]] };
   var ROLE_DEF = { voice: { synth: "fm", gain: 0.45, harm: 1, index: 4 }, sect: { synth: "fm", gain: 0.8, harm: 2.02, index: 7.5 }, v3: { synth: "am", gain: 0.55, harm: 1.5, index: 3 } };
-  var rtPatchSent = 0, rtSendTimer = null;
+  var rtPatchSent = 0, rtSendTimer = null, gPrep = null, lastRoleFrames = 0;
   /* the site's login (3b) and the role setups (web/lab-roles.js): made before the role controls are first built below */
   var sb = typeof supabase !== "undefined" ? supabase.createClient(SUPA, ANON, { auth: { persistSession: true, autoRefreshToken: true } }) : null, me = null;
   var roles = FsRoles.session({ sb: sb, ctx: audio, analyse: analyseMono, onChange: onRolesChange });
@@ -529,13 +529,16 @@
   function sendRolesAndPatch(first) {
     var c = audio();
     ROLES.forEach(function (r) {
-      var v = roleSynth(r[0]), own = roles.buf(r[0]), buf = own || buffer || audio().createBuffer(1, 128, audio().sampleRate),
-        ana = own ? roles.ana(r[0]) : buffer ? analysis : null, key = own ? "r" + roles.recId(r[0]) : buffer ? "g" + recId : "none";
+      /* the recording loaded above, its silence cut out as the site's samples are (3c.1 F1) - once per recording */
+      var own = roles.buf(r[0]);
+      if (buffer && !own && (!gPrep || gPrep.id !== recId)) { gPrep = { id: recId, p: FsRoles.prepare(audio(), buffer, analysis) }; }
+      var v = roleSynth(r[0]), buf = own || (buffer ? gPrep.p.buf : null) || audio().createBuffer(1, 128, audio().sampleRate),
+        ana = own ? roles.ana(r[0]) : buffer ? gPrep.p.analysis : null, key = own ? "r" + roles.recId(r[0]) : buffer ? "g" + recId : "none";
       /* once per recording and role: each send is mixed and kept by the engine, on its audio thread (final review 3a I2/I3).
          A role's own sample (3b) goes in place of the recording loaded above */
       if (v.indexOf("s-") !== 0 || sentRec[r[1]] === key) { return; }
       sentRec[r[1]] = key;
-      FsRoles.sendRole(pnode.port, r[1], buf, ana); rtSent++;
+      FsRoles.sendRole(pnode.port, r[1], buf, ana); rtSent++; lastRoleFrames = buf.length;
     });
     pnode.port.postMessage({ type: first ? "route" : "patch", bytes: utf8(JSON.stringify(rtPatch())), tuning: tuning ? 1 : 0 });
     if (c.state === "suspended") { c.resume(); }
@@ -615,7 +618,7 @@
   if ($("#lab-rt-save")) { $("#lab-rt-save").addEventListener("click", saveRoute); }
 
   window.fsLab = { ready: ready, load: load, get analysis() { return analysis; }, get routes() { return routes; }, setRoute: setRoute, play: play, stop: stop,
-    get peak() { return peak; }, level: levelDb, get rtSent() { return rtSent; }, get rolesFor() { return roles.loadedFor; }, get rtPatchSent() { return rtPatchSent; },
+    get peak() { return peak; }, level: levelDb, get rtSent() { return rtSent; }, get rolesFor() { return roles.loadedFor; }, get lastRoleFrames() { return lastRoleFrames; }, get rtPatchSent() { return rtPatchSent; },
     /* tests: sign in as a setter (Kerem signs in on the site; the lab shares that session) */
     signIn: function (email, password) {
       if (!sb) { return Promise.resolve("no client"); }

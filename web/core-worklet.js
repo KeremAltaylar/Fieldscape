@@ -126,6 +126,7 @@ class FieldscapeEngine extends AudioWorkletProcessor {
     /* the screen's live reads (fs_engine_morphs / _chord / _route), ~30 times a second */
     this.liveEvery = Math.max(1, Math.round(sampleRate / 128 / 30)); this.liveN = 0;
     this.morphs = x.malloc(7 * 24 * 8); this.nums = x.malloc(24); this.label = x.malloc(32);
+    this.rolesP = x.fs_engine_roles ? x.malloc(4 * 24) : 0;     /* 3c.1: each role's level and notes (lab build only) */
     this.port.onmessage = (ev) => {
       const m = ev.data;
       try {
@@ -176,8 +177,10 @@ class FieldscapeEngine extends AudioWorkletProcessor {
     const v = new DataView(x.memory.buffer, p, 24);
     const m = new Float64Array(7 * Math.max(0, n));
     m.set(new Float64Array(x.memory.buffer, this.morphs, m.length));
+    let roles = null;
+    if (this.rolesP) { x.fs_engine_roles(this.e, this.rolesP, 6); roles = new Float32Array(24); roles.set(new Float32Array(x.memory.buffer, this.rolesP, 24)); }
     this.port.postMessage({ type: "live", n, clock: v.getFloat64(0, true), root: v.getInt32(8, true), shown: v.getInt32(12, true),
-      route: x.fs_engine_route(this.e), chord: { step, count: v.getInt32(16, true), label: this.cstr(this.label) }, morphs: m }, [m.buffer]);
+      route: x.fs_engine_route(this.e), chord: { step, count: v.getInt32(16, true), label: this.cstr(this.label) }, morphs: m, roles }, roles ? [m.buffer, roles.buffer] : [m.buffer]);
   }
   bytes(u8) {      /* a NUL-terminated copy in wasm memory; free it after the call */
     const p = this.x.malloc(u8.length + 1);
