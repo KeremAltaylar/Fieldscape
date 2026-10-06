@@ -1297,7 +1297,7 @@ struct Piece : Device {
         for (int h = 0; h < FS_MAX_VOICES; h++) {
             auto &op = in.r[h]; Rhythm &R = rh[h];
             if (op.op == 1) {
-                R.used = true; R.dying = false; R.cfg = op.cfg; R.grains = op.grains;
+                R.used = true; R.dying = false; R.cfg = op.cfg; R.grains = op.grains; for (auto &k : R.trk) k = Trk{};
                 R.tick = 0; R.step = 0; R.live = false; R.bars = 0; R.sentence_idx = 0; R.fx_ready = false;
                 R.gain.init(0);
                 for (auto &g : R.gv) g.on = false;
@@ -1312,9 +1312,8 @@ struct Piece : Device {
             }
             op.op = 0;
             if (op.gain) { op.gain = false; R.host_g = op.g; R.gain.p.linearRampTo(rhythm_level(R, h), 0.35, now); }
-            for (int s = 0; s < 4; s++) if (op.trk_set[s]) { op.trk_set[s] = false; R.trk[s] = op.trk[s]; }
             for (int s = 0; s < 4; s++) if (op.src_set[s]) {
-                op.src_set[s] = false;
+                op.src_set[s] = false; R.trk[s] = Trk{};      /* a new recording: the last one's track goes (final review 5 I1) */
                 Src &dst = R.grains ? R.gsrc : R.hit[s].src;
                 if (dst.data) my_trash.push_back(dst.data);
                 dst = op.src[s];
@@ -1323,6 +1322,7 @@ struct Piece : Device {
                     R.hit[s].blend.p.linearRampTo(amt, 0.2, now);
                 }
             }
+            for (int s = 0; s < 4; s++) if (op.trk_set[s]) { op.trk_set[s] = false; R.trk[s] = op.trk[s]; }
         }
         for (int h = 0; h < FS_MAX_VOICES; h++) {
             Rhythm &R = rh[h];
@@ -1694,6 +1694,7 @@ int fs_piece_rhythm_add(fs_device *d, const char *rhythm_json, int grains) {
         rhythm_of(j.kind == Json::OBJ ? &j : nullptr, op.cfg, p->main_rnd);   /* rhythmOf's sentence draw */
         op.op = 1; op.grains = grains != 0; op.gain = false;
         for (auto &s : op.src_set) s = false;
+        for (auto &s : op.trk_set) s = false;
         return h;
     }
     return -1;
@@ -1717,7 +1718,8 @@ void fs_piece_rhythm_track(fs_device *d, int h, int slot, const char *json) {
     Piece *p = P(d);
     if (!p || h < 0 || h >= FS_MAX_VOICES || slot < 0 || slot > 3 || !json) return;
     Json j = Json::parse(json);
-    const Json *tr = j.get("track"); const int n = tr ? (int)tr->size() : 0;
+    /* a recording judged unpitched (f0 0) does not follow, even on its confident frames (final review 5 I5) */
+    const Json *tr = j.n("f0", 0) > 0 ? j.get("track") : nullptr; const int n = tr ? (int)tr->size() : 0;
     float *tf = n ? (float *)std::malloc(sizeof(float) * 2 * n) : nullptr, *tc = tf ? tf + n : nullptr;
     for (int i = 0; i < n && tf; i++) { const Json *fr = tr->at(i); const Json *a = fr ? fr->at(0) : nullptr, *b = fr ? fr->at(1) : nullptr; tf[i] = a ? (float)a->num : 0; tc[i] = b ? (float)b->num : 0; }
     std::lock_guard<std::mutex> g(p->mu); sweep(p);

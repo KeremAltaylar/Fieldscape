@@ -8465,7 +8465,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
                 for (var i = 0; i < n; i++) { var s = d[i]; pcm[i * c + k] = s < -1 ? -32768 : (s > 1 ? 32767 : Math.round(s * 32767)); }
               }
               eng.node.port.postMessage({ type: "source", kind: kind, index: index, sub: sub, id: id, channels: c, pcm: pcm }, [pcm.buffer]);
-              if (labOn() && eng.wasm === "web/core-lab.wasm") { labPointTrack(eng, kind, index, sub, id, buf); }   /* 5 */
+              if (labOn() && eng.wasm === "web/core-lab.wasm") { labPointTrack(eng, kind, index, sub, id, buf, key + " " + path); }   /* 5 */
             });
           };
           var next = (eng.decodes || Promise.resolve()).then(run);
@@ -12885,8 +12885,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     }
     return labAnalyse.then(function (x) {
       var n = mono.length, p = x.malloc(n * 4); new Float32Array(x.memory.buffer, p, n).set(mono);
-      var need = x.fs_analyse(p, BigInt(n), sr, 0, 0), out = x.malloc(need + 1);
-      x.fs_analyse(p, BigInt(n), sr, out, need + 1);
+      /* one analysis: a buffer big enough for the usual track, a second call only when it is not (5 I3) */
+      var size = 1 << 22, out = x.malloc(size), need = x.fs_analyse(p, BigInt(n), sr, out, size);
+      if (need + 1 > size) { x.free(out); size = need + 1; out = x.malloc(size); x.fs_analyse(p, BigInt(n), sr, out, size); }
       var a = JSON.parse(new TextDecoder().decode(new Uint8Array(x.memory.buffer, out, need))); x.free(out); x.free(p);
       return a;
     });
@@ -13066,11 +13067,17 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   }
   /* Sample harmony 5: a point follows the chord (lab). Its follow kept in the lab table under the point's id, overlaid on
      the point for the engine; each point recording's pitch track (its first 60 s) analysed here and sent with it */
-  window.__fa.labTracks = 0;
-  function labPointTrack(eng, kind, index, sub, id, buf) {
-    var n = Math.min(buf.length, Math.round(60 * buf.sampleRate)), c = buf.numberOfChannels, mono = new Float32Array(n);
-    for (var k = 0; k < c; k++) { var d = buf.getChannelData(k); for (var i = 0; i < n; i++) { mono[i] += d[i] / c; } }
-    labAnalyseMono(mono, buf.sampleRate).then(function (a) {
+  window.__fa.labTracks = 0; window.__fa.labAnalyses = 0;
+  var labTrackCache = {};    /* a recording's track, by its key and path: analysed once, not on every engine (5 I3) */
+  window.__fa.labTrackKeys = function () { return Object.keys(labTrackCache).length; };
+  function labPointTrack(eng, kind, index, sub, id, buf, cacheKey) {
+    if (!labTrackCache[cacheKey]) {
+      var n = Math.min(buf.length, Math.round(60 * buf.sampleRate)), c = buf.numberOfChannels, mono = new Float32Array(n);
+      for (var k = 0; k < c; k++) { var d = buf.getChannelData(k); for (var i = 0; i < n; i++) { mono[i] += d[i] / c; } }
+      labTrackCache[cacheKey] = labAnalyseMono(mono, buf.sampleRate); window.__fa.labAnalyses++;
+      labTrackCache[cacheKey].catch(function (e) { delete labTrackCache[cacheKey]; window.__fa.labTrackErrors = (window.__fa.labTrackErrors || []).concat(String(e && e.message || e)); });
+    }
+    labTrackCache[cacheKey].then(function (a) {
       if (core !== eng || !eng.node || !a) { return; }
       eng.node.port.postMessage({ type: "track", kind: kind, index: index, sub: sub, id: id, bytes: new TextEncoder().encode(JSON.stringify({ f0: a.f0, hop_s: a.hop_s, track: a.track })) });
       window.__fa.labTracks++;

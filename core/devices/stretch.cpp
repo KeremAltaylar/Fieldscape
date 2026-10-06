@@ -328,7 +328,8 @@ struct Voice {
                     if (fi >= 0 && fi < cc.tn && cc.tc[fi] >= 0.8f && cc.tf[fi] > 0) {
                         double ch[5]; int m = 0;
                         for (int i = 0; i < 5; i++) if (gnote[i] >= 0) ch[m++] = 440 * std::pow(2.0, (gnote[i] - 69) / 12);
-                        tgt = 1200 * std::log2(harmony::follow_rate(1.0, cc.tf[fi], ch, m, 1.0));
+                        /* the pitch as it sounds, transposed: a +7 transpose follows from there (final review 5 I4) */
+                        tgt = 1200 * std::log2(harmony::follow_rate(sh_T, cc.tf[fi], ch, m, 1.0) / sh_T);
                     }
                     const double gr = 1.0 - std::exp(-5.0 * H / ((cc.glide > 0.05 ? cc.glide : 0.05) * sr));
                     folog += (tgt - folog) * gr;
@@ -546,7 +547,7 @@ struct Stretch : Device {
     Stretch() { for (int i = 0; i < P_COUNT; i++) value[i] = STRETCH_PARAMS[i].def; }
     void *cast(const char *kind) override { return std::strcmp(kind, "stretch") ? nullptr : this; }
     /* 5: the recording's pitch track; the one before is kept a generation (a voice reads it until its next frame) */
-    std::vector<float> trk_f, trk_c, old_f, old_c; double trk_hop = 0.02;
+    std::vector<float> trk_f, trk_c, old_f, old_c; double trk_hop = 0.02; bool chord_seen = false;
     void set_track(const float *f0s, const float *confs, int n, double hop) {
         old_f.swap(trk_f); old_c.swap(trk_c);
         trk_f.assign(f0s && confs && n > 0 ? f0s : nullptr, f0s && confs && n > 0 ? f0s + n : nullptr);
@@ -570,7 +571,8 @@ struct Stretch : Device {
         if (any) { for (int i = 0; i < 5; i++) last_chord[i] = value[P_CHORD0 + i]; last_root = value[P_ROOT] >= 0 ? value[P_ROOT] : value[P_CHORD0]; }
         for (int i = 0; i < 5; i++) c.chord[i] = last_chord[i];
         c.root = last_root;
-        c.follow = value[P_FOLLOW]; c.tn = (int)trk_f.size(); c.tf = c.tn ? trk_f.data() : nullptr; c.tc = c.tn ? trk_c.data() : nullptr; c.thop = trk_hop;
+        if (any) chord_seen = true;
+        c.follow = chord_seen ? value[P_FOLLOW] : 0; c.tn = (int)trk_f.size();   /* before any chord, no follow (5 I2) */ c.tf = c.tn ? trk_f.data() : nullptr; c.tc = c.tn ? trk_c.data() : nullptr; c.thop = trk_hop;
         c.shaping = std::fabs(c.transpose) > 1e-4 || c.tune > 0 || (c.layers >= 0.5f && c.harmony > 0) || c.blur > 0 || (c.follow > 0 && c.tn > 0);
         return c;
     }
@@ -596,6 +598,7 @@ struct Stretch : Device {
     }
 
     void set_source(int channels, int frames, const float *const *s) override {
+        set_track(nullptr, nullptr, 0, 0.02);    /* a new recording: the last one's pitch track goes (final review 5 I1) */
         if (channels < 1 || frames < 1 || !s) { src = Source(); return; }
         src = Source();
         src.ch[0] = s[0]; src.ch[1] = channels > 1 ? s[1] : s[0]; src.len = frames;
@@ -603,6 +606,7 @@ struct Stretch : Device {
     }
 
     void set_source_i16(int channels, int frames, const int16_t *const *s) override {
+        set_track(nullptr, nullptr, 0, 0.02);
         if (channels < 1 || frames < 1 || !s) { src = Source(); return; }
         src = Source();
         src.s16[0] = s[0]; src.s16[1] = channels > 1 ? s[1] : s[0]; src.len = frames;

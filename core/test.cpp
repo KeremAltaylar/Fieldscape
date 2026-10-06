@@ -748,6 +748,29 @@ int main() {
             std::vector<float> w(o.end() - (long)(1.5 * SR), o.end());
             return std::make_pair(peak_amp(w, SR, 349.23), peak_amp(w, SR, 330)); };
         const auto f1 = stretch_peak(1), f0 = stretch_peak(0);
+        /* final review 5: (I1) a new recording clears the old one's track; (I2) before any chord, no follow; (I4) with a
+           transpose the followed pitch is the transposed one (330 Hz +7 -> 494 Hz -> A 440, not 523) */
+        auto stretch2 = [&](double transpose, bool chord, bool second, double want, double other, double hz = 330) {
+            std::vector<float> rec((size_t)(6 * SR)); for (size_t i = 0; i < rec.size(); i++) rec[i] = (float)(0.3 * std::sin(2 * sampler::PI * hz * i / SR));
+            fs_device *d = fs_create("stretch"); fs_prepare(d, SR, B);
+            const float *pp[1] = { rec.data() }; fs_set_source(d, 1, (int)rec.size(), pp);
+            fs_set_param(d, 0, 0); fs_set_param(d, 1, 0.25f);
+            const std::string shape = "{\"glide\":0.5,\"transpose\":" + std::to_string(transpose) + "}";
+            fs_stretch_shape(d, shape.c_str());
+            if (chord) { const float c6[6] = { 62, 65, 69, -1, -1, 62 }; for (int k = 0; k < 6; k++) fs_set_param(d, 18 + k, c6[k]); }
+            std::vector<float> tf(300, (float)hz), tc(300, 0.95f); fs_stretch_track(d, tf.data(), tc.data(), 300, 0.02, 1.0f);
+            std::vector<float> rec2;
+            if (second) { rec2 = rec; const float *p2[1] = { rec2.data() }; fs_set_source(d, 1, (int)rec2.size(), p2); }   /* a new recording, no track yet */
+            std::vector<float> o;
+            for (int b2 = 0; b2 < (int)(5 * SR / B); b2++) { fs_process(d, B); const float *l = fs_out(d, 0); o.insert(o.end(), l, l + B); }
+            fs_destroy(d);
+            std::vector<float> w(o.end() - (long)(1.5 * SR), o.end());
+            return std::make_pair(peak_amp(w, SR, want), peak_amp(w, SR, other)); };
+        /* no chord: an E-flat (311 Hz) - the stretch's default D minor 9 would pull it to D or E */
+        const auto nochord = stretch2(0, false, false, 311.13, 329.63, 311.13), fresh = stretch2(0, true, true, 330, 349.23), tr = stretch2(7, true, false, 440, 523.25);
+        std::printf("5 stretch: no chord 311 %.3g vs 330 %.3g; a new recording 330 %.3g vs 349 %.3g; transpose +7 440 %.3g vs 523 %.3g\n",
+            nochord.first, nochord.second, fresh.first, fresh.second, tr.first, tr.second);
+        assert(nochord.first > 10 * nochord.second && fresh.first > 10 * fresh.second && tr.first > 10 * tr.second);
         std::printf("5 stretch: follow 1 349 Hz %.3g vs 330 Hz %.3g; follow 0 349 %.3g vs 330 %.3g\n", f1.first, f1.second, f0.first, f0.second);
         assert(f1.first > 10 * f1.second && f0.second > 10 * f0.first);
         /* hits (an E-flat, 311 Hz - not in the route's D minor 9): a pitched hit's logged rate lands on a chord note the route plays (within 2 cents, any octave) at follow 1 */
@@ -769,6 +792,27 @@ int main() {
                 worst = std::max(worst, best); n_hit++; }
             return std::make_pair(n_hit, worst); };
         const auto on = hits("{\"follow\":1}"), off = hits("{}");
+        /* final review 5 I5: grains of a recording judged unpitched (f0 0) do not follow, even on confident frames */
+        { struct G2 { std::vector<double> r; } gl;
+          auto lg = [](void *p, int role, double f, double, double, double) { if (role == 20) ((G2 *)p)->r.push_back(f); };
+          auto grains = [&](const char *trk) {
+              gl.r.clear(); unsigned seed = 9; fs_device *pc = fs_create("piece"); fs_prepare(pc, SR, B); fs_piece_test_hooks(pc, fixed_draw, &seed, lg, &gl);
+              fs_piece_add_route(pc, "{}");
+              const int h = fs_piece_rhythm_add(pc, "{\"follow\":1}", 1);
+              const int n = (int)(2 * SR); short *pcm = (short *)std::malloc(sizeof(short) * n);
+              for (int i = 0; i < n; i++) pcm[i] = (short)(8000 * std::sin(2 * sampler::PI * 311 * i / SR));
+              fs_piece_rhythm_source(pc, h, 0, 1, n, pcm);
+              fs_piece_rhythm_track(pc, h, 0, trk);
+              for (int b2 = 0; b2 < (int)(8 * SR / B); b2++) { fs_piece_walk(pc, 0, 0.3, 0); fs_process(pc, B); }
+              fs_destroy(pc);
+              return gl.r; };
+          std::string tr = "["; for (int k = 0; k < 120; k++) tr += std::string(k ? "," : "") + "[311,0.95,0]"; tr += "]";
+          const auto pitched = grains(("{\"f0\":311,\"hop_s\":0.02,\"track\":" + tr + "}").c_str()), unp = grains(("{\"f0\":0,\"hop_s\":0.02,\"track\":" + tr + "}").c_str());
+          /* grains scatter their own pitch, so: against the same grains with no track at all */
+          const auto none = grains("{}");
+          auto moved = [&](const std::vector<double> &r) { int m = 0; for (size_t i = 0; i < r.size() && i < none.size(); i++) if (std::fabs(1200 * std::log2(r[i] / none[i])) > 1) m++; return m; };
+          std::printf("5 grains: against no track, pitched %d of %zu grains moved; judged unpitched %d of %zu\n", moved(pitched), pitched.size(), moved(unp), unp.size());
+          assert(pitched.size() > 3 && unp.size() == none.size() && moved(pitched) > 0 && moved(unp) == 0); }
         std::printf("5 hits: follow 1 %d hits, worst %.2f cents off a chord note; follow 0 %d hits, worst %.2f\n", on.first, on.second, off.first, off.second);
         assert(on.first > 3 && on.second < 2 && off.second > 5);
     }

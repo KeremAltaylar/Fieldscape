@@ -301,6 +301,15 @@ try {
     const pc = PT.geometry.coordinates;
     for (let i = 0; i < 40 && !((await ev("__fa.labTracks || 0")) > 0); i++) { await ev(`__fa.walkTo(${pc[0]}, ${pc[1]})`); await sleep(500); }
     check("5: walking to it, its recording's pitch track goes to the engine", (await ev("__fa.labTracks || 0")) > 0, await ev("__fa.labTracks"));
+    /* final review 5 I3: a new engine (lab off and on) gets the track again, without analysing the recording again */
+    const an0 = await ev("__fa.labAnalyses"), tk0 = await ev("__fa.labTracks");
+    await ev("document.querySelector('#pp-lab').click(), 0"); await sleep(4000);
+    await ev("document.querySelector('#pp-lab').click(), 0"); await sleep(3000);
+    for (let i = 0; i < 40 && !((await ev("__fa.labTracks")) > tk0); i++) { await ev(`__fa.walkTo(${pc[0]}, ${pc[1]})`); await sleep(500); }
+    check("5: a new engine gets the track again from the cache, no second analysis (final review 5 I3)",
+      (await ev("__fa.labTracks")) > tk0 && an0 > 0 && (await ev("__fa.labAnalyses")) <= (await ev("__fa.labTrackKeys()")),
+      [an0, await ev("__fa.labAnalyses"), await ev("__fa.labTrackKeys()"), tk0, await ev("__fa.labTracks")]);
+    check("5: no recording's analysis failed", !(await ev("__fa.labTrackErrors")), await ev("__fa.labTrackErrors"));
     await ev("(function(){ var s = document.querySelector('#rp-lab-follow'); s.value = '0'; s.dispatchEvent(new Event('input')); return 1; })()");
     await sleep(2500);
     check("5: follow 0 - the engine gets the point exactly as saved", await ev(`__fa.coreSentFeature('${PT.id}') === JSON.stringify(__fa.features().filter(function (f) { return f.properties.id === '${PT.id}'; })[0])`), await ev(`(__fa.coreSentFeature('${PT.id}') || '').slice(0, 80)`));
