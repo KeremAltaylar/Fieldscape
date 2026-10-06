@@ -633,7 +633,7 @@ struct Piece : Device {
     Synth *make(int type) {
         Synth *s;
         if (is_sampler(type)) {           /* 3a: the sampler synths, 6 voices a role */
-            static const int MAP[6] = { sampler::RETUNE, sampler::RESONATE, sampler::HARMONIC, sampler::FORMANT, sampler::PULSAR, sampler::FREEZE };
+            static const int MAP[8] = { sampler::RETUNE, sampler::RESONATE, sampler::HARMONIC, sampler::FORMANT, sampler::PULSAR, sampler::FREEZE, sampler::SFM, sampler::SAM };
             auto *r = new sampler::Resonator(); r->synth = MAP[type - S_RETUNE]; r->nv = 6;
             r->init(sr);
             return r;

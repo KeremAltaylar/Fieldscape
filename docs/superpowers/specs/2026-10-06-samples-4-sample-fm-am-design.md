@@ -21,7 +21,7 @@ Decisions under Kerem's go-ahead of 2026-10-06; each the recommended option.
 |---|---|
 | Core | FM depth 0 = Retune at Position 0 (sample for sample) |
 | Core | FM on a 220 Hz sine, ratio 1, depth 0.5: a 440 Hz sideband ≥ −25 dB of 220 (depth 0: under −60) |
-| Core | AM depth ½: 440 Hz at −12 … 0 dB of 220; ring (depth 1): 220 Hz ≥ 30 dB under depth 0's |
+| Core | AM depth ½: 440 Hz at −13 … 0 dB of 220 (exactly −12.04: a quarter of the carrier); ring (depth 1): 220 Hz ≥ 30 dB under depth 0's |
 | Core | an unpitched recording: finite output; 24 voices within the budget |
 | Core | levels against fm on a route's Voice (the 3a level check gains s-fm, s-am) |
 | Browser | both synths in the Sampler group (now 8); their panel rows: model, ratio, depth, tune, sample; each sounds on the Voice |
