@@ -562,6 +562,67 @@ int main() {
         }
         assert(worst >= 0);
     }
+    {   /* 3d: the pitch sampler's models (method 0 One-shot, 1 Looped, 2 Granular) and Position (Focus) */
+        auto tone = [&](double secs, double f, double third, double from) {   /* f with a 3rd harmonic of `third` from `from` s */
+            std::vector<float> x((size_t)(secs * SR));
+            for (size_t i = 0; i < x.size(); i++) { const double t = i / SR; x[i] = (float)(0.3 * std::sin(2 * sampler::PI * f * t) + 0.15 * std::sin(2 * sampler::PI * 2 * f * t) + (t >= from ? third : 0) * std::sin(2 * sampler::PI * 3 * f * t)); }
+            return x; };
+        auto play = [&](const std::vector<float> &src, int model, double pos, double note, double secs) {
+            sampler::Resonator r; r.init(SR); r.synth = sampler::RETUNE; r.nv = 6;
+            const float *p[1] = { src.data() }; r.set_source(1, (long long)src.size(), p);
+            const int nh = (int)(src.size() / SR / 0.02) + 1; std::vector<float> tf((size_t)nh, 220.0f), tc((size_t)nh, 0.95f);
+            r.set_track(220, 0.02, tf.data(), tc.data(), nh);
+            r.method = model; r.focus = pos; r.colour = 1; r.tune = 1;
+            r.attack(note, 0, 0.5);
+            std::vector<float> L((size_t)(secs * SR), 0.0f), R(L.size(), 0.0f);
+            for (size_t i = 0; i < L.size(); i += 128) r.render(L.data() + i, R.data() + i, (int)std::min<size_t>(128, L.size() - i), i / SR);
+            return L; };
+        auto win = [&](const std::vector<float> &x, double a, double z) { return std::vector<float>(x.begin() + (long)(a * SR), x.begin() + (long)(z * SR)); };
+        auto rms = [&](const std::vector<float> &x, double a, double z) { double e = 0; size_t n = 0; for (size_t i = (size_t)(a * SR); i < (size_t)(z * SR) && i < x.size(); i++) { e += (double)x[i] * x[i]; n++; } return 10 * std::log10(e / std::max<size_t>(1, n) + 1e-30); };
+        auto steps = [&](const std::vector<float> &x, double a, double z) { double m = 0; for (size_t i = (size_t)(a * SR) + 1; i < (size_t)(z * SR) && i < x.size(); i++) m = std::max(m, (double)std::fabs(x[i] - x[i - 1])); return m; };
+        /* Position: the second half of a recording has a 3rd harmonic; at 0.75 the note reads it, at 0 it does not */
+        const std::vector<float> halves = tone(2, 220, 0.3, 1.0);
+        auto third = [&](const std::vector<float> &o) { const auto w = win(o, 0.05, 0.4); return 20 * std::log10(peak_amp(w, SR, 660) / peak_amp(w, SR, 220)); };
+        const double h0 = third(play(halves, 0, 0.0, 220, 0.5)), h75 = third(play(halves, 0, 0.75, 220, 0.5));
+        std::printf("3d position: the 3rd harmonic %.1f dB at Position 0, %.1f dB at 0.75\n", h0, h75);
+        assert(h75 > h0 + 20);
+        /* Looped: a 5 s note on a 1 s recording sounds to the end, on pitch, no join steps beyond the tone's own */
+        const std::vector<float> one = tone(1, 220, 0, 9);
+        const std::vector<float> lp = play(one, 1, 0.3, 220, 5), os = play(one, 0, 0.3, 220, 5);
+        const double lp_late = rms(lp, 4, 5), lp_early = rms(lp, 0.2, 0.6), os_late = rms(os, 4, 5);
+        const double cents = 1200 * std::log2(line_peak(win(lp, 3, 4.4), SR, 220, 0.02) / 220);
+        std::printf("3d looped: 4-5 s %.1f dB (first 0.2-0.6 s %.1f; One-shot 4-5 s %.1f); %.2f cents; largest step %.4f (steady %.4f)\n",
+            lp_late, lp_early, os_late, cents, steps(lp, 1, 5), steps(lp, 0.2, 0.6));
+        assert(lp_late > lp_early - 6 && os_late < lp_early - 40 && std::fabs(cents) < 5 && steps(lp, 1, 5) <= 1.3 * steps(lp, 0.2, 0.6));
+        /* a 0.3 s recording looped: still sounds, still no clicks (Review Focus 2) */
+        const std::vector<float> tiny = tone(0.3, 220, 0, 9), tl = play(tiny, 1, 0.5, 220, 3);
+        bool fin = true; for (float v : tl) fin = fin && std::isfinite(v);
+        std::printf("3d looped short: 2-3 s %.1f dB, largest step %.4f (steady %.4f)\n", rms(tl, 2, 3), steps(tl, 0.5, 3), steps(tl, 0.05, 0.15));
+        assert(fin && rms(tl, 2, 3) > rms(tl, 0.05, 0.15) - 6 && steps(tl, 0.5, 3) <= 1.3 * steps(tl, 0.05, 0.15));
+        /* Granular: steady over 5 s (100 ms windows within 3 dB), on pitch, near One-shot's level (Review Focus 5) */
+        const std::vector<float> gr = play(one, 2, 0.5, 220, 5);
+        double lo = 1e9, hi = -1e9; for (double t = 0.5; t < 4.9; t += 0.1) { const double l = rms(gr, t, t + 0.1); lo = std::min(lo, l); hi = std::max(hi, l); }
+        const double gc = 1200 * std::log2(line_peak(win(gr, 2, 3.4), SR, 220, 0.02) / 220);
+        std::printf("3d granular: 100 ms windows %.1f .. %.1f dB; %.2f cents; level %.1f vs One-shot %.1f\n", lo, hi, gc, rms(gr, 1, 4), rms(os, 0.2, 0.6));
+        assert(hi - lo < 3 && std::fabs(gc) < 10 && std::fabs(rms(gr, 1, 4) - rms(os, 0.2, 0.6)) < 3);
+        /* budget: 24 voices of each model */
+#ifdef FS_TEST_O1
+        const double slack = 1.5;
+#else
+        const double slack = 1;
+#endif
+        for (int model : { 1, 2 }) {
+            sampler::Resonator r; r.init(48000); r.synth = sampler::RETUNE; const float *p[1] = { one.data() }; r.set_source(1, (long long)one.size(), p);
+            std::vector<float> tf(60, 220.0f), tc(60, 0.95f); r.set_track(220, 0.02, tf.data(), tc.data(), 60); r.method = model; r.focus = 0.4;
+            for (int k = 0; k < sampler::Resonator::VOICES; k++) r.attack(110 * std::pow(2.0, k / 12.0), 0, 0.05);
+            std::vector<double> ms; std::vector<float> b1(128), b2(128);
+            for (int k = 0; k < (int)(4 * 48000 / 128); k++) { std::fill(b1.begin(), b1.end(), 0.0f); auto c0 = std::chrono::steady_clock::now(); r.render(b1.data(), b2.data(), 128, k * 128 / 48000.0);
+                if (k > 100) ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - c0).count()); }
+            std::sort(ms.begin(), ms.end());
+            std::printf("3d budget: 24 %s voices, 99.9%% of blocks within %.3f ms (budget %.2f)\n", model == 1 ? "Looped" : "Granular", ms[(size_t)(ms.size() * 0.999)], 1.33 * slack);
+            assert(ms[(size_t)(ms.size() * 0.999)] < 1.33 * slack);
+        }
+    }
     {   /* 3c.1 F4: each role's level and sounding notes, from the whole engine */
         fs_engine *e = fs_engine_create(SR, B);
         fs_engine_features(e, "{\"type\":\"FeatureCollection\",\"features\":[{\"type\":\"Feature\","
@@ -1871,7 +1932,7 @@ int main() {
           std::vector<float> tf(200, 440.0f), tc(200, 0.95f);
           auto fluct = [&](double fifth) {
               tone::SimpleSynth dg; dg.init(SR); sampler::Resonator sm; sm.init(SR); const float *p[1] = { tone.data() }; sm.set_source(1, (long long)tone.size(), p);
-              sm.set_track(440, 0.02, tf.data(), tc.data(), 200); sm.synth = sampler::RETUNE; sm.nv = 6;
+              sm.set_track(440, 0.02, tf.data(), tc.data(), 200); sm.synth = sampler::RETUNE; sm.nv = 6; sm.focus = 0;   /* 3d: Position 0, from the start */
               dg.attack(220, 0, 0.5); sm.attack(fifth, 0, 0.5);
               std::vector<float> L((size_t)(4 * SR), 0.0f), R(L.size(), 0.0f);
               for (size_t i = 0; i < L.size(); i += 128) { dg.render(L.data() + i, R.data() + i, 128, i / SR); sm.render(L.data() + i, R.data() + i, 128, i / SR); }

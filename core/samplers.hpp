@@ -135,6 +135,8 @@ struct Voice {
     double vfocus = 0.5, fpow = 0; uint32_t rng = 1;             /* Freeze (2c): the note's Focus, the moment's power, jitter */
     /* the pitch sampler (3a): read place and speed, the recording's pitch there, its brightness filter, the end */
     double rpos = 0, rspd = 1, rf0 = 261.63, rlp = 0, rlpa = 0; long long rend = 0;
+    /* 3d: Looped - the loop [rls, rls + rL) and its crossfade; Granular - four grains (source place, age), a new one every hop */
+    double rls = 0, rL = 0, rxf = 1; double gpos[4] = {}; long long gage[4] = {}; bool gon[4] = {}; long long gt = 0; double gc = 0;
 };
 
 inline bool spectrum_of(const float *x, long long n, double sr, std::vector<float> &out) {
@@ -181,8 +183,10 @@ struct Resonator : tone::Synth {
 
     static double t60(double focus) { return 0.2 * std::pow(50.0, std::fmin(1.0, std::fmax(0.0, focus))); }
 
+    std::vector<float> ghann;                                      /* 3d: one 80 ms Hann grain, looked up (24 voices x 4 grains of cos were over budget) */
     void init(double s) override {
         sr = s; kglide = 1 - std::exp(-1.0 / (0.01 * sr));
+        { const int G = (int)(0.08 * sr); ghann.resize((size_t)G); for (int i = 0; i < G; i++) ghann[(size_t)i] = (float)(0.5 - 0.5 * std::cos(2 * PI * i / G)); }
         for (auto &x : v) {
             x.line.assign(MASK + 1, 0.0f);
             x.ola.assign(SPN, 0.0f); x.hold.assign(SPN / 2 + 1, 0.0f); x.ph.assign(SPN / 2 + 1, 0.0f); x.mask.assign(SPN / 2 + 1, 0.0f); x.owner.assign(SPN / 2 + 1, 0);
@@ -292,12 +296,73 @@ struct Resonator : tone::Synth {
        clearest moment (or Position); a one-shot fades out over its last 5 ms. Brightness (Colour): a low-pass following
        the note. No level matching - the recording's own dynamics. */
     void start_retune(Voice &x, double f) {
-        x.rpos = offset_s > 0 ? offset_s * sr : (double)tclear; x.rend = src.frames;
+        /* 3d Position (Focus): 0 ... 1 from the pitch track's first clear frame to the end (the bench's offset wins) */
+        const double len = (double)src.frames, from = (double)tclear;
+        const double at = offset_s > 0 ? offset_s * sr : from + std::fmin(1.0, std::fmax(0.0, focus)) * std::fmax(0.0, len - from - 2);
+        x.rpos = at; x.rend = src.frames;
         x.rf0 = tf0 > 0 ? tf0 : 261.63; x.sf = f; x.rspd = std::pow(f / x.rf0, tune);
         const double b = std::fmin(1.0, std::fmax(0.0, colour));
         x.rlpa = b >= 0.999 ? 0 : std::exp(-2 * PI * std::fmin(f * (1.5 + 30 * b * b), 0.45 * sr) / sr); x.rlp = 0; x.agc = 1;
+        if (x.method == 1) {        /* Looped: about 0.5 s of whole periods at Position, inside the recording */
+            const double f0 = track_f0(at), P = sr / (f0 > 0 ? f0 : 261.63);
+            double L = std::fmax(1.0, std::round(0.5 * sr / P)) * P;
+            L = std::fmin(L, std::fmax(8.0, len - 4));
+            x.rxf = std::fmin(0.03 * sr, 0.5 * L);
+            double s0 = std::fmin(at, len - 3 - L); s0 = std::fmax(s0, x.rxf + 2);
+            x.rls = s0; x.rL = L; x.rpos = s0;
+        }
+        if (x.method == 2) {        /* Granular: grains around Position */
+            x.gc = at; x.gt = 0; for (int g = 0; g < 4; g++) x.gon[g] = false; x.rpos = at;
+        }
+    }
+    /* the recording's pitch at a place (its track where confident, else its f0) */
+    double track_f0(double pos) const {
+        const int fr = (int)std::floor(pos / sr / thop);
+        if (fr >= 0 && fr < tn && tcp[fr] >= 0.8f && tfp[fr] > 0) return tfp[fr];
+        return tf0;
+    }
+    double read(double pos) const {
+        const long long i = (long long)std::floor(pos); const double u = pos - (double)i;
+        const double y0 = src.at(i - 1), y1 = src.at(i), y2 = src.at(i + 1), y3 = src.at(i + 2);
+        const double c1 = 0.5 * (y2 - y0), c2 = y0 - 2.5 * y1 + 2 * y2 - 0.5 * y3, c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
+        return ((c3 * u + c2) * u + c1) * u + y1;
     }
     double retune(Voice &x) {
+        if (x.method == 1 || x.method == 2) {
+            const double ft = x.rpos / sr / thop - 0.5; const int fr = (int)std::floor(ft);
+            if (fr >= 0 && fr < tn && tcp[fr] >= 0.8f && tfp[fr] > 0) x.rf0 = tfp[fr];
+            x.rspd += (std::pow(x.sf / x.rf0, tune) - x.rspd) * kglide;
+            double y = 0;
+            if (x.method == 1) {    /* the loop, its last rxf crossfaded into the same place one loop earlier */
+                if (x.rpos >= x.rls + x.rL) x.rpos -= x.rL;
+                y = read(x.rpos);
+                const double into = x.rpos - (x.rls + x.rL - x.rxf);
+                if (into > 0) { const double w = into / x.rxf; y = y * (1 - w) + read(x.rpos - x.rL) * w; }
+                x.rpos += x.rspd;
+            } else {                /* four Hann grains of 80 ms, one every 20 ms, at Position +-30 ms; the read place stays */
+                const long long G = (long long)(0.08 * sr), H = G / 4;
+                if (x.gt % H == 0) {
+                    const int g = (int)((x.gt / H) % 4);
+                    x.rng = x.rng * 1664525u + 1013904223u;
+                    /* the jitter in whole periods of the recording there: grains of a pitched sound stay in phase (a steady
+                       level - random phases beat by 6 dB, measured) */
+                    const double P = sr / (x.rf0 > 0 ? x.rf0 : 261.63);
+                    const double jit = std::round(((x.rng >> 8) / 16777216.0 * 2 - 1) * 0.03 * sr / P) * P;
+                    x.gpos[g] = std::fmin(std::fmax(1.0, x.rpos + jit), std::fmax(1.0, (double)src.frames - 3 - G * x.rspd)); x.gage[g] = 0; x.gon[g] = true;
+                }
+                /* the read place runs at the note's speed and steps back whole periods to stay at Position: every grain
+                   starts on it, so a pitched sound's grains are in phase (each 20 ms later, 20 ms of it further on) */
+                { const double P = sr / (x.rf0 > 0 ? x.rf0 : 261.63);
+                  x.rpos += x.rspd; if (x.rpos > x.gc + 0.03 * sr) x.rpos -= std::fmax(1.0, std::round(0.03 * sr / P)) * P; }
+                for (int g = 0; g < 4; g++) if (x.gon[g]) {
+                    y += ghann[(size_t)x.gage[g]] * read(x.gpos[g]);
+                    x.gpos[g] += x.rspd; if (++x.gage[g] >= G) x.gon[g] = false;
+                }
+                y *= 0.5; x.gt++;   /* Hann at 75 % overlap sums to 2 */
+            }
+            x.rlp = (1 - x.rlpa) * y + x.rlpa * x.rlp; if (std::fabs(x.rlp) < 1e-20) x.rlp = 0;
+            return x.rlp;
+        }
         const double left = (double)x.rend - 2 - x.rpos;
         if (left <= 0) return 0;
         const double ft = x.rpos / sr / thop - 0.5; const int fr = (int)std::floor(ft);   /* frame centres at (k + 0.5) thop */
