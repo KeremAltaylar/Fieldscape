@@ -159,6 +159,10 @@ class FieldscapeEngine extends AudioWorkletProcessor {
           bufs.forEach((p) => x.free(p)); x.free(ptrs);
         } else if (m.type === "analysis") {
           const p = this.bytes(m.bytes); x.fs_engine_role_analysis(this.e, m.role, p); x.free(p);
+        } else if (m.type === "track" && x.fs_engine_source_track) {   /* 5 lab mode: a point recording's pitch track */
+          const p = this.bytes(m.bytes), id = this.bytes(Uint8Array.from(m.id + "", (ch) => ch.charCodeAt(0)));
+          x.fs_engine_source_track(this.e, m.kind.charCodeAt(0), m.index, m.sub, id, p);
+          x.free(id); x.free(p);
         } else if (m.type === "source") {
           const n = m.pcm.length, p = x.fs_alloc_i16(n);
           new Int16Array(x.memory.buffer, p, n).set(m.pcm);

@@ -1333,6 +1333,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 #pp-body .ppsample-warn:empty { display: none; }
 #pp-body .ppsample-warn { color: var(--lamp); font-size: var(--t-xs); }
 #pp-body .ppsample-wave { width: 100%; height: 40px; display: block; cursor: pointer; }
+.rp-lab { display: flex; align-items: center; gap: var(--s-1); font-family: var(--font-mono); font-size: var(--t-xs); text-transform: uppercase; letter-spacing: 0.04em; color: var(--faint); }
+.rp-lab[hidden] { display: none; }
+.rp-lab i { font-style: normal; color: var(--ink); min-width: 3em; text-align: right; }
 #pp-body .pplive-notes { font-size: var(--t-xs); min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 #pp-body .pplive-meter { display: block; height: 6px; background: var(--hairline); border-radius: 3px; overflow: hidden; }
 #pp-body .pplive-meter b { display: block; height: 100%; width: 0; background: var(--accent); transition: width 80ms linear; }
@@ -5913,6 +5916,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var r = rhythmOf(f), q = soundOf(f), body = $("#rp-body");
     $("#rp-title").textContent = "Sound · " + MODE_LABEL[modeOf(f)] + " · " + label(f);
     body.textContent = "";
+    labFollowControl(f);
 
     /* Every point has a presence whether or not it has anything to play, so This point is the
        first column of all three panels and the sound is what may be missing. */
@@ -8313,10 +8317,19 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   /* Sample harmony 3c, lab mode: each route goes to the engine with its lab role setups laid over its patch (the sampler
      synth and its controls only; never saved), and the walker's route's role samples follow it */
   function coreFeature(f) {
+    if (labOn() && f.properties.kind === "point") {   /* 5: a point's follow, overlaid (never saved into the point) */
+      var lp = labRoutes[f.properties.id], fol = lp && lp.point && lp.point.follow;
+      if (!(fol > 0)) { return f; }
+      var h = JSON.parse(JSON.stringify(f)), hp = h.properties;
+      hp.sound = hp.sound || {}; hp.sound.shape = Object.assign({}, hp.sound.shape || {}, { follow: fol });
+      hp.rhythm = Object.assign({}, hp.rhythm || {}, { follow: fol });
+      return h;
+    }
     if (!labOn() || f.properties.kind !== "route" || !labRoutes[f.properties.id]) { return f; }
     var g = JSON.parse(JSON.stringify(f)); g.properties.patch = FsRoles.overlay(f.properties.patch, labRoutes[f.properties.id]);
     return g;
   }
+  window.__fa.coreSentFeature = function (id) { return core && core.sent && core.sent[id] || null; };
   window.__fa.coreSentPatch = function (id) { var t = core && core.sent && core.sent[id]; return t ? JSON.stringify(JSON.parse(t).properties.patch) : null; };
   var labRoutesLoading = null, labEngineFailed = false;
   function labWantWasm() { return labOn() && !labEngineFailed ? "web/core-lab.wasm" : "web/core.wasm"; }
@@ -8452,6 +8465,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
                 for (var i = 0; i < n; i++) { var s = d[i]; pcm[i * c + k] = s < -1 ? -32768 : (s > 1 ? 32767 : Math.round(s * 32767)); }
               }
               eng.node.port.postMessage({ type: "source", kind: kind, index: index, sub: sub, id: id, channels: c, pcm: pcm }, [pcm.buffer]);
+              if (labOn() && eng.wasm === "web/core-lab.wasm") { labPointTrack(eng, kind, index, sub, id, buf, key + " " + path); }   /* 5 */
             });
           };
           var next = (eng.decodes || Promise.resolve()).then(run);
@@ -12871,8 +12885,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     }
     return labAnalyse.then(function (x) {
       var n = mono.length, p = x.malloc(n * 4); new Float32Array(x.memory.buffer, p, n).set(mono);
-      var need = x.fs_analyse(p, BigInt(n), sr, 0, 0), out = x.malloc(need + 1);
-      x.fs_analyse(p, BigInt(n), sr, out, need + 1);
+      /* one analysis: a buffer big enough for the usual track, a second call only when it is not (5 I3) */
+      var size = 1 << 22, out = x.malloc(size), need = x.fs_analyse(p, BigInt(n), sr, out, size);
+      if (need + 1 > size) { x.free(out); size = need + 1; out = x.malloc(size); x.fs_analyse(p, BigInt(n), sr, out, size); }
       var a = JSON.parse(new TextDecoder().decode(new Uint8Array(x.memory.buffer, out, need))); x.free(out); x.free(p);
       return a;
     });
@@ -13049,6 +13064,49 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       mEl.dataset.db = String(Math.round(db));
       mEl.firstChild.style.width = Math.max(0, Math.min(100, (db + 60) / 60 * 100)) + "%";
     });
+  }
+  /* Sample harmony 5: a point follows the chord (lab). Its follow kept in the lab table under the point's id, overlaid on
+     the point for the engine; each point recording's pitch track (its first 60 s) analysed here and sent with it */
+  window.__fa.labTracks = 0; window.__fa.labAnalyses = 0;
+  var labTrackCache = {};    /* a recording's track, by its key and path: analysed once, not on every engine (5 I3) */
+  window.__fa.labTrackKeys = function () { return Object.keys(labTrackCache).length; };
+  function labPointTrack(eng, kind, index, sub, id, buf, cacheKey) {
+    if (!labTrackCache[cacheKey]) {
+      var n = Math.min(buf.length, Math.round(60 * buf.sampleRate)), c = buf.numberOfChannels, mono = new Float32Array(n);
+      for (var k = 0; k < c; k++) { var d = buf.getChannelData(k); for (var i = 0; i < n; i++) { mono[i] += d[i] / c; } }
+      labTrackCache[cacheKey] = labAnalyseMono(mono, buf.sampleRate); window.__fa.labAnalyses++;
+      labTrackCache[cacheKey].catch(function (e) { delete labTrackCache[cacheKey]; window.__fa.labTrackErrors = (window.__fa.labTrackErrors || []).concat(String(e && e.message || e)); });
+    }
+    labTrackCache[cacheKey].then(function (a) {
+      if (core !== eng || !eng.node || !a) { return; }
+      eng.node.port.postMessage({ type: "track", kind: kind, index: index, sub: sub, id: id, bytes: new TextEncoder().encode(JSON.stringify({ f0: a.f0, hop_s: a.hop_s, track: a.track })) });
+      window.__fa.labTracks++;
+    }).catch(function (e) { console.warn("lab track: " + (e && e.message || e)); });
+  }
+  var labFollowTimer = null;
+  function labFollowControl(f) {
+    var bar = $("#rp-close") && $("#rp-close").parentNode, lb = $("#rp-lab");
+    if (!lb && bar) {
+      lb = document.createElement("label"); lb.id = "rp-lab"; lb.className = "rp-lab";
+      lb.title = "A pitched recording moves onto the chord's nearest note (lab; 0 = as recorded)";
+      lb.innerHTML = "<span>follow the chord (lab)</span> <input type='range' id='rp-lab-follow' min='0' max='1' step='0.05'> <i id='rp-lab-follow-v'></i>";
+      bar.insertBefore(lb, $("#rp-close"));
+    }
+    if (!lb) { return; }
+    lb.hidden = !labOn();
+    if (!labOn()) { return; }
+    var id = f.properties.id, inp = $("#rp-lab-follow"), out = $("#rp-lab-follow-v"), lp = labRoutes[id];
+    inp.value = String(lp && lp.point ? lp.point.follow || 0 : 0); out.textContent = Math.round(100 * +inp.value) + " %";
+    inp.oninput = function () {
+      var v = +inp.value; out.textContent = Math.round(100 * v) + " %";
+      labRoutes[id] = { point: { follow: v } }; labChanged();
+      clearTimeout(labFollowTimer);
+      labFollowTimer = setTimeout(function () {
+        sb.from("lab_route_roles").upsert({ route_id: id, roles: { point: { follow: v } }, updated_by: setter.id }).then(function (q) {
+          if (q.error) { labMsg("Samplers (lab): follow not saved - " + q.error.message); }
+        });
+      }, 600);
+    };
   }
   function labToggle() {
     labWanted = !labWanted; labEngineFailed = false;

@@ -276,7 +276,7 @@ struct HitCfg { int pulses, rotate; double gain, pitch, crush, drive; Div delayD
 struct GrainCfg { double pulses, rotate, offset, grain, count, spread, scatter, gain, pitch, vary, roam, attack, decay, sustain, release; };
 struct Combo { int pulses, rotate; };
 struct RhythmCfg {
-    bool on = true; int steps = 64; Div div; double gain = 0.85, idiom = 0.35; int sentence_bars = 8;
+    bool on = true; int steps = 64; Div div; double gain = 0.85, idiom = 0.35; int sentence_bars = 8; double follow = 0;
     HitCfg v[4]; GrainCfg g; Combo sentence[4][4]; bool has_sentence = false;
 };
 
@@ -329,6 +329,7 @@ static void rhythm_of(const Json *j, RhythmCfg &r, Rng &rnd) {
     r.div = div_of(j ? j->s("div", "16n") : "16n");
     r.gain = j ? j->n("gain", 0.85) : 0.85;
     r.idiom = j ? j->n("idiom", 0.35) : 0.35;
+    r.follow = j ? std::max(0.0, std::min(1.0, j->n("follow", 0))) : 0;   /* 5 */
     r.sentence_bars = j ? (int)j->n("sentenceBars", 8) : 8;
     const Json *vs = j ? j->get("voices") : nullptr;
     for (int s = 0; s < 4; s++) {
@@ -511,6 +512,7 @@ struct HitSlot {
     Shaper shp;
 };
 struct GrainV { bool on = false; double pos, rate, at, a, d, hold, s, w, len; };
+struct Trk { const float *tf = nullptr, *tc = nullptr; int n = 0; double hop = 0.02, f0 = 0; };   /* 5: a source's pitch track */
 struct Rhythm {
     bool used = false, dying = false; double free_at = 0;
     bool grains = false;
@@ -519,6 +521,7 @@ struct Rhythm {
     float host_g = 0;                 /* the level the walk last gave it, before any solo */
     HitSlot hit[4];
     Src gsrc;
+    Trk trk[4];                       /* 5: each source's pitch (grains: [0]) */
     GrainV gv[192];
     long tick = 0; int step = 0;
     bool live = false; Combo lv[4]; int bars = 0, sentence_idx = 0; bool fx_ready = false;
@@ -533,7 +536,7 @@ struct Inbox {
     bool character = false; double centroid = 2000, onsets = 1;
     int zones[8]; int nzones = 0;
     bool solo_set = false; int solo_v = -1;    /* Listen on a rhythm point: that handle alone (-1: everything) */
-    struct ROp { int op = 0; RhythmCfg cfg; bool grains = false; bool gain = false; float g = 0; Src src[4]; bool src_set[4] = {}; } r[FS_MAX_VOICES];
+    struct ROp { int op = 0; RhythmCfg cfg; bool grains = false; bool gain = false; float g = 0; Src src[4]; bool src_set[4] = {}; Trk trk[4]; bool trk_set[4] = {}; } r[FS_MAX_VOICES];
     RoleRec rrec[3]; bool rrec_set[3] = {};   /* role recordings for the audio thread (3a) */
     std::vector<short *> trash;       /* buffers the audio thread let go of */
     bool freed[FS_MAX_VOICES] = {};
@@ -1083,6 +1086,12 @@ struct Piece : Device {
     }
 
     /* ---- rhythmStep ---- */
+    /* 5: a rate toward the chord now (its notes in Hz); off every route the last chord, before any none */
+    double follow_chord(double rate, double f0, double follow) {
+        double hz[8]; const int n = std::max(0, std::min(8, H.ntones));
+        for (int i = 0; i < n; i++) hz[i] = note_hz(H.tones[i]);
+        return harmony::follow_rate(rate, f0, hz, n, follow);
+    }
     void fire_grains(Rhythm &R, double time, double step_secs) {
         Src &b = R.gsrc;
         if (!b.data || !b.frames) return;
@@ -1123,6 +1132,10 @@ struct Piece : Device {
             double off = base + (rnd() - 0.5) * scatter * dur;
             off = std::max(0.0, std::min(std::max(0.0, dur - grainSec), off));
             double rate = std::pow(2, g.pitch / 12) * (1 + (rnd() - 0.5) * 0.02);
+            if (R.cfg.follow > 0 && R.trk[0].n > 0) {   /* 5: the grain's pitch where it reads, toward the chord */
+                const Trk &k = R.trk[0]; const int fi = (int)(off / k.hop);
+                if (fi >= 0 && fi < k.n && k.tc[fi] >= 0.8f && k.tf[fi] > 0) rate = follow_chord(rate, k.tf[fi], R.cfg.follow);
+            }
             GrainV *gv = nullptr;
             for (auto &x : R.gv) if (!x.on) { gv = &x; break; }
             if (!gv) continue;                  /* ponytail: 192 grains at once per point */
@@ -1165,6 +1178,7 @@ struct Piece : Device {
                 if (!h.src.data || R.lv[s].pulses <= 0) continue;
                 if (!euclid_at(std::min(R.lv[s].pulses, steps), steps, R.lv[s].rotate, at)) continue;
                 double rate = std::pow(2, cfg.pitch / 12) * (1 + (rnd() - 0.5) * 0.012);
+                if (r.follow > 0 && R.trk[s].f0 > 0) rate = follow_chord(rate, R.trk[s].f0, r.follow);   /* 5: a pitched hit onto the chord */
                 double accent = r.idiom * metric_weight((int)((R.tick - 1) % 16), 16) * 4;
                 double vol = 20 * std::log10(std::max(0.02, cfg.gain)) + (rnd() - 0.5) * 1.5 + accent;
                 h.vol = (float)db_to_gain(vol);
@@ -1283,7 +1297,7 @@ struct Piece : Device {
         for (int h = 0; h < FS_MAX_VOICES; h++) {
             auto &op = in.r[h]; Rhythm &R = rh[h];
             if (op.op == 1) {
-                R.used = true; R.dying = false; R.cfg = op.cfg; R.grains = op.grains;
+                R.used = true; R.dying = false; R.cfg = op.cfg; R.grains = op.grains; for (auto &k : R.trk) k = Trk{};
                 R.tick = 0; R.step = 0; R.live = false; R.bars = 0; R.sentence_idx = 0; R.fx_ready = false;
                 R.gain.init(0);
                 for (auto &g : R.gv) g.on = false;
@@ -1299,7 +1313,7 @@ struct Piece : Device {
             op.op = 0;
             if (op.gain) { op.gain = false; R.host_g = op.g; R.gain.p.linearRampTo(rhythm_level(R, h), 0.35, now); }
             for (int s = 0; s < 4; s++) if (op.src_set[s]) {
-                op.src_set[s] = false;
+                op.src_set[s] = false; R.trk[s] = Trk{};      /* a new recording: the last one's track goes (final review 5 I1) */
                 Src &dst = R.grains ? R.gsrc : R.hit[s].src;
                 if (dst.data) my_trash.push_back(dst.data);
                 dst = op.src[s];
@@ -1308,6 +1322,7 @@ struct Piece : Device {
                     R.hit[s].blend.p.linearRampTo(amt, 0.2, now);
                 }
             }
+            for (int s = 0; s < 4; s++) if (op.trk_set[s]) { op.trk_set[s] = false; R.trk[s] = op.trk[s]; }
         }
         for (int h = 0; h < FS_MAX_VOICES; h++) {
             Rhythm &R = rh[h];
@@ -1679,6 +1694,7 @@ int fs_piece_rhythm_add(fs_device *d, const char *rhythm_json, int grains) {
         rhythm_of(j.kind == Json::OBJ ? &j : nullptr, op.cfg, p->main_rnd);   /* rhythmOf's sentence draw */
         op.op = 1; op.grains = grains != 0; op.gain = false;
         for (auto &s : op.src_set) s = false;
+        for (auto &s : op.trk_set) s = false;
         return h;
     }
     return -1;
@@ -1697,6 +1713,20 @@ void fs_piece_rhythm_source(fs_device *d, int h, int slot, int channels, long lo
     if (op.src_set[slot] && op.src[slot].data) std::free(op.src[slot].data);
     op.src[slot] = Src{ interleaved, channels < 1 ? 1 : channels, frames };
     op.src_set[slot] = true;
+}
+void fs_piece_rhythm_track(fs_device *d, int h, int slot, const char *json) {
+    Piece *p = P(d);
+    if (!p || h < 0 || h >= FS_MAX_VOICES || slot < 0 || slot > 3 || !json) return;
+    Json j = Json::parse(json);
+    /* a recording judged unpitched (f0 0) does not follow, even on its confident frames (final review 5 I5) */
+    const Json *tr = j.n("f0", 0) > 0 ? j.get("track") : nullptr; const int n = tr ? (int)tr->size() : 0;
+    float *tf = n ? (float *)std::malloc(sizeof(float) * 2 * n) : nullptr, *tc = tf ? tf + n : nullptr;
+    for (int i = 0; i < n && tf; i++) { const Json *fr = tr->at(i); const Json *a = fr ? fr->at(0) : nullptr, *b = fr ? fr->at(1) : nullptr; tf[i] = a ? (float)a->num : 0; tc[i] = b ? (float)b->num : 0; }
+    std::lock_guard<std::mutex> g(p->mu); sweep(p);
+    if (tf) p->keep.b.push_back(tf);
+    auto &op = p->in.r[h];
+    op.trk[slot] = Trk{ tf, tc, tf ? n : 0, j.n("hop_s", 0.02), j.n("f0", 0) };
+    op.trk_set[slot] = true;
 }
 /* The morph cells (the web's cellsDraw): the playing route's morphs that are on, at the piece's clock -
    the same numbers the voices take. 7 doubles a cell: shape (0 drift 1 breath 2 pulse 3 ramp 4 tide), voice

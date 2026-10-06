@@ -438,6 +438,21 @@ void fs_engine_source(fs_engine *e, int kind, int index, int sub, const char *id
     }
 }
 
+/* 5: a point recording's analysis - its pitch track to the stretch slot (with the point's follow) or the rhythm handle */
+void fs_engine_source_track(fs_engine *e, int kind, int index, int sub, const char *id, const char *json) {
+    if (!json) return;
+    if (kind == 'S') {
+        if (index < 0 || index >= SLOTS || e->slot[index].id != id || !e->slot[index].active) return;
+        Json j = Json::parse(json); const Json *tr = j.n("f0", 0) > 0 ? j.get("track") : nullptr; const int n = tr ? (int)tr->size() : 0;   /* unpitched: none (5 I5) */
+        std::vector<float> tf((size_t)n), tc((size_t)n);
+        for (int i = 0; i < n; i++) { const Json *fr = tr->at(i); const Json *a = fr ? fr->at(0) : nullptr, *b = fr ? fr->at(1) : nullptr; tf[(size_t)i] = a ? (float)a->num : 0; tc[(size_t)i] = b ? (float)b->num : 0; }
+        fs_stretch_track(e->slot[index].dev, n ? tf.data() : nullptr, n ? tc.data() : nullptr, n, j.n("hop_s", 0.02), -1);
+    } else {
+        auto it = e->handle.find(id);
+        if (it == e->handle.end() || it->second != index) return;
+        fs_piece_rhythm_track(e->piece, index, sub, json);
+    }
+}
 void fs_engine_process(fs_engine *e, int frames) { fs_mix_process(e->mix, frames); e->frames += frames; }
 float *fs_engine_out(fs_engine *e, int ch) { return fs_mix_out(e->mix, ch); }
 const char *fs_engine_state(fs_engine *e) { return e->state.c_str(); }

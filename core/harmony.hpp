@@ -55,4 +55,18 @@ struct Follower {
     }
 };
 
+/* Sample harmony 5: a rate moved toward the chord - the pitch it sounds at (f0 x rate) goes `follow` of the way (in
+   cents) to the nearest chord note, any octave. Unpitched (f0 <= 0), no chord or follow 0: the rate as it was */
+inline double follow_rate(double rate, double f0, const double *chord, int n, double follow) {
+    if (!(f0 > 0) || n <= 0 || !(follow > 0) || !(rate > 0)) return rate;
+    const double f = f0 * rate; double best = 1e9;
+    for (int i = 0; i < n; i++) {
+        if (!(chord[i] > 0)) continue;
+        const double k = std::round(std::log2(f / chord[i])), c = 1200 * std::log2(chord[i] * std::pow(2.0, k) / f);
+        if (std::fabs(c) < std::fabs(best)) best = c;
+    }
+    if (best > 1e8) return rate;
+    return rate * std::pow(2.0, std::fmin(1.0, follow) * best / 1200);
+}
+
 }  // namespace harmony
