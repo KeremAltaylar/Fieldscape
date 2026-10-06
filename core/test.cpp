@@ -605,6 +605,28 @@ int main() {
         const double gc = 1200 * std::log2(line_peak(win(gr, 2, 3.4), SR, 220, 0.02) / 220);
         std::printf("3d granular: 100 ms windows %.1f .. %.1f dB; %.2f cents; level %.1f vs One-shot %.1f\n", lo, hi, gc, rms(gr, 1, 4), rms(os, 0.2, 0.6));
         assert(hi - lo < 3 && std::fabs(gc) < 10 && std::fabs(rms(gr, 1, 4) - rms(os, 0.2, 0.6)) < 3);
+        /* final review 3d C1: a short recording that does not repeat cleanly (233 Hz and a slow ramp) looped - reads stay
+           inside the recording: no step beyond the tone's own at the joins */
+        auto rough = [&](double secs) { std::vector<float> x((size_t)(secs * SR)); for (size_t i = 0; i < x.size(); i++) { const double t = i / SR; x[i] = (float)(0.3 * std::sin(2 * sampler::PI * 233 * t) + 0.2 * t / secs); } return x; };
+        for (double secs : { 0.3, 0.45, 0.52 }) {
+            const std::vector<float> rr = rough(secs), lo = play(rr, 1, 0.5, 233, 3);
+            std::vector<float> st = play(rough(2.0), 0, 0.0, 233, 0.5);
+            std::printf("3d looped %.2f s (not periodic): largest step %.4f (steady %.4f), 2-3 s %.1f dB\n", secs, steps(lo, 0.3, 3), steps(st, 0.05, 0.45), rms(lo, 2, 3));
+            assert(steps(lo, 0.3, 3) <= 1.3 * steps(st, 0.05, 0.45) && rms(lo, 2, 3) > -40);
+        }
+        /* final review 3d I1: Position 1 still sounds (at least 0.4 s of a one-shot note) */
+        { const std::vector<float> ten = tone(10, 220, 0, 99), p1 = play(ten, 0, 1.0, 220, 1);
+          std::printf("3d position 1: 0-0.4 s %.1f dB\n", rms(p1, 0.0, 0.4));
+          assert(rms(p1, 0.0, 0.4) > -30); }
+        /* final review 3d I2: Position 0 is the first clear frame, not the clearest (one 0.99 frame at 9.5 s among 0.85s) */
+        { const std::vector<float> ten = tone(10, 220, 0, 99);
+          sampler::Resonator r; r.init(SR); r.synth = sampler::RETUNE; r.nv = 6; const float *pp[1] = { ten.data() }; r.set_source(1, (long long)ten.size(), pp);
+          std::vector<float> tf(500, 220.0f), tc(500, 0.85f); tc[475] = 0.99f; r.set_track(220, 0.02, tf.data(), tc.data(), 500);
+          r.method = 0; r.focus = 0; r.colour = 1; r.tune = 1; r.attack(220, 0, 0.5);
+          std::vector<float> L((size_t)(2 * SR), 0.0f), R(L.size(), 0.0f);
+          for (size_t i = 0; i < L.size(); i += 128) r.render(L.data() + i, R.data() + i, 128, i / SR);
+          std::printf("3d position 0 with the clearest frame at 9.5 s: 1-2 s %.1f dB (a 10 s recording read from its start sounds the whole 2 s)\n", rms(L, 1, 2));
+          assert(rms(L, 1, 2) > -30); }
         /* budget: 24 voices of each model */
 #ifdef FS_TEST_O1
         const double slack = 1.5;

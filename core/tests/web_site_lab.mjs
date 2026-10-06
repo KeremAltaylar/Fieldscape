@@ -140,7 +140,10 @@ try {
   await sleep(300);
   const col2 = await ev("+document.querySelector('#pp-body input[data-k=\"v3.colour\"]').value");
   check("dragging on Freeze's waveform moves its Moment (final review 3c.1)", col2 > 0.6, col2);
+  /* final review 3d: a Method saved for Harmonic/Formant does not become Retune's Model (Comb 2 would play Granular) */
+  await setSel("v3.synth", "s-harmonic"); await sleep(300); await setSel("v3.method", "2"); await sleep(300);
   await setSel("v3.synth", "s-retune"); await sleep(400);
+  check("switching to Retune starts at One-shot, whatever Method the role had", (await ev("(document.querySelector('#pp-body select[data-k=\"v3.method\"]') || {}).value")) === "0", await ev("(document.querySelector('#pp-body select[data-k=\"v3.method\"]') || {}).value"));
   check("3d: Retune shows a model menu (One-shot, Looped, Granular) and a position control",
     await ev("(function(){ var m = document.querySelector('#pp-body select[data-k=\"v3.method\"]'), p = document.querySelector('#pp-body input[data-k=\"v3.focus\"]'); return !!m && [].map.call(m.options, function (o) { return o.textContent; }).join(',') === 'One-shot,Looped,Granular' && !!p && /^position$/i.test(p.closest('.pprow').querySelector('span').textContent.trim()) && /^\\d+:\\d\\d$/.test(p.closest('.pprow').querySelector('i').textContent.trim()); })()"),
     await ev("(function(){ var m = document.querySelector('#pp-body select[data-k=\"v3.method\"]'), p = document.querySelector('#pp-body input[data-k=\"v3.focus\"]'); return [m && [].map.call(m.options, function (o) { return o.textContent; }).join(','), p && p.closest('.pprow').textContent]; })()"));

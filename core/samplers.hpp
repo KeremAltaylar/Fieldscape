@@ -176,7 +176,7 @@ struct Resonator : tone::Synth {
     /* 3c.1 F2: the recording's power spectrum (spectrum_of; not owned). A note keeps its octave when its overtones meet the
        recording's energy within FOLD_DB of the best octave; otherwise it moves to the nearest octave that does (pitch class kept) */
     const float *spec = nullptr; int spec_n = 0; double spec_sr = 48000;
-    int nv = VOICES; double tf0 = 0, thop = 0.02, kglide = 0; long long tclear = 0; std::vector<float> tf, tc;
+    int nv = VOICES; double tf0 = 0, thop = 0.02, kglide = 0; long long tclear = 0, tfirst = 0; std::vector<float> tf, tc;
     const float *tfp = nullptr, *tcp = nullptr; int tn = 0;      /* the track as read (a copy's, or a host's buffers) */
     long long freeze_at = -1; const void *freeze_src = nullptr; double freeze_tp = 0;   /* ...and which moment it is */
     long long seek_from = -1, seek_got = 0; const void *seek_src = nullptr;          /* 3c.1: the loudest-nearby search, once per Moment */
@@ -228,6 +228,8 @@ struct Resonator : tone::Synth {
         int best = -1; float bc = 0;
         for (int i = 0; i < tn; i++) if (tfp[i] > 0 && tcp[i] > bc && tf0 > 0 && std::fabs(1200 * std::log2(tfp[i] / tf0)) < 50) { best = i; bc = tcp[i]; }
         tclear = best < 0 ? 0 : (long long)(best * thop * sr);
+        /* 3d: Position's origin - the first confident frame (the clearest could sit at the end; final review 3d I2) */
+        tfirst = 0; for (int i = 0; i < tn; i++) if (tfp[i] > 0 && tcp[i] >= 0.8f) { tfirst = (long long)(i * thop * sr); break; }
     }
     void set_source(int ch, long long n, const float *const *p) {
         src = Source(); freeze_at = -1; seek_from = -1;   /* a new recording: no frozen moment carried over */ if (!p || n <= 0) return;
@@ -297,18 +299,23 @@ struct Resonator : tone::Synth {
        the note. No level matching - the recording's own dynamics. */
     void start_retune(Voice &x, double f) {
         /* 3d Position (Focus): 0 ... 1 from the pitch track's first clear frame to the end (the bench's offset wins) */
-        const double len = (double)src.frames, from = (double)tclear;
-        const double at = offset_s > 0 ? offset_s * sr : from + std::fmin(1.0, std::fmax(0.0, focus)) * std::fmax(0.0, len - from - 2);
+        /* ... and it stops 0.5 s (or half what is left) short of the end, so Position 1 still plays a note (3d I1) */
+        const double len = (double)src.frames, from = std::fmin((double)tfirst, std::fmax(0.0, len - 2));
+        const double room = std::fmax(0.0, len - from - 2), tail = std::fmin(0.5 * sr, 0.5 * room);
+        const double at = offset_s > 0 ? offset_s * sr : from + std::fmin(1.0, std::fmax(0.0, focus)) * (room - tail);
         x.rpos = at; x.rend = src.frames;
         x.rf0 = tf0 > 0 ? tf0 : 261.63; x.sf = f; x.rspd = std::pow(f / x.rf0, tune);
         const double b = std::fmin(1.0, std::fmax(0.0, colour));
         x.rlpa = b >= 0.999 ? 0 : std::exp(-2 * PI * std::fmin(f * (1.5 + 30 * b * b), 0.45 * sr) / sr); x.rlp = 0; x.agc = 1;
         if (x.method == 1) {        /* Looped: about 0.5 s of whole periods at Position, inside the recording */
-            const double f0 = track_f0(at), P = sr / (f0 > 0 ? f0 : 261.63);
+            /* whole periods that fit, with the crossfade before the loop, inside the recording (a read past the end
+               wrapped to the start: clicks on loops under ~0.5 s; final review 3d C1) */
+            const double f0 = track_f0(at), P = sr / (f0 > 0 ? f0 : 261.63), avail = len - 5;
             double L = std::fmax(1.0, std::round(0.5 * sr / P)) * P;
-            L = std::fmin(L, std::fmax(8.0, len - 4));
+            while (L > P && L + std::fmin(0.03 * sr, 0.5 * L) > avail) L -= P;
+            if (L + std::fmin(0.03 * sr, 0.5 * L) > avail) L = std::fmax(8.0, avail / 1.5);   /* under ~1.5 periods: what exists */
             x.rxf = std::fmin(0.03 * sr, 0.5 * L);
-            double s0 = std::fmin(at, len - 3 - L); s0 = std::fmax(s0, x.rxf + 2);
+            const double s0 = std::fmin(std::fmax(at, x.rxf + 2), len - 3 - L);
             x.rls = s0; x.rL = L; x.rpos = s0;
         }
         if (x.method == 2) {        /* Granular: grains around Position */

@@ -12899,6 +12899,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         groups: [["Digital", SYNTH_TYPES.map(function (t) { return [t, SYNTH_LABEL[t] || t]; })], ["Sampler", FsRoles.SAMPLER]],
         get: function () { return smp ? st.synth : patch[role].synth; },
         set: function (v) {
+          if ((v === "s-retune") !== (st.synth === "s-retune")) { st.method = 0; }   /* Method and Model share a field (3d) */
           st.synth = v;
           if (!FsRoles.isSampler(v) && v !== patch[role].synth) {   /* digital: the live patch, exactly as with lab mode off */
             pset(patch, role + ".synth", v); var P = paramsFor(v);
@@ -12921,7 +12922,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       else {                                            /* 3d: the pitch sampler's model, and where in the recording it reads */
         out.push({ k: role + ".method", label: "model", options: function () { return ["0", "1", "2"]; },
           fmt: function (v) { return ["One-shot", "Looped", "Granular"][+v]; }, get: function () { return String(st.method); }, set: function (v) { st.method = +v; labSaveSoon(f); } });
-        out.push(lab("focus", "position", 0, 1, 0.01, function (v) { var t = labMomentSeconds(role, v); return Math.floor(t / 60) + ":" + ("0" + Math.floor(t % 60)).slice(-2); }));
+        out.push(lab("focus", "position", 0, 1, 0.01, function (v) {
+          var b = S.buf(role); if (!b) { return "0:00"; }
+          var t = labCompactToRaw(role, FsRoles.positionFrame(v, b.length, S.ana(role), b.sampleRate));   /* as the core reads it (3d I3) */
+          return Math.floor(t / 60) + ":" + ("0" + Math.floor(t % 60)).slice(-2);
+        }));
       }
       var colourRow = lab("colour", colourWord(st.synth), 0, 1, 0.0001, function (v) { return colourValue(st.synth, v, role); }), colourSet = colourRow.set;
       colourRow.set = function (v) { colourSet(v); var c = document.getElementById("pp-" + role + "-wave"); if (c) { labDrawWave(c, role, st); } };   /* the Moment marker follows */
@@ -12940,9 +12945,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   }
   /* Freeze's Moment: Colour across the compacted sample (core: at = colour · (len − 2048)), shown at its time in the recording */
   function labMomentSeconds(role, v) {
+    var b = labSession().buf(role);
+    return b ? labCompactToRaw(role, Math.max(0, Math.round(v * Math.max(0, b.length - 2048)))) : 0;
+  }
+  /* a place in the compacted sample, at its time in the recording as recorded (the silence cut out is put back) */
+  function labCompactToRaw(role, pos) {
     var S = labSession(), b = S.buf(role), kept = S.kept(role), B = S.block(role), raw = S.raw(role);
     if (!b || !kept || !raw) { return 0; }
-    var pos = Math.max(0, Math.round(v * Math.max(0, b.length - 2048))), acc = 0;
+    pos = Math.round(pos); var acc = 0;
     for (var k = 0; k < kept.length; k++) { if (!kept[k]) { continue; } var len = Math.min(B, raw.length - k * B); if (pos < acc + len) { return (k * B + (pos - acc)) / raw.sampleRate; } acc += len; }
     return raw.duration;
   }
