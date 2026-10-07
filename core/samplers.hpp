@@ -122,7 +122,7 @@ struct Voice {
     std::vector<float> line; unsigned w = 0; int N = 1;
     double c = 0, a = 0, g = 0, ap_x = 0, ap_y = 0, lp = 0;
     int modes = 0; double b0[4] = {}, a1[4] = {}, a2[4] = {}, y1[4] = {}, y2[4] = {}, wt[4] = {};
-    double dc_x = 0, dc_y = 0, lx = 0, ly = 0, g60 = 0, rin = 0, rout = 0, agc = 1;
+    double dc_x = 0, dc_y = 0, lx = 0, ly = 0, g60 = 0, rin = 0, rout = 0, agc = 1, pkg = 1;   /* pkg: a Plucked note's make-up gain */
     int body = 0, excite = 0, synth = 0, method = 0, mode = 0;    /* the note's own: a later change is the next note's */
     int np = 0; double pb0[PARTIALS] = {}, pa1[PARTIALS] = {}, pa2[PARTIALS] = {}, py1[PARTIALS] = {}, py2[PARTIALS] = {}, pw[PARTIALS] = {};
     double px1 = 0, px2 = 0;                                      /* the bank's shared input history */
@@ -251,7 +251,7 @@ struct Resonator : tone::Synth {
         x.active = true; x.started = false; x.releasing = false; x.stealing = false; x.has_next = false;
         x.f = f; x.on_t = t; x.off_t = 1e300; x.vel = vel; x.env = 0; x.aph = 0; x.body = body; x.excite = excite; x.synth = synth; x.method = method; x.mode = mode; x.vfocus = focus;
         x.pos = (long long)(offset_s * sr); x.burst = 0; x.burst_len = (int)(0.025 * sr);
-        x.w = 0; x.ap_x = x.ap_y = x.lp = 0; x.dc_x = x.dc_y = 0; x.lx = x.ly = 0; x.rin = x.rout = 0; x.agc = 1;
+        x.w = 0; x.ap_x = x.ap_y = x.lp = 0; x.dc_x = x.dc_y = 0; x.lx = x.ly = 0; x.rin = x.rout = 0; x.agc = 1; x.pkg = 1;
         const double w = 2 * PI * f / sr, T = t60(focus);
         /* Colour is set against the note (its cutoff 1.5x to 31x the fundamental, open at 1): dark stays dark in
            every register without swallowing the fundamental - a fixed filter killed high notes in milliseconds */
@@ -272,7 +272,22 @@ struct Resonator : tone::Synth {
                 x.b0[k] = (1 - r) * std::abs(1.0 - r * std::polar(1.0, -2 * wk));   /* about unity at the peak */
                 x.y1[k] = x.y2[k] = 0; x.wt[k] = std::pow(cw, k); x.modes++;
             }
-        } else start_loop(x, f, T, body == TUBE);
+            if (excite == PLUCKED) pluck_gain(x);
+        } else { start_loop(x, f, T, body == TUBE); if (excite == PLUCKED) x.pkg = 2.5; }   /* ponytail: String/Tube Plucked a fixed +8 dB (measured 7-11 dB under Bowed over 300 ms); per-note like the Bell if it varies more */
+    }
+    /* A Bell's modes have unity gain only at their peaks: a 25 ms burst of a broadband recording leaves them 48-59 dB under
+       Bowed (Kerem 2026-10-07: "can't hear it"). The burst is known at the note's start, so it is run through the modes
+       here (150 ms, ~0.1 ms of CPU) and the note made up to the burst's own level. A silent burst is never boosted. */
+    void pluck_gain(Voice &x) {
+        double y1[4] = { 0 }, y2[4] = { 0 }, ein = 0, eout = 0; const int n = (int)(0.15 * sr);
+        for (int i = 0; i < n; i++) {
+            const double in = i < x.burst_len ? src.at(x.pos + i) * 0.5 * (1 - std::cos(2 * PI * i / x.burst_len)) : 0;
+            double y = 0;
+            for (int k = 0; k < x.modes; k++) { const double o = x.b0[k] * in - x.a1[k] * y1[k] - x.a2[k] * y2[k]; y2[k] = y1[k]; y1[k] = o; y += x.wt[k] * o; }
+            if (i < x.burst_len) ein += in * in;
+            eout += y * y;
+        }
+        if (ein > 1e-10 * x.burst_len && eout > 0) x.pkg = std::fmin(1000.0, std::fmax(1.0, std::sqrt(ein / x.burst_len / (eout / n))));
     }
 
     /* the String / Tube loop tuned to f, ringing for T (2a; Comb Ringing in 2b plays the String) */
@@ -816,7 +831,7 @@ struct Resonator : tone::Synth {
                 /* bowed noise through a feedback loop gains 1 / (1 - g^2) in power: fed through sqrt(1 - g^2), the
                    loop's level starts near the recording's and the automatic gain below only fine-tunes it */
                 const bool fed = part ? x.method == COMB && x.mode == RINGING : x.excite == BOWED && x.body != BELL;   /* a feedback loop fed continuously */
-                double wet = resonate(x, fed ? exc * std::sqrt(std::fmax(0.0, 1 - x.g60 * x.g60)) : exc);
+                double wet = resonate(x, fed ? exc * std::sqrt(std::fmax(0.0, 1 - x.g60 * x.g60)) : exc) * x.pkg;
                 if ((part || x.excite == BOWED) && !pitched_sampler(x.synth)) {   /* the bowed level follows the recording's (not Retune's: its own dynamics) */
                     /* partial synths: 3 s, so gusts keep their shape. Freeze matches a fixed power, the moment's - the
                        recording moving on underneath must not move a frozen note - at the 0.3 s rate */

@@ -2285,7 +2285,27 @@ int main() {
             for (float s : a) { uint32_t u; std::memcpy(&u, &s, 4); h = (h ^ u) * 1099511628211ull; }
         }
         std::printf("resonator 2a hash %016llx\n", (unsigned long long)h);
-        assert(h == 0xcc29d779bacb46dbull);   /* the em++ -O1 test build (no FMA in wasm) */
+        assert(h == 0xe6ca8a8a9c8837e9ull);   /* the em++ -O1 test build (no FMA in wasm); 2026-10-07: Plucked made up to level */
+    }
+    {   /* 2026-10-07 (Kerem: "Bell/Plucked ... very low volume, can't hear it"): every Resonator body x excite sounds within
+           6 dB of String Bowed - RMS over a 2 s note on wind, at the default Focus/Colour and at Kerem's likely settings */
+        const std::vector<float> wind = noise_src(3, 0.5f, 77);
+        std::printf("6 resonator levels (dB vs String Bowed):");
+        double worst = 0;
+        for (double fo : { 0.5, 0.9 }) for (double f : { 110.0, 196.0, 440.0 }) {
+            double ref = 0;
+            for (int body = 0; body < 3; body++) for (int ex = 0; ex < 2; ex++) {
+                const std::vector<float> o = res_render(body, ex, fo, 0.5, 1, f, 2, wind);
+                /* the note's first 300 ms: a pluck decays, so it is judged where it speaks */
+                double e = 0; const size_t w = (size_t)(0.3 * 48000); for (size_t i = 0; i < w; i++) e += (double)o[i] * o[i];
+                const double db = 10 * std::log10(e / w + 1e-30);
+                if (body == 0 && ex == 0) ref = db;
+                const double d = db - ref; worst = std::fmin(worst, d);
+                if (f == 196.0) std::printf(" f%.1f %s/%s %+.1f", fo, body == 0 ? "String" : body == 1 ? "Tube" : "Bell", ex ? "Plucked" : "Bowed", d);
+            }
+        }
+        std::printf("; worst %+.1f\n", worst);
+        assert(worst > -6);
     }
     std::printf("core ok\n");
     return 0;
