@@ -109,3 +109,42 @@ test("lab-roles: positionFrame maps Position as the core does", () => {
   assert.equal(FsRoles.positionFrame(1, len, { hop_s: 0.02, track }, sr), from + room - tail);
   assert.equal(FsRoles.positionFrame(0.5, len, null, sr), 0.5 * (len - 2 - Math.min(0.5 * sr, 0.5 * (len - 2))));
 });
+
+/* Sample harmony 6 (Kerem 2026-10-07): octave on every sampler synth, an EQ on every voice */
+test("lab-roles 6: overlay puts a role's EQ on the patch for a digital role as well as a sampler one, octave with the sampler", () => {
+  const eq = [[80, 3, 0.7], [250, 0, 1], [1000, -4, 1], [4000, 0, 1], [10000, 0, 0.7]];
+  const patch = { version: 17, voice: { synth: "fm", gain: 0.4, harm: 1, index: 4 }, sect: { synth: "fm", gain: 0.8 }, v3: { synth: "am" } };
+  const roles = { voice: { synth: "s-resonator", sampler: { focus: 0.5, octave: -1 }, eq }, sect: { synth: "am", eq }, v3: { synth: "am" } };
+  const out = FsRoles.overlay(patch, roles);
+  assert.deepEqual(out.voice.eq, eq);
+  assert.equal(out.voice.sampler.octave, -1);
+  assert.deepEqual(out.sect.eq, eq);
+  assert.equal(out.sect.synth, "fm");                         /* a digital role: the live patch's synth, only the EQ added */
+  assert.ok(!("eq" in out.v3));
+  assert.ok(!("eq" in patch.sect));                           /* the original untouched */
+});
+
+test("lab-roles 6: a session keeps octave and EQ in its saved roles and reads them back", async () => {
+  const eq = [[80, 3, 0.7], [250, 0, 1], [1000, -4, 1], [4000, 0, 1], [10000, 0, 0.7]];
+  const rows = { A: { sect: { synth: "fm", eq }, voice: { synth: "s-retune", sampler: { octave: 2 } } } };
+  const sb = { from: () => ({ select: () => ({ eq: (k, id) => ({ maybeSingle: async () => ({ data: rows[id] ? { roles: rows[id] } : null, error: null }) }) }) }) };
+  const s = FsRoles.session({ sb, ctx: () => null, analyse: () => null });
+  await s.load("A");
+  assert.deepEqual(s.state("sect").eq, eq);
+  assert.equal(s.state("voice").octave, 2);
+  assert.equal(s.state("v3").octave, 0);
+  const j = s.json();
+  assert.deepEqual(j.sect.eq, eq);
+  assert.equal(j.voice.sampler.octave, 2);
+  assert.ok(!("eq" in j.v3) || j.v3.eq === null);
+});
+
+test("lab-roles 6: eqResponse - flat is 0 dB, a +6 dB bell at 1 kHz reads +6 there and ~0 a decade away", () => {
+  const flat = FsRoles.eqDefault();
+  for (const hz of [50, 1000, 12000]) assert.ok(Math.abs(FsRoles.eqResponse(flat, hz, 48000)) < 1e-9);
+  const b = FsRoles.eqDefault(); b[2] = [1000, 6, 1];
+  assert.ok(Math.abs(FsRoles.eqResponse(b, 1000, 48000) - 6) < 0.01);
+  assert.ok(Math.abs(FsRoles.eqResponse(b, 100, 48000)) < 0.1 && Math.abs(FsRoles.eqResponse(b, 10000, 48000)) < 0.1);
+  const sh = FsRoles.eqDefault(); sh[0] = [16000, -12, 0.7];  /* a low shelf high up: everything under it -12 (the core's route check) */
+  assert.ok(Math.abs(FsRoles.eqResponse(sh, 500, 48000) + 12) < 0.1);
+});

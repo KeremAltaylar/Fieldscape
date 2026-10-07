@@ -1336,6 +1336,23 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 .rp-lab { display: flex; align-items: center; gap: var(--s-1); font-family: var(--font-mono); font-size: var(--t-xs); text-transform: uppercase; letter-spacing: 0.04em; color: var(--faint); }
 .rp-lab[hidden] { display: none; }
 .rp-lab i { font-style: normal; color: var(--ink); min-width: 3em; text-align: right; }
+#pp-body .ppeq { display: grid; gap: 4px; margin: 2px 0 var(--s-1); min-width: 0; flex: 0 0 100%; box-sizing: border-box; }
+#pp-body .ppeq-top { display: flex; align-items: center; gap: var(--s-1); min-width: 0; }
+#pp-body .ppeq-top > span:first-child { font-family: var(--font-mono); font-size: var(--t-xs); letter-spacing: 0.04em; text-transform: uppercase; color: var(--faint); }
+#pp-body .ppeq-read { flex: 1; text-align: right; font-family: var(--font-mono); font-size: var(--t-xs); color: var(--dim); white-space: nowrap; }
+#pp-body .ppeq-top button { padding: 1px var(--s-1); font-size: var(--t-xs); }
+#pp-body .ppeq svg { width: 100%; height: auto; display: block; touch-action: none; user-select: none; }
+#pp-body .ppeq .eq-grid { stroke: var(--hairline); stroke-width: 1; }
+#pp-body .ppeq .eq-zero { stroke: var(--faint); stroke-width: 1; stroke-dasharray: 2 3; }
+#pp-body .ppeq .eq-label { fill: var(--faint); font-family: var(--font-mono); font-size: 10px; }
+#pp-body .ppeq .eq-curve { fill: none; stroke: var(--accent); stroke-width: 1.6; stroke-linejoin: round; }
+#pp-body .ppeq .eq-band { cursor: grab; outline: none; }
+#pp-body .ppeq .eq-band:active { cursor: grabbing; }
+#pp-body .ppeq .eq-hit { fill: transparent; }
+#pp-body .ppeq .eq-dot { fill: var(--sunk); stroke: var(--dim); stroke-width: 1.5; }
+#pp-body .ppeq .eq-band.on .eq-dot { fill: var(--accent); stroke: var(--accent); }
+#pp-body .ppeq .eq-band:hover .eq-dot, #pp-body .ppeq .eq-band:focus-visible .eq-dot { stroke: var(--ink); stroke-width: 2; }
+#pp-body .ppeq .eq-band:focus-visible .eq-hit { stroke: var(--lamp); stroke-width: 1.5; }
 #pp-body .pplive-notes { font-size: var(--t-xs); min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 #pp-body .pplive-meter { display: block; height: 6px; background: var(--hairline); border-radius: 3px; overflow: hidden; }
 #pp-body .pplive-meter b { display: block; height: 100%; width: 0; background: var(--accent); transition: width 80ms linear; }
@@ -12214,7 +12231,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       if (!cur) { cur = { title: "", rows: [] }; sections.push(cur); }
       cur.rows.push(fl);
     });
-    sections.forEach(function (sc) { totalRows += sc.rows.length + 1.6; });
+    var rowsOf = function (sc) { return sc.rows.reduce(function (a, fl) { return a + (fl.eqRow ? 3.5 : 1); }, 0); };   /* 6: an EQ graph is ~3.5 rows tall */
+    sections.forEach(function (sc) { totalRows += rowsOf(sc) + 1.6; });
 
     /* Four columns where there is room for them. Thirty-two rows in three is taller than the
      panel however they are balanced, and the row is label, slider, value — a narrower column
@@ -12250,7 +12268,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         return sc.col === undefined ? 0 : Math.min(sc.col, COLS - 1);
       });
     } else {
-      var wts = sections.map(function (sc) { return sc.rows.length + 1.6; });
+      var wts = sections.map(function (sc) { return rowsOf(sc) + 1.6; });
       var total = wts.reduce(function (x, y) { return x + y; }, 0);
       place = wts.map(function () { return 0; });
       for (var cap = total / COLS; cap <= total + 1; cap += 0.4) {
@@ -12273,7 +12291,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         h.textContent = sc.title;
         host.appendChild(h);
       }
-      sc.rows.forEach(function (fl) { host.appendChild(fl.sampleRow ? labSampleBlock(fl.sampleRow, f) : fl.liveRow ? labLiveRow(fl.liveRow) : buildRow(fl, patch, f)); });
+      sc.rows.forEach(function (fl) { host.appendChild(fl.sampleRow ? labSampleBlock(fl.sampleRow, f) : fl.liveRow ? labLiveRow(fl.liveRow) : fl.eqRow ? labEqBlock(fl.eqRow, f) : buildRow(fl, patch, f)); });
     });
 
     renderProgression(f, patch, body);
@@ -12924,9 +12942,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           if (!FsRoles.isSampler(v)) { st.harm = pget(patch, role + ".harm"); st.index = pget(patch, role + ".index"); }   /* the live synth back: its own timbres kept (3c I2) */
           labSaveSoon(f); renderPatchPanel();
         } });
+      out.push({ eqRow: role });                       /* 6: every voice's EQ, digital or sampler */
       if (!smp) { return; }
       out.push({ liveRow: role });                     /* 3c.1 F4: its notes and level, while sound plays */
-      var lab = function (k, label, min, max, step, fmt) { return { k: role + "." + k, label: label, min: min, max: max, step: step, fmt: fmt, def: k === "tune" ? 1 : 0.5,
+      var lab = function (k, label, min, max, step, fmt) { return { k: role + "." + k, label: label, min: min, max: max, step: step, fmt: fmt, def: k === "tune" ? 1 : k === "octave" ? 0 : 0.5,
         get: function () { return st[k]; }, set: function (v) { st[k] = +v; labSaveSoon(f); } }; };
       var NAMES = { body: ["String", "Tube", "Bell"], excite: ["Bowed", "Plucked"], method: ["Bank", "Spectral", "Comb"], mode: ["Dry", "Ringing"] };
       var menu = function (k) { return { k: role + "." + k, label: k, options: function () { return NAMES[k].map(function (x, i) { return String(i); }); },
@@ -12948,6 +12967,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       colourRow.set = function (v) { colourSet(v); var c = document.getElementById("pp-" + role + "-wave"); if (c) { labDrawWave(c, role, st); } };   /* the Moment marker follows */
       out.push(colourRow);
       out.push(lab("tune", "tune", 0, 1, 0.01));
+      out.push(lab("octave", "octave", -2, 2, 1, function (v) { return (+v > 0 ? "+" : "") + Math.round(+v); }));   /* 6 */
       out.push({ sampleRow: role });
     });
     return out;
@@ -13041,6 +13061,92 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       g.fillStyle = css.getPropertyValue("--lamp").trim() || "#e0b25b"; g.fillRect(Math.round(mx) - 1, 0, 2, h);
       cv.dataset.moment = String(Math.round(mx));
     }
+  }
+  /* Sample harmony 6: a voice's EQ - five dots on a 30 Hz - 16 kHz, +-12 dB graph (low shelf, three bells, high shelf).
+     Drag a dot: across for frequency, up and down for gain. Arrows move the focused dot (Shift: four times as far);
+     double-click puts it back. Saved with the route's lab setup and heard at once, as every lab control is. */
+  var EQ_W = 320, EQ_H = 96, EQ_PX = 10, EQ_PY = 8, EQ_LO = 30, EQ_HI = 16000, EQ_NAMES = ["low shelf", "bell", "bell", "bell", "high shelf"];
+  function eqX(hz) { return EQ_PX + Math.log(hz / EQ_LO) / Math.log(EQ_HI / EQ_LO) * (EQ_W - 2 * EQ_PX); }
+  function eqHz(x) { return EQ_LO * Math.pow(EQ_HI / EQ_LO, Math.max(0, Math.min(1, (x - EQ_PX) / (EQ_W - 2 * EQ_PX)))); }
+  function eqY(db) { return EQ_H / 2 - db / 12 * (EQ_H / 2 - EQ_PY); }
+  function eqDb(y) { return Math.max(-12, Math.min(12, (EQ_H / 2 - y) / (EQ_H / 2 - EQ_PY) * 12)); }
+  function eqHzText(hz) { return hz >= 1000 ? (hz / 1000).toFixed(hz >= 10000 ? 0 : 1) + " kHz" : Math.round(hz) + " Hz"; }
+  function eqDbText(db) { return (db > 0 ? "+" : db < 0 ? "-" : "") + Math.abs(db).toFixed(1) + " dB"; }
+  function labEqBlock(role, f) {
+    var S = labSession(), st = S.state(role), NS = "http://www.w3.org/2000/svg";
+    var bands = function () { return st.eq || FsRoles.eqDefault(); };
+    var box = document.createElement("div"); box.className = "ppeq"; box.id = "pp-" + role + "-eq";
+    var top = document.createElement("div"); top.className = "ppeq-top";
+    var label = document.createElement("span"); label.textContent = "eq"; top.appendChild(label);
+    var read = document.createElement("span"); read.className = "ppeq-read"; top.appendChild(read);
+    var flat = document.createElement("button"); flat.type = "button"; flat.className = "ghost"; flat.textContent = "Flat";
+    top.appendChild(flat); box.appendChild(top);
+    var svg = document.createElementNS(NS, "svg"); svg.setAttribute("viewBox", "0 0 " + EQ_W + " " + EQ_H); svg.setAttribute("role", "group");
+    svg.setAttribute("aria-label", "EQ, " + ({ voice: "First voice", sect: "Second voice", v3: "Third voice" })[role]);
+    var el = function (tag, a, parent) { var e = document.createElementNS(NS, tag); for (var k in a) { e.setAttribute(k, a[k]); } (parent || svg).appendChild(e); return e; };
+    [100, 1000, 10000].forEach(function (hz) {
+      el("line", { "class": "eq-grid", x1: eqX(hz), x2: eqX(hz), y1: EQ_PY, y2: EQ_H - EQ_PY });
+      el("text", { "class": "eq-label", x: eqX(hz) + 3, y: EQ_H - EQ_PY - 2 }).textContent = hz >= 1000 ? (hz / 1000) + "k" : String(hz);
+    });
+    [-12, 12].forEach(function (db) { el("line", { "class": "eq-grid", x1: EQ_PX, x2: EQ_W - EQ_PX, y1: eqY(db), y2: eqY(db) }); });
+    el("line", { "class": "eq-zero", x1: EQ_PX, x2: EQ_W - EQ_PX, y1: eqY(0), y2: eqY(0) });
+    el("text", { "class": "eq-label", x: EQ_PX + 2, y: eqY(12) + 9 }).textContent = "+12";
+    el("text", { "class": "eq-label", x: EQ_PX + 2, y: eqY(-12) - 3 }).textContent = "-12";
+    var curve = el("path", { "class": "eq-curve" });
+    var dots = [];
+    var sr = (core && core.ctx && core.ctx.sampleRate) || 48000;
+    var draw = function () {
+      var b = bands(), d = "";
+      for (var x = EQ_PX; x <= EQ_W - EQ_PX; x += 2) { d += (d ? "L" : "M") + x + " " + eqY(Math.max(-13, Math.min(13, FsRoles.eqResponse(b, eqHz(x), sr)))).toFixed(1); }
+      curve.setAttribute("d", d);
+      dots.forEach(function (g, k) {
+        g.setAttribute("transform", "translate(" + eqX(b[k][0]).toFixed(1) + " " + eqY(b[k][1]).toFixed(1) + ")");
+        g.setAttribute("aria-valuetext", EQ_NAMES[k] + ", " + eqHzText(b[k][0]) + ", " + eqDbText(b[k][1]));
+        g.setAttribute("aria-valuenow", String(b[k][1]));
+        g.classList.toggle("on", b[k][1] !== 0);
+      });
+    };
+    var show = function (k) { var b = bands(); read.textContent = k == null ? "" : eqHzText(b[k][0]) + " " + eqDbText(b[k][1]); };
+    var put = function (k, hz, db) {
+      var b = JSON.parse(JSON.stringify(bands()));
+      b[k][0] = Math.round(Math.max(EQ_LO, Math.min(EQ_HI, hz))); b[k][1] = Math.round(Math.max(-12, Math.min(12, db)) * 10) / 10;
+      st.eq = b; draw(); show(k); labSaveSoon(f);
+    };
+    for (var k = 0; k < 5; k++) {
+      (function (k) {
+        var g = el("g", { "class": "eq-band", "data-band": k, tabindex: "0", role: "slider", "aria-valuemin": "-12", "aria-valuemax": "12", "aria-label": EQ_NAMES[k] });
+        el("circle", { "class": "eq-hit", r: 14 }, g); el("circle", { "class": "eq-dot", r: 5 }, g);
+        var drag = false;
+        g.addEventListener("pointerdown", function (e) {
+          drag = true; e.preventDefault(); g.focus();
+          if (g.setPointerCapture && e.pointerId != null) { try { g.setPointerCapture(e.pointerId); } catch (x) { /* a synthetic event */ } }
+        });
+        g.addEventListener("pointermove", function (e) {
+          if (!drag) { return; }
+          var m = svg.getScreenCTM(); if (!m) { return; }
+          var p = svg.createSVGPoint(); p.x = e.clientX; p.y = e.clientY; p = p.matrixTransform(m.inverse());
+          put(k, eqHz(p.x), eqDb(p.y));
+        });
+        var stop = function () { drag = false; };
+        g.addEventListener("pointerup", stop); g.addEventListener("pointercancel", stop);
+        g.addEventListener("dblclick", function () { put(k, FsRoles.eqDefault()[k][0], 0); });
+        g.addEventListener("keydown", function (e) {
+          var b = bands()[k], m = e.shiftKey ? 4 : 1;
+          if (e.key === "ArrowUp") { put(k, b[0], b[1] + 0.5 * m); }
+          else if (e.key === "ArrowDown") { put(k, b[0], b[1] - 0.5 * m); }
+          else if (e.key === "ArrowRight") { put(k, b[0] * Math.pow(2, m / 6), b[1]); }
+          else if (e.key === "ArrowLeft") { put(k, b[0] / Math.pow(2, m / 6), b[1]); }
+          else { return; }
+          e.preventDefault();
+        });
+        g.addEventListener("focus", function () { show(k); }); g.addEventListener("blur", function () { show(null); });
+        g.addEventListener("pointerenter", function () { show(k); }); g.addEventListener("pointerleave", function () { if (!drag && document.activeElement !== g) { show(null); } });
+        dots.push(g);
+      })(k);
+    }
+    flat.addEventListener("click", function () { st.eq = null; draw(); show(null); labSaveSoon(f); });
+    box.appendChild(svg); draw();
+    return box;
   }
   function labLiveRow(role) {
     var row = document.createElement("div"); row.className = "pprow pplive"; row.dataset.role = role;
