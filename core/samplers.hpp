@@ -122,7 +122,7 @@ struct Voice {
     std::vector<float> line; unsigned w = 0; int N = 1;
     double c = 0, a = 0, g = 0, ap_x = 0, ap_y = 0, lp = 0;
     int modes = 0; double b0[4] = {}, a1[4] = {}, a2[4] = {}, y1[4] = {}, y2[4] = {}, wt[4] = {};
-    double dc_x = 0, dc_y = 0, lx = 0, ly = 0, g60 = 0, rin = 0, rout = 0, agc = 1, pkg = 1;   /* pkg: a Plucked note's make-up gain */
+    double dc_x = 0, dc_y = 0, lx = 0, ly = 0, g60 = 0, rin = 0, rout = 0, agc = 1, pkg = 1, req = 0, soc = 1;   /* req: the note as asked (before fold and Octave: a re-voice starts from it); soc: Retune's Octave; pkg: a Plucked note's make-up gain */
     int body = 0, excite = 0, synth = 0, method = 0, mode = 0;    /* the note's own: a later change is the next note's */
     int np = 0; double pb0[PARTIALS] = {}, pa1[PARTIALS] = {}, pa2[PARTIALS] = {}, py1[PARTIALS] = {}, py2[PARTIALS] = {}, pw[PARTIALS] = {};
     double px1 = 0, px2 = 0;                                      /* the bank's shared input history */
@@ -245,6 +245,7 @@ struct Resonator : tone::Synth {
 
     /* a voice made ready for a note: the loop tuned to f (String/Tube) or the modes set (Bell) */
     void start(Voice &x, double f, double t, double vel) {
+        x.req = f;
         f = fold(f) * std::ldexp(1.0, std::max(-2, std::min(2, octave)));   /* 6: Octave after the fold: from the octave the recording sounds in */
         std::fill(x.line.begin(), x.line.end(), 0.0f);
         f = std::fmin(std::fmax(f, 6.0), 0.45 * sr);                 /* extreme octaves: clamped, never unstable */
@@ -279,15 +280,29 @@ struct Resonator : tone::Synth {
        Bowed (Kerem 2026-10-07: "can't hear it"). The burst is known at the note's start, so it is run through the modes
        here (150 ms, ~0.1 ms of CPU) and the note made up to the burst's own level. A silent burst is never boosted. */
     void pluck_gain(Voice &x) {
-        double y1[4] = { 0 }, y2[4] = { 0 }, ein = 0, eout = 0; const int n = (int)(0.15 * sr);
-        for (int i = 0; i < n; i++) {
-            const double in = i < x.burst_len ? src.at(x.pos + i) * 0.5 * (1 - std::cos(2 * PI * i / x.burst_len)) : 0;
+        /* only the burst is run (the window's cosine by rotation, not a cos a sample); each mode's ringing over the rest of
+           the 150 ms is a decaying sinusoid, its energy in closed form (final review 6 I2: ~110 us a note before) */
+        double y1[4] = { 0 }, y2[4] = { 0 }, ein = 0, eout = 0; const int n = (int)(0.15 * sr), L = x.burst_len;
+        const double dc = std::cos(2 * PI / L), ds = std::sin(2 * PI / L); double hc = 1, hs = 0;
+        /* the burst read in place, one wrap check a sample (Source::at's modulo a sample was most of the cost) */
+        const long long F = src.frames; long long j = F > 0 ? ((x.pos % F) + F) % F : 0;
+        const int m = x.modes; double B0[4], A1[4], A2[4], WT[4]; for (int k = 0; k < m; k++) { B0[k] = x.b0[k]; A1[k] = x.a1[k]; A2[k] = x.a2[k]; WT[k] = x.wt[k]; }
+        for (int i = 0; i < L; i++) {
+            const float sv = F <= 0 ? 0.0f : src.f[0] ? (src.nch > 1 ? 0.5f * (src.f[0][j] + src.f[1][j]) : src.f[0][j])
+                           : src.s[0] ? (src.nch > 1 ? 0.5f * (src.s[0][j] + src.s[1][j]) : src.s[0][j]) * (1.0f / 32768.0f) : 0.0f;
+            if (F > 0 && ++j >= F) j = 0;
+            const double in = sv * 0.5 * (1 - hc); { const double t = hc * dc - hs * ds; hs = hs * dc + hc * ds; hc = t; }
             double y = 0;
-            for (int k = 0; k < x.modes; k++) { const double o = x.b0[k] * in - x.a1[k] * y1[k] - x.a2[k] * y2[k]; y2[k] = y1[k]; y1[k] = o; y += x.wt[k] * o; }
-            if (i < x.burst_len) ein += in * in;
-            eout += y * y;
+            for (int k = 0; k < m; k++) { const double o = B0[k] * in - A1[k] * y1[k] - A2[k] * y2[k]; y2[k] = y1[k]; y1[k] = o; y += WT[k] * o; }
+            ein += in * in; eout += y * y;
         }
-        if (ein > 1e-10 * x.burst_len && eout > 0) x.pkg = std::fmin(1000.0, std::fmax(1.0, std::sqrt(ein / x.burst_len / (eout / n))));
+        const int M = n - L;
+        for (int k = 0; k < x.modes && M > 0; k++) {
+            const double r = std::sqrt(x.a2[k]), cw = -x.a1[k] / (2 * r), sw = std::sqrt(std::fmax(1e-12, 1 - cw * cw));
+            const double q = (r * y2[k] - y1[k] * cw) / sw, A2 = y1[k] * y1[k] + q * q, r2 = r * r;
+            eout += x.wt[k] * x.wt[k] * 0.5 * A2 * r2 * (1 - std::pow(r2, M)) / std::fmax(1e-12, 1 - r2);
+        }
+        if (ein > 1e-10 * L && eout > 0) x.pkg = std::fmin(1000.0, std::fmax(1.0, std::sqrt(ein / x.burst_len / (eout / n))));
     }
 
     /* the String / Tube loop tuned to f, ringing for T (2a; Comb Ringing in 2b plays the String) */
@@ -323,7 +338,9 @@ struct Resonator : tone::Synth {
         const double room = std::fmax(0.0, len - from - 2), tail = std::fmin(0.5 * sr, 0.5 * room);
         const double at = offset_s > 0 ? offset_s * sr : from + std::fmin(1.0, std::fmax(0.0, focus)) * (room - tail);
         x.rpos = at; x.rend = src.frames;
-        x.rf0 = tf0 > 0 ? tf0 : 261.63; x.sf = f; x.rspd = std::pow(f / x.rf0, tune);
+        x.rf0 = tf0 > 0 ? tf0 : 261.63;
+        /* Octave outside Tune's power: whole octaves whatever Tune is (final review 6 I3) */
+        x.soc = std::ldexp(1.0, std::max(-2, std::min(2, octave))); x.sf = f / x.soc; x.rspd = std::pow(x.sf / x.rf0, tune) * x.soc;
         const double b = std::fmin(1.0, std::fmax(0.0, colour));
         x.rlpa = b >= 0.999 ? 0 : std::exp(-2 * PI * std::fmin(f * (1.5 + 30 * b * b), 0.45 * sr) / sr); x.rlp = 0; x.agc = 1;
         if (x.method == 1) {        /* Looped: about 0.5 s of whole periods at Position, inside the recording */
@@ -369,7 +386,7 @@ struct Resonator : tone::Synth {
         focus = 0; colour = 1; start_retune(x, f); focus = fo; colour = co;
         build_modulator();
         const double ratio = 0.25 * std::pow(16.0, std::fmin(1.0, std::fmax(0.0, fo)));
-        x.mdep = std::fmin(1.0, std::fmax(0.0, co)); x.mph = 0; x.mstep = 256.0 * x.sf * ratio / sr; x.mlast = 0;
+        x.mdep = std::fmin(1.0, std::fmax(0.0, co)); x.mph = 0; x.mstep = 256.0 * x.sf * x.soc * ratio / sr; x.mlast = 0;
         const double P = sr / (tf0 > 0 ? tf0 : 261.63);
         x.mdev = x.synth == SFM ? x.mdep * 2 * P : 0;
         if (x.mdev > 0 && x.method == 0 && x.rpos < x.mdev + 2) x.rpos = x.mdev + 2;   /* the bend stays inside the recording */
@@ -410,7 +427,7 @@ struct Resonator : tone::Synth {
         if (x.method == 1 || x.method == 2) {
             const double ft = x.rpos / sr / thop - 0.5; const int fr = (int)std::floor(ft);
             if (fr >= 0 && fr < tn && tcp[fr] >= 0.8f && tfp[fr] > 0) x.rf0 = tfp[fr];
-            x.rspd += (std::pow(x.sf / x.rf0, tune) - x.rspd) * kglide;
+            x.rspd += (std::pow(x.sf / x.rf0, tune) * x.soc - x.rspd) * kglide;
             double y = 0;
             if (x.method == 1) {    /* the loop, its last rxf crossfaded into the same place one loop earlier */
                 if (x.rpos >= x.rls + x.rL) x.rpos -= x.rL;
@@ -447,7 +464,7 @@ struct Resonator : tone::Synth {
         const double ft = x.rpos / sr / thop - 0.5; const int fr = (int)std::floor(ft);   /* frame centres at (k + 0.5) thop */
         if (fr >= 0 && fr + 1 < tn && tcp[fr] >= 0.8f && tcp[fr + 1] >= 0.8f && tfp[fr] > 0 && tfp[fr + 1] > 0) x.rf0 = tfp[fr] + (tfp[fr + 1] - tfp[fr]) * (ft - fr);
         else if (fr >= 0 && fr < tn && tcp[fr] >= 0.8f && tfp[fr] > 0) x.rf0 = tfp[fr];
-        x.rspd += (std::pow(x.sf / x.rf0, tune) - x.rspd) * kglide;
+        x.rspd += (std::pow(x.sf / x.rf0, tune) * x.soc - x.rspd) * kglide;
         const long long i = (long long)x.rpos; const double u = x.rpos - (double)i;
         const double y0 = src.at(i - 1), y1 = src.at(i), y2 = src.at(i + 1), y3 = src.at(i + 2);
         const double c1 = 0.5 * (y2 - y0), c2 = y0 - 2.5 * y1 + 2 * y2 - 0.5 * y3, c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
@@ -764,7 +781,7 @@ struct Resonator : tone::Synth {
         for (int i = 0; i < nv; i++) {
             Voice &x = v[i];
             if (!x.active || x.releasing || x.stealing) continue;
-            fs[n] = x.f; vs[n] = x.vel; ts[n] = std::fmax(t, x.on_t); offs[n] = x.off_t; n++;
+            fs[n] = x.req; vs[n] = x.vel;   /* as asked: x.f already has the fold and Octave in it (final review 6 C1) */ ts[n] = std::fmax(t, x.on_t); offs[n] = x.off_t; n++;
             x.stealing = true; x.has_next = false; x.steal_at = t; x.fade = 1.0 / (STEAL_S * sr);
         }
         for (int k = 0; k < n; k++) { attack(fs[k], ts[k], vs[k]); if (offs[k] < 1e299) release(offs[k]); }

@@ -8397,6 +8397,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       });
     });
   }
+  var labSyncTimer = null;
   function labEngineSync() {
     if (labOn() && !labLoaded) { labRoutesLoad(); }
     if (!core || !core.node) { return; }
@@ -8409,7 +8410,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       return;
     }
     if (core.state) { labRoleSamples(core.state.route_id || null); }   /* only what changed is sent (C1) */
-    coreSyncSoon();
+    /* throttled, not debounced: a lab drag (an EQ dot) is heard while it moves, ~16 times a second (final review 6 I6) */
+    if (!labSyncTimer) { labSyncTimer = setTimeout(function () { labSyncTimer = null; coreSync(); }, 60); }
   }
   function coreMove() {
     /* open world and place mode alike: the engine picks the route from where the walker is, and in
@@ -13115,7 +13117,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     for (var k = 0; k < 5; k++) {
       (function (k) {
         var g = el("g", { "class": "eq-band", "data-band": k, tabindex: "0", role: "slider", "aria-valuemin": "-12", "aria-valuemax": "12", "aria-label": EQ_NAMES[k] });
-        el("circle", { "class": "eq-hit", r: 14 }, g); el("circle", { "class": "eq-dot", r: 5 }, g);
+        el("circle", { "class": "eq-hit", r: 22 }, g);   /* >= 44 px across at a phone's width (final review 6) */ el("circle", { "class": "eq-dot", r: 5 }, g);
         var drag = false;
         g.addEventListener("pointerdown", function (e) {
           drag = true; e.preventDefault(); g.focus();

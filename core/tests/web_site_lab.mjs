@@ -180,10 +180,11 @@ try {
     await ev(`(function(){ var t = document.querySelector("#pp-tabs [data-tab='voices']"); t && t.click(); var v = document.querySelector("#pp-sub [data-sub='${sub}']"); v && v.click(); return 1; })()`); await sleep(500);
     await ev(`document.querySelector('#pp-${r}-eq').scrollIntoView({ block: 'center' }), 0`); await sleep(300);
     const w = await ev(`(function(){ var e = document.querySelector('#pp-${r}-eq svg'), c = e && e.closest('.ppcol'); return e && c ? [Math.round(e.getBoundingClientRect().width), Math.round(c.getBoundingClientRect().width)] : null; })()`);
-    if (!(await inCol(`#pp-${r}-eq svg`)) || !w || w[0] < w[1] * 0.9) phoneEq.push([r, w]);
+    const hit = await ev(`Math.round(document.querySelector('#pp-${r}-eq .eq-hit').getBoundingClientRect().width)`);   /* final review 6: a 44 px touch target */
+    if (!(await inCol(`#pp-${r}-eq svg`)) || !w || w[0] < w[1] * 0.9 || hit < 44) phoneEq.push([r, w, hit]);
     if (r === "v3") await shot("6-eq-phone");
   }
-  check("6: on a phone each voice's EQ graph spans its column, the page does not scroll sideways",
+  check("6: on a phone each voice's EQ graph spans its column, its dots are 44 px touch targets, the page does not scroll sideways",
     phoneEq.length === 0 && (await ev("document.documentElement.scrollWidth <= innerWidth + 1")), phoneEq);
   await s.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false }); await sleep(1000);
   const page1 = await livePatch(DRAFT), dbPatch1 = JSON.stringify((await db.from("features").select("properties").eq("id", DRAFT).single()).data.properties.patch);
@@ -261,6 +262,14 @@ try {
     d.dispatchEvent(o('pointerdown', y)); d.dispatchEvent(o('pointermove', y - 10)); d.dispatchEvent(o('pointermove', y - 20)); d.dispatchEvent(o('pointerup', y - 20)); return 1; })()`);
   await sleep(400); sp = await sentP();
   check("6: dragging a sampler voice's EQ dot up raises that band", !!(sp && sp.v3 && sp.v3.eq && sp.v3.eq[4][1] > 1), sp && sp.v3 && sp.v3.eq);
+  /* final review 6 I6: the sound follows a drag while it moves - moves every 30 ms, the engine has the band before the pointer lets go */
+  await ev(`(function(){ var d = document.querySelector('#pp-voice-eq [data-band="1"]'), r = d.getBoundingClientRect(); window.__dragY = r.top + r.height / 2; window.__dragX = r.left + r.width / 2;
+    d.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 2, clientX: __dragX, clientY: __dragY, bubbles: true, isPrimary: true, button: 0, buttons: 1 })); return 1; })()`);
+  for (let i = 1; i <= 12; i++) { await ev(`document.querySelector('#pp-voice-eq [data-band="1"]').dispatchEvent(new PointerEvent('pointermove', { pointerId: 2, clientX: __dragX, clientY: __dragY - ${i * 2}, bubbles: true, buttons: 1 })), 0`); await sleep(30); }
+  sp = await sentP();
+  const mid6 = sp && sp.voice && sp.voice.eq ? sp.voice.eq[1][1] : null;
+  await ev("document.querySelector('#pp-voice-eq [data-band=\"1\"]').dispatchEvent(new PointerEvent('pointerup', { pointerId: 2, bubbles: true })), 0");
+  check("6: mid-drag, the engine already has the band moving (final review 6 I6)", mid6 > 0, sp && sp.voice && sp.voice.eq);
   await setRange("v3.octave", "1"); await sleep(400); sp = await sentP();
   check("6: a sampler voice's octave reaches the engine", !!(sp && sp.v3 && sp.v3.sampler && sp.v3.sampler.octave === 1), sp && sp.v3 && sp.v3.sampler);
   await sleep(2500);

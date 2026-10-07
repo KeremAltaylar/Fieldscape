@@ -2286,7 +2286,7 @@ int main() {
             for (float s : a) { uint32_t u; std::memcpy(&u, &s, 4); h = (h ^ u) * 1099511628211ull; }
         }
         std::printf("resonator 2a hash %016llx\n", (unsigned long long)h);
-        assert(h == 0xe6ca8a8a9c8837e9ull);   /* the em++ -O1 test build (no FMA in wasm); 2026-10-07: Plucked made up to level */
+        assert(h == 0x756efa77ba1e282cull);   /* the em++ -O1 test build (no FMA in wasm); 2026-10-07: Plucked made up to level */
     }
     {   /* 2026-10-07 (Kerem: "Bell/Plucked ... very low volume, can't hear it"): every Resonator body x excite sounds within
            6 dB of String Bowed - RMS over a 2 s note on wind, at the default Focus/Colour and at Kerem's likely settings */
@@ -2322,6 +2322,48 @@ int main() {
         const double z220 = peak_amp(z, 48000, 220), z110 = peak_amp(z, 48000, 110), u220 = peak_amp(up, 48000, 220), u440 = peak_amp(up, 48000, 440), d110 = peak_amp(dn, 48000, 110);
         std::printf("6 octave: at 0 220 Hz %.3g, 110 Hz %.3g; +1 220 Hz %.3g (440 %.3g); -1 110 Hz %.3g\n", z220, z110, u220, u440, d110);
         assert(u220 < 0.1 * z220 && u440 > 0.3 * z220 && d110 > 10 * z110);
+    }
+    {   /* final review 6 C1: a re-voice (every lab control on the role) keeps a held note's octave - it moved up one each time */
+        const std::vector<float> wind = noise_src(5, 0.5f, 77); const float *p[1] = { wind.data() };
+        auto held = [&](int revoices) {
+            sampler::Resonator r; r.init(48000); r.set_source(1, (long long)wind.size(), p);
+            r.body = sampler::STRING; r.excite = sampler::BOWED; r.focus = 0.9; r.octave = 1;
+            r.attack(220, 0, 0.5);
+            std::vector<float> L((size_t)(4 * 48000), 0.0f), R(L.size(), 0.0f);
+            for (size_t i = 0; i < L.size(); i += 128) { if (revoices >= 1 && i == 48000 / 128 * 128) r.revoice(i / 48000.0); if (revoices >= 2 && i == 96000 / 128 * 128) r.revoice(i / 48000.0);
+                r.render(L.data() + i, R.data() + i, 128, i / 48000.0); }
+            return peak_amp(L, 48000, 440); };
+        const double ref = held(0), two = held(2);
+        std::printf("6 octave and re-voice: 440 Hz %.3g held, %.3g after two re-voices\n", ref, two);
+        assert(two > 0.5 * ref);
+    }
+    {   /* final review 6 I3: Octave on the pitch sampler is whole octaves whatever Tune is (Tune 0.5 made +1 an augmented 4th) */
+        std::vector<float> sine((size_t)(4 * 48000)); for (size_t i = 0; i < sine.size(); i++) sine[i] = (float)(0.3 * std::sin(2 * sampler::PI * 220 * i / 48000));
+        auto play = [&](int oct) {
+            sampler::Resonator r; r.init(48000); r.synth = sampler::RETUNE; r.method = 0; const float *p[1] = { sine.data() }; r.set_source(1, (long long)sine.size(), p);
+            std::vector<float> tf(200, 220.0f), tc(200, 0.95f); r.set_track(220, 0.02, tf.data(), tc.data(), 200);
+            r.tune = 0.5; r.focus = 0; r.octave = oct; r.attack(440, 0, 0.5);
+            std::vector<float> L((size_t)(1.5 * 48000 / 128) * 128, 0.0f), R(L.size(), 0.0f);   /* whole blocks */
+            for (size_t i = 0; i < L.size(); i += 128) r.render(L.data() + i, R.data() + i, 128, i / 48000.0);
+            return L; };
+        const auto z = play(0), up = play(1);
+        const double base = 220 * std::sqrt(2.0);   /* Tune 0.5: halfway (in pitch) from the recording's 220 Hz to the note's 440 */
+        const double z0 = peak_amp(z, 48000, base), u2 = peak_amp(up, 48000, 2 * base), u440 = peak_amp(up, 48000, 440);
+        std::printf("6 retune octave at tune 0.5: octave 0 %.0f Hz %.3g; octave +1 %.0f Hz %.3g (440 Hz %.3g)\n", base, z0, 2 * base, u2, u440);
+        assert(z0 > 0.01 && u2 > 5 * u440);
+    }
+    {   /* final review 6 I2: a Bell Plucked note's make-up is cheap at its start (it ran 150 ms of modes: ~110 us a note) */
+        const std::vector<float> wind = noise_src(3, 0.5f, 77); const float *p[1] = { wind.data() };
+        auto cost = [&](int ex) {
+            std::vector<double> us;   /* fresh voices only: past 24 an attack steals, and a steal's start waits for render */
+            for (int rep = 0; rep < 12; rep++) {
+                sampler::Resonator r; r.init(48000); r.set_source(1, (long long)wind.size(), p); r.body = sampler::BELL; r.excite = ex;
+                for (int k = 0; k < sampler::Resonator::VOICES; k++) { auto c0 = std::chrono::steady_clock::now(); r.attack(110 * std::pow(2.0, k / 12.0), 0, 0.5);
+                    us.push_back(std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - c0).count()); } }
+            std::sort(us.begin(), us.end()); return us[us.size() / 2]; };
+        const double pl = cost(sampler::PLUCKED), bo = cost(sampler::BOWED);
+        std::printf("6 bell plucked note start: median %.1f us (bowed %.1f us)\n", pl, bo);
+        assert(pl < 25);
     }
     {   /* 6: the five-band EQ - a +6 dB bell at 1 kHz where it should be and nowhere else; flat is the input exactly; a jump
            of +12 dB never steps (the coefficients glide) */
