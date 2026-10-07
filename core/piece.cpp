@@ -18,6 +18,7 @@
 #include "synths.hpp"
 #include "harmony.hpp"
 #include "samplers.hpp"
+#include "eq.hpp"
 
 #include <cstdio>
 #include <cstring>
@@ -158,7 +159,7 @@ struct VoiceCfg { bool on; double gain, density, bass, top, index, harm, drive, 
 struct SectCfg { bool on; int n; double gain; Div rhythm; double chordPull, harm, index, drive, warp; int synth; };
 struct V3Cfg { bool on; double gain; Div rhythm; int synth; double harm, index, drive, warp; };
 /* a sampler role's settings (3a): the bench's controls; Focus / Colour are its two timbre slots (morphs drive them) */
-struct SamplerCfg { int body = 0, excite = 0, method = 0, mode = 0; double focus = 0.5, colour = 0.5, tune = 1; };
+struct SamplerCfg { int body = 0, excite = 0, method = 0, mode = 0, octave = 0; double focus = 0.5, colour = 0.5, tune = 1; };
 struct RfxCfg { double cutoff, drive; Div delayDiv; double delayWet, delayFb, revWet, revDecay; };
 struct Patch {
     double tempo = 72; int key = 50, key2 = 55;
@@ -170,12 +171,14 @@ struct Patch {
     Sector sectors[32]; int nsectors = 0;
     int tuning = -1;   /* "just" 1, "equal" 0, absent -1: the piece's default (sample harmony) */
     SamplerCfg smp[3];  /* voice, sect, v3: their "sampler" object (3a) */
+    double eq[3][5][3] = {};   /* 6 (lab): each role's EQ, [band][Hz, dB, Q]; an absent "eq" is flat */
 };
 static SamplerCfg smp_of(const Json *role) {
     SamplerCfg c; const Json *j = role ? role->get("sampler") : nullptr;
     if (!j) return c;
     c.body = (int)j->n("body", c.body); c.excite = (int)j->n("excite", c.excite); c.method = (int)j->n("method", c.method);
     c.mode = (int)j->n("mode", c.mode); c.focus = j->n("focus", c.focus); c.colour = j->n("colour", c.colour); c.tune = j->n("tune", c.tune);
+    c.octave = (int)std::lround(j->n("octave", 0));   /* 6 */
     return c;
 }
 static bool is_sampler(int type) { return type >= S_RETUNE && type < NSYNTH; }
@@ -243,6 +246,17 @@ static void patch_of(const Json *p, Patch &P) {
         s ? s->n("index", 7.5) : 7.5, s ? s->n("drive", 0.18) : 0.18, s ? s->n("warp", 0.14) : 0.14,
         find_synth(s ? s->s("synth", "fm") : "fm", FM) };
     P.smp[0] = smp_of(v); P.smp[1] = smp_of(s); P.smp[2] = smp_of(v3);
+    {   /* 6 (lab): "eq": [[Hz, dB, Q] x5] on a role */
+        static const double F[5] = { 80, 250, 1000, 4000, 10000 }, Q[5] = { 0.7, 1, 1, 1, 0.7 };
+        const Json *rj[3] = { v, s, v3 };
+        for (int q = 0; q < 3; q++) {
+            const Json *e = rj[q] ? rj[q]->get("eq") : nullptr;
+            for (int k = 0; k < 5; k++) {
+                const Json *b = e ? e->at(k) : nullptr; const Json *f = b ? b->at(0) : nullptr, *g = b ? b->at(1) : nullptr, *qq = b ? b->at(2) : nullptr;
+                P.eq[q][k][0] = f ? f->num : F[k]; P.eq[q][k][1] = g ? g->num : 0; P.eq[q][k][2] = qq ? qq->num : Q[k];
+            }
+        }
+    }
 
     const Json *m = p ? p->get("morph") : nullptr;
     P.nmorph = 0;
@@ -602,6 +616,7 @@ struct Piece : Device {
     void bind_role(Role &r, const RoleRec &k) { for (int t = S_RETUNE; t < NSYNTH; t++) if (r.inst[t]) bind(r.inst[t].get(), k); }
     Ctl bass_g, top_g;
     Layer pad, sectL, v3L;
+    Eq5 eqs[3];                       /* 6 (lab): each role's EQ, after its layer, before its effects */
     double lvl[3] = {};               /* 3c.1 F4: each role's own output, ~0.1 s mean square (voice, sect, v3) */
     FxChain fx, fx2, fx3, rfx;
     Layer rdrive;                     /* the rhythm effects' drive and lowpass (no warp) */
@@ -712,6 +727,7 @@ struct Piece : Device {
         pad.init(sr, 2.6, 0.62, 0.55, 5.5, 0.6, 1200, 1, p.voice.gain);
         sectL.init(sr, 3.2, 0.58, 1.7, 3, 0.7, 9000, p.sect.gain, 0.78);
         v3L.init(sr, 2.8, 0.6, 0.35, 7, 0.5, 7000, 1, p.v3.gain);
+        for (auto &e : eqs) e.init(sr);
         bass_g.init(0.9); top_g.init(0.8);
         swap(bass, p.voice.synth, 0); swap(top, p.voice.synth, 0); swap(sectr, p.sect.synth, 0); swap(v3r, p.v3.synth, 0);
         /* buildRhythmFx */
@@ -772,6 +788,7 @@ struct Piece : Device {
         fx.apply(p.fx, p.tempo, now);
         v3L.g2.p.linearRampTo(p.v3.on ? p.v3.gain : 0, 0.2, now);
         fx3.apply(p.fx3, p.tempo, now);
+        for (int q = 0; q < 3; q++) for (int k = 0; k < 5; k++) eqs[q].set(k, p.eq[q][k][0], p.eq[q][k][1], p.eq[q][k][2]);
         /* applySynths */
         settings_for(p);
         if (bass.cur != p.voice.synth) { swap(bass, p.voice.synth, now); swap(top, p.voice.synth, now); H.held = false; }
@@ -855,7 +872,7 @@ struct Piece : Device {
         rs->colour = morph(ID[q], t, m) ? SYNTH_PARAMS[type][1].min + m * (SYNTH_PARAMS[type][1].max - SYNTH_PARAMS[type][1].min) : c.colour;
     }
     static bool same_cfg(const SamplerCfg &a, const SamplerCfg &b) {
-        return a.body == b.body && a.excite == b.excite && a.method == b.method && a.mode == b.mode && a.focus == b.focus && a.colour == b.colour && a.tune == b.tune;
+        return a.body == b.body && a.excite == b.excite && a.method == b.method && a.mode == b.mode && a.focus == b.focus && a.colour == b.colour && a.tune == b.tune && a.octave == b.octave;
     }
     void revoice_changed(const SamplerCfg was[3], double t) {
         Role *rs[3][2] = { { &bass, &top }, { &sectr, nullptr }, { &v3r, nullptr } };
@@ -865,7 +882,7 @@ struct Piece : Device {
             for (Role *r : rs[q]) {
                 if (!r || !is_sampler(r->cur) || !r->inst[r->cur]) continue;
                 auto *s = static_cast<sampler::Resonator *>(r->inst[r->cur].get());
-                s->body = c.body; s->excite = c.excite; s->method = c.method; s->mode = c.mode; s->tune = c.tune; sampler_timbre(s, q, c, t);
+                s->body = c.body; s->excite = c.excite; s->method = c.method; s->mode = c.mode; s->tune = c.tune; s->octave = c.octave; sampler_timbre(s, q, c, t);
                 s->revoice(t);
             }
         }
@@ -876,7 +893,7 @@ struct Piece : Device {
         Role *rr = role == 0 ? &bass : role == 1 ? &top : role == 2 ? &sectr : role == 3 ? &v3r : nullptr;
         if (rr && is_sampler(rr->cur) && sy == rr->sy()) {   /* a sampler role: its settings for this note (3a) */
             auto *rs = static_cast<sampler::Resonator *>(sy); const SamplerCfg &c = patch.smp[role <= 1 ? 0 : role - 1];
-            rs->body = c.body; rs->excite = c.excite; rs->method = c.method; rs->mode = c.mode; rs->tune = c.tune;
+            rs->body = c.body; rs->excite = c.excite; rs->method = c.method; rs->mode = c.mode; rs->tune = c.tune; rs->octave = c.octave;
             sampler_timbre(rs, role <= 1 ? 0 : role - 1, c, t);   /* Focus and Colour too: a held note started before the step set them */
             /* a held note (the bass) ends the one before it: a one-voice digital synth retriggers, a sampler would keep
                every earlier bass sounding (final review 3a C1: six old bass notes piled up) */
@@ -1464,6 +1481,7 @@ struct Piece : Device {
         pad.process(fx.L, fx.R, n, te);
         sectL.process(fx2.L, fx2.R, n, te);
         v3L.process(fx3.L, fx3.R, n, te);
+        eqs[0].process(fx.L, fx.R, n); eqs[1].process(fx2.L, fx2.R, n); eqs[2].process(fx3.L, fx3.R, n);
         {   /* 3c.1 F4: what each role puts out - after its drive, warp and gain, before its effects (each layer alone in its
                chain's input here: the chains clear after every block, and the one-shots are added below), ~0.1 s mean square */
             const double k = 1 - std::exp(-n / (0.1 * sr));

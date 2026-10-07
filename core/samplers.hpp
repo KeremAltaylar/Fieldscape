@@ -168,7 +168,7 @@ struct Resonator : tone::Synth {
     static const unsigned MASK = (1u << 13) - 1;                  /* 8192-sample lines: down to ~6 Hz */
     Source src;
     int body = STRING, excite = BOWED, synth = RESONATE, method = BANK, mode = DRY;
-    double focus = 0.5, colour = 0.5, tune = 1, att = 0.02, rel = 0.6, offset_s = 0;
+    double focus = 0.5, colour = 0.5, tune = 1, att = 0.02, rel = 0.6, offset_s = 0; int octave = 0;   /* 6: whole octaves on every note */
     Voice v[VOICES]; int last = -1;
     double tune_s = -1;                                           /* Tune as heard: glides to `tune` over ~10 ms (A-2) */
     std::vector<double> tune_buf;                                 /* per block; sized once to the largest block */
@@ -245,7 +245,7 @@ struct Resonator : tone::Synth {
 
     /* a voice made ready for a note: the loop tuned to f (String/Tube) or the modes set (Bell) */
     void start(Voice &x, double f, double t, double vel) {
-        f = fold(f);
+        f = fold(f) * std::ldexp(1.0, std::max(-2, std::min(2, octave)));   /* 6: Octave after the fold: from the octave the recording sounds in */
         std::fill(x.line.begin(), x.line.end(), 0.0f);
         f = std::fmin(std::fmax(f, 6.0), 0.45 * sr);                 /* extreme octaves: clamped, never unstable */
         x.active = true; x.started = false; x.releasing = false; x.stealing = false; x.has_next = false;

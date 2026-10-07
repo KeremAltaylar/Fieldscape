@@ -4,6 +4,7 @@
 #include "harmony.hpp"
 #include "devices/fft.hpp"
 #include "samplers.hpp"
+#include "eq.hpp"
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -2306,6 +2307,65 @@ int main() {
         }
         std::printf("; worst %+.1f\n", worst);
         assert(worst > -6);
+    }
+    {   /* 6 (Kerem 2026-10-07: "octave control for every sampler synth"): Octave moves the note by whole octaves */
+        const std::vector<float> wind = noise_src(4, 0.5f, 77); const float *p[1] = { wind.data() };
+        auto at = [&](int oct) {
+            sampler::Resonator r; r.init(48000); r.set_source(1, (long long)wind.size(), p);
+            r.body = sampler::STRING; r.excite = sampler::BOWED; r.focus = 0.9; r.octave = oct;
+            r.attack(220, 0, 0.5); r.release(10);
+            std::vector<float> L((size_t)(3 * 48000), 0.0f), R(L.size(), 0.0f);
+            for (size_t i = 0; i < L.size(); i += 128) r.render(L.data() + i, R.data() + i, 128, i / 48000.0);
+            return L; };
+        /* the old fundamental gone an octave up, a new one an octave down (a string at 220 Hz has 440 in it already) */
+        const auto z = at(0), up = at(1), dn = at(-1);
+        const double z220 = peak_amp(z, 48000, 220), z110 = peak_amp(z, 48000, 110), u220 = peak_amp(up, 48000, 220), u440 = peak_amp(up, 48000, 440), d110 = peak_amp(dn, 48000, 110);
+        std::printf("6 octave: at 0 220 Hz %.3g, 110 Hz %.3g; +1 220 Hz %.3g (440 %.3g); -1 110 Hz %.3g\n", z220, z110, u220, u440, d110);
+        assert(u220 < 0.1 * z220 && u440 > 0.3 * z220 && d110 > 10 * z110);
+    }
+    {   /* 6: the five-band EQ - a +6 dB bell at 1 kHz where it should be and nowhere else; flat is the input exactly; a jump
+           of +12 dB never steps (the coefficients glide) */
+        auto gain_at = [](double hz, double g1k) {
+            Eq5 e; e.init(48000); e.set(2, 1000, g1k, 1);
+            std::vector<float> L(48000), R(48000);
+            for (int i = 0; i < 48000; i++) L[i] = R[i] = (float)(0.25 * std::sin(2 * 3.141592653589793 * hz * i / 48000));
+            std::vector<float> in = L;
+            for (int i = 0; i < 48000; i += 32) e.process(L.data() + i, R.data() + i, 32);
+            double a = 0, b = 0; for (int i = 24000; i < 48000; i++) { a += (double)L[i] * L[i]; b += (double)in[i] * in[i]; }
+            return 10 * std::log10(a / b); };
+        const double g1 = gain_at(1000, 6), g100 = gain_at(100, 6), g10k = gain_at(10000, 6);
+        Eq5 flat; flat.init(48000);
+        std::vector<float> fl(4800), fr(4800); for (int i = 0; i < 4800; i++) fl[i] = fr[i] = (float)std::sin(i * 0.37);
+        std::vector<float> fin = fl; for (int i = 0; i < 4800; i += 32) flat.process(fl.data() + i, fr.data() + i, 32);
+        Eq5 j; j.init(48000); double step = 0, dstep = 0; float prev = 0, dprev = 0;
+        for (int b = 0; b < 48000 / 32; b++) {
+            if (b == 600) j.set(0, 200, 12, 0.7);
+            float L[32], R[32], D[32];
+            for (int i = 0; i < 32; i++) { const int n = b * 32 + i; L[i] = R[i] = D[i] = (float)(0.2 * std::sin(2 * 3.141592653589793 * 80 * n / 48000)); }
+            j.process(L, R, 32);
+            for (int i = 0; i < 32; i++) { step = std::fmax(step, std::fabs(L[i] - prev)); prev = L[i]; dstep = std::fmax(dstep, std::fabs(D[i] - dprev)); dprev = D[i]; }
+        }
+        std::printf("6 eq: bell +6 at 1 kHz reads %+.2f dB, at 100 Hz %+.2f, at 10 kHz %+.2f; flat identical %d; a +12 dB jump's largest step %.2fx the dry's\n",
+            g1, g100, g10k, (int)(fl == fin), step / dstep);
+        assert(std::fabs(g1 - 6) < 0.3 && std::fabs(g100) < 0.5 && std::fabs(g10k) < 0.5 && fl == fin && step < 4.2 * dstep);
+    }
+    {   /* 6: a role's EQ on a route - a -12 dB low shelf at 16 kHz on every role takes the route ~12 dB down (all of it goes through
+           the role EQs); a flat one changes nothing */
+        auto render = [](const char *patch) {
+            unsigned seed = 4242; fs_device *d = fs_create("piece"); fs_prepare(d, 48000, 128);
+            fs_piece_test_hooks(d, fixed_draw, &seed, nullptr, nullptr);
+            const int r = fs_piece_add_route(d, patch); fs_piece_walk(d, r, 0.3, 0);
+            std::vector<float> o;
+            for (int i = 0; i < 12 * 48000 / 128; i++) { fs_process(d, 128); const float *l = fs_out(d, 0); o.insert(o.end(), l, l + 128); }
+            fs_destroy(d); return o; };
+        auto hi = [](const std::vector<float> &o) { double e = 0; for (float x : o) e += (double)x * x; return e; };
+        const std::string shelf = "[[16000,-12,0.7],[250,0,1],[1000,0,1],[4000,0,1],[10000,0,0.7]]", zero = "[[80,0,0.7],[250,0,1],[1000,0,1],[4000,0,1],[10000,0,0.7]]";
+        const std::string V = "{\"version\":17,\"prog\":[{\"r\":0,\"q\":\"m9\"}],";
+        const auto none = render((V + "\"tempo\":72}").c_str()), cut = render((V + "\"voice\":{\"eq\":" + shelf + "},\"sect\":{\"eq\":" + shelf + "},\"v3\":{\"eq\":" + shelf + "}}").c_str()),
+                   flat = render((V + "\"voice\":{\"eq\":" + zero + "},\"sect\":{\"eq\":" + zero + "},\"v3\":{\"eq\":" + zero + "}}").c_str());
+        const double drop = 10 * std::log10(hi(cut) / hi(none));
+        std::printf("6 route eq: %+.1f dB with a -12 dB low shelf at 16 kHz on every role (energy %.3g); flat EQ identical %d\n", drop, hi(none), (int)(flat == none));
+        assert(drop < -11 && flat == none);
     }
     std::printf("core ok\n");
     return 0;
