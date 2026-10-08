@@ -37,11 +37,31 @@
     var p = JSON.parse(JSON.stringify(patch || {}));
     if (!roles) { return p; }
     ROLES.forEach(function (r) {
-      var rr = roles[r]; if (!rr || !isSampler(rr.synth)) { return; }
+      var rr = roles[r]; if (!rr) { return; }
+      if (Array.isArray(rr.eq)) { p[r] = p[r] || {}; p[r].eq = JSON.parse(JSON.stringify(rr.eq)); }   /* 6: every voice's EQ */
+      if (!isSampler(rr.synth)) { return; }
       p[r] = p[r] || {}; p[r].synth = rr.synth; p[r].sampler = JSON.parse(JSON.stringify(rr.sampler || {}));
       delete p[r].harm; delete p[r].index;
     });
     return p;
+  }
+  /* Sample harmony 6: a voice's five-band EQ - [Hz, dB, Q] for a low shelf, three bells and a high shelf - and its
+     response in dB at a frequency (the core's Eq5: the same RBJ biquads) */
+  function eqDefault() { return [[80, 0, 0.7], [250, 0, 1], [1000, 0, 1], [4000, 0, 1], [10000, 0, 0.7]]; }
+  function eqResponse(bands, hz, sr) {
+    var db = 0, z = 2 * Math.PI * hz / sr, c1 = Math.cos(z), s1 = Math.sin(z), c2 = Math.cos(2 * z), s2 = Math.sin(2 * z);
+    for (var k = 0; k < 5; k++) {
+      var b = bands[k]; if (!b || !b[1]) { continue; }
+      var A = Math.pow(10, b[1] / 40), w = 2 * Math.PI * Math.min(b[0], 0.45 * sr) / sr, c = Math.cos(w), al = Math.sin(w) / (2 * b[2]), B0, B1, B2, A0, A1, A2;
+      if (k === 0 || k === 4) {
+        var sA = 2 * Math.sqrt(A) * al, s = k === 0 ? -1 : 1;
+        B0 = A * ((A + 1) + s * (A - 1) * c + sA); B1 = -2 * s * A * ((A - 1) + s * (A + 1) * c); B2 = A * ((A + 1) + s * (A - 1) * c - sA);
+        A0 = (A + 1) - s * (A - 1) * c + sA; A1 = 2 * s * ((A - 1) - s * (A + 1) * c); A2 = (A + 1) - s * (A - 1) * c - sA;
+      } else { B0 = 1 + al * A; B1 = -2 * c; B2 = 1 - al * A; A0 = 1 + al / A; A1 = -2 * c; A2 = 1 - al / A; }
+      var nr = B0 + B1 * c1 + B2 * c2, ni = -(B1 * s1 + B2 * s2), dr = A0 + A1 * c1 + A2 * c2, di = -(A1 * s1 + A2 * s2);
+      db += 10 * Math.log10((nr * nr + ni * ni) / (dr * dr + di * di));
+    }
+    return db;
   }
   /* 3c.1 F1: the sounding parts of a recording, in order. 50 ms blocks; a block sounds when its energy is at least the
      loudest block's -40 dB (the analyser's silence rule); a silent run under 0.25 s is kept (the breath in a call) */
@@ -139,7 +159,7 @@
     var keep = function (r, p) { bufs[r] = p.buf; anas[r] = p.analysis; raws[r] = p.raw; kepts[r] = p.kept; blocks[r] = p.block; };
     var changed = function (r) { if (o.onChange) { o.onChange(r); } };
     s.state = function (r) {
-      if (!st[r]) { var d = s.defaults[r]; st[r] = { synth: "", gain: d.gain, harm: d.harm, index: d.index, body: 0, excite: 0, method: 0, mode: 0, focus: 0.5, colour: 0.5, tune: 1, sample: null, sampleNote: "" }; }
+      if (!st[r]) { var d = s.defaults[r]; st[r] = { synth: "", gain: d.gain, harm: d.harm, index: d.index, body: 0, excite: 0, method: 0, mode: 0, focus: 0.5, colour: 0.5, tune: 1, octave: 0, eq: null, sample: null, sampleNote: "" }; }
       return st[r];
     };
     s.buf = function (r) { return bufs[r] || null; };
@@ -153,7 +173,8 @@
       var out = {};
       ROLES.forEach(function (r) { var x = s.state(r);
         out[r] = { synth: x.synth, gain: x.gain, harm: x.harm, index: x.index,
-          sampler: { body: x.body, excite: x.excite, method: x.method, mode: x.mode, focus: x.focus, colour: x.colour, tune: x.tune },
+          sampler: { body: x.body, excite: x.excite, method: x.method, mode: x.mode, focus: x.focus, colour: x.colour, tune: x.tune, octave: x.octave },
+          eq: x.eq ? JSON.parse(JSON.stringify(x.eq)) : null,
           sample: x.sample && x.sample.path ? { path: x.sample.path, name: x.sample.name, analysis: x.sample.analysis } : null }; });
       return out;
     };
@@ -173,6 +194,7 @@
           var x = s.state(r); x.synth = rr.synth || "";
           ["gain", "harm", "index"].forEach(function (k) { if (rr[k] != null) { x[k] = rr[k]; } });
           if (rr.sampler) { Object.keys(rr.sampler).forEach(function (k) { x[k] = rr.sampler[k]; }); }
+          if (Array.isArray(rr.eq)) { x.eq = rr.eq; }
           x.sample = rr.sample || null; x.sampleNote = rr.sample ? "loading…" : "";
           if (rr.sample && rr.sample.path) {
             decodeSample(o.sb, o.ctx(), rr.sample).then(function (b) {
@@ -230,6 +252,6 @@
   }
   var api = { ROLES: ROLES, ROLE_INDEX: ROLE_INDEX, MAX_S: MAX_S, SAMPLER: SAMPLER, NAMES: NAMES, isSampler: isSampler, esc: esc,
     sampleLabel: sampleLabel, colourName: colourName, wavBytes: wavBytes, wav: wav, trimmed: trimmed, overlay: overlay,
-    fetchRoute: fetchRoute, sendRole: sendRole, session: session, decodeSample: decodeSample, silence: silence, compactPlan: compactPlan, compactData: compactData, prepare: prepare, positionFrame: positionFrame };
+    fetchRoute: fetchRoute, sendRole: sendRole, session: session, decodeSample: decodeSample, silence: silence, compactPlan: compactPlan, compactData: compactData, prepare: prepare, positionFrame: positionFrame, eqDefault: eqDefault, eqResponse: eqResponse };
   root.FsRoles = api;
 })(typeof globalThis !== "undefined" ? globalThis : self);

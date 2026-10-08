@@ -38,8 +38,13 @@ const PT = ((await db.from("features").select("id, geometry, properties").eq("ki
 const ptHadRow = PT ? !!(await db.from("lab_route_roles").select("route_id").eq("route_id", PT.id).maybeSingle()).data : true;
 /* the site reads only published features from the server: a setter's draft is on their own device (the page's local
    store), with the same id as its row - which lab_route_roles needs */
+/* the published route's patch with its three voices on at their default levels: the Freeze checks hear the Third voice
+   against the others, and a setter may have changed them on the live route (2026-10-07: Third voice off on one route,
+   0.15 under a First voice at 1.0 on the other) */
+const pp0 = pubRow.properties.patch, lv = (k, g) => Object.assign({}, pp0[k], { on: true, gain: g });
+const draftPatch = Object.assign({}, pp0, { voice: lv("voice", 0.45), sect: lv("sect", 0.8), v3: lv("v3", 0.55) });
 const draftFeature = { type: "Feature", geometry: { type: "LineString", coordinates: pubRow.geometry.coordinates.map((c) => [c[0], c[1] + 0.01]) },
-  properties: { id: DRAFT, kind: "route", place: pubRow.place, published: false, name: "lab site draft", patch: pubRow.properties.patch } };
+  properties: { id: DRAFT, kind: "route", place: pubRow.place, published: false, name: "lab site draft", patch: draftPatch } };
 await db.from("features").insert({ id: DRAFT, place: pubRow.place, kind: "route", geometry: draftFeature.geometry, properties: draftFeature.properties });
 const dbPatch0 = JSON.stringify((await db.from("features").select("properties").eq("id", DRAFT).single()).data.properties.patch);
 
@@ -160,6 +165,7 @@ try {
   check("Retune with an unpitched sample warns", /Retune needs a pitched sample/i.test(await ev("(document.querySelector('#pp-v3-warn') || {}).textContent || ''")), await ev("(document.querySelector('#pp-v3-warn') || {}).textContent"));
   await setSel("v3.synth", "s-freeze"); await sleep(400);
   await setRange("v3.focus", "0.77"); await sleep(2500);
+  const shot = async (name) => { if (!process.env.SHOTS) return; const r = await s.send("Page.captureScreenshot", { format: "png" }); (await import("node:fs")).writeFileSync(process.env.SHOTS + "/" + name + ".png", Buffer.from(r.data, "base64")); };
   /* phone width: the block fits its column (Review Focus 5) */
   await s.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(500);
   await open();                                                   /* a phone opens the page at its own width */
@@ -168,6 +174,18 @@ try {
   await ev("(function(){ var t = document.querySelector(\"#pp-tabs [data-tab='voices']\"); t && t.click(); var v = document.querySelector(\"#pp-sub [data-sub='v3']\"); v && v.click(); return 1; })()"); await sleep(500);
   const phone = await ev("(function(){ var b = document.querySelector('.ppsample[data-role=v3]'), c = b && b.closest('.ppcol'), s = document.querySelector('#pp-body select[data-k=\"v3.synth\"]'); return b && c && s ? { block: Math.round(b.getBoundingClientRect().width), col: Math.round(c.getBoundingClientRect().width), sel: Math.round(s.getBoundingClientRect().width), vw: innerWidth } : null; })()");
   check("phone width: the sample block fits its column, spans it, and the instrument menu stays usable", (await inCol("#pp-v3-name")) && (await inCol("#pp-v3-wave")) && (await ev("document.documentElement.scrollWidth <= innerWidth + 1")) && !!phone && phone.col > phone.vw * 0.8 && phone.block >= phone.col * 0.95 && phone.sel > 120, phone);
+  /* 6: each voice's EQ graph on a phone, in its own tab */
+  const phoneEq = [];
+  for (const [sub, r] of [["v1", "voice"], ["v2", "sect"], ["v3", "v3"]]) {
+    await ev(`(function(){ var t = document.querySelector("#pp-tabs [data-tab='voices']"); t && t.click(); var v = document.querySelector("#pp-sub [data-sub='${sub}']"); v && v.click(); return 1; })()`); await sleep(500);
+    await ev(`document.querySelector('#pp-${r}-eq').scrollIntoView({ block: 'center' }), 0`); await sleep(300);
+    const w = await ev(`(function(){ var e = document.querySelector('#pp-${r}-eq svg'), c = e && e.closest('.ppcol'); return e && c ? [Math.round(e.getBoundingClientRect().width), Math.round(c.getBoundingClientRect().width)] : null; })()`);
+    const hit = await ev(`Math.round(document.querySelector('#pp-${r}-eq .eq-hit').getBoundingClientRect().width)`);   /* final review 6: a 44 px touch target */
+    if (!(await inCol(`#pp-${r}-eq svg`)) || !w || w[0] < w[1] * 0.9 || hit < 44) phoneEq.push([r, w, hit]);
+    if (r === "v3") await shot("6-eq-phone");
+  }
+  check("6: on a phone each voice's EQ graph spans its column, its dots are 44 px touch targets, the page does not scroll sideways",
+    phoneEq.length === 0 && (await ev("document.documentElement.scrollWidth <= innerWidth + 1")), phoneEq);
   await s.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false }); await sleep(1000);
   const page1 = await livePatch(DRAFT), dbPatch1 = JSON.stringify((await db.from("features").select("properties").eq("id", DRAFT).single()).data.properties.patch);
   check("the live patch is unchanged byte for byte, on the page and in the database", page1 === page0 && dbPatch1 === dbPatch0 && !/"s-/.test(page1), [JSON.parse(page0).v3, JSON.parse(page1).v3]);
@@ -215,16 +233,59 @@ try {
   for (let i = 0; i < 40 && !(await ev(`!!(window.__fa.core && __fa.core.route_id === '${DRAFT}')`)); i++) { await ev(`__fa.walkTo(${mid[0]}, ${mid[1]})`); await sleep(400); }
   check("lab mode on: the site's engine is core-lab.wasm and the walker is on the draft route", (await ev("__fa.coreWasm")) === "web/core-lab.wasm" && (await ev("__fa.core && __fa.core.route_id")) === DRAFT, [await ev("__fa.coreWasm"), await ev("__fa.core && __fa.core.route_id")]);
   const lvl = async () => { let e = 0; for (let i = 0; i < 16; i++) { await sleep(250); await ev(`__fa.walkTo(${mid[0]}, ${mid[1]})`); e += Math.pow(10, (await ev("__fa.coreLevel ? __fa.coreLevel() : -120")) / 10); } return 10 * Math.log10(e / 16); };
-  await sleep(3000); const withRole = await lvl();
-  await setRange("v3.gain", "0"); await sleep(4000); const muted = await lvl();
+  /* the Freeze role's own meter (3c.1 F4), not the whole mix: on a route whose other voices are loud (2026-10-07:
+     Koşuyolu Parkı, all three on) the Third voice sits ~5 dB under the rest and the mix moves by less than its noise */
+  const v3db = async () => { let e = 0; for (let i = 0; i < 12; i++) { await sleep(250); await ev(`__fa.walkTo(${mid[0]}, ${mid[1]})`); e += Math.pow(10, (+(await ev("(document.querySelector('#pp-v3-meter') || { dataset: {} }).dataset.db || -120"))) / 10); } return 10 * Math.log10(e / 12); };
+  await sleep(3000); const withRole = await v3db();
+  await setRange("v3.gain", "0"); await sleep(4000); const muted = await v3db();
   await setRange("v3.gain", "0.55");
-  check("walking the route, the Freeze role with its sample sounds (muting it drops the level >= 3 dB)", withRole > muted + 3, [withRole, muted]);
+  check("walking the route, the Freeze role with its sample sounds (its meter above -45 dB; muting it drops it >= 20 dB)", withRole > -45 && withRole > muted + 20, [withRole, muted]);
   const sends0 = await ev("__fa.labRoleSends");
   for (let i = 0; i < 20; i++) { await setRange("v3.focus", (0.30 + i * 0.01).toFixed(2)); await sleep(30); }
   await sleep(350);
   check("a sampler control reaches the engine at patch-edit speed, before any save (final review 3c I7)", (await ev(`__fa.coreSentPatch('${DRAFT}') || ''`)).indexOf('"focus":0.49') >= 0, await ev(`(__fa.coreSentPatch('${DRAFT}') || '').slice(0, 200)`));
   await sleep(3000);
   check("moving a control and its autosave send no sample to the engine again (final review 3c C1)", (await ev("__fa.labRoleSends")) === sends0, [sends0, await ev("__fa.labRoleSends")]);
+  /* 6 (Kerem 2026-10-07): an EQ graph on every voice, digital or sampler; octave on a sampler voice */
+  const sentP = async () => JSON.parse((await ev(`__fa.coreSentPatch('${DRAFT}') || 'null'`)) || "null");
+  check("6: every voice has an EQ graph in lab mode, the digital ones too", await ev("['voice','sect','v3'].every(function (r) { return !!document.querySelector('#pp-' + r + '-eq svg'); })"),
+    await ev("['voice','sect','v3'].map(function (r) { return !!document.querySelector('#pp-' + r + '-eq svg'); })"));
+  const curve0 = await ev("(document.querySelector('#pp-sect-eq path.eq-curve') || {}).getAttribute ? document.querySelector('#pp-sect-eq path.eq-curve').getAttribute('d') : ''");
+  await ev("(function(){ var d = document.querySelector('#pp-sect-eq [data-band=\"2\"]'); d.focus(); for (var i = 0; i < 4; i++) d.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true })); return 1; })()");
+  await sleep(400);
+  let sp = await sentP();
+  check("6: arrow keys on a digital voice's EQ band raise it (+2 dB) and the engine gets it at once", !!(sp && sp.sect && sp.sect.eq && sp.sect.eq[2][1] === 2 && sp.sect.synth !== undefined && !/^s-/.test(sp.sect.synth)), sp && sp.sect);
+  check("6: the curve is redrawn", curve0 !== "" && curve0 !== (await ev("document.querySelector('#pp-sect-eq path.eq-curve').getAttribute('d')")), curve0.slice(0, 40));
+  /* a drag: a band's dot pulled up 20 px reads a positive gain */
+  await ev(`(function(){ var d = document.querySelector('#pp-v3-eq [data-band="4"]'), r = d.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
+    var o = function (t, yy) { return new PointerEvent(t, { pointerId: 1, clientX: x, clientY: yy, bubbles: true, isPrimary: true, button: 0, buttons: 1 }); };
+    d.dispatchEvent(o('pointerdown', y)); d.dispatchEvent(o('pointermove', y - 10)); d.dispatchEvent(o('pointermove', y - 20)); d.dispatchEvent(o('pointerup', y - 20)); return 1; })()`);
+  await sleep(400); sp = await sentP();
+  check("6: dragging a sampler voice's EQ dot up raises that band", !!(sp && sp.v3 && sp.v3.eq && sp.v3.eq[4][1] > 1), sp && sp.v3 && sp.v3.eq);
+  /* final review 6 I6: the sound follows a drag while it moves - moves every 30 ms, the engine has the band before the pointer lets go */
+  await ev(`(function(){ var d = document.querySelector('#pp-voice-eq [data-band="1"]'), r = d.getBoundingClientRect(); window.__dragY = r.top + r.height / 2; window.__dragX = r.left + r.width / 2;
+    d.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 2, clientX: __dragX, clientY: __dragY, bubbles: true, isPrimary: true, button: 0, buttons: 1 })); return 1; })()`);
+  for (let i = 1; i <= 12; i++) { await ev(`document.querySelector('#pp-voice-eq [data-band="1"]').dispatchEvent(new PointerEvent('pointermove', { pointerId: 2, clientX: __dragX, clientY: __dragY - ${i * 2}, bubbles: true, buttons: 1 })), 0`); await sleep(30); }
+  sp = await sentP();
+  const mid6 = sp && sp.voice && sp.voice.eq ? sp.voice.eq[1][1] : null;
+  await ev("document.querySelector('#pp-voice-eq [data-band=\"1\"]').dispatchEvent(new PointerEvent('pointerup', { pointerId: 2, bubbles: true })), 0");
+  check("6: mid-drag, the engine already has the band moving (final review 6 I6)", mid6 > 0, sp && sp.voice && sp.voice.eq);
+  await setRange("v3.octave", "1"); await sleep(400); sp = await sentP();
+  check("6: a sampler voice's octave reaches the engine", !!(sp && sp.v3 && sp.v3.sampler && sp.v3.sampler.octave === 1), sp && sp.v3 && sp.v3.sampler);
+  await sleep(2500);
+  const r6 = (await db.from("lab_route_roles").select("roles").eq("route_id", DRAFT).maybeSingle()).data;
+  check("6: EQ and octave are saved with the route's lab setup", !!(r6 && r6.roles.sect.eq && r6.roles.sect.eq[2][1] === 2 && r6.roles.v3.sampler.octave === 1 && r6.roles.v3.eq[4][1] > 1), r6 && [r6.roles.sect.eq, r6.roles.v3.sampler]);
+  await ev("(function(){ var d = document.querySelector('#pp-sect-eq [data-band=\"2\"]'); d.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); return 1; })()");
+  await sleep(400); sp = await sentP();
+  check("6: double-click puts a band back to 0 dB", !!(sp && sp.sect && sp.sect.eq && sp.sect.eq[2][1] === 0), sp && sp.sect && sp.sect.eq);
+  await setRange("v3.octave", "0");
+  /* 6: the graphs sit inside their columns, on a desk and on a phone; screenshots with SHOTS=dir */
+  const eqIn = async () => { for (const r of ["voice", "sect", "v3"]) if (!(await inCol(`#pp-${r}-eq svg`))) return r; return null; };
+  await ev("document.querySelector('#pp-sect-eq').scrollIntoView({ block: 'center' }), 0"); await sleep(300);
+  check("6: on a desk every EQ graph is inside its column", (await eqIn()) === null, await eqIn());
+  await shot("6-eq-desk");
+
+  await s.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false }); await sleep(800);
   await ev("document.querySelector('#pp-lab').click(), 0"); await sleep(5000);
   check("lab mode off while sound plays: the engine is core.wasm again, still sounding", (await ev("__fa.coreWasm")) === "web/core.wasm" && (await ev("__fa.coreLevel()")) > -60, [await ev("__fa.coreWasm"), await ev("__fa.coreLevel()")]);
   await ev("document.querySelector('#pp-lab').click(), 0"); await sleep(5000);
