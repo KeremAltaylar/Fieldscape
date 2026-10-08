@@ -2344,6 +2344,26 @@ int main() {
         std::printf("\n");
         assert(worst > -10);
     }
+    {   /* 6c (Kerem 2026-10-08: "I want digital voices too"): the live row names a digital voice's sounding notes, as a sampler's -
+           every note named is one the voice played, and some are named while it sounds */
+        NoteLog log; unsigned seed = 4242; fs_device *d = fs_create("piece"); fs_prepare(d, 48000, 128);
+        fs_piece_test_hooks(d, fixed_draw, &seed, log_note, &log);
+        const int r = fs_piece_add_route(d, "{\"version\":17,\"prog\":[{\"r\":0,\"q\":\"m9\"}],\"tempo\":72}"); fs_piece_walk(d, r, 0.3, 0);
+        int named[3] = {}, wrong = 0; float out[3 * 8];
+        for (int i = 0; i < 20 * 48000 / 128; i++) {
+            fs_process(d, 128);
+            if (i % 100) continue;
+            fs_piece_roles(d, out, 6);
+            for (int q = 0; q < 3; q++) for (int k = 0; k < (int)out[q * 8 + 1]; k++) {
+                named[q]++; const double f = out[q * 8 + 2 + k]; bool played = false;
+                for (double g : log.f) if (std::fabs(g - f) < 0.01) { played = true; break; }
+                if (!played) wrong++;
+            }
+        }
+        fs_destroy(d);
+        std::printf("6c digital notes named: voice %d, second %d, third %d; named but never played %d\n", named[0], named[1], named[2], wrong);
+        assert(named[0] > 0 && named[1] > 0 && wrong == 0);
+    }
     {   /* final review 6 C1: a re-voice (every lab control on the role) keeps a held note's octave - it moved up one each time */
         const std::vector<float> wind = noise_src(5, 0.5f, 77); const float *p[1] = { wind.data() };
         auto held = [&](int revoices) {

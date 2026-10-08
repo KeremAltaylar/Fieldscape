@@ -618,6 +618,9 @@ struct Piece : Device {
     Layer pad, sectL, v3L;
     Eq5 eqs[3];                       /* 6 (lab): each role's EQ, after its layer, before its effects */
     double lvl[3] = {};               /* 3c.1 F4: each role's own output, ~0.1 s mean square (voice, sect, v3) */
+    /* 6c: a digital role's notes as played (bass, top, sect, v3; 8 each, the oldest replaced) - for the live row, as a
+       sampler names its sounding notes. A held note (dur < 0) lasts until the role's next held note */
+    struct Heard { double f = 0, from = 0, until = -1; bool held = false; } heard[4][8];
     FxChain fx, fx2, fx3, rfx;
     Layer rdrive;                     /* the rhythm effects' drive and lowpass (no warp) */
     Ctl synth_level;
@@ -900,6 +903,14 @@ struct Piece : Device {
             if (dur < 0) rs->release_all(t);
         }
         if (dur < 0) sy->attack(f, t, vel); else sy->attack_release(f, dur, t, vel);
+        if (role >= 0 && role <= 3 && !(rr && is_sampler(rr->cur))) {
+            Heard *h = heard[role], *slot = &h[0];
+            for (int k = 0; k < 8; k++) {
+                if (dur < 0 && h[k].held && h[k].until > t) h[k].until = t;      /* a held note ends the one before it */
+                if (h[k].until < slot->until) slot = &h[k];
+            }
+            *slot = Heard{ f, t, dur < 0 ? 1e300 : t + dur, dur < 0 };
+        }
     }
 
     /* ---- harmonyBar ---- */
@@ -1592,12 +1603,20 @@ int fs_piece_roles(fs_device *d, float *out, int max_notes) {
     for (int q = 0; q < 3; q++) {
         float *o = out + q * W; o[0] = (float)std::fmax(-120.0, 10 * std::log10(p->lvl[q] + 1e-30)); o[1] = 0;
         for (int i = 0; i < max_notes; i++) o[2 + i] = 0;
-        int c = 0;
-        for (Role *r : rs[q]) {
-            if (!r || !is_sampler(r->cur) || !r->inst[r->cur] || c >= max_notes) continue;
-            std::vector<double> f((size_t)max_notes);
-            const int got = static_cast<sampler::Resonator *>(r->inst[r->cur].get())->sounding(f.data(), max_notes - c);
-            for (int i = 0; i < got; i++) o[2 + c++] = (float)f[(size_t)i];
+        int c = 0; const double now = (double)p->frame / p->sr;
+        const int hid[3][2] = { { 0, 1 }, { 2, -1 }, { 3, -1 } };
+        for (int ri = 0; ri < 2; ri++) {
+            Role *r = rs[q][ri];
+            if (!r || c >= max_notes) continue;
+            if (!is_sampler(r->cur)) {   /* 6c: a digital role's notes as played, while it is heard (a stopped route names none) */
+                if (o[0] < -70) continue;
+                for (const auto &h : p->heard[hid[q][ri]]) if (c < max_notes && h.from <= now && now < h.until) o[2 + c++] = (float)h.f;
+                continue;
+            }
+            if (!r->inst[r->cur]) continue;
+            double f[32]; const int want = std::min(max_notes - c, 32);
+            const int got = static_cast<sampler::Resonator *>(r->inst[r->cur].get())->sounding(f, want);
+            for (int i = 0; i < got; i++) o[2 + c++] = (float)f[i];
         }
         o[1] = (float)c;
     }
