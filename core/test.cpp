@@ -2344,6 +2344,73 @@ int main() {
         std::printf("\n");
         assert(worst > -10);
     }
+    {   /* 7 (Kerem 2026-10-08: "total super consonance", the stretch last): Resonate inside the stretch. White noise (no pitch
+           at all), a D minor chord: the share of the energy (55 Hz - 8 kHz) within 25 cents of a pitch-class set, by FFT */
+        std::vector<float> noise((size_t)(8 * SR)); { uint32_t s = 99; for (auto &x : noise) { s = s * 1664525u + 1013904223u; x = 0.3f * (((int)(s >> 8) - 8388608) / 8388608.0f); } }
+        auto share = [&](const std::vector<float> &x, std::initializer_list<double> pcs) {
+            const int N = 65536; FFT fft; fft.reserve(N); fft.plan(N); fft.twiddles(0, N);
+            std::vector<float> b(4 * N); float *ar = b.data(), *ai = ar + N, *br = ai + N, *bi = br + N;
+            const size_t s0 = x.size() - N;
+            for (int i = 0; i < N; i++) { ar[i] = (float)(x[s0 + i] * (0.5 - 0.5 * std::cos(2 * 3.141592653589793 * i / N))); ai[i] = 0; }
+            for (int p = 0; p < fft.passes; p++) { if (p % 2 == 0) fft.pass(p, ar, ai, br, bi, 0, fft.butterflies(p)); else fft.pass(p, br, bi, ar, ai, 0, fft.butterflies(p)); }
+            const float *re = fft.passes % 2 ? br : ar, *im = fft.passes % 2 ? bi : ai;
+            double in = 0, all = 0;
+            for (int k = (int)(55.0 * N / SR); k < (int)(8000.0 * N / SR); k++) {
+                const double e = (double)re[k] * re[k] + (double)im[k] * im[k], c = std::fmod(1200 * std::log2(k * SR / N / 440.0) + 900 + 1200 * 64, 1200.0);
+                all += e; for (double pc : pcs) { double d = std::fmod(std::fabs(c - pc), 1200.0); if (d > 600) d = 1200 - d; if (d < 25) { in += e; break; } }
+            }
+            return in / all; };
+        auto render = [&](const char *shape, int change_at_s) {
+            fs_device *d = fs_create("stretch"); fs_prepare(d, SR, B);
+            const float *pp[1] = { noise.data() }; fs_set_source(d, 1, (int)noise.size(), pp);
+            fs_set_param(d, 0, 0); fs_set_param(d, 1, 0.25f);
+            fs_stretch_shape(d, shape);
+            const float dm[6] = { 62, 65, 69, -1, -1, 62 }, em[6] = { 64, 68, 71, -1, -1, 64 };
+            for (int k = 0; k < 6; k++) fs_set_param(d, 18 + k, dm[k]);
+            std::vector<float> o;
+            for (int b2 = 0; b2 < (int)(7 * SR / B); b2++) {
+                if (change_at_s > 0 && b2 == (int)(change_at_s * SR / B)) for (int k = 0; k < 6; k++) fs_set_param(d, 18 + k, em[k]);
+                fs_process(d, B); const float *l = fs_out(d, 0); o.insert(o.end(), l, l + B); }
+            fs_destroy(d); return o; };
+        auto rms = [](const std::vector<float> &x) { double e = 0; for (size_t i = x.size() / 2; i < x.size(); i++) e += (double)x[i] * x[i]; return 10 * std::log10(e / (x.size() / 2) + 1e-30); };
+        const auto dry = render("{\"glide\":0.5}", 0), off = render("{\"glide\":0.5,\"resonate\":0}", 0),
+                   str = render("{\"glide\":0.5,\"resonate\":1,\"partials\":1,\"focus\":0.1}", 0),
+                   bell = render("{\"glide\":0.5,\"resonate\":1,\"body\":2,\"focus\":0.1}", 0),
+                   moved = render("{\"glide\":0.5,\"resonate\":1,\"partials\":1,\"focus\":0.1}", 3);
+        const double D = 200, F = 500, A = 900, E = 400, Gs = 800, B_ = 1100;   /* pitch classes in cents from C */
+        const double s_dry = share(dry, { D, F, A }), s_str = share(str, { D, F, A }), b_bell = share(bell, { D + 557, F + 557, A + 557 }), b_str = share(str, { D + 557, F + 557, A + 557 });   /* String's fundamentals alone: Partials 8 spreads low peaks widened to the bins */
+        const double s_new = share(moved, { E, Gs, B_ }), s_old = share(moved, { D, F, A });
+        std::printf("7 resonate: noise in D F A %.0f%% dry, %.0f%% at resonate 1 (level %+.1f dB); Bell at x2.76 %.0f%% (String %.0f%%); after a change to E major %.0f%% in E G# B (%.0f%% in D F A); off identical %d\n",
+            100 * s_dry, 100 * s_str, rms(str) - rms(dry), 100 * b_bell, 100 * b_str, 100 * s_new, 100 * s_old, (int)(off == dry));
+        assert(off == dry && s_dry < 0.2 && s_str >= 0.6 && std::fabs(rms(str) - rms(dry)) < 1 && b_bell > 2 * b_str && s_new >= 0.6 && s_new > 3 * s_old);
+        /* final review 7 I2: Resonate before the layers - at Resonate 1 the layers still build on it (they were thrown away) */
+        const auto lay = render("{\"glide\":0.5,\"resonate\":1,\"partials\":1,\"focus\":0.1,\"layers\":3,\"harmony\":1}", 0);
+        std::printf("7 resonate then layers: layers change the sound at resonate 1 %d\n", (int)(lay != str));
+        assert(lay != str);
+        /* final review 7 C1: the chord table rebuilt while the chord glides is spread over the frame's callbacks (it sat in
+           one: 5.5 ms at defaults with a 2 s window, 31 ms at Partials 24 / Focus 1) - worst process() of 128 samples */
+#ifdef FS_TEST_O1
+        const double slack7 = 1.5;
+#else
+        const double slack7 = 1;
+#endif
+        for (double win : { 0.34, 2.0 }) {
+            fs_device *d = fs_create("stretch"); fs_prepare(d, SR, B);
+            const float *pp[1] = { noise.data() }; fs_set_source(d, 1, (int)noise.size(), pp);
+            fs_set_param(d, 0, 0.3f); fs_set_param(d, 1, (float)win);
+            fs_stretch_shape(d, "{\"glide\":2,\"resonate\":1,\"partials\":24,\"focus\":1,\"tune\":1,\"layers\":3,\"harmony\":1}");
+            std::vector<double> ms;
+            for (int b2 = 0; b2 < (int)(20 * SR / B); b2++) {
+                if (b2 % (int)(1.5 * SR / B) == 0) { const int up = (b2 / (int)(1.5 * SR / B)) % 2; const float c6[6] = { 62.0f + up * 2, 65.0f + up * 3, 69.0f + up * 2, -1, -1, 62.0f + up * 2 }; for (int k = 0; k < 6; k++) fs_set_param(d, 18 + k, c6[k]); }
+                auto c0 = std::chrono::steady_clock::now(); fs_process(d, B);
+                if (b2 > (int)(3 * SR / B)) ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - c0).count());
+            }
+            fs_destroy(d);
+            std::sort(ms.begin(), ms.end());
+            std::printf("7 resonate gliding, window %.2f s: worst process() %.3f ms, 99.9%% %.3f ms (budget %.2f)\n", win, ms.back(), ms[(size_t)(ms.size() * 0.999)], 1.33 * slack7);
+            assert(ms[(size_t)(ms.size() * 0.999)] < 1.33 * slack7);
+        }
+    }
     {   /* 6c (Kerem 2026-10-08: "I want digital voices too"): the live row names a digital voice's sounding notes, as a sampler's -
            every note named is one the voice played, and some are named while it sounds */
         NoteLog log; unsigned seed = 4242; fs_device *d = fs_create("piece"); fs_prepare(d, 48000, 128);
