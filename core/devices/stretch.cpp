@@ -55,9 +55,10 @@ struct Controls {
     bool shaping; double transpose; float tune, focus, partials, layers, harmony, glide, drift, blur, start, end;
     float chord[5], root;
     float follow; const float *tf, *tc; int tn; double thop;   /* 5: the recording's pitch track, and how far it follows the chord */
+    float resonate; int body;                                  /* 7: the chord rung by the recording (0 String, 1 Tube, 2 Bell) */
 };
 
-enum Stage { S_WIN, S_TWID, S_GAIN, S_READ, S_FWD, S_MAG, S_ONSET, S_BINC, S_COMB, S_SH_IN, S_SH_T, S_SH_L, S_SH_NORM, S_PHASE, S_INV, S_OUT, S_FINISH };
+enum Stage { S_WIN, S_TWID, S_GAIN, S_READ, S_FWD, S_MAG, S_ONSET, S_BINC, S_COMB, S_RCLR, S_RTAB, S_SH_IN, S_SH_T, S_SH_E, S_SH_L, S_SH_NORM, S_PHASE, S_INV, S_OUT, S_FINISH };
 static const int CENTS = 1200;        /* the tune comb: one octave at 1-cent steps */
 static const int BANDS = 32;
 
@@ -83,6 +84,11 @@ struct Voice {
     /* shaping */
     Controls cc{};
     std::vector<float> shp[2], sm[2], pre[2], tt[2], binc, table;
+    /* 7 Resonate: each bin's pitch in cents from A440 (unfolded), the chord's response per bin, its peaks, the frame's
+       running sums (its colour, smoothed over +-1/6 octave) */
+    std::vector<float> bina, rtab; std::vector<double> pfx[2];
+    struct Peak { float cents, w; }; Peak rpk[1024]; int npk = 0;
+    long long res_key = -1, rtab_key = -1;
     double e0[2] = { 0, 0 }, e1[2] = { 0, 0 }, sh_T = 1, ratio[4]; int nr = 0; float sh_g[2] = { 1, 1 };
     double log2k[25];
     double gnote[5] = { -1, -1, -1, -1, -1 }, groot = -1;   /* the chord as it glides (MIDI) */
@@ -103,7 +109,8 @@ struct Voice {
         fft.reserve(nmax);
         for (auto *v : { &win, &ar, &ai, &br, &bi }) v->assign(nmax, 0.0f);
         hc.assign(nmax / 2, 0.0f);
-        binc.assign(nmax / 2 + 1, 0.0f);
+        binc.assign(nmax / 2 + 1, 0.0f); bina.assign(nmax / 2 + 1, 0.0f); rtab.assign(nmax / 2 + 1, 0.0f);
+        for (auto &p : pfx) p.assign(nmax / 2 + 2, 0.0);
         for (int k = 1; k <= 24; k++) log2k[k] = 1200.0 * std::log2((double)k);
         table.assign(CENTS, 0.0f);
         for (int c = 0; c < 2; c++) {
@@ -127,7 +134,7 @@ struct Voice {
         cc = c; set_region(src ? src->len : 0);
         onset_on = false; have_mag = false; get_next = true; tau = 0; credit = 0;
         std::memset(bands, 0, sizeof bands);
-        have_sm = false; table_key = -1; drift_off = 0; drift_v = 0; binc_ready = false;
+        have_sm = false; table_key = -1; rtab_key = -1; drift_off = 0; drift_v = 0; binc_ready = false;
         setup = true;
         begin_job(c);
     }
@@ -158,14 +165,16 @@ struct Voice {
             if (onset_on) add(S_ONSET, 0, 1, 64);
         }
         if (c.shaping) {
-            if (c.tune > 0 && !binc_ready) add(S_BINC, 0, N / 2 + 1, 60);
+            if ((c.tune > 0 || c.resonate > 0) && !binc_ready) add(S_BINC, 0, N / 2 + 1, 60);
+            if (c.resonate > 0 && res_key != rtab_key) { res_peaks(); add(S_RCLR, 0, N / 2 + 1, 1); add(S_RTAB, 0, npk, 40); }
             if (c.tune > 0 && comb_key != table_key) add(S_COMB, 0, CENTS, 40 + 25 * (int)std::lround(c.partials < 1 ? 1 : c.partials > 24 ? 24 : c.partials));
             /* split per bin like the FFT, so no callback carries a whole spectrum (measured: 7.8 ms in one) */
             const int M = N / 2 + 1, L = (int)std::lround(c.layers < 0 ? 0 : c.layers > 4 ? 4 : c.layers);
             /* weights per bin, both channels (measured against the FFT's 3 x radix per butterfly) */
             add(S_SH_IN, 0, M, 10);
             add(S_SH_T, 0, M, 16);
-            add(S_SH_L, 0, M, 30 + 24 * L);
+            if (c.resonate > 0) add(S_SH_E, 0, M, 4);
+            add(S_SH_L, 0, M, 30 + 24 * L + (c.resonate > 0 ? 12 : 0));
             add(S_SH_NORM, 0, M, 5);
         }
         add(S_PHASE, 0, N / 2 + 1, 20);
@@ -188,6 +197,31 @@ struct Voice {
         long long k = (long long)std::lround(cc.focus * 1000) * 31 + (long long)std::lround(cc.partials);
         for (double g : gnote) k = k * 131071 + (g < 0 ? 7 : std::lround(g * 100));
         comb_key = k;
+        res_key = (k * 7 + (long long)std::lround(cc.body < 0 ? 0 : cc.body > 2 ? 2 : cc.body)) * 1000003 + N;   /* 7: what Resonate's table depends on */
+    }
+    /* 7: the peaks Resonate rings - every chord note in every octave from 55 Hz, with the body's overtones */
+    void res_peaks() {
+        static const double BR[4] = { 1.0, 2.76, 5.40, 8.93 }, BW[4] = { 1.0, 0.6, 0.35, 0.2 };
+        const int body = (int)std::lround(cc.body < 0 ? 0 : cc.body > 2 ? 2 : cc.body);
+        const int P = (int)std::lround(cc.partials < 1 ? 1 : cc.partials > 24 ? 24 : cc.partials);
+        const double top = std::fmin(12000.0, 0.45 * sr), w = 3.0 + std::pow(cc.focus, 1.5) * 80.0;
+        npk = 0;
+        for (int i = 0; i < 5; i++) {
+            if (gnote[i] < 0) continue;
+            double f = 440 * std::pow(2.0, (gnote[i] - 69) / 12);
+            while (f >= 110) f /= 2;
+            while (f < 55) f *= 2;
+            for (; f < 8000; f *= 2) {
+                const int n = body == 2 ? 4 : P;
+                for (int k = 1; k <= n && npk < 1024; k++) {
+                    if (body == 1 && k % 2 == 0) continue;                  /* Tube: odd overtones */
+                    const double r = body == 2 ? BR[k - 1] : k, g = body == 2 ? BW[k - 1] : 1.0 / k;
+                    if (f * r >= top) break;
+                    rpk[npk++] = { (float)(1200 * std::log2(f * r / 440)), (float)g };
+                }
+            }
+        }
+        (void)w;
     }
     /* A magnitude spectrum read at bin j / r (linear between bins): moved in pitch by r. */
     static float at(const float *m, double x, int M) {
@@ -293,6 +327,7 @@ struct Voice {
             for (int j = a; j < b; j++) {
                 const double f = (double)j * sr / N;
                 binc[j] = f < 40 ? -1.0f : (float)std::fmod(1200.0 * std::log2(f / 440.0) + 900.0 + 1200.0 * 64, 1200.0);
+                bina[j] = j ? (float)(1200.0 * std::log2(f / 440.0)) : -1e9f;
             }
             if (b == N / 2 + 1) binc_ready = true;
             break;
@@ -315,6 +350,25 @@ struct Voice {
                 table[c] = (float)(v > 1 ? 1 : v);
             }
             if (b == CENTS) table_key = comb_key;
+            break;
+        }
+        case S_RCLR:
+            for (int j = a; j < b; j++) rtab[j] = 0;
+            break;
+        case S_RTAB: {
+            /* each peak painted onto its bins (the strongest wins): as wide as Focus says, but never narrower than the bins
+               there - at 55 Hz a 0.25 s window's bins are ~125 cents apart, and a 3-cent peak would miss them all */
+            const double w0 = 3.0 + std::pow(cc.focus, 1.5) * 80.0, binhz = sr / N;
+            for (int p = a; p < b; p++) {
+                const double c = rpk[p].cents, f = 440 * std::pow(2.0, c / 1200), jf = f / binhz;
+                const double w = std::fmax(w0, 0.6 * 1200 * std::log2((jf + 1) / std::fmax(1.0, jf)));
+                const int lo = std::max(1, (int)std::floor(jf * std::pow(2.0, -4 * w / 1200))), hi = std::min(N / 2, (int)std::ceil(jf * std::pow(2.0, 4 * w / 1200)));
+                for (int j = lo; j <= hi; j++) {
+                    const double d = (bina[j] - c) / w, v = rpk[p].w * std::exp(-0.5 * d * d);
+                    if (v > rtab[j]) rtab[j] = (float)v;
+                }
+            }
+            if (b == npk) rtab_key = res_key;
             break;
         }
         case S_SH_IN:
@@ -359,6 +413,10 @@ struct Voice {
             for (int ch = 0; ch < 2; ch++) for (int j = a; j < b; j++) tt[ch][j] = move ? at(pre[ch].data(), j / sh_T, M) : pre[ch][j];
             break;
         }
+        case S_SH_E:
+            /* 7: the frame's running sums, for its colour smoothed over +-1/6 octave */
+            for (int ch = 0; ch < 2; ch++) { if (a == 0) pfx[ch][0] = 0; for (int j = a; j < b; j++) pfx[ch][j + 1] = pfx[ch][j] + tt[ch][j]; }
+            break;
         case S_SH_L: {
             /* layers (copies at the chord's intervals), then tune (the comb), then blur (smear in time) */
             const int M = N / 2 + 1;
@@ -369,6 +427,11 @@ struct Voice {
                     float l = 0;
                     for (int r = 0; r < nr; r++) l += at(tt[ch].data(), j / ratio[r], M);
                     x = x * (1 - cc.harmony) + l / nr * cc.harmony;
+                }
+                if (cc.resonate > 0) {   /* 7: the chord rung by the recording's colour here (excitation x response) */
+                    const int lo = std::max(0, (int)(j * 0.8909)), hi = std::min(M - 1, (int)(j * 1.1225) + 1);
+                    const double env = (pfx[ch][hi + 1] - pfx[ch][lo]) / (hi + 1 - lo);
+                    x = x * (1 - cc.resonate) + (float)(env * rtab[j]) * cc.resonate;
                 }
                 if (cc.tune > 0) {
                     const float bc = binc[j];
@@ -527,10 +590,12 @@ static const fs_param STRETCH_PARAMS[] = {
     { "chord4", "Chord note 5", "", -1.0f, 127.0f, -1.0f },
     { "root", "Chord root", "", -1.0f, 127.0f, -1.0f },
     { "follow", "Follow", "", 0.0f, 1.0f, 0.0f },   /* 5: a pitched recording onto the chord (0 = as recorded) */
+    { "resonate", "Resonate", "", 0.0f, 1.0f, 0.0f },   /* 7: the chord rung by the recording, inside the stretch */
+    { "body", "Body", "", 0.0f, 2.0f, 0.0f },           /* 7: 0 String, 1 Tube, 2 Bell */
 };
 enum { P_STRETCH, P_WINDOW, P_FREEZE, P_ONSET, P_WIDTH, P_SHAPE, P_SEED,
        P_TRANSPOSE, P_TUNE, P_FOCUS, P_PARTIALS, P_LAYERS, P_HARMONY, P_GLIDE, P_DRIFT, P_BLUR, P_START, P_END,
-       P_CHORD0, P_ROOT = P_CHORD0 + 5, P_FOLLOW, P_COUNT };
+       P_CHORD0, P_ROOT = P_CHORD0 + 5, P_FOLLOW, P_RESONATE, P_BODY, P_COUNT };
 
 struct Stretch : Device {
     float value[P_COUNT];
@@ -573,7 +638,8 @@ struct Stretch : Device {
         c.root = last_root;
         if (any) chord_seen = true;
         c.follow = chord_seen ? value[P_FOLLOW] : 0; c.tn = (int)trk_f.size();   /* before any chord, no follow (5 I2) */ c.tf = c.tn ? trk_f.data() : nullptr; c.tc = c.tn ? trk_c.data() : nullptr; c.thop = trk_hop;
-        c.shaping = std::fabs(c.transpose) > 1e-4 || c.tune > 0 || (c.layers >= 0.5f && c.harmony > 0) || c.blur > 0 || (c.follow > 0 && c.tn > 0);
+        c.resonate = value[P_RESONATE]; c.body = (int)std::lround(value[P_BODY]);
+        c.shaping = std::fabs(c.transpose) > 1e-4 || c.tune > 0 || (c.layers >= 0.5f && c.harmony > 0) || c.blur > 0 || (c.follow > 0 && c.tn > 0) || c.resonate > 0;
         return c;
     }
     int target_n() {
@@ -651,7 +717,7 @@ Device *make_stretch() { return new Stretch(); }
 /* The host's side of the shaping, shared by the web engine and both apps' walks, so every platform
    reads a point the same way. The shaping's own names (properties.sound.shape); anything missing
    takes the parameter's default, which is dry (A-8). */
-static const char *const SHAPE_KEYS[] = { "transpose", "tune", "focus", "partials", "layers", "harmony", "glide", "drift", "blur", "start", "end", "width", "follow" };
+static const char *const SHAPE_KEYS[] = { "transpose", "tune", "focus", "partials", "layers", "harmony", "glide", "drift", "blur", "start", "end", "width", "follow", "resonate", "body" };
 static int stretch_param(const char *id) { for (int i = 0; i < P_COUNT; i++) if (!std::strcmp(STRETCH_PARAMS[i].id, id)) return i; return -1; }
 
 extern "C" void fs_stretch_shape(fs_device *d, const char *shape_json) {
