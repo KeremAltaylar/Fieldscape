@@ -58,7 +58,7 @@ struct Controls {
     float resonate; int body;                                  /* 7: the chord rung by the recording (0 String, 1 Tube, 2 Bell) */
 };
 
-enum Stage { S_WIN, S_TWID, S_GAIN, S_READ, S_FWD, S_MAG, S_ONSET, S_BINC, S_COMB, S_RCLR, S_RTAB, S_SH_IN, S_SH_T, S_SH_E, S_SH_L, S_SH_NORM, S_PHASE, S_INV, S_OUT, S_FINISH };
+enum Stage { S_WIN, S_TWID, S_GAIN, S_READ, S_FWD, S_MAG, S_ONSET, S_BINC, S_COMB, S_RCLR, S_RTAB, S_SH_IN, S_SH_T, S_SH_E, S_SH_R, S_SH_L, S_SH_NORM, S_PHASE, S_INV, S_OUT, S_FINISH };
 static const int CENTS = 1200;        /* the tune comb: one octave at 1-cent steps */
 static const int BANDS = 32;
 
@@ -87,7 +87,9 @@ struct Voice {
     /* 7 Resonate: each bin's pitch in cents from A440 (unfolded), the chord's response per bin, its peaks, the frame's
        running sums (its colour, smoothed over +-1/6 octave) */
     std::vector<float> bina, rtab; std::vector<double> pfx[2];
-    struct Peak { float cents, w; }; Peak rpk[1024]; int npk = 0;
+    /* each peak: its pitch, weight, width (cents) and the bins it paints; the table is painted bin by bin, so its work is
+       spread over the frame's callbacks by what it costs (final review 7 C1: by peak, one callback took 5-31 ms) */
+    struct Peak { float cents, w, wid; int lo, hi; }; Peak rpk[1024]; int npk = 0; long long npaint = 0; int rp_i = 0, rp_j = 0;
     long long res_key = -1, rtab_key = -1;
     double e0[2] = { 0, 0 }, e1[2] = { 0, 0 }, sh_T = 1, ratio[4]; int nr = 0; float sh_g[2] = { 1, 1 };
     double log2k[25];
@@ -166,15 +168,15 @@ struct Voice {
         }
         if (c.shaping) {
             if ((c.tune > 0 || c.resonate > 0) && !binc_ready) add(S_BINC, 0, N / 2 + 1, 60);
-            if (c.resonate > 0 && res_key != rtab_key) { res_peaks(); add(S_RCLR, 0, N / 2 + 1, 1); add(S_RTAB, 0, npk, 40); }
+            if (c.resonate > 0 && res_key != rtab_key) { res_peaks(); add(S_RCLR, 0, N / 2 + 1, 1); add(S_RTAB, 0, (int)std::max(1LL, npaint), 10); }
             if (c.tune > 0 && comb_key != table_key) add(S_COMB, 0, CENTS, 40 + 25 * (int)std::lround(c.partials < 1 ? 1 : c.partials > 24 ? 24 : c.partials));
             /* split per bin like the FFT, so no callback carries a whole spectrum (measured: 7.8 ms in one) */
             const int M = N / 2 + 1, L = (int)std::lround(c.layers < 0 ? 0 : c.layers > 4 ? 4 : c.layers);
             /* weights per bin, both channels (measured against the FFT's 3 x radix per butterfly) */
             add(S_SH_IN, 0, M, 10);
             add(S_SH_T, 0, M, 16);
-            if (c.resonate > 0) add(S_SH_E, 0, M, 4);
-            add(S_SH_L, 0, M, 30 + 24 * L + (c.resonate > 0 ? 12 : 0));
+            if (c.resonate > 0) { add(S_SH_E, 0, M, 4); add(S_SH_R, 0, M, 8); }
+            add(S_SH_L, 0, M, 30 + 24 * L);
             add(S_SH_NORM, 0, M, 5);
         }
         add(S_PHASE, 0, N / 2 + 1, 20);
@@ -204,7 +206,7 @@ struct Voice {
         static const double BR[4] = { 1.0, 2.76, 5.40, 8.93 }, BW[4] = { 1.0, 0.6, 0.35, 0.2 };
         const int body = (int)std::lround(cc.body < 0 ? 0 : cc.body > 2 ? 2 : cc.body);
         const int P = (int)std::lround(cc.partials < 1 ? 1 : cc.partials > 24 ? 24 : cc.partials);
-        const double top = std::fmin(12000.0, 0.45 * sr), w = 3.0 + std::pow(cc.focus, 1.5) * 80.0;
+        const double top = std::fmin(12000.0, 0.45 * sr);
         npk = 0;
         for (int i = 0; i < 5; i++) {
             if (gnote[i] < 0) continue;
@@ -217,11 +219,22 @@ struct Voice {
                     if (body == 1 && k % 2 == 0) continue;                  /* Tube: odd overtones */
                     const double r = body == 2 ? BR[k - 1] : k, g = body == 2 ? BW[k - 1] : 1.0 / k;
                     if (f * r >= top) break;
-                    rpk[npk++] = { (float)(1200 * std::log2(f * r / 440)), (float)g };
+                    rpk[npk++] = { (float)(1200 * std::log2(f * r / 440)), (float)g, 0, 0, -1 };
                 }
             }
         }
-        (void)w;
+        /* each peak's width (never narrower than the bins there: at 55 Hz a 0.25 s window's bins are ~125 cents apart) and span */
+        const double w0 = 3.0 + std::pow(cc.focus, 1.5) * 80.0, binhz = sr / N;
+        npaint = 0;
+        for (int p = 0; p < npk; p++) {
+            const double jf = 440 * std::pow(2.0, rpk[p].cents / 1200) / binhz;
+            const double w = std::fmax(w0, 0.6 * 1200 * std::log2((jf + 1) / std::fmax(1.0, jf)));
+            rpk[p].wid = (float)w;
+            rpk[p].lo = std::max(1, (int)std::floor(jf * std::pow(2.0, -4 * w / 1200)));
+            rpk[p].hi = std::min(N / 2, (int)std::ceil(jf * std::pow(2.0, 4 * w / 1200)));
+            if (rpk[p].hi >= rpk[p].lo) npaint += rpk[p].hi - rpk[p].lo + 1;
+        }
+        rp_i = 0; rp_j = npk ? rpk[0].lo : 0;
     }
     /* A magnitude spectrum read at bin j / r (linear between bins): moved in pitch by r. */
     static float at(const float *m, double x, int M) {
@@ -356,19 +369,19 @@ struct Voice {
             for (int j = a; j < b; j++) rtab[j] = 0;
             break;
         case S_RTAB: {
-            /* each peak painted onto its bins (the strongest wins): as wide as Focus says, but never narrower than the bins
-               there - at 55 Hz a 0.25 s window's bins are ~125 cents apart, and a 3-cent peak would miss them all */
-            const double w0 = 3.0 + std::pow(cc.focus, 1.5) * 80.0, binhz = sr / N;
-            for (int p = a; p < b; p++) {
-                const double c = rpk[p].cents, f = 440 * std::pow(2.0, c / 1200), jf = f / binhz;
-                const double w = std::fmax(w0, 0.6 * 1200 * std::log2((jf + 1) / std::fmax(1.0, jf)));
-                const int lo = std::max(1, (int)std::floor(jf * std::pow(2.0, -4 * w / 1200))), hi = std::min(N / 2, (int)std::ceil(jf * std::pow(2.0, 4 * w / 1200)));
-                for (int j = lo; j <= hi; j++) {
-                    const double d = (bina[j] - c) / w, v = rpk[p].w * std::exp(-0.5 * d * d);
-                    if (v > rtab[j]) rtab[j] = (float)v;
+            /* the peaks painted bin by bin (the strongest wins), a cursor carried across callbacks; the bell shape looked up */
+            static float G[257]; static bool g_ready = false;
+            if (!g_ready) { for (int k = 0; k <= 256; k++) { const double d = k / 64.0; G[k] = (float)std::exp(-0.5 * d * d); } g_ready = true; }
+            for (int it = a; it < b && rp_i < npk; it++) {
+                const Peak &pk = rpk[rp_i];
+                if (rp_j <= pk.hi) {
+                    const double d = std::fabs(bina[rp_j] - pk.cents) / pk.wid;
+                    if (d < 4) { const float v = pk.w * G[(int)(d * 64)]; if (v > rtab[rp_j]) rtab[rp_j] = v; }
+                    rp_j++;
                 }
+                while (rp_i < npk && rp_j > rpk[rp_i].hi) { rp_i++; if (rp_i < npk) rp_j = rpk[rp_i].lo; }
             }
-            if (b == npk) rtab_key = res_key;
+            if (b >= std::max(1LL, npaint)) rtab_key = res_key;
             break;
         }
         case S_SH_IN:
@@ -417,6 +430,17 @@ struct Voice {
             /* 7: the frame's running sums, for its colour smoothed over +-1/6 octave */
             for (int ch = 0; ch < 2; ch++) { if (a == 0) pfx[ch][0] = 0; for (int j = a; j < b; j++) pfx[ch][j + 1] = pfx[ch][j] + tt[ch][j]; }
             break;
+        case S_SH_R: {
+            /* 7: the chord rung by the recording's colour here (excitation x response), in place - before the layers, so they
+               build on it (final review 7 I2: after them, Resonate 1 threw the layers away) */
+            const int M = N / 2 + 1;
+            for (int ch = 0; ch < 2; ch++) for (int j = a; j < b; j++) {
+                const int lo = std::max(0, (int)(j * 0.8909)), hi = std::min(M - 1, (int)(j * 1.1225) + 1);
+                const double env = (pfx[ch][hi + 1] - pfx[ch][lo]) / (hi + 1 - lo);
+                tt[ch][j] = tt[ch][j] * (1 - cc.resonate) + (float)(env * rtab[j]) * cc.resonate;
+            }
+            break;
+        }
         case S_SH_L: {
             /* layers (copies at the chord's intervals), then tune (the comb), then blur (smear in time) */
             const int M = N / 2 + 1;
@@ -427,11 +451,6 @@ struct Voice {
                     float l = 0;
                     for (int r = 0; r < nr; r++) l += at(tt[ch].data(), j / ratio[r], M);
                     x = x * (1 - cc.harmony) + l / nr * cc.harmony;
-                }
-                if (cc.resonate > 0) {   /* 7: the chord rung by the recording's colour here (excitation x response) */
-                    const int lo = std::max(0, (int)(j * 0.8909)), hi = std::min(M - 1, (int)(j * 1.1225) + 1);
-                    const double env = (pfx[ch][hi + 1] - pfx[ch][lo]) / (hi + 1 - lo);
-                    x = x * (1 - cc.resonate) + (float)(env * rtab[j]) * cc.resonate;
                 }
                 if (cc.tune > 0) {
                     const float bc = binc[j];

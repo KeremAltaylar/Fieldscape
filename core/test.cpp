@@ -2383,6 +2383,33 @@ int main() {
         std::printf("7 resonate: noise in D F A %.0f%% dry, %.0f%% at resonate 1 (level %+.1f dB); Bell at x2.76 %.0f%% (String %.0f%%); after a change to E major %.0f%% in E G# B (%.0f%% in D F A); off identical %d\n",
             100 * s_dry, 100 * s_str, rms(str) - rms(dry), 100 * b_bell, 100 * b_str, 100 * s_new, 100 * s_old, (int)(off == dry));
         assert(off == dry && s_dry < 0.2 && s_str >= 0.6 && std::fabs(rms(str) - rms(dry)) < 1 && b_bell > 2 * b_str && s_new >= 0.6 && s_new > 3 * s_old);
+        /* final review 7 I2: Resonate before the layers - at Resonate 1 the layers still build on it (they were thrown away) */
+        const auto lay = render("{\"glide\":0.5,\"resonate\":1,\"partials\":1,\"focus\":0.1,\"layers\":3,\"harmony\":1}", 0);
+        std::printf("7 resonate then layers: layers change the sound at resonate 1 %d\n", (int)(lay != str));
+        assert(lay != str);
+        /* final review 7 C1: the chord table rebuilt while the chord glides is spread over the frame's callbacks (it sat in
+           one: 5.5 ms at defaults with a 2 s window, 31 ms at Partials 24 / Focus 1) - worst process() of 128 samples */
+#ifdef FS_TEST_O1
+        const double slack7 = 1.5;
+#else
+        const double slack7 = 1;
+#endif
+        for (double win : { 0.34, 2.0 }) {
+            fs_device *d = fs_create("stretch"); fs_prepare(d, SR, B);
+            const float *pp[1] = { noise.data() }; fs_set_source(d, 1, (int)noise.size(), pp);
+            fs_set_param(d, 0, 0.3f); fs_set_param(d, 1, (float)win);
+            fs_stretch_shape(d, "{\"glide\":2,\"resonate\":1,\"partials\":24,\"focus\":1,\"tune\":1,\"layers\":3,\"harmony\":1}");
+            std::vector<double> ms;
+            for (int b2 = 0; b2 < (int)(20 * SR / B); b2++) {
+                if (b2 % (int)(1.5 * SR / B) == 0) { const int up = (b2 / (int)(1.5 * SR / B)) % 2; const float c6[6] = { 62.0f + up * 2, 65.0f + up * 3, 69.0f + up * 2, -1, -1, 62.0f + up * 2 }; for (int k = 0; k < 6; k++) fs_set_param(d, 18 + k, c6[k]); }
+                auto c0 = std::chrono::steady_clock::now(); fs_process(d, B);
+                if (b2 > (int)(3 * SR / B)) ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - c0).count());
+            }
+            fs_destroy(d);
+            std::sort(ms.begin(), ms.end());
+            std::printf("7 resonate gliding, window %.2f s: worst process() %.3f ms, 99.9%% %.3f ms (budget %.2f)\n", win, ms.back(), ms[(size_t)(ms.size() * 0.999)], 1.33 * slack7);
+            assert(ms[(size_t)(ms.size() * 0.999)] < 1.33 * slack7);
+        }
     }
     {   /* 6c (Kerem 2026-10-08: "I want digital voices too"): the live row names a digital voice's sounding notes, as a sampler's -
            every note named is one the voice played, and some are named while it sounds */
