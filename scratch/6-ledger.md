@@ -20,3 +20,8 @@ Final: minor (deferred): double-tap does not reset one band on iOS Safari (Flat 
 Final: minor (deferred): the core EQ "no step" bound (4.2x the dry step) would not catch a moderate click
 Final: Ruling: declined-to-judge - rebuilding public core.wasm would carry the EQ/octave/pluck code (neutral by default); core.wasm stays unbuilt per D1 - cost if wrong: none until step 6
 Final: Ruling: declined-to-judge - re-voicing a Bell Plucked note re-plucks it (3c.1 design) - cost if wrong: a re-strike while turning a knob
+6b (2026-10-08, Kerem: "Bell plucked resonator still silent"): measured on his Koşuyolu First voice sample (Titmouse, starts in silence): Bell Plucked -108 dB - every pluck struck the recording's first 25 ms
+Final: fixed - a pluck strikes the recording read along with the note's time, at its loudest 25 ms in the next 0.3 s - "6 plucked on a sparse recording" RED (-270 dB vs Bowed) -> GREEN (String +11.3, Tube -8.5, Bell -2.0); his sample: Bell Plucked -108 -> -32 dB
+Ruling: the note-start budget guard is 40 us (measured ~19-26: the burst through four modes plus the strike search) - it catches the 108 us class - cost if wrong: ~0.5 ms of a 2.67 ms quantum if 18 Bell Plucked notes start at once on a desktop
+Final: minor (deferred): String Plucked +11 dB over Bowed on sparse recordings (fixed +8 dB plus strikes on the loudest moment); Tube -8.5
+Not reproduced: Kerem's sound stopping after ~2 min walking Koşuyolu (4 tries). Desktop Chrome, lab mode, 4 min on the route and 4 min touring every point: no stop, no error, no memory growth (page ~730 MB, peaks ~1.2 GB while decoding). Asked Kerem for device/browser and what it looked like.

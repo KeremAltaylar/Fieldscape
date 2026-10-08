@@ -2286,7 +2286,7 @@ int main() {
             for (float s : a) { uint32_t u; std::memcpy(&u, &s, 4); h = (h ^ u) * 1099511628211ull; }
         }
         std::printf("resonator 2a hash %016llx\n", (unsigned long long)h);
-        assert(h == 0x756efa77ba1e282cull);   /* the em++ -O1 test build (no FMA in wasm); 2026-10-07: Plucked made up to level */
+        assert(h == 0x41baaacdc5874316ull);   /* the em++ -O1 test build (no FMA in wasm); 2026-10-07: Plucked made up to level */
     }
     {   /* 2026-10-07 (Kerem: "Bell/Plucked ... very low volume, can't hear it"): every Resonator body x excite sounds within
            6 dB of String Bowed - RMS over a 2 s note on wind, at the default Focus/Colour and at Kerem's likely settings */
@@ -2322,6 +2322,27 @@ int main() {
         const double z220 = peak_amp(z, 48000, 220), z110 = peak_amp(z, 48000, 110), u220 = peak_amp(up, 48000, 220), u440 = peak_amp(up, 48000, 440), d110 = peak_amp(dn, 48000, 110);
         std::printf("6 octave: at 0 220 Hz %.3g, 110 Hz %.3g; +1 220 Hz %.3g (440 %.3g); -1 110 Hz %.3g\n", z220, z110, u220, u440, d110);
         assert(u220 < 0.1 * z220 && u440 > 0.3 * z220 && d110 > 10 * z110);
+    }
+    {   /* 2026-10-08 (Kerem: "Bell plucked resonator still silent"): every pluck struck the recording's first 25 ms - his
+           Titmouse song starts in silence, so every note was -108 dB. A recording like his as the engine has it (the silence cut
+           to gaps of 0.25 s at most): 1 s of silence, then 0.35 s calls 0.25 s apart. Notes every 0.83 s for 20 s: Plucked within 10 dB of Bowed, for every body */
+        std::vector<float> bird((size_t)(20 * 48000), 0.0f);
+        for (size_t i = 48000; i < bird.size(); i++) { const double t = (i - 48000) / 48000.0, ph = std::fmod(t, 0.6);
+            if (ph < 0.35) bird[i] = (float)(0.4 * std::sin(sampler::PI * ph / 0.35) * std::sin(2 * sampler::PI * 3000 * t)); }
+        const float *p[1] = { bird.data() };
+        auto level = [&](int body, int ex) {
+            sampler::Resonator r; r.init(48000); r.set_source(1, (long long)bird.size(), p); r.body = body; r.excite = ex; r.focus = 0.5; r.colour = 1;
+            std::vector<float> L(48000 * 20 / 128 * 128), R(L.size()); double nt = 0;
+            for (size_t i = 0; i < L.size(); i += 128) { const double t = i / 48000.0;
+                if (t >= nt) { r.attack(375, t, 0.6); r.release(t + 1.5); nt += 0.83; }   /* 375 Hz: its 8th overtone at 3 kHz, the calls' */
+                r.render(L.data() + i, R.data() + i, 128, t); }
+            double s = 0; for (float v : L) s += (double)v * v; return 10 * std::log10(s / L.size() + 1e-30); };
+        std::printf("6 plucked on a sparse recording (dB vs Bowed):");
+        double worst = 0;
+        for (int body = 0; body < 3; body++) { const double d = level(body, sampler::PLUCKED) - level(body, sampler::BOWED); worst = std::fmin(worst, d);
+            std::printf(" %s %+.1f", body == 0 ? "String" : body == 1 ? "Tube" : "Bell", d); }
+        std::printf("\n");
+        assert(worst > -10);
     }
     {   /* final review 6 C1: a re-voice (every lab control on the role) keeps a held note's octave - it moved up one each time */
         const std::vector<float> wind = noise_src(5, 0.5f, 77); const float *p[1] = { wind.data() };
@@ -2363,7 +2384,7 @@ int main() {
             std::sort(us.begin(), us.end()); return us[us.size() / 2]; };
         const double pl = cost(sampler::PLUCKED), bo = cost(sampler::BOWED);
         std::printf("6 bell plucked note start: median %.1f us (bowed %.1f us)\n", pl, bo);
-        assert(pl < 25);
+        assert(pl < 40);   /* ~26 us (the burst through four modes, the strike search); the old 108 us is what this catches */
     }
     {   /* 6: the five-band EQ - a +6 dB bell at 1 kHz where it should be and nowhere else; flat is the input exactly; a jump
            of +12 dB never steps (the coefficients glide) */
