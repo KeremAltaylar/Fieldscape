@@ -12945,8 +12945,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           labSaveSoon(f); renderPatchPanel();
         } });
       out.push({ eqRow: role });                       /* 6: every voice's EQ, digital or sampler */
+      out.push({ liveRow: role });                     /* 3c.1 F4: its level while sound plays (6c: digital too; notes are a sampler's) */
       if (!smp) { return; }
-      out.push({ liveRow: role });                     /* 3c.1 F4: its notes and level, while sound plays */
       var lab = function (k, label, min, max, step, fmt) { return { k: role + "." + k, label: label, min: min, max: max, step: step, fmt: fmt, def: k === "tune" ? 1 : k === "octave" ? 0 : 0.5,
         get: function () { return st[k]; }, set: function (v) { st[k] = +v; labSaveSoon(f); } }; };
       var NAMES = { body: ["String", "Tube", "Bell"], excite: ["Bowed", "Plucked"], method: ["Bank", "Spectral", "Comb"], mode: ["Dry", "Ringing"] };

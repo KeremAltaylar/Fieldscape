@@ -240,6 +240,9 @@ try {
   await setRange("v3.gain", "0"); await sleep(4000); const muted = await v3db();
   await setRange("v3.gain", "0.55");
   check("walking the route, the Freeze role with its sample sounds (its meter above -45 dB; muting it drops it >= 20 dB)", withRole > -45 && withRole > muted + 20, [withRole, muted]);
+  /* 6c (Kerem 2026-10-08: "the digital synthesizers a volume meter as well"): a digital voice's meter, live */
+  const dmeter = await ev("(function(){ var r = ['voice','sect'].filter(function (k) { var s = document.querySelector('#pp-body select[data-k=\"' + k + '.synth\"]'); return s && !/^s-/.test(s.value); }); return r.map(function (k) { var m = document.querySelector('#pp-' + k + '-meter'); return [k, m ? +m.dataset.db : null]; }); })()");
+  check("6c: a digital voice has the live meter too, moving while it sounds", dmeter.length > 0 && dmeter.every((x) => x[1] !== null) && dmeter.some((x) => x[1] > -60), dmeter);
   const sends0 = await ev("__fa.labRoleSends");
   for (let i = 0; i < 20; i++) { await setRange("v3.focus", (0.30 + i * 0.01).toFixed(2)); await sleep(30); }
   await sleep(350);
