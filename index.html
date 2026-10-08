@@ -1335,6 +1335,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 #pp-body .ppsample-wave { width: 100%; height: 40px; display: block; cursor: pointer; }
 .rp-lab { display: flex; align-items: center; gap: var(--s-1); font-family: var(--font-mono); font-size: var(--t-xs); text-transform: uppercase; letter-spacing: 0.04em; color: var(--faint); }
 .rp-lab[hidden] { display: none; }
+.rp-lab select { font-family: var(--font-mono); font-size: var(--t-xs); padding: 0 var(--s-1); }
 .rp-lab i { font-style: normal; color: var(--ink); min-width: 3em; text-align: right; }
 #pp-body .ppeq { display: grid; gap: 4px; margin: 2px 0 var(--s-1); min-width: 0; flex: 0 0 100%; box-sizing: border-box; }
 #pp-body .ppeq-top { display: flex; align-items: center; gap: var(--s-1); min-width: 0; }
@@ -8334,12 +8335,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   /* Sample harmony 3c, lab mode: each route goes to the engine with its lab role setups laid over its patch (the sampler
      synth and its controls only; never saved), and the walker's route's role samples follow it */
   function coreFeature(f) {
-    if (labOn() && f.properties.kind === "point") {   /* 5: a point's follow, overlaid (never saved into the point) */
-      var lp = labRoutes[f.properties.id], fol = lp && lp.point && lp.point.follow;
-      if (!(fol > 0)) { return f; }
-      var h = JSON.parse(JSON.stringify(f)), hp = h.properties;
-      hp.sound = hp.sound || {}; hp.sound.shape = Object.assign({}, hp.sound.shape || {}, { follow: fol });
-      hp.rhythm = Object.assign({}, hp.rhythm || {}, { follow: fol });
+    if (labOn() && f.properties.kind === "point") {   /* 5: a point's follow (7: and Resonate), overlaid (never saved into the point) */
+      var lp = labRoutes[f.properties.id], pt = (lp && lp.point) || {}, fol = pt.follow > 0 ? pt.follow : 0, res = pt.resonate > 0 ? pt.resonate : 0;
+      if (!fol && !res) { return f; }
+      var h = JSON.parse(JSON.stringify(f)), hp = h.properties, add = {};
+      if (fol) { add.follow = fol; hp.rhythm = Object.assign({}, hp.rhythm || {}, { follow: fol }); }
+      if (res) { add.resonate = res; add.body = pt.body || 0; }
+      hp.sound = hp.sound || {}; hp.sound.shape = Object.assign({}, hp.sound.shape || {}, add);
       return h;
     }
     if (!labOn() || f.properties.kind !== "route" || !labRoutes[f.properties.id]) { return f; }
@@ -13191,30 +13193,45 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       window.__fa.labTracks++;
     }).catch(function (e) { console.warn("lab track: " + (e && e.message || e)); });
   }
-  var labFollowTimer = null;
+  var labPointTimers = {};   /* one save timer a point: moving B never cancels A's save */
+  function labPointSave(id, part) {
+    var cur = (labRoutes[id] && labRoutes[id].point) || {};
+    labRoutes[id] = { point: Object.assign({}, cur, part) }; labChanged();
+    clearTimeout(labPointTimers[id]);
+    labPointTimers[id] = setTimeout(function () {
+      delete labPointTimers[id];
+      sb.from("lab_route_roles").upsert({ route_id: id, roles: { point: labRoutes[id].point }, updated_by: setter.id }).then(function (q) {
+        if (q.error) { labMsg("Samplers (lab): the point's setting was not saved - " + q.error.message); }
+      });
+    }, 600);
+  }
   function labFollowControl(f) {
-    var bar = $("#rp-close") && $("#rp-close").parentNode, lb = $("#rp-lab");
+    var bar = $("#rp-close") && $("#rp-close").parentNode, lb = $("#rp-lab"), lr = $("#rp-lab-res");
     if (!lb && bar) {
       lb = document.createElement("label"); lb.id = "rp-lab"; lb.className = "rp-lab";
       lb.title = "A pitched recording moves onto the chord's nearest note (lab; 0 = as recorded)";
       lb.innerHTML = "<span>follow the chord (lab)</span> <input type='range' id='rp-lab-follow' min='0' max='1' step='0.05'> <i id='rp-lab-follow-v'></i>";
       bar.insertBefore(lb, $("#rp-close"));
+      /* 7: Resonate - the chord rung by the recording inside the stretch, before its cloud (stretch points) */
+      lr = document.createElement("span"); lr.id = "rp-lab-res"; lr.className = "rp-lab";
+      lr.title = "The route's chord rung by this recording, inside the stretch (lab; 0 = as recorded)";
+      lr.innerHTML = "<label for='rp-lab-resonate'>resonate (lab)</label> <input type='range' id='rp-lab-resonate' min='0' max='1' step='0.05'> <i id='rp-lab-resonate-v'></i>" +
+        " <select id='rp-lab-body' aria-label='Resonate body'><option value='0'>String</option><option value='1'>Tube</option><option value='2'>Bell</option></select>";
+      bar.insertBefore(lr, $("#rp-close"));
     }
     if (!lb) { return; }
-    lb.hidden = !labOn();
+    var stretchPt = !/^(hits|grains)$/.test(f.properties.audio_mode || "");
+    lb.hidden = !labOn(); if (lr) { lr.hidden = !labOn() || !stretchPt; }
     if (!labOn()) { return; }
-    var id = f.properties.id, inp = $("#rp-lab-follow"), out = $("#rp-lab-follow-v"), lp = labRoutes[id];
-    inp.value = String(lp && lp.point ? lp.point.follow || 0 : 0); out.textContent = Math.round(100 * +inp.value) + " %";
-    inp.oninput = function () {
-      var v = +inp.value; out.textContent = Math.round(100 * v) + " %";
-      labRoutes[id] = { point: { follow: v } }; labChanged();
-      clearTimeout(labFollowTimer);
-      labFollowTimer = setTimeout(function () {
-        sb.from("lab_route_roles").upsert({ route_id: id, roles: { point: { follow: v } }, updated_by: setter.id }).then(function (q) {
-          if (q.error) { labMsg("Samplers (lab): follow not saved - " + q.error.message); }
-        });
-      }, 600);
-    };
+    var id = f.properties.id, inp = $("#rp-lab-follow"), out = $("#rp-lab-follow-v"), lp = labRoutes[id], pt = (lp && lp.point) || {};
+    inp.value = String(pt.follow || 0); out.textContent = Math.round(100 * +inp.value) + " %";
+    inp.oninput = function () { var v = +inp.value; out.textContent = Math.round(100 * v) + " %"; labPointSave(id, { follow: v }); };
+    var ri = $("#rp-lab-resonate"), ro = $("#rp-lab-resonate-v"), rb = $("#rp-lab-body");
+    if (ri) {
+      ri.value = String(pt.resonate || 0); ro.textContent = Math.round(100 * +ri.value) + " %"; rb.value = String(pt.body || 0);
+      ri.oninput = function () { var v = +ri.value; ro.textContent = Math.round(100 * v) + " %"; labPointSave(id, { resonate: v }); };
+      rb.onchange = function () { labPointSave(id, { body: +rb.value }); };
+    }
   }
   function labToggle() {
     labWanted = !labWanted; labEngineFailed = false;

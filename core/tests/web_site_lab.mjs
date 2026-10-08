@@ -35,7 +35,8 @@ await db.from("features").delete().eq("id", DRAFT);
 const PT = ((await db.from("features").select("id, geometry, properties").eq("kind", "point").is("deleted_at", null)
   .filter("properties->>published", "eq", "true").filter("properties->>has_audio", "eq", "true")).data || [])
   .find((r) => !["hits", "grains"].includes(r.properties.audio_mode)) || null;
-const ptHadRow = PT ? !!(await db.from("lab_route_roles").select("route_id").eq("route_id", PT.id).maybeSingle()).data : true;
+/* the point's lab row as it was (a setter's own follow/resonate on it): put back exactly after, or removed if there was none */
+const ptRow0 = PT ? (await db.from("lab_route_roles").select("roles, updated_by").eq("route_id", PT.id).maybeSingle()).data : null;
 /* the site reads only published features from the server: a setter's draft is on their own device (the page's local
    store), with the same id as its row - which lab_route_roles needs */
 /* the published route's patch with its three voices on at their default levels: the Freeze checks hear the Third voice
@@ -364,6 +365,15 @@ try {
       !!(prow && prow.roles.point && prow.roles.point.follow === 0.8) && !!sent1 && JSON.parse(sent1).properties.sound.shape.follow === 0.8 && JSON.parse(sent1).properties.rhythm.follow === 0.8,
       [prow && prow.roles, sent1 && JSON.parse(sent1).properties.sound]);
     check("5: the point's own row untouched (no follow in its saved properties)", !("follow" in (((PT.properties.sound || {}).shape) || {})), null);
+    /* 7: Resonate (amount and body) beside follow - saved with it under the point, overlaid on the stretch's shape */
+    check("7: a stretch point's panel in lab mode has resonate and a body menu", await ev("!!document.querySelector('#rp-lab-resonate') && !!document.querySelector('#rp-lab-body')"), null);
+    await ev("(function(){ var b = document.querySelector('#rp-lab-body'); b.value = '2'; b.dispatchEvent(new Event('change')); var s = document.querySelector('#rp-lab-resonate'); s.value = '0.7'; s.dispatchEvent(new Event('input')); return 1; })()");
+    await sleep(2500);
+    const prow7 = (await db.from("lab_route_roles").select("roles").eq("route_id", PT.id).maybeSingle()).data, sent7 = await ev(`__fa.coreSentFeature('${PT.id}')`);
+    const sh7 = sent7 ? JSON.parse(sent7).properties.sound.shape : {};
+    check("7: resonate and body are saved with follow under the point and reach the engine", !!(prow7 && prow7.roles.point.resonate === 0.7 && prow7.roles.point.body === 2 && prow7.roles.point.follow === 0.8) && sh7.resonate === 0.7 && sh7.body === 2,
+      [prow7 && prow7.roles.point, sh7]);
+    await ev("(function(){ var s = document.querySelector('#rp-lab-resonate'); s.value = '0'; s.dispatchEvent(new Event('input')); var b = document.querySelector('#rp-lab-body'); b.value = '0'; b.dispatchEvent(new Event('change')); return 1; })()");
     const pc = PT.geometry.coordinates;
     for (let i = 0; i < 40 && !((await ev("__fa.labTracks || 0")) > 0); i++) { await ev(`__fa.walkTo(${pc[0]}, ${pc[1]})`); await sleep(500); }
     check("5: walking to it, its recording's pitch track goes to the engine", (await ev("__fa.labTracks || 0")) > 0, await ev("__fa.labTracks"));
@@ -396,7 +406,8 @@ try {
   const { data: objs } = await db.storage.from("recordings").list(`lab/${DRAFT}`);
   if (objs && objs.length) await db.storage.from("recordings").remove(objs.map((o) => `lab/${DRAFT}/${o.name}`));
   await db.from("lab_route_roles").delete().eq("route_id", DRAFT);
-  if (PT && !ptHadRow) await db.from("lab_route_roles").delete().eq("route_id", PT.id);
+  if (PT && !ptRow0) await db.from("lab_route_roles").delete().eq("route_id", PT.id);
+  if (PT && ptRow0) await db.from("lab_route_roles").upsert({ route_id: PT.id, roles: ptRow0.roles, updated_by: ptRow0.updated_by });
   await db.from("features").delete().eq("id", DRAFT);
   await db.from("audit").delete().eq("setter_id", userId);
   await db.from("setters").delete().eq("id", userId);
