@@ -252,6 +252,7 @@ struct Resonator : tone::Synth {
         x.active = true; x.started = false; x.releasing = false; x.stealing = false; x.has_next = false;
         x.f = f; x.on_t = t; x.off_t = 1e300; x.vel = vel; x.env = 0; x.aph = 0; x.body = body; x.excite = excite; x.synth = synth; x.method = method; x.mode = mode; x.vfocus = focus;
         x.pos = (long long)(offset_s * sr); x.burst = 0; x.burst_len = (int)(0.025 * sr);
+        if (synth == RESONATE && excite == PLUCKED && offset_s <= 0) x.pos = pluck_place(t, x.burst_len);
         x.w = 0; x.ap_x = x.ap_y = x.lp = 0; x.dc_x = x.dc_y = 0; x.lx = x.ly = 0; x.rin = x.rout = 0; x.agc = 1; x.pkg = 1;
         const double w = 2 * PI * f / sr, T = t60(focus);
         /* Colour is set against the note (its cutoff 1.5x to 31x the fundamental, open at 1): dark stays dark in
@@ -275,6 +276,27 @@ struct Resonator : tone::Synth {
             }
             if (excite == PLUCKED) pluck_gain(x);
         } else { start_loop(x, f, T, body == TUBE); if (excite == PLUCKED) x.pkg = 2.5; }   /* ponytail: String/Tube Plucked a fixed +8 dB (measured 7-11 dB under Bowed over 300 ms); per-note like the Bell if it varies more */
+    }
+    /* Where a pluck strikes (Kerem 2026-10-08: "Bell plucked still silent"): every pluck struck the recording's first 25 ms,
+       silence on his Titmouse song, and the same strike every note. Now the recording is read along with the note's time, as a
+       bowed note reads it, and the strike is its loudest 25 ms in the next 0.3 s (the engine's recordings have no gap longer than
+       0.25 s) - 5 ms blocks, every 4th sample, ~3900 reads */
+    long long pluck_place(double t, int W) const {
+        const long long F = src.frames; if (F <= 0) return 0;
+        const long long a = ((long long)(std::fmax(0.0, t) * sr)) % F;
+        const int S = std::max(1, (int)(0.005 * sr)), nb = (int)(0.3 * sr) / S + W / S, per = std::max(1, W / S);
+        double e[128] = { 0 }; const int NB = std::min(nb, 128);
+        if (a + (long long)NB * S < F) {          /* no wrap (nearly always): straight reads, every 4th sample */
+            if (src.f[0]) { const float *q = src.f[0] + a; for (int b = 0; b < NB; b++, q += S) { float acc = 0; for (int i = 0; i < S; i += 4) acc += q[i] * q[i]; e[b] = acc; } }
+            else if (src.s[0]) { const int16_t *q = src.s[0] + a; for (int b = 0; b < NB; b++, q += S) { float acc = 0; for (int i = 0; i < S; i += 4) acc += (float)q[i] * q[i]; e[b] = acc; } }
+        } else {
+            long long j = a;
+            for (int b = 0; b < NB; b++) for (int i = 0; i < S; i++, j = j + 1 >= F ? 0 : j + 1) if (!(i & 3)) {
+                const float v = src.f[0] ? src.f[0][j] : src.s[0] ? (float)src.s[0][j] : 0.0f; e[b] += (double)v * v; }
+        }
+        int best = 0; double bs = -1;
+        for (int b = 0; b + per <= NB; b++) { double sum = 0; for (int k = 0; k < per; k++) sum += e[b + k]; if (sum > bs) { bs = sum; best = b; } }
+        return (a + (long long)best * S) % F;
     }
     /* A Bell's modes have unity gain only at their peaks: a 25 ms burst of a broadband recording leaves them 48-59 dB under
        Bowed (Kerem 2026-10-07: "can't hear it"). The burst is known at the note's start, so it is run through the modes
