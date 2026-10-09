@@ -37,6 +37,7 @@ var SHELL_FILES = [
   "./src/pending.mjs",
   "./src/shrink.mjs",
   "./web/core.wasm",
+  "./web/lab-roles.js",           /* 6a: a route's sampler voices, offline too */
   "./web/core-worklet.js",
   "./web/listener.js",
   "./web/listener.css",

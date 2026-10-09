@@ -8379,7 +8379,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       return analyseMono(mono, buf.sampleRate);
     }).then(function (a) { return { f0: a.f0, hop_s: a.hop_s, track: a.track }; });
   }
-  var trackMaking = Promise.resolve(), trackBusy = {};
+  /* a recording that could not be read is not tried again until it changes (6a final review I4); a track made for a recording
+     that was replaced meanwhile is dropped and made again for the new one (I3) */
+  var trackMaking = Promise.resolve(), trackBusy = {}, trackFailed = {};
+  window.__fa.trackAttempts = 0; window.__fa.tracksMade = 0;
   function ensureTrack(f) {
     if (!samplersOn() || !f) { return; }
     var id = f.properties.id, p = f.properties, recs = [];
@@ -8387,23 +8390,29 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       HIT_SLOTS.forEach(function (slot) { var h = p.hits && p.hits[slot]; if (h && typeof h === "object" && !h.track_path) { recs.push({ key: id + "#" + slot, path: h.storage_path || null, slot: slot, h: h }); } });
     } else if (p.has_audio && !(p.sound && p.sound.track_path)) { recs.push({ key: id, path: p.storage_path || null, slot: null }); }
     recs.forEach(function (rc) {
-      if (trackBusy[rc.key]) { return; }
-      trackBusy[rc.key] = true;
+      var token = rc.slot ? rc.h : (p.audio && p.audio.added_at) || "", fk = rc.key + " " + rc.path + " " + (rc.slot ? "" : token);
+      if (trackBusy[rc.key] || trackFailed[fk]) { return; }
+      trackBusy[rc.key] = true; window.__fa.trackAttempts++;
+      var stale = false;
       trackMaking = trackMaking.then(function () {
         return audioBlob(rc.key, rc.path).then(function (blob) {
           if (!blob) { throw new Error("no recording on this device or the server"); }
           return trackOfBlob(blob);
         }).then(function (t) {
+          return new Promise(function (r) { setTimeout(r, window.__fa.trackDelay || 0); }).then(function () { return t; });   /* test hook: hold the upload */
+        }).then(function (t) {
+          /* the recording replaced while this one was read: not its track (I3) */
+          if (rc.slot ? !(p.hits && p.hits[rc.slot] === rc.h) : ((p.audio && p.audio.added_at) || "") !== token) { stale = true; return; }
           var path = id + "/track-" + (rc.slot ? rc.slot + "-" : "") + Date.now() + ".json";
           return sb.storage.from("recordings").upload(path, new Blob([JSON.stringify(t)], { type: "application/json" }), { upsert: false, contentType: "application/json" }).then(function (u) {
             if (u.error) { throw new Error(u.error.message); }
             if (rc.slot) { rc.h.track_path = path; } else { (p.sound = p.sound || {}).track_path = path; }
             trackFiles[path] = Promise.resolve(JSON.stringify(t));
-            claimEdit(f); save(); coreSync();
+            claimEdit(f); save(); coreSync(); window.__fa.tracksMade++;
             if (core && core.srcs) { Object.keys(core.srcs).forEach(function (k) { var x = core.srcs[k]; if (x.id === id) { pointTrack(core, x.kind, x.index, x.sub, x.id); } }); }
           });
-        }).catch(function (e) { toast("Follow: this recording's pitch could not be read - " + (e && e.message || e)); })
-          .then(function () { delete trackBusy[rc.key]; });
+        }).catch(function (e) { trackFailed[fk] = true; toast("Follow: this recording's pitch could not be read - " + (e && e.message || e)); })
+          .then(function () { delete trackBusy[rc.key]; if (stale) { ensureTrack(f); } });
       });
     });
   }
@@ -8419,10 +8428,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     return fetch(url).then(function (r) { if (!r.ok) { throw new Error("download " + r.status); } return r.blob(); }).then(trackOfBlob);
   };
   /* test hook: a generated 2 s tone attached as the point's new recording, through the page's own path */
-  window.__fa.reattachTestAudio = function (id) {
+  window.__fa.reattachTestAudio = function (id, hz) {
     var f = feature(id); if (!f) { return false; }
     var sr = 48000, n = sr * 2, chs = [new Float32Array(n)];
-    for (var i = 0; i < n; i++) { chs[0][i] = 0.3 * Math.sin(2 * Math.PI * 440 * i / sr); }
+    for (var i = 0; i < n; i++) { chs[0][i] = 0.3 * Math.sin(2 * Math.PI * (hz || 440) * i / sr); }
     return attachRecording(f, new File([FsRoles.wavBytes(chs, sr)], "test-tone.wav", { type: "audio/wav" })).then(function () { return true; });
   };
   window.__fa.coreSentFeature = function (id) { return core && core.sent && core.sent[id] || null; };
@@ -13333,6 +13342,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (!f) { return; }
     f.properties.patch = defaultPatch();
     commitPatch(f, f.properties.patch);
+    if (labRoles) { labRoles.loadedFor = null; }   /* the voices from the fresh patch, not the old session (6a final review I2) */
     renderPatchPanel();
     toast("Patch reset");
   });

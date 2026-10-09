@@ -87,7 +87,7 @@
       p[r].sampler = JSON.parse(JSON.stringify(rr.sampler || {}));
       var sm = rr.sample;
       if (sm && sm.path) { p[r].sample = { path: sm.path, name: sm.name || "", analysis_path: sm.analysis_path || null, f0: (sm.analysis && sm.analysis.f0) || sm.f0 || 0 }; }
-      else { delete p[r].sample; }
+      else if (!sm) { delete p[r].sample; }   /* uploading, or failed: the saved one stays (6a final review I1) */
     });
     return p;
   }

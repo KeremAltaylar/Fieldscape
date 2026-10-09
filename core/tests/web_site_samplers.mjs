@@ -352,7 +352,8 @@ try {
   await ev("__fa.reloadSession(), 0"); await sleep(4000);
   const lv3 = []; for (let i = 0; i < 8; i++) { await ev(`__fa.walkTo(${mid[0]}, ${mid[1]})`); await sleep(500); lv3.push(await ev("(__fa.coreRoles() || [])[16]")); }
   check("6a: a sample that will not download leaves its voice silent and the walk playing (Review Focus 3)", Math.max(...lv3) < -60 && (await ev("__fa.coreLevel()")) > -60, [lv3, await ev("__fa.coreLevel()")]);
-  await ev(`(function(){ var g = ${'${JSON.stringify(good)}'}; __fa.patchEdit('${DRAFT}', function (p) { p.v3.sample = g; }); return 1; })()`);
+  await ev(`(function(){ var g = ${JSON.stringify(good)}; __fa.patchEdit('${DRAFT}', function (p) { p.v3.sample = g; }); return 1; })()`);
+  await ev("__fa.reloadSession(), 0"); await sleep(1500);   /* the panel's voices from the restored patch */
   await ev("fsListen.sound()"); await sleep(1500);    /* off */
 
   /* 6a points: follow, resonate and body in a stretch point's Pitch & harmony; follow makes the recording's track file */
@@ -364,6 +365,12 @@ try {
   check("6a: a stretch point's Pitch & harmony has follow, resonate and body beside glide",
     await ev("['follow','resonate','glide'].every(function (k) { return !!document.querySelector('#rp-body input[data-k=\"' + k + '\"]'); }) && !!document.querySelector('#rp-body select[data-k=\"body\"]')"), null);
   check("6a: the lab's header controls are gone", await ev("!document.querySelector('#rp-lab, #rp-lab-res')"), null);
+  /* final review 6a I4: a recording that cannot be read is tried once, not on every drag (and says so once) */
+  await ev(`(function(){ var f = __fa.features().filter(function (f) { return f.properties.id === '${PTP}'; })[0]; window.__keepPath = f.properties.storage_path; f.properties.storage_path = '${PTP}/missing.wav'; return 1; })()`);
+  const at0 = await ev("__fa.trackAttempts || 0");
+  for (const v of ["0.8", "0.85", "0.9", "0.95"]) { await ev(`(function(){ var s = document.querySelector('#rp-body input[data-k="follow"]'); s.value = '${v}'; s.dispatchEvent(new Event('input')); return 1; })()`); await sleep(700); }
+  check("6a: an unreadable recording's track is tried once over four drags, not four times (final review I4)", (await ev("__fa.trackAttempts || 0")) - at0 === 1, [at0, await ev("__fa.trackAttempts")]);
+  await ev(`(function(){ var f = __fa.features().filter(function (f) { return f.properties.id === '${PTP}'; })[0]; f.properties.storage_path = window.__keepPath; return 1; })()`);
   await ev("(function(){ var s = document.querySelector('#rp-body input[data-k=\"follow\"]'); s.value = '0.8'; s.dispatchEvent(new Event('input')); return 1; })()");
   await until(`!!((__fa.features().filter(function (f) { return f.properties.id === '${PTP}'; })[0].properties.sound || {}).track_path)`, 30000);
   let P = await ptProps();
@@ -380,9 +387,30 @@ try {
   await until(`(function(){ var t = (__fa.features().filter(function (f) { return f.properties.id === '${PTP}'; })[0].properties.sound || {}).track_path; return !!t && t !== '${'${oldTrack}'}'; })()`, 30000);
   const newTrack = (await ptProps()).sound.track_path;
   check("6a: replacing the recording replaces its track (the old track_path dropped, a new file made) (Review Focus 1)", !!newTrack && newTrack !== oldTrack, [oldTrack, newTrack]);
+  /* final review 6a I3: a recording replaced while its track is still being made - the old one's track never lands on the new */
+  await ev("window.__fa.trackDelay = 2500, 0");
+  await ev(`__fa.reattachTestAudio('${PTP}', 440), 0`); await sleep(600);
+  await ev(`__fa.reattachTestAudio('${PTP}', 660), 0`);
+  await sleep(2500);
+  await until(`(function(){ var t = (__fa.features().filter(function (f) { return f.properties.id === '${PTP}'; })[0].properties.sound || {}).track_path; return !!t && __fa.tracksMade >= 2; })()`, 30000);
+  await sleep(4000); await ev("window.__fa.trackDelay = 0, 0");
+  const tp3 = (await ptProps()).sound.track_path;
+  const tj3 = JSON.parse(await (await db.storage.from("recordings").download(tp3)).data.text());
+  check("6a: the track kept is the new recording's (660 Hz), not the one being made when it was replaced (final review I3)", Math.abs(1200 * Math.log2(tj3.f0 / 660)) < 30, [tp3, tj3.f0]);
   await ev("(function(){ var b = document.querySelector('#rp-close'); b && b.click(); return 0; })()");
   const ptPub = await ptProps(); ptPub.published = true; ptPub.storage_path = `${PTP}/take.wav`;
   await db.from("features").update({ properties: ptPub }).eq("id", PTP);
+
+  /* final review 6a I2: Reset to default stays reset - the next sampler or EQ touch writes no old sampler back */
+  await openPanel(DRAFT); await until(`__fa.rolesFor === '${DRAFT}'`, 8000);
+  const before2 = await livePatch(DRAFT);
+  await ev("document.querySelector('#pp-reset').click(), 0"); await sleep(600);
+  await eqOpen("v3");
+  await ev("(function(){ var d = document.querySelector('#pp-v3-eq [data-band=\"2\"]'); d.focus(); d.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true })); return 1; })()"); await sleep(500);
+  const reset2 = JSON.parse(await livePatch(DRAFT));
+  check("6a: after Reset to default, touching an EQ writes no old sampler back (final review I2)", !/"s-/.test(JSON.stringify(reset2)) && !reset2.v3.sample && (await ev("(document.querySelector('#pp-body select[data-k=\"v3.synth\"]') || {}).value")) === reset2.v3.synth, [reset2.v3.synth, reset2.v3.sample]);
+  await ev(`__fa.patchEdit('${DRAFT}', function (p) { var b = ${before2}; Object.keys(p).forEach(function (k) { delete p[k]; }); Object.assign(p, b); }), 0`);
+  await ev("__fa.reloadSession(), 0"); await sleep(1500);
 
   /* the listener: the draft published (as Publish writes it), a signed-out page with nothing on the device */
   const props = JSON.parse(await ev(`JSON.stringify(__fa.features().filter(function (f) { return f.properties.id === '${DRAFT}'; })[0].properties)`));

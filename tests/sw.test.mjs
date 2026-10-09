@@ -44,3 +44,8 @@ test("the shell cache was renamed to v14, so an installed app picks up the new f
 test("the tile cache is not renamed: tile entries are expensive, permanent, and unaffected", () => {
   assert.match(sw, /var TILES\s*=\s*"fieldarc-tiles-v1"/);
 });
+
+/* 6a final review: the sampler roles are a public dependency now - a walk started offline still plays its sampler voices */
+test("the shell keeps web/lab-roles.js (the route's sampler voices, offline)", () => {
+  assert.ok(sw.includes('"./web/lab-roles.js"'), "web/lab-roles.js is not in SHELL_FILES");
+});

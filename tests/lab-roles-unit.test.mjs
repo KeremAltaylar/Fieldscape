@@ -200,3 +200,9 @@ test("6a: a voice moved to a sampler remembers its digital synth (its timbres ke
   const p2 = FsRoles.toPatch(p1, { v3: { synth: "s-pulsar", sampler: {} } });
   assert.equal(p2.v3.digital, "pluck");                         /* sampler to sampler: the digital one kept */
 });
+test("6a final review I1: a sample still uploading (or failed) keeps the patch's saved sample - never a silent voice", () => {
+  const patch = { v3: { synth: "s-freeze", sampler: {}, sample: { path: "R/v3-1.wav", name: "good.wav", analysis_path: "R/v3-1.json", f0: 0 } } };
+  const out = FsRoles.toPatch(patch, { v3: { synth: "s-freeze", sampler: { focus: 0.4 }, sample: { path: null, name: "new.wav", analysis: null } } });
+  assert.deepEqual(out.v3.sample, patch.v3.sample);
+  assert.equal(out.v3.sampler.focus, 0.4);
+});
