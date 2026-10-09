@@ -8414,6 +8414,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       return trackOfBlob(d.data);
     });
   };
+  /* the carry-over reads a fuzzed point's recording too: through a signed link it makes with the service key */
+  window.__fa.trackForUrl = function (url) {
+    return fetch(url).then(function (r) { if (!r.ok) { throw new Error("download " + r.status); } return r.blob(); }).then(trackOfBlob);
+  };
   /* test hook: a generated 2 s tone attached as the point's new recording, through the page's own path */
   window.__fa.reattachTestAudio = function (id) {
     var f = feature(id); if (!f) { return false; }
