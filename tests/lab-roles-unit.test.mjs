@@ -148,3 +148,49 @@ test("lab-roles 6: eqResponse - flat is 0 dB, a +6 dB bell at 1 kHz reads +6 the
   const sh = FsRoles.eqDefault(); sh[0] = [16000, -12, 0.7];  /* a low shelf high up: everything under it -12 (the core's route check) */
   assert.ok(Math.abs(FsRoles.eqResponse(sh, 500, 48000) + 12) < 0.1);
 });
+
+/* Sample harmony 6a: a route's role setups live in its own patch (K4) */
+test("6a: toPatch writes sampler roles and EQ into a copy of the patch, never an inline analysis", () => {
+  const patch = { version: 17, voice: { synth: "fm", gain: 0.4, harm: 1, index: 4 }, sect: { synth: "fm" }, v3: { synth: "am" } };
+  const eq = [[80, 3, 0.7], [250, 0, 1], [1000, 0, 1], [4000, 0, 1], [10000, 0, 0.7]];
+  const roles = { voice: { synth: "s-retune", sampler: { focus: 0.3, octave: 1 }, eq, sample: { path: "R/voice-1.wav", name: "a.wav", analysis_path: "R/voice-1.json", f0: 220, analysis: { track: [1] } } },
+    sect: { synth: "fm", eq }, v3: { synth: "am" } };
+  const out = FsRoles.toPatch(patch, roles);
+  assert.equal(out.voice.synth, "s-retune");
+  assert.deepEqual(out.voice.sampler, { focus: 0.3, octave: 1 });
+  assert.deepEqual(out.voice.sample, { path: "R/voice-1.wav", name: "a.wav", analysis_path: "R/voice-1.json", f0: 220 });
+  assert.equal(out.voice.gain, 0.4);
+  assert.deepEqual(out.sect.eq, eq); assert.equal(out.sect.synth, "fm");
+  assert.ok(!("eq" in out.v3) && !("sample" in out.v3));
+  assert.equal(patch.voice.synth, "fm");                       /* the original untouched */
+});
+test("6a: fromPatch reads them back", () => {
+  const patch = { voice: { synth: "s-freeze", gain: 0.5, sampler: { focus: 0.7 }, sample: { path: "R/voice-1.wav", name: "a", analysis_path: "R/voice-1.json", f0: 0 } }, sect: { synth: "fm", eq: [[80, 1, 0.7]] } };
+  const r = FsRoles.fromPatch(patch);
+  assert.equal(r.voice.synth, "s-freeze"); assert.equal(r.voice.sampler.focus, 0.7); assert.equal(r.voice.sample.analysis_path, "R/voice-1.json");
+  assert.deepEqual(r.sect.eq, [[80, 1, 0.7]]); assert.equal(r.sect.synth, "fm");
+});
+test("6a: decodeSample fetches the analysis file when the sample has none inline", async () => {
+  const got = [];
+  const sb = { storage: { from: () => ({ download: async (p) => { got.push(p); return { data: p.endsWith(".json") ? new Blob([JSON.stringify({ f0: 220, hop_s: 0.02, track: [] })]) : new Blob([new Uint8Array(8)]) }; } }) } };
+  const chan = new Float32Array(4800);
+  const buf = { numberOfChannels: 1, length: chan.length, sampleRate: 48000, duration: 0.1, getChannelData: () => chan, copyToChannel() {} };
+  const ctx = { sampleRate: 48000, decodeAudioData: async () => buf, createBuffer: () => buf };
+  const p = await FsRoles.decodeSample(sb, ctx, { path: "R/voice-1.wav", analysis_path: "R/voice-1.json" });
+  assert.deepEqual(got.sort(), ["R/voice-1.json", "R/voice-1.wav"]);
+  assert.equal(p.analysis.f0, 220);
+});
+test("6a: a session saving to the route's folder uploads the WAV and its analysis JSON beside it", async () => {
+  const ups = [];
+  const sb = { storage: { from: () => ({ upload: async (p, b) => { ups.push([p, b.type]); return { error: null }; }, download: async () => ({ error: { message: "none" } }) }) } };
+  const chan = new Float32Array(48000);
+  const buf = { numberOfChannels: 1, length: chan.length, sampleRate: 48000, duration: 1, getChannelData: () => chan, copyToChannel() {} };
+  const ctx = { sampleRate: 48000, decodeAudioData: async () => buf, createBuffer: () => buf };
+  const s = FsRoles.session({ sb, ctx: () => ctx, analyse: () => ({ f0: 330, hop_s: 0.02, track: [] }), folder: (id) => id + "/", analysisFiles: true });
+  s.fromPatch("R", {});
+  await s.upload("v3", { name: "b.wav", arrayBuffer: async () => new ArrayBuffer(8) }, "R");
+  const x = s.state("v3").sample;
+  assert.ok(/^R\/v3-\d+\.wav$/.test(x.path) && x.analysis_path === x.path.replace(/\.wav$/, ".json") && x.f0 === 330, JSON.stringify(x));
+  assert.deepEqual(ups.map((u) => u[0]).sort(), [x.analysis_path, x.path].sort());
+  assert.equal(s.loadedFor, "R");
+});

@@ -63,6 +63,33 @@
     }
     return db;
   }
+  /* 6a: a route's role setups live in its own patch (K4): the sampler keys, every role's EQ, the sample's two files */
+  function fromPatch(patch) {
+    var out = {};
+    ROLES.forEach(function (r) {
+      var q = (patch && patch[r]) || {}, x = { synth: q.synth || "" };
+      if (q.sampler) { x.sampler = JSON.parse(JSON.stringify(q.sampler)); }
+      if (Array.isArray(q.eq)) { x.eq = JSON.parse(JSON.stringify(q.eq)); }
+      if (q.sample && q.sample.path) { x.sample = { path: q.sample.path, name: q.sample.name || "", analysis_path: q.sample.analysis_path || null, f0: q.sample.f0 || 0 }; }
+      out[r] = x;
+    });
+    return out;
+  }
+  function toPatch(patch, roles) {
+    var p = JSON.parse(JSON.stringify(patch || {}));
+    ROLES.forEach(function (r) {
+      var rr = roles && roles[r]; if (!rr) { return; }
+      p[r] = p[r] || {};
+      if (Array.isArray(rr.eq)) { p[r].eq = JSON.parse(JSON.stringify(rr.eq)); } else { delete p[r].eq; }
+      if (!isSampler(rr.synth)) { return; }
+      p[r].synth = rr.synth;
+      p[r].sampler = JSON.parse(JSON.stringify(rr.sampler || {}));
+      var sm = rr.sample;
+      if (sm && sm.path) { p[r].sample = { path: sm.path, name: sm.name || "", analysis_path: sm.analysis_path || null, f0: (sm.analysis && sm.analysis.f0) || sm.f0 || 0 }; }
+      else { delete p[r].sample; }
+    });
+    return p;
+  }
   /* 3c.1 F1: the sounding parts of a recording, in order. 50 ms blocks; a block sounds when its energy is at least the
      loudest block's -40 dB (the analyser's silence rule); a silent run under 0.25 s is kept (the breath in a call) */
   var BLOCK_S = 0.05, KEEP_GAP_S = 0.25, FADE_S = 0.005;
@@ -129,10 +156,17 @@
     return from + Math.min(1, Math.max(0, v)) * (room - tail);
   }
   function decodeSample(sb, ctx, smp) {
-    return sb.storage.from("recordings").download(smp.path).then(function (d) {
+    var store = sb.storage.from("recordings");
+    /* 6a: the analysis from its file beside the sample (a lab row carries it inline) */
+    var ana = smp.analysis ? Promise.resolve(smp.analysis) : smp.analysis_path ? store.download(smp.analysis_path).then(function (d) {
+      if (d.error || !d.data) { throw new Error("analysis " + ((d.error && d.error.message) || "not found")); }
+      return d.data.text();
+    }).then(JSON.parse) : Promise.resolve(null);
+    var audio = store.download(smp.path).then(function (d) {
       if (d.error || !d.data) { throw new Error((d.error && d.error.message) || "not found"); }
       return d.data.arrayBuffer();
-    }).then(function (ab) { return ctx.decodeAudioData(ab); }).then(function (b) { return prepare(ctx, trimmed(ctx, b), smp.analysis || null); });
+    }).then(function (ab) { return ctx.decodeAudioData(ab); });
+    return Promise.all([audio, ana]).then(function (v) { return prepare(ctx, trimmed(ctx, v[0]), v[1]); });
   }
   function fetchRoute(sb, ctx, id) {
     return sb.from("lab_route_roles").select("roles").eq("route_id", id).maybeSingle().then(function (q) {
@@ -156,6 +190,7 @@
     var s = { defaults: { voice: { gain: 0.45, harm: 1, index: 4 }, sect: { gain: 0.8, harm: 2.02, index: 7.5 }, v3: { gain: 0.55, harm: 1.5, index: 3 } },
       gen: 0, loading: false, failed: false, loadedFor: null };
     var st = {}, bufs = {}, anas = {}, raws = {}, kepts = {}, blocks = {}, recIds = { voice: 0, sect: 0, v3: 0 }, uploading = [];
+    var folder = o.folder || function (id) { return "lab/" + id + "/"; };   /* 6a: the route's own folder on the site */
     var keep = function (r, p) { bufs[r] = p.buf; anas[r] = p.analysis; raws[r] = p.raw; kepts[r] = p.kept; blocks[r] = p.block; };
     var changed = function (r) { if (o.onChange) { o.onChange(r); } };
     s.state = function (r) {
@@ -175,7 +210,7 @@
         out[r] = { synth: x.synth, gain: x.gain, harm: x.harm, index: x.index,
           sampler: { body: x.body, excite: x.excite, method: x.method, mode: x.mode, focus: x.focus, colour: x.colour, tune: x.tune, octave: x.octave },
           eq: x.eq ? JSON.parse(JSON.stringify(x.eq)) : null,
-          sample: x.sample && x.sample.path ? { path: x.sample.path, name: x.sample.name, analysis: x.sample.analysis } : null }; });
+          sample: x.sample && x.sample.path ? { path: x.sample.path, name: x.sample.name, analysis: x.sample.analysis, analysis_path: x.sample.analysis_path || null, f0: x.sample.f0 || (x.sample.analysis && x.sample.analysis.f0) || 0 } : null }; });
       return out;
     };
     /* each route choice is a generation: a load or upload from an earlier one never lands on the route now shown (3b I2/I5) */
@@ -208,6 +243,27 @@
         changed(null);
       });
     };
+    /* 6a: the route's own patch is the record - no table, at once (a sample decodes after, as load's do) */
+    s.fromPatch = function (id, patch) {
+      st = {}; bufs = {}; anas = {}; raws = {}; kepts = {}; blocks = {}; var gen = ++s.gen; s.failed = false; s.loading = false; s.loadedFor = id;
+      var roles = fromPatch(patch);
+      ROLES.forEach(function (r) {
+        var rr = roles[r], x = s.state(r);
+        x.synth = isSampler(rr.synth) ? rr.synth : "";
+        if (rr.sampler) { Object.keys(rr.sampler).forEach(function (k) { x[k] = rr.sampler[k]; }); }
+        x.eq = rr.eq || null;
+        x.sample = isSampler(rr.synth) && rr.sample ? rr.sample : null; x.sampleNote = x.sample ? "loading…" : "";
+        if (x.sample && o.ctx && o.ctx()) {
+          decodeSample(o.sb, o.ctx(), x.sample).then(function (b) {
+            if (gen !== s.gen) { return; } keep(r, b); recIds[r]++; x.sample.analysis = b.analysis; x.sampleNote = ""; changed(r);
+          }, function (e) {
+            if (gen !== s.gen) { return; } bufs[r] = silence(o.ctx()); anas[r] = null; raws[r] = null; kepts[r] = null; recIds[r]++;
+            x.sampleNote = "sample missing (" + (e && e.message || e) + ") - this role is silent"; changed(r);
+          });
+        }
+      });
+      changed(null);
+    };
     s.upload = function (r, file, id) {
       var x = s.state(r), gen = s.gen;
       return file.arrayBuffer().then(function (ab) { return o.ctx().decodeAudioData(ab); }).then(function (b) {
@@ -219,10 +275,14 @@
         keep(r, prepare(o.ctx(), res.buf, res.analysis)); recIds[r]++;   /* the silence cut out; the upload stays as recorded */
         x.sample = { path: null, name: file.name, analysis: res.analysis };
         if (!o.sb || !id) { x.sampleNote = "not saved: log in as a setter on the site to save"; changed(r); return; }
-        var path = "lab/" + id + "/" + r + "-" + Date.now() + ".wav";
+        var path = folder(id) + r + "-" + Date.now() + ".wav", jpath = path.replace(/\.wav$/, ".json"), store = o.sb.storage.from("recordings");
         x.sampleNote = "uploading…"; changed(r);
-        var up = o.sb.storage.from("recordings").upload(path, wav(res.buf), { upsert: false, contentType: "audio/wav" }).then(function (u) {
-          if (u.error) { x.sampleNote = "upload failed: " + u.error.message; } else { x.sample.path = path; x.sampleNote = "uploaded"; }
+        /* 6a: its analysis beside it, so a listener never analyses; the sample counts as saved once both are up */
+        var ana = o.analysisFiles ? store.upload(jpath, new Blob([JSON.stringify(res.analysis)], { type: "application/json" }), { upsert: false, contentType: "application/json" }) : Promise.resolve({ error: null });
+        var up = Promise.all([store.upload(path, wav(res.buf), { upsert: false, contentType: "audio/wav" }), ana]).then(function (u) {
+          var err = u[0].error || u[1].error;
+          if (err) { x.sampleNote = "upload failed: " + err.message; }
+          else { x.sample.path = path; if (o.analysisFiles) { x.sample.analysis_path = jpath; x.sample.f0 = (res.analysis && res.analysis.f0) || 0; } x.sampleNote = "uploaded"; }
           changed(r);
         });
         uploading.push(up);
@@ -252,6 +312,6 @@
   }
   var api = { ROLES: ROLES, ROLE_INDEX: ROLE_INDEX, MAX_S: MAX_S, SAMPLER: SAMPLER, NAMES: NAMES, isSampler: isSampler, esc: esc,
     sampleLabel: sampleLabel, colourName: colourName, wavBytes: wavBytes, wav: wav, trimmed: trimmed, overlay: overlay,
-    fetchRoute: fetchRoute, sendRole: sendRole, session: session, decodeSample: decodeSample, silence: silence, compactPlan: compactPlan, compactData: compactData, prepare: prepare, positionFrame: positionFrame, eqDefault: eqDefault, eqResponse: eqResponse };
+    fetchRoute: fetchRoute, sendRole: sendRole, session: session, decodeSample: decodeSample, silence: silence, compactPlan: compactPlan, compactData: compactData, prepare: prepare, positionFrame: positionFrame, eqDefault: eqDefault, eqResponse: eqResponse, fromPatch: fromPatch, toPatch: toPatch };
   root.FsRoles = api;
 })(typeof globalThis !== "undefined" ? globalThis : self);
