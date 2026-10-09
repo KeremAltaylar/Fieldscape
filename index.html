@@ -1333,10 +1333,6 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 #pp-body .ppsample-warn:empty { display: none; }
 #pp-body .ppsample-warn { color: var(--lamp); font-size: var(--t-xs); }
 #pp-body .ppsample-wave { width: 100%; height: 40px; display: block; cursor: pointer; }
-.rp-lab { display: flex; align-items: center; gap: var(--s-1); font-family: var(--font-mono); font-size: var(--t-xs); text-transform: uppercase; letter-spacing: 0.04em; color: var(--faint); }
-.rp-lab[hidden] { display: none; }
-.rp-lab select { font-family: var(--font-mono); font-size: var(--t-xs); padding: 0 var(--s-1); }
-.rp-lab i { font-style: normal; color: var(--ink); min-width: 3em; text-align: right; }
 #pp-body .ppcol { position: relative; }
 #pp-body .ppeq-btn { display: block; width: 100%; height: 1.4rem; padding: 0 2px; background: transparent; border: 1px solid var(--hairline); border-radius: 2px; cursor: pointer; }
 #pp-body .ppeq-btn svg { width: 100%; height: 100%; display: block; }
@@ -5424,9 +5420,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     putAudio(target.id + "#" + target.slot, file).then(function () {
       claimEdit(f);
       f.properties.hits = f.properties.hits || {};
-      f.properties.hits[target.slot] = { name: file.name, size: file.size };
+      f.properties.hits[target.slot] = { name: file.name, size: file.size };   /* 6a: its track_path goes with the old object */
       f.properties.audio_mode = "hits";
       commit();
+      if (follows(f, "R")) { ensureTrack(f); }   /* 6a: a following hit's new recording gets its track */
       renderAudioMode(f);
       /* Loaded players are stale the moment a slot changes. */
       if (bed && bed.rhythms && bed.rhythms[target.id]) { disposeRhythm(target.id); }
@@ -5513,6 +5510,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   function pctFmt(v) { return Math.round(v * 100) + " %"; }
 
+  /* 6a: grains and hits onto the chord (rhythm.follow; a pitched recording only - its track file says) */
+  var FOLLOW_FIELD = { k: "follow", label: "follow chord", min: 0, max: 1, step: 0.05,
+    hint: "pitched grains and hits move onto the chord's notes (0 = as recorded)" };
   var RHYTHM_FIELDS = [
     { k: "on", label: "rhythm", toggle: true },
     { k: "steps", label: "steps", min: 4, max: 64, step: 1,
@@ -5758,6 +5758,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
     var cloud = [ppHeading("The cloud", "Three randomnesses kept apart on purpose: roam, scatter and vary")];
     GRAIN_FIELDS.slice(2).forEach(function (fl) { cloud.push(gRow(fl, commitR)); });
+    cloud.push(buildRhythmRow(FOLLOW_FIELD, r, function () { commitR(); if (r.follow > 0) { ensureTrack(f); } }));   /* 6a */
 
     var env = [ppHeading("The grain envelope",
       "Four stages as fractions of the grain, so it keeps its shape when the size varies")];
@@ -5943,7 +5944,6 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var r = rhythmOf(f), q = soundOf(f), body = $("#rp-body");
     $("#rp-title").textContent = "Sound · " + MODE_LABEL[modeOf(f)] + " · " + label(f);
     body.textContent = "";
-    labFollowControl(f);
 
     /* Every point has a presence whether or not it has anything to play, so This point is the
        first column of all three panels and the sound is what may be missing. */
@@ -5978,6 +5978,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var line = [ppHeading("The line", "Pulses are spread as evenly as the step count allows. " +
       "Rotation turns a pattern without changing it. Everything runs on the route's tempo.")];
     RHYTHM_FIELDS.slice(0, 4).forEach(function (fl) { line.push(buildRhythmRow(fl, r, commitR)); });
+    line.push(buildRhythmRow(FOLLOW_FIELD, r, function () { commitR(); if (r.follow > 0) { ensureTrack(f); } }));   /* 6a */
     var phrase = [ppHeading("Phrase", "Four related patterns, cycled one phrase at a time")];
     RHYTHM_FIELDS.slice(4).forEach(function (fl) { phrase.push(buildRhythmRow(fl, r, commitR)); });
 
@@ -6248,6 +6249,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        setter usually has no live voice. */
     var commitLive = function () {
       commitQ();
+      if (q.shape && q.shape.follow > 0) { ensureTrack(f); }   /* 6a: following needs its recording's track file */
       updateWaveCaption();
       var v = bed && bed.voices[f.properties.id];
       if (!v || !v.ready || !v.stretch || !v.stretch.ready) { return; }
@@ -6272,7 +6274,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        properties.sound.shape and read by the core's stretch. All dry by default (A-8). */
     if (!q.shape) { q.shape = {}; }
     var sh = q.shape, SHD = { transpose: 0, tune: 0, focus: 0.5, partials: 8, layers: 0, harmony: 0.5, glide: 2,
-                              drift: 0, blur: 0, width: 1, start: 0, end: 1 };
+                              drift: 0, blur: 0, width: 1, start: 0, end: 1, follow: 0, resonate: 0, body: 0 };
     Object.keys(SHD).forEach(function (k) { if (sh[k] === undefined) { sh[k] = SHD[k]; } });
     var colStretch = [
       heading("Time", "The stretch itself, and the part of the recording it reads."),
@@ -6295,6 +6297,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       heading("Pitch & harmony", "On the chord playing on the route in reach; off a route, the last one heard."),
       R({ label: "transpose", k: "transpose", min: -12, max: 12, step: 1, def: 0,
         fmt: function (v) { return (v > 0 ? "+" : "") + Math.round(v) + " st"; }, hint: "the whole point up or down" }, sh),
+      /* 6a (K5): the recording onto the chord, and the chord rung by it - beside glide, which moves both */
+      R({ label: "follow chord", k: "follow", min: 0, max: 1, step: 0.05, def: 0, fmt: fx.pct,
+        hint: "a pitched recording moves onto the chord's nearest note, gliding (0 = as recorded)" }, sh),
+      R({ label: "resonate", k: "resonate", min: 0, max: 1, step: 0.05, def: 0, fmt: fx.pct,
+        hint: "the chord rung by the recording, inside the stretch, before its cloud" }, sh),
+      buildPxSelect("body", sh, "body", ["String", "Tube", "Bell"], commitLive),
       R({ label: "tune", k: "tune", min: 0, max: 1, step: 0.01, def: 0, fmt: fx.two,
         hint: "pulls the sound onto the chord's notes: wind hums the chord" }, sh),
       R({ label: "focus", k: "focus", min: 0, max: 1, step: 0.01, def: 0.5, fmt: fx.two,
@@ -6526,7 +6534,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     input.min = toUi(fl.min); input.max = toUi(fl.max);
     input.step = fl.log ? "any" : fl.step;
     input.value = toUi(fl.get ? fl.get(obj) : obj[fl.k]);
-    input.dataset.def = toUi(fl.def);
+    input.dataset.def = toUi(fl.def); if (fl.k) { input.dataset.k = fl.k; }
     input.title = (fl.hint ? fl.hint + " · " : "") + "double-click to reset · shift-drag for fine steps";
     var show = function () { val.textContent = fl.fmt(fromUi(+input.value)); };
     show();
@@ -6568,7 +6576,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       op.value = String(i); op.textContent = n;
       sel.appendChild(op);
     });
-    sel.value = String(obj[key] || 0);
+    sel.value = String(obj[key] || 0); sel.dataset.k = key;
     sel.addEventListener("change", function () { obj[key] = +sel.value; commit(); });
     row.appendChild(name); row.appendChild(sel); row.appendChild(document.createElement("i"));
     return row;
@@ -6740,9 +6748,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (!setterTools()) { return; }   /* the hidden input is the real entry point, not the button */
     if (!file || !f) { return; }
     $("#rec-add").textContent = "Analysing…";
-    putAudio(f.properties.id, file).then(function () {
+    attachRecording(f, file);
+  });
+  /* the point's recording replaced: its old track goes with it (6a Review Focus 1), and a following point gets a new one */
+  function attachRecording(f, file) {
+    return putAudio(f.properties.id, file).then(function () {
       claimEdit(f);
       f.properties.has_audio = true;
+      if (f.properties.sound) { delete f.properties.sound.track_path; }
       f.properties.audio = {
         name: file.name, type: file.type || "audio/*", size: file.size,
         added_at: new Date().toISOString(),
@@ -6750,6 +6763,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         time_source: file.lastModified ? "file_mtime" : "import_time"
       };
       commit();
+      if (follows(f, "S") || follows(f, "R")) { ensureTrack(f); }   /* 6a: a following point's new recording gets its track */
       renderDetail();
       recordingTime(file).then(function (t) {
         if (t.source !== "bwf") { return; }
@@ -6777,7 +6791,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     }).catch(function (err) {
       $("#saved").textContent = "Could not store audio: " + err.message;
     });
-  });
+  }
   $("#rec-remove").addEventListener("click", function () {
     if (!setterTools()) { return; }
     var f = feature(selected);
@@ -8331,20 +8345,82 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   }
   window.__fa.coreSync = coreSync;
 
-  /* 6a: routes and points go to the engine as they are saved - their sampler keys, EQ, follow and resonate are in them.
-     Until Task 4, a point's lab follow/resonate is still overlaid here (labRoutes holds only point rows now) */
-  function coreFeature(f) {
-    if (samplersOn() && f.properties.kind === "point") {   /* 5: a point's follow (7: and Resonate), overlaid (never saved into the point) */
-      var lp = labRoutes[f.properties.id], pt = (lp && lp.point) || {}, fol = pt.follow > 0 ? pt.follow : 0, res = pt.resonate > 0 ? pt.resonate : 0;
-      if (!fol && !res) { return f; }
-      var h = JSON.parse(JSON.stringify(f)), hp = h.properties, add = {};
-      if (fol) { add.follow = fol; hp.rhythm = Object.assign({}, hp.rhythm || {}, { follow: fol }); }
-      if (res) { add.resonate = res; add.body = pt.body || 0; }
-      hp.sound = hp.sound || {}; hp.sound.shape = Object.assign({}, hp.sound.shape || {}, add);
-      return h;
-    }
-    return f;
+  /* 6a: point pitch tracks are files beside their recordings (K4). A listener downloads one; a setter's page makes it once,
+     when follow is set on a recording without one. */
+  window.__fa.tracksSent = 0; window.__fa.analyses = 0;
+  var trackFiles = {};
+  function trackPathOf(f, kind, sub) {
+    var p = f.properties;
+    if (kind === "R" && p.audio_mode === "hits") { var h = p.hits && p.hits[HIT_SLOTS[sub]]; return h && typeof h === "object" ? h.track_path || null : null; }
+    return (p.sound && p.sound.track_path) || null;
   }
+  function follows(f, kind) {
+    var p = f.properties;
+    return kind === "S" ? !!(p.sound && p.sound.shape && p.sound.shape.follow > 0) : !!(p.rhythm && p.rhythm.follow > 0);
+  }
+  function pointTrack(eng, kind, index, sub, id) {
+    var f = feature(id), path = f && trackPathOf(f, kind, sub);
+    if (!f || !path || !sb || !follows(f, kind)) { return; }
+    (trackFiles[path] = trackFiles[path] || sb.storage.from("recordings").download(path).then(function (d) {
+      if (d.error || !d.data) { throw new Error((d.error && d.error.message) || "not found"); }
+      return d.data.text();
+    })).then(function (text) {
+      if (core !== eng || !eng.node) { return; }
+      eng.node.port.postMessage({ type: "track", kind: kind, index: index, sub: sub, id: id, bytes: new TextEncoder().encode(text) });
+      window.__fa.tracksSent++;
+    }, function (e) { delete trackFiles[path]; console.warn("a point's track did not load - " + (e && e.message || e)); });
+  }
+  /* a recording's track: its first 60 s, mono, analysed on this page (a setter's, or the carry-over's) */
+  function trackOfBlob(blob) {
+    return blob.arrayBuffer().then(function (ab) { return labCtx().decodeAudioData(ab); }).then(function (buf) {
+      var n = Math.min(buf.length, Math.round(60 * buf.sampleRate)), c = buf.numberOfChannels, mono = new Float32Array(n);
+      for (var k = 0; k < c; k++) { var d = buf.getChannelData(k); for (var i = 0; i < n; i++) { mono[i] += d[i] / c; } }
+      window.__fa.analyses++;
+      return analyseMono(mono, buf.sampleRate);
+    }).then(function (a) { return { f0: a.f0, hop_s: a.hop_s, track: a.track }; });
+  }
+  var trackMaking = Promise.resolve(), trackBusy = {};
+  function ensureTrack(f) {
+    if (!samplersOn() || !f) { return; }
+    var id = f.properties.id, p = f.properties, recs = [];
+    if (p.audio_mode === "hits") {
+      HIT_SLOTS.forEach(function (slot) { var h = p.hits && p.hits[slot]; if (h && typeof h === "object" && !h.track_path) { recs.push({ key: id + "#" + slot, path: h.storage_path || null, slot: slot, h: h }); } });
+    } else if (p.has_audio && !(p.sound && p.sound.track_path)) { recs.push({ key: id, path: p.storage_path || null, slot: null }); }
+    recs.forEach(function (rc) {
+      if (trackBusy[rc.key]) { return; }
+      trackBusy[rc.key] = true;
+      trackMaking = trackMaking.then(function () {
+        return audioBlob(rc.key, rc.path).then(function (blob) {
+          if (!blob) { throw new Error("no recording on this device or the server"); }
+          return trackOfBlob(blob);
+        }).then(function (t) {
+          var path = id + "/track-" + (rc.slot ? rc.slot + "-" : "") + Date.now() + ".json";
+          return sb.storage.from("recordings").upload(path, new Blob([JSON.stringify(t)], { type: "application/json" }), { upsert: false, contentType: "application/json" }).then(function (u) {
+            if (u.error) { throw new Error(u.error.message); }
+            if (rc.slot) { rc.h.track_path = path; } else { (p.sound = p.sound || {}).track_path = path; }
+            trackFiles[path] = Promise.resolve(JSON.stringify(t));
+            claimEdit(f); save(); coreSync();
+            if (core && core.srcs) { Object.keys(core.srcs).forEach(function (k) { var x = core.srcs[k]; if (x.id === id) { pointTrack(core, x.kind, x.index, x.sub, x.id); } }); }
+          });
+        }).catch(function (e) { toast("Follow: this recording's pitch could not be read - " + (e && e.message || e)); })
+          .then(function () { delete trackBusy[rc.key]; });
+      });
+    });
+  }
+  /* the carry-over (tools/carry-over-6a.mjs): a published recording's track, read here */
+  window.__fa.trackFor = function (path) {
+    return sb.storage.from("recordings").download(path).then(function (d) {
+      if (d.error || !d.data) { throw new Error((d.error && d.error.message) || "not found"); }
+      return trackOfBlob(d.data);
+    });
+  };
+  /* test hook: a generated 2 s tone attached as the point's new recording, through the page's own path */
+  window.__fa.reattachTestAudio = function (id) {
+    var f = feature(id); if (!f) { return false; }
+    var sr = 48000, n = sr * 2, chs = [new Float32Array(n)];
+    for (var i = 0; i < n; i++) { chs[0][i] = 0.3 * Math.sin(2 * Math.PI * 440 * i / sr); }
+    return attachRecording(f, new File([FsRoles.wavBytes(chs, sr)], "test-tone.wav", { type: "audio/wav" })).then(function () { return true; });
+  };
   window.__fa.coreSentFeature = function (id) { return core && core.sent && core.sent[id] || null; };
   window.__fa.coreSentPatch = function (id) { var t = core && core.sent && core.sent[id]; return t ? JSON.stringify(JSON.parse(t).properties.patch) : null; };
   var labSound = {}, labSentFor = null;
@@ -8473,7 +8549,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
                 for (var i = 0; i < n; i++) { var s = d[i]; pcm[i * c + k] = s < -1 ? -32768 : (s > 1 ? 32767 : Math.round(s * 32767)); }
               }
               eng.node.port.postMessage({ type: "source", kind: kind, index: index, sub: sub, id: id, channels: c, pcm: pcm }, [pcm.buffer]);
-              if (samplersOn()) { labPointTrack(eng, kind, index, sub, id, buf, key + " " + path); }   /* 5 (Task 4: from the track's file) */
+              (eng.srcs = eng.srcs || {})[id + " " + kind + " " + sub] = { kind: kind, index: index, sub: sub, id: id };
+              pointTrack(eng, kind, index, sub, id);   /* 6a: a following point's track, from its file */
             });
           };
           var next = (eng.decodes || Promise.resolve()).then(run);
@@ -12875,7 +12952,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   /* Sample harmony 3c: samplers on this panel, setters only, apart from the live patch (lab_route_roles + recordings/lab/),
      docs/superpowers/specs/2026-10-05-samples-3c-patch-screen-design.md. Off: the panel is exactly as before. */
-  var labRoles = null, labAnalyse = null, labRoutes = {};   /* labRoutes: a point's lab follow/resonate until Task 4 */
+  var labRoles = null, labAnalyse = null;
   /* 6a: a signed-in setter edits sampler voices in the real panel (no lab switch); listeners hear them from the patch */
   function samplersOn() { return setter.signedIn && !!sb && typeof FsRoles !== "undefined"; }
   function labMsg(t) { var m = $("#pp-lab-msg"); if (m) { m.textContent = t || ""; m.hidden = !t; } }
@@ -13220,64 +13297,6 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       mEl.dataset.db = String(Math.round(db));
       mEl.firstChild.style.width = Math.max(0, Math.min(100, (db + 60) / 60 * 100)) + "%";
     });
-  }
-  /* Sample harmony 5: a point follows the chord (lab). Its follow kept in the lab table under the point's id, overlaid on
-     the point for the engine; each point recording's pitch track (its first 60 s) analysed here and sent with it */
-  window.__fa.labTracks = 0; window.__fa.labAnalyses = 0;
-  var labTrackCache = {};    /* a recording's track, by its key and path: analysed once, not on every engine (5 I3) */
-  window.__fa.labTrackKeys = function () { return Object.keys(labTrackCache).length; };
-  function labPointTrack(eng, kind, index, sub, id, buf, cacheKey) {
-    if (!labTrackCache[cacheKey]) {
-      var n = Math.min(buf.length, Math.round(60 * buf.sampleRate)), c = buf.numberOfChannels, mono = new Float32Array(n);
-      for (var k = 0; k < c; k++) { var d = buf.getChannelData(k); for (var i = 0; i < n; i++) { mono[i] += d[i] / c; } }
-      labTrackCache[cacheKey] = labAnalyseMono(mono, buf.sampleRate); window.__fa.labAnalyses++;
-      labTrackCache[cacheKey].catch(function (e) { delete labTrackCache[cacheKey]; window.__fa.labTrackErrors = (window.__fa.labTrackErrors || []).concat(String(e && e.message || e)); });
-    }
-    labTrackCache[cacheKey].then(function (a) {
-      if (core !== eng || !eng.node || !a) { return; }
-      eng.node.port.postMessage({ type: "track", kind: kind, index: index, sub: sub, id: id, bytes: new TextEncoder().encode(JSON.stringify({ f0: a.f0, hop_s: a.hop_s, track: a.track })) });
-      window.__fa.labTracks++;
-    }).catch(function (e) { console.warn("lab track: " + (e && e.message || e)); });
-  }
-  var labPointTimers = {};   /* one save timer a point: moving B never cancels A's save */
-  function labPointSave(id, part) {
-    var cur = (labRoutes[id] && labRoutes[id].point) || {};
-    labRoutes[id] = { point: Object.assign({}, cur, part) }; labChanged();
-    clearTimeout(labPointTimers[id]);
-    labPointTimers[id] = setTimeout(function () {
-      delete labPointTimers[id];
-      sb.from("lab_route_roles").upsert({ route_id: id, roles: { point: labRoutes[id].point }, updated_by: setter.id }).then(function (q) {
-        if (q.error) { labMsg("Samplers (lab): the point's setting was not saved - " + q.error.message); }
-      });
-    }, 600);
-  }
-  function labFollowControl(f) {
-    var bar = $("#rp-close") && $("#rp-close").parentNode, lb = $("#rp-lab"), lr = $("#rp-lab-res");
-    if (!lb && bar) {
-      lb = document.createElement("label"); lb.id = "rp-lab"; lb.className = "rp-lab";
-      lb.title = "A pitched recording moves onto the chord's nearest note (lab; 0 = as recorded)";
-      lb.innerHTML = "<span>follow the chord (lab)</span> <input type='range' id='rp-lab-follow' min='0' max='1' step='0.05'> <i id='rp-lab-follow-v'></i>";
-      bar.insertBefore(lb, $("#rp-close"));
-      /* 7: Resonate - the chord rung by the recording inside the stretch, before its cloud (stretch points) */
-      lr = document.createElement("span"); lr.id = "rp-lab-res"; lr.className = "rp-lab";
-      lr.title = "The route's chord rung by this recording, inside the stretch (lab; 0 = as recorded)";
-      lr.innerHTML = "<label for='rp-lab-resonate'>resonate (lab)</label> <input type='range' id='rp-lab-resonate' min='0' max='1' step='0.05'> <i id='rp-lab-resonate-v'></i>" +
-        " <select id='rp-lab-body' aria-label='Resonate body'><option value='0'>String</option><option value='1'>Tube</option><option value='2'>Bell</option></select>";
-      bar.insertBefore(lr, $("#rp-close"));
-    }
-    if (!lb) { return; }
-    var stretchPt = !/^(hits|grains)$/.test(f.properties.audio_mode || "");
-    lb.hidden = !samplersOn(); if (lr) { lr.hidden = !samplersOn() || !stretchPt; }
-    if (!samplersOn()) { return; }
-    var id = f.properties.id, inp = $("#rp-lab-follow"), out = $("#rp-lab-follow-v"), lp = labRoutes[id], pt = (lp && lp.point) || {};
-    inp.value = String(pt.follow || 0); out.textContent = Math.round(100 * +inp.value) + " %";
-    inp.oninput = function () { var v = +inp.value; out.textContent = Math.round(100 * v) + " %"; labPointSave(id, { follow: v }); };
-    var ri = $("#rp-lab-resonate"), ro = $("#rp-lab-resonate-v"), rb = $("#rp-lab-body");
-    if (ri) {
-      ri.value = String(pt.resonate || 0); ro.textContent = Math.round(100 * +ri.value) + " %"; rb.value = String(pt.body || 0);
-      ri.oninput = function () { var v = +ri.value; ro.textContent = Math.round(100 * v) + " %"; labPointSave(id, { resonate: v }); };
-      rb.onchange = function () { labPointSave(id, { body: +rb.value }); };
-    }
   }
 
   function commitPatch(f, patch) {

@@ -40,6 +40,18 @@ const pp0 = pubRow.properties.patch, lv = (k, g) => Object.assign({}, pp0[k], { 
 const draftPatch = Object.assign({}, pp0, { voice: lv("voice", 0.45), sect: lv("sect", 0.8), v3: lv("v3", 0.55) });
 const draftFeature = { type: "Feature", geometry: { type: "LineString", coordinates: pubRow.geometry.coordinates.map((c) => [c[0], c[1] + 0.01]) },
   properties: { id: DRAFT, kind: "route", place: pubRow.place, published: false, name: "lab site draft", patch: draftPatch } };
+/* 6a points: a published probe stretch point with its own recording (a 3 s 330 Hz tone), beside the draft; removed after */
+const PTP = "00000000-0000-4000-8000-0000000006a4";
+const ptAt = (() => { const c = draftFeature.geometry.coordinates; return [c[Math.floor(c.length / 2)][0] + 0.0004, c[Math.floor(c.length / 2)][1]]; })();
+{ await db.from("features").delete().eq("id", PTP);
+  const sr = 48000, n = sr * 3, b = Buffer.alloc(44 + n * 2);
+  b.write("RIFF", 0); b.writeUInt32LE(36 + n * 2, 4); b.write("WAVEfmt ", 8); b.writeUInt32LE(16, 16); b.writeUInt16LE(1, 20); b.writeUInt16LE(1, 22);
+  b.writeUInt32LE(sr, 24); b.writeUInt32LE(sr * 2, 28); b.writeUInt16LE(2, 32); b.writeUInt16LE(16, 34); b.write("data", 36); b.writeUInt32LE(n * 2, 40);
+  for (let i = 0; i < n; i++) b.writeInt16LE(Math.round(9000 * Math.sin(2 * Math.PI * 330 * i / sr)), 44 + 2 * i);
+  await db.storage.from("recordings").upload(`${PTP}/take.wav`, b, { contentType: "audio/wav", upsert: true });
+  await db.from("features").insert({ id: PTP, place: pubRow.place, kind: "point", geometry: { type: "Point", coordinates: ptAt },
+    properties: { id: PTP, kind: "point", place: pubRow.place, name: "probe 6a point", published: true, has_audio: true, storage_path: `${PTP}/take.wav`,
+      audio: { name: "tone.wav", type: "audio/wav", size: b.length }, sound: { radius: 140, gain: 0.9, zoneR: 25, stretch: 0 } } }); }
 await db.from("features").insert({ id: DRAFT, place: pubRow.place, kind: "route", geometry: draftFeature.geometry, properties: draftFeature.properties });
 const dbPatch0 = JSON.stringify((await db.from("features").select("properties").eq("id", DRAFT).single()).data.properties.patch);
 
@@ -343,6 +355,35 @@ try {
   await ev(`(function(){ var g = ${'${JSON.stringify(good)}'}; __fa.patchEdit('${DRAFT}', function (p) { p.v3.sample = g; }); return 1; })()`);
   await ev("fsListen.sound()"); await sleep(1500);    /* off */
 
+  /* 6a points: follow, resonate and body in a stretch point's Pitch & harmony; follow makes the recording's track file */
+  const ptProps = async () => JSON.parse(await ev(`JSON.stringify((__fa.features().filter(function (f) { return f.properties.id === '${PTP}'; })[0] || { properties: null }).properties)`));
+  await until(`__fa.features().some(function (f) { return f.properties.id === '${PTP}'; })`, 20000);
+  await ev(`fsListen.select('${PTP}'), 0`); await sleep(900);
+  await ev("(function(){ var b = document.querySelector('#ls-card #f-rhythm') || document.querySelector('#f-rhythm'); b && b.click(); return 0; })()");
+  await until("!!document.querySelector('#rp-body input[data-k=\"follow\"]')", 8000);
+  check("6a: a stretch point's Pitch & harmony has follow, resonate and body beside glide",
+    await ev("['follow','resonate','glide'].every(function (k) { return !!document.querySelector('#rp-body input[data-k=\"' + k + '\"]'); }) && !!document.querySelector('#rp-body select[data-k=\"body\"]')"), null);
+  check("6a: the lab's header controls are gone", await ev("!document.querySelector('#rp-lab, #rp-lab-res')"), null);
+  await ev("(function(){ var s = document.querySelector('#rp-body input[data-k=\"follow\"]'); s.value = '0.8'; s.dispatchEvent(new Event('input')); return 1; })()");
+  await until(`!!((__fa.features().filter(function (f) { return f.properties.id === '${PTP}'; })[0].properties.sound || {}).track_path)`, 30000);
+  let P = await ptProps();
+  check("6a: follow is saved in the point's shape, and its track file is made beside its recording", P.sound.shape.follow === 0.8 && String(P.sound.track_path).indexOf(PTP + "/track-") === 0, P.sound);
+  const tfiles = ((await db.storage.from("recordings").list(PTP)).data || []).map((o) => o.name);
+  check("6a: the track file is in Storage", tfiles.some((n) => /^track-\d+\.json$/.test(n)), tfiles);
+  await ev("(function(){ var b = document.querySelector('#rp-body select[data-k=\"body\"]'); b.value = '2'; b.dispatchEvent(new Event('change')); var s = document.querySelector('#rp-body input[data-k=\"resonate\"]'); s.value = '0.6'; s.dispatchEvent(new Event('input')); return 1; })()");
+  await sleep(600); P = await ptProps();
+  check("6a: resonate and body are saved in the point's shape", P.sound.shape.resonate === 0.6 && P.sound.shape.body === 2, P.sound.shape);
+  /* Review Focus 1: a new recording drops the old track; follow still on makes a new one */
+  const oldTrack = (await ptProps()).sound.track_path;
+  const ra = await ev(`Promise.resolve(__fa.reattachTestAudio('${PTP}')).then(function () { return (__fa.features().filter(function (f) { return f.properties.id === '${PTP}'; })[0].properties.sound || {}).track_path || null; }, function (e) { return 'ERR ' + (e && e.message); })`);
+  check("6a: right after a new recording is attached, its old track_path is gone (Review Focus 1)", ra !== oldTrack && !/^ERR/.test(String(ra)), [oldTrack, ra]);
+  await until(`(function(){ var t = (__fa.features().filter(function (f) { return f.properties.id === '${PTP}'; })[0].properties.sound || {}).track_path; return !!t && t !== '${'${oldTrack}'}'; })()`, 30000);
+  const newTrack = (await ptProps()).sound.track_path;
+  check("6a: replacing the recording replaces its track (the old track_path dropped, a new file made) (Review Focus 1)", !!newTrack && newTrack !== oldTrack, [oldTrack, newTrack]);
+  await ev("(function(){ var b = document.querySelector('#rp-close'); b && b.click(); return 0; })()");
+  const ptPub = await ptProps(); ptPub.published = true; ptPub.storage_path = `${PTP}/take.wav`;
+  await db.from("features").update({ properties: ptPub }).eq("id", PTP);
+
   /* the listener: the draft published (as Publish writes it), a signed-out page with nothing on the device */
   const props = JSON.parse(await ev(`JSON.stringify(__fa.features().filter(function (f) { return f.properties.id === '${DRAFT}'; })[0].properties)`));
   props.published = true;
@@ -355,6 +396,8 @@ try {
   for (let i = 0; i < 60 && !((await ev("__fa.roleSends || 0")) > 0 && (await ev("(__fa.coreRoles() || [])[16]")) > -60); i++) { await ev(`__fa.walkTo(${mid[0]}, ${mid[1]})`); await sleep(500); }
   check("6a: a signed-out listener's engine gets the route's sampler sample and plays it (Third voice above -60 dB)", (await ev("__fa.roleSends")) > 0 && (await ev("(__fa.coreRoles() || [])[16]")) > -60, [await ev("__fa.roleSends"), await ev("JSON.stringify(__fa.coreRoles())")]);
   check("6a: the listener's engine is the public core.wasm", (await ev("__fa.coreWasm")) === "web/core.wasm", await ev("__fa.coreWasm"));
+  for (let i = 0; i < 40 && !((await ev("__fa.tracksSent || 0")) > 0); i++) { await ev(`__fa.walkTo(${ptAt[0]}, ${ptAt[1]})`); await sleep(500); }
+  check("6a: a signed-out listener's engine gets the point's track from its file, with no analysis on the page", (await ev("__fa.tracksSent || 0")) > 0 && (await ev("__fa.analyses || 0")) === 0, [await ev("__fa.tracksSent"), await ev("__fa.analyses")]);
   await ev("fsListen.sound()"); await sleep(1000);
   check("no page errors", errors.length === 0, errors);
 } finally {
@@ -365,6 +408,9 @@ try {
   if (own && own.length) await db.storage.from("recordings").remove(own.map((o) => `${DRAFT}/${o.name}`));
   await db.from("lab_route_roles").delete().eq("route_id", DRAFT);
   await db.from("features").delete().eq("id", DRAFT);
+  await db.from("features").delete().eq("id", PTP);
+  const { data: pfiles } = await db.storage.from("recordings").list(PTP);
+  if (pfiles && pfiles.length) await db.storage.from("recordings").remove(pfiles.map((o) => `${PTP}/${o.name}`));
   await db.from("audit").delete().eq("setter_id", userId);
   await db.from("setters").delete().eq("id", userId);
   if (userId) await db.auth.admin.deleteUser(userId);
