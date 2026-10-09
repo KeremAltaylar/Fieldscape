@@ -82,6 +82,7 @@
       p[r] = p[r] || {};
       if (Array.isArray(rr.eq)) { p[r].eq = JSON.parse(JSON.stringify(rr.eq)); } else { delete p[r].eq; }
       if (!isSampler(rr.synth)) { return; }
+      if (p[r].synth && !isSampler(p[r].synth)) { p[r].digital = p[r].synth; }   /* the digital synth it was: chosen again, its timbres stay */
       p[r].synth = rr.synth;
       p[r].sampler = JSON.parse(JSON.stringify(rr.sampler || {}));
       var sm = rr.sample;

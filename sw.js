@@ -23,7 +23,8 @@
 /* v11: chord segments in open world; a picked park draws its border. */
 /* v12: the engine asks for a draft rhythm or grains point's recordings. */
 /* v13: the apps' branch merged: core.wasm with the stretch shaping and the route's chord. */
-var SHELL = "fieldarc-shell-v13";
+/* v14: 6a - the public engine plays the samplers; lab-roles.js reads the route's patch. */
+var SHELL = "fieldarc-shell-v14";
 var TILES = "fieldarc-tiles-v1";
 
 var SHELL_FILES = [

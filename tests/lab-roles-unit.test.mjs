@@ -194,3 +194,9 @@ test("6a: a session saving to the route's folder uploads the WAV and its analysi
   assert.deepEqual(ups.map((u) => u[0]).sort(), [x.analysis_path, x.path].sort());
   assert.equal(s.loadedFor, "R");
 });
+test("6a: a voice moved to a sampler remembers its digital synth (its timbres kept when chosen again: 3c I2)", () => {
+  const p1 = FsRoles.toPatch({ v3: { synth: "pluck", harm: 8000 } }, { v3: { synth: "s-freeze", sampler: {} } });
+  assert.equal(p1.v3.synth, "s-freeze"); assert.equal(p1.v3.digital, "pluck"); assert.equal(p1.v3.harm, 8000);
+  const p2 = FsRoles.toPatch(p1, { v3: { synth: "s-pulsar", sampler: {} } });
+  assert.equal(p2.v3.digital, "pluck");                         /* sampler to sampler: the digital one kept */
+});

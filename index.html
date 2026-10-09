@@ -1337,6 +1337,16 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 .rp-lab[hidden] { display: none; }
 .rp-lab select { font-family: var(--font-mono); font-size: var(--t-xs); padding: 0 var(--s-1); }
 .rp-lab i { font-style: normal; color: var(--ink); min-width: 3em; text-align: right; }
+#pp-body .ppcol { position: relative; }
+#pp-body .ppeq-btn { display: block; width: 100%; height: 1.4rem; padding: 0 2px; background: transparent; border: 1px solid var(--hairline); border-radius: 2px; cursor: pointer; }
+#pp-body .ppeq-btn svg { width: 100%; height: 100%; display: block; }
+#pp-body .ppeq-btn path { fill: none; stroke: var(--faint); stroke-width: 1.4; }
+#pp-body .ppeq-btn.on path { stroke: var(--accent); }
+#pp-body .ppeq-btn:hover, #pp-body .ppeq-btn:focus-visible, #pp-body .ppeq-btn[aria-expanded=true] { border-color: var(--accent); outline: none; }
+#pp-body .ppeq-pop { position: absolute; left: 0; right: 0; z-index: 5; background: var(--panel); border: 1px solid var(--bdr); border-radius: 2px; padding: var(--s-1); box-shadow: 0 6px 18px rgba(0,0,0,.45); }
+#pp-body .pplive-cell { display: grid; gap: 2px; min-width: 0; font-style: normal; }
+#pp-body .pplive-cell .pplive-meter { display: block; height: 3px; background: var(--hairline); border-radius: 2px; overflow: hidden; }
+#pp-body .pplive-cell .pplive-meter b { display: block; height: 100%; width: 0; background: var(--accent); transition: width 80ms linear; }
 #pp-body .ppeq { display: grid; gap: 4px; margin: 2px 0 var(--s-1); min-width: 0; flex: 0 0 100%; box-sizing: border-box; }
 #pp-body .ppeq-top { display: flex; align-items: center; gap: var(--s-1); min-width: 0; }
 #pp-body .ppeq-top > span:first-child { font-family: var(--font-mono); font-size: var(--t-xs); letter-spacing: 0.04em; text-transform: uppercase; color: var(--faint); }
@@ -1952,7 +1962,6 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   <div id="patchpanel" hidden>
     <div class="viewerbar">
       <span id="pp-title">Patch</span>
-      <button type="button" id="pp-lab" class="ghost" aria-pressed="false" hidden title="Sampler synths on this route, for you only - saved apart from the live patch">Samplers (lab)</button>
       <button type="button" id="pp-reset" class="ghost">Reset to default</button>
       <button type="button" id="pp-close">Close</button>
     </div>
@@ -4015,8 +4024,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   window.__fa = { map: map, errors: [] };   // debug hook — inspect state from the console
   window.__fa.sb = sb;   /* null offline, a client otherwise — measurable either way */
   /* tests (3c): lab mode's state (they sign in through __fa.sb; this page never asks for a password) */
-  Object.defineProperty(window.__fa, "labMode", { get: function () { return labOn(); } });
-  Object.defineProperty(window.__fa, "labRolesFor", { get: function () { return labRoles ? labRoles.loadedFor : null; } });
+  Object.defineProperty(window.__fa, "samplers", { get: function () { return samplersOn(); } });
+  Object.defineProperty(window.__fa, "rolesFor", { get: function () { return labRoles ? labRoles.loadedFor : null; } });
   window.__fa.fetchPublished = fetchPublished;
   window.__fa.mergeRemote = mergeRemote;
   window.__fa.offline = { version: placeVersion, sameVersion: sameVersion,
@@ -8249,20 +8258,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       return core.ctx.resume().then(function () { coreRamp(1, SOUND_FADE_IN); coreButton(true); coreMove(); });
     }
     var ctx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 0.05 });
-    /* lab mode (3c): the same core with the sampler synths, for this setter only; the public's stays web/core.wasm */
-    var wasmUrl = labWantWasm();
+    var wasmUrl = "web/core.wasm";   /* 6a: the public engine plays the samplers (the lab's own engine until then) */
     core = { ctx: ctx, on: true, pending: {}, wasm: wasmUrl };
     var me = core;
     var getWasm = function (u) { return fetch(u).then(function (r) { if (!r.ok) { throw new Error(u + " " + r.status); } return r.arrayBuffer(); }); };
     return Promise.all([
-      getWasm(wasmUrl).catch(function (e) {
-        if (wasmUrl === "web/core.wasm") { throw e; }
-        /* the lab build did not load: the site's own, and lab mode says so (spec: Failure; 3c I5) */
-        labEngineFailed = true;
-        labMsg("Samplers (lab): the lab engine did not load (" + (e && e.message || e) + ") - playing the site's own sound");
-        wasmUrl = me.wasm = "web/core.wasm";
-        return getWasm(wasmUrl);
-      }),
+      getWasm(wasmUrl),
       ctx.audioWorklet.addModule("web/core-worklet.js"),
       ctx.resume()
     ]).then(function (res) {
@@ -8280,13 +8281,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       core.node = node; core.gain = gain;
       window.__fa.coreWasm = wasmUrl; window.__fa.coreNodes = (window.__fa.coreNodes || 0) + 1;
       node.port.onmessage = coreMessage;
-      var enc = new TextEncoder(), feats = visible().map(coreFeature);
+      var enc = new TextEncoder(), feats = visible();
       node.port.postMessage({ type: "places", bytes: enc.encode(JSON.stringify({ type: "FeatureCollection", features: places })) });
       node.port.postMessage({ type: "features", bytes: enc.encode(JSON.stringify({ type: "FeatureCollection", features: feats })) });
       core.sent = {};
       feats.forEach(function (f) { core.sent[f.properties.id] = JSON.stringify(f); });
-      if (labOn() && !labLoaded) { labRoutesLoad(); }                 /* a reload with lab mode remembered (3c I3) */
-      if (me.wasm !== labWantWasm()) { setTimeout(labEngineSync, 0); } /* lab mode turned while it loaded (3c I4) */
       keepAwake(true);
       coreRamp(1, SOUND_FADE_IN);
       coreButton(true);
@@ -8321,7 +8320,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (!core || !core.node || !core.sent) { return; }
     var enc = new TextEncoder(), now = {}, changed = false;
     visible().forEach(function (f) {
-      var id = f.properties.id, s = JSON.stringify(coreFeature(f));
+      var id = f.properties.id, s = JSON.stringify(f);
       now[id] = true;
       if (core.sent[id] !== s) { core.sent[id] = s; core.node.port.postMessage({ type: "upsert", bytes: enc.encode(s) }); changed = true; }
     });
@@ -8332,10 +8331,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   }
   window.__fa.coreSync = coreSync;
 
-  /* Sample harmony 3c, lab mode: each route goes to the engine with its lab role setups laid over its patch (the sampler
-     synth and its controls only; never saved), and the walker's route's role samples follow it */
+  /* 6a: routes and points go to the engine as they are saved - their sampler keys, EQ, follow and resonate are in them.
+     Until Task 4, a point's lab follow/resonate is still overlaid here (labRoutes holds only point rows now) */
   function coreFeature(f) {
-    if (labOn() && f.properties.kind === "point") {   /* 5: a point's follow (7: and Resonate), overlaid (never saved into the point) */
+    if (samplersOn() && f.properties.kind === "point") {   /* 5: a point's follow (7: and Resonate), overlaid (never saved into the point) */
       var lp = labRoutes[f.properties.id], pt = (lp && lp.point) || {}, fol = pt.follow > 0 ? pt.follow : 0, res = pt.resonate > 0 ? pt.resonate : 0;
       if (!fol && !res) { return f; }
       var h = JSON.parse(JSON.stringify(f)), hp = h.properties, add = {};
@@ -8344,39 +8343,36 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       hp.sound = hp.sound || {}; hp.sound.shape = Object.assign({}, hp.sound.shape || {}, add);
       return h;
     }
-    if (!labOn() || f.properties.kind !== "route" || !labRoutes[f.properties.id]) { return f; }
-    var g = JSON.parse(JSON.stringify(f)); g.properties.patch = FsRoles.overlay(f.properties.patch, labRoutes[f.properties.id]);
-    return g;
+    return f;
   }
   window.__fa.coreSentFeature = function (id) { return core && core.sent && core.sent[id] || null; };
   window.__fa.coreSentPatch = function (id) { var t = core && core.sent && core.sent[id]; return t ? JSON.stringify(JSON.parse(t).properties.patch) : null; };
-  var labRoutesLoading = null, labEngineFailed = false;
-  function labWantWasm() { return labOn() && !labEngineFailed ? "web/core-lab.wasm" : "web/core.wasm"; }
-  function labRoutesLoad() {
-    if (!labOn()) { return Promise.resolve(); }
-    if (labRoutesLoading) { return labRoutesLoading; }
-    return (labRoutesLoading = sb.from("lab_route_roles").select("route_id, roles").then(function (q) {
-      labRoutesLoading = null;
-      if (q.error) { labMsg("Samplers (lab): " + q.error.message); return; }
-      (q.data || []).forEach(function (r) { if (!(r.route_id in labRoutes)) { labRoutes[r.route_id] = r.roles; } });
-      labLoaded = true; labChanged();
-    }));
-  }
-  var labSound = {}, labSentFor = null, labLoaded = false;
-  window.__fa.labRoleSends = 0;     /* role buffers sent to the engine (tests: a control move sends none) */
-  function labSend(port, r, b, a) { FsRoles.sendRole(port, FsRoles.ROLE_INDEX[r], b, a); window.__fa.labRoleSends++; }
+  var labSound = {}, labSentFor = null;
+  window.__fa.roleSends = 0;     /* role buffers sent to the engine (tests: a control move sends none) */
+  /* test hooks (6a): the engine's last roles (8 floats a voice: level dB, note count, notes); a route's patch edited as a
+     panel control would; the panel's voices read again from the patch */
+  window.__fa.coreRoles = function () { return core && core.roles ? Array.prototype.slice.call(core.roles) : null; };
+  window.__fa.patchEdit = function (id, fn) { var f = feature(id); if (!f) { return false; } var p = patchOf(f); fn(p); commitPatch(f, p); labChanged(); return true; };
+  window.__fa.reloadSession = function () { if (labRoles) { labRoles.loadedFor = null; } if (!$("#patchpanel").hidden) { renderPatchPanel(); } labKey = {}; labSentFor = null; labChanged(); };
+  function labSend(port, r, b, a) { FsRoles.sendRole(port, FsRoles.ROLE_INDEX[r], b, a); window.__fa.roleSends++; }
   Object.defineProperty(window.__fa, "labSentFor", { get: function () { return labSentFor; } });
   /* Each role's sample goes to the engine once (the engine mixes and keeps every send: final review 3a I2/I3, 3c C1): keyed
      by what it is - the panel's own copy, a saved path, or silence - and sent again only when that changes. A new route:
      silence on every role first, so the last route's samples never play on this one (Review Focus 1) */
   var labKey = {};
-  function labRoleSamples(id) {
-    if (!labOn() || !core || !core.node || core.wasm !== "web/core-lab.wasm") { return; }
+  function routeSamples(id) {
+    if (!core || !core.node || typeof FsRoles === "undefined") { return; }
     var ctx = core.ctx, port = core.node.port;
     var silence = function (r) { if (labKey[r] !== "silence") { labKey[r] = "silence"; labSend(port, r, FsRoles.silence(ctx), null); } };
-    if (labSentFor !== id || labKey.port !== port) { labSentFor = id; labKey = { port: port }; FsRoles.ROLES.forEach(silence); }
-    var roles = id && labRoutes[id], S = labRoles;
-    if (!roles) { return; }
+    var rf = id && feature(id), roles = rf && rf.properties.kind === "route" ? FsRoles.fromPatch(rf.properties.patch) : null, S = labRoles;
+    /* a new route: silence first on every role that has had a sample, so the last route's never plays on this one (Review
+       Focus 1); a route with no sampler voice sends nothing at all */
+    var any = roles && FsRoles.ROLES.some(function (r) { return FsRoles.isSampler(roles[r].synth); });
+    if (labSentFor !== id || labKey.port !== port) {
+      var had = labKey.port === port ? FsRoles.ROLES.filter(function (r) { return labKey[r] && labKey[r] !== "silence"; }) : [];
+      labSentFor = id; labKey = { port: port }; had.forEach(silence);
+    }
+    if (!any) { return; }
     FsRoles.ROLES.forEach(function (r) {
       var rr = roles[r]; if (!rr || !FsRoles.isSampler(rr.synth)) { return; }
       if (S && S.loadedFor === id && S.buf(r)) {       /* the panel's own copy: an upload is heard before it is saved */
@@ -8385,7 +8381,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         return;
       }
       var path = rr.sample && rr.sample.path;
-      if (!path) { silence(r); return; }
+      if (!path || !sb) { silence(r); return; }
       var key = "p:" + path;
       if (labKey[r] === key || labKey[r] === key + " loading") { return; }
       labKey[r] = key + " loading";
@@ -8395,23 +8391,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       }, function (e) {
         delete labSound[path];
         if (labKey[r] === key + " loading") { labKey[r] = null; silence(r); }
-        labMsg("Samplers (lab): a sample did not load - " + (e && e.message || e));
+        console.warn("a sampler voice's sample did not load - " + (e && e.message || e));
       });
     });
   }
   var labSyncTimer = null;
   function labEngineSync() {
-    if (labOn() && !labLoaded) { labRoutesLoad(); }
     if (!core || !core.node) { return; }
-    if (core.wasm !== labWantWasm()) {        /* the other build: one engine, restarted (Review Focus 2) */
-      var old = core, wasOn = old.on;
-      old.node.port.onmessage = null; old.node.disconnect(); old.ctx.close();
-      core = null; window.__fa.coreNodes = 0; labSentFor = null; labKey = {};
-      labLiveUpdate(null);
-      if (wasOn) { coreStart().catch(function (e) { labMsg("Sound: " + (e && e.message || e)); }); }
-      return;
-    }
-    if (core.state) { labRoleSamples(core.state.route_id || null); }   /* only what changed is sent (C1) */
+    if (core.state) { routeSamples(core.state.route_id || null); }   /* only what changed is sent (C1) */
     /* throttled, not debounced: a lab drag (an EQ dot) is heard while it moves, ~16 times a second (final review 6 I6) */
     if (!labSyncTimer) { labSyncTimer = setTimeout(function () { labSyncTimer = null; coreSync(); }, 60); }
   }
@@ -8486,7 +8473,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
                 for (var i = 0; i < n; i++) { var s = d[i]; pcm[i * c + k] = s < -1 ? -32768 : (s > 1 ? 32767 : Math.round(s * 32767)); }
               }
               eng.node.port.postMessage({ type: "source", kind: kind, index: index, sub: sub, id: id, channels: c, pcm: pcm }, [pcm.buffer]);
-              if (labOn() && eng.wasm === "web/core-lab.wasm") { labPointTrack(eng, kind, index, sub, id, buf, key + " " + path); }   /* 5 */
+              if (samplersOn()) { labPointTrack(eng, kind, index, sub, id, buf, key + " " + path); }   /* 5 (Task 4: from the track's file) */
             });
           };
           var next = (eng.decodes || Promise.resolve()).then(run);
@@ -8498,7 +8485,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     } else if (m.type === "state") {
       var st = JSON.parse(dec.decode(m.bytes));
       core.state = st;
-      labRoleSamples(st.route_id || null);
+      routeSamples(st.route_id || null);
       fsListen._changed();
       $("#patch-info").textContent = st.rows.length + " voice" + (st.rows.length === 1 ? "" : "s") +
         (st.route ? " · " + st.route : "") + (st.rhythms.length ? " · " + st.rhythms.join(", ") : "");
@@ -8511,7 +8498,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       if (m.chord.step !== harmony.chord) { harmony.chord = m.chord.step; drawProgSegments(); }
       core.live = m;
       window.__fa.coreLive = m;
-      if (m.roles) { labLiveUpdate(m.roles); }       /* 3c.1 F4: each sampler role's notes and level, in lab mode */
+      if (m.roles) { core.roles = m.roles; labLiveUpdate(m.roles); }       /* 3c.1 F4: each role's notes and level */
       fsListen._changed();
     } else if (m.type === "error") {
       console.error("core engine: " + m.message);
@@ -12214,11 +12201,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (!f || f.properties.kind !== "route") { return; }
     var patch = patchOf(f), body = $("#pp-body");
     $("#pp-title").textContent = "Patch · " + label(f);
-    if (labOn()) {
+    if (samplersOn()) {
       var S = labSession();
       ["voice", "sect", "v3"].forEach(function (r) { var q = patch[r] || {}; S.defaults[r] = { gain: q.gain, harm: q.harm, index: q.index }; });
-      /* the route's lab roles not loaded yet: load, and its first notice draws the panel - once (3c I6) */
-      if (S.loadedFor !== f.properties.id && !(S.loading && S.loadingFor === f.properties.id)) { S.loadingFor = f.properties.id; S.load(f.properties.id); return; }
+      /* 6a: the route's voices from its own patch, at once (its samples decode after and redraw the panel) */
+      if (S.loadedFor !== f.properties.id) { S.fromPatch(f.properties.id, patch); }
     }
     body.textContent = "";
 
@@ -12227,15 +12214,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        in the same place every time the panel opens, and nothing can move while you are
        touching it. */
     var sections = [], cur = null, totalRows = 0;
-    var lab = labOn();
-    $("#pp-lab").hidden = !setter.signedIn;
-    $("#pp-lab").setAttribute("aria-pressed", String(lab));
+    var lab = samplersOn();
     (lab ? labFields(PATCH_FIELDS, patch, f) : PATCH_FIELDS).forEach(function (fl) {
       if (fl.sec) { cur = { title: fl.sec, col: fl.col, rows: [] }; sections.push(cur); return; }
       if (!cur) { cur = { title: "", rows: [] }; sections.push(cur); }
       cur.rows.push(fl);
     });
-    var rowsOf = function (sc) { return sc.rows.reduce(function (a, fl) { return a + (fl.eqRow ? 3.5 : 1); }, 0); };   /* 6: an EQ graph is ~3.5 rows tall */
+    var rowsOf = function (sc) { return sc.rows.length; };
     sections.forEach(function (sc) { totalRows += rowsOf(sc) + 1.6; });
 
     /* Four columns where there is room for them. Thirty-two rows in three is taller than the
@@ -12295,7 +12280,15 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         h.textContent = sc.title;
         host.appendChild(h);
       }
-      sc.rows.forEach(function (fl) { host.appendChild(fl.sampleRow ? labSampleBlock(fl.sampleRow, f) : fl.liveRow ? labLiveRow(fl.liveRow) : fl.eqRow ? labEqBlock(fl.eqRow, f) : buildRow(fl, patch, f)); });
+      sc.rows.forEach(function (fl) {
+        if (fl.sampleRow) { host.appendChild(labSampleBlock(fl.sampleRow, f)); return; }
+        var row = buildRow(fl, patch, f);
+        /* 6a: a voice's EQ (a button, the graph floating over the column) and its live notes and level sit in the readout
+           cells of rows it already has - the desk panel still fits one screen (C-8) */
+        if (fl.eqRole) { labEqButton(row, fl.eqRole, f); }
+        if (fl.liveRole) { labLiveCell(row, fl.liveRole); }
+        host.appendChild(row);
+      });
     });
 
     renderProgression(f, patch, body);
@@ -12882,26 +12875,24 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   /* Sample harmony 3c: samplers on this panel, setters only, apart from the live patch (lab_route_roles + recordings/lab/),
      docs/superpowers/specs/2026-10-05-samples-3c-patch-screen-design.md. Off: the panel is exactly as before. */
-  var LAB_KEY = "fs-lab-mode", labWanted = false, labRoles = null, labSaveTimer = null, labAnalyse = null, labRoutes = {};
-  try { labWanted = localStorage.getItem(LAB_KEY) === "1"; } catch (e) { /* none */ }
-  function labOn() { return labWanted && setter.signedIn && !!sb && typeof FsRoles !== "undefined"; }
+  var labRoles = null, labAnalyse = null, labRoutes = {};   /* labRoutes: a point's lab follow/resonate until Task 4 */
+  /* 6a: a signed-in setter edits sampler voices in the real panel (no lab switch); listeners hear them from the patch */
+  function samplersOn() { return setter.signedIn && !!sb && typeof FsRoles !== "undefined"; }
   function labMsg(t) { var m = $("#pp-lab-msg"); if (m) { m.textContent = t || ""; m.hidden = !t; } }
   function labChanged() { if (typeof labEngineSync === "function") { labEngineSync(); } }    /* the sound (Task 4) */
   function labCtx() { if (!labCtx.c) { labCtx.c = new (window.AudioContext || window.webkitAudioContext)(); } return labCtx.c; }
   function labSession() {
     if (!labRoles) {
-      labRoles = FsRoles.session({ sb: sb, ctx: labCtx, analyse: labAnalyseMono, onChange: function () {
-        if (!$("#patchpanel").hidden) { renderPatchPanel(); }
-        if (labRoles.failed) { labMsg("Samplers (lab): the route's saved roles did not load - " + labRoles.loadError); }
-      } });
+      labRoles = FsRoles.session({ sb: sb, ctx: labCtx, analyse: analyseMono, folder: function (id) { return id + "/"; }, analysisFiles: true,
+        onChange: function () { if (!$("#patchpanel").hidden) { renderPatchPanel(); } } });   /* an upload saves itself when it is up */
     }
     return labRoles;
   }
-  /* the analyser runs on this page from the lab build (fs_analyse), loaded on the first upload only */
-  function labAnalyseMono(mono, sr) {
+  /* the analyser runs on this page from the engine's own build (fs_analyse), loaded on the first upload only */
+  function analyseMono(mono, sr) {
     if (!labAnalyse) {
       var stub = function () { return new Proxy({}, { get: function () { return function () { return 0; }; } }); };
-      labAnalyse = fetch("web/core-lab.wasm").then(function (r) { return r.arrayBuffer(); }).then(function (b) {
+      labAnalyse = fetch("web/core.wasm").then(function (r) { return r.arrayBuffer(); }).then(function (b) {
         return WebAssembly.instantiate(b, { env: stub(), wasi_snapshot_preview1: stub() });
       }).then(function (r) { var x = r.instance.exports; if (x._initialize) { x._initialize(); } return x; });
     }
@@ -12914,13 +12905,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       return a;
     });
   }
+  /* 6a: the voices' sampler keys, EQ and samples written into the route's own patch - saved and heard as every patch
+     control is (local draft at once, listeners on Publish). A sample still uploading is written once it is up */
   function labSaveSoon(f) {
-    clearTimeout(labSaveTimer);
-    var id = f.properties.id, S = labSession();
-    if (S.loadedFor === id) { labRoutes[id] = S.json(); }        /* heard at once, as a patch edit is (3c I7) */
-    labSaveTimer = setTimeout(function () {
-      S.save(id, setter.signedIn ? setter.id : null).then(function (m) { labMsg(m); if (!m && S.lastSaved) { labRoutes[id] = S.lastSaved; } });
-    }, 600);
+    var S = labSession();
+    if (S.loadedFor !== f.properties.id) { return; }
+    var p = patchOf(f), np = FsRoles.toPatch(p, S.json());
+    Object.keys(np).forEach(function (k) { p[k] = np[k]; });
+    commitPatch(f, p);
     labChanged();
   }
   /* the role rows in lab mode: the instrument menu in two groups; a sampler role's own controls in place of its two
@@ -12928,26 +12920,27 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function labFields(fields, patch, f) {
     var S = labSession(), out = [];
     fields.forEach(function (fl) {
+      var on = fl.k && /^(voice|sect|v3)\.on$/.exec(fl.k);
+      if (on) { out.push(Object.assign({}, fl, { liveRole: on[1] })); return; }   /* 6a: notes and level in its readout cell */
       var m = fl.k && /^(voice|sect|v3)\.(synth|harm|index)$/.exec(fl.k);
       if (!m) { out.push(fl); return; }
       var role = m[1], st = S.state(role), smp = FsRoles.isSampler(st.synth);
       if (m[2] !== "synth") { if (!smp) { out.push(fl); } return; }
-      out.push({ k: fl.k, label: "instrument",
+      out.push({ k: fl.k, label: "instrument", eqRole: role,
         groups: [["Digital", SYNTH_TYPES.map(function (t) { return [t, SYNTH_LABEL[t] || t]; })], ["Sampler", FsRoles.SAMPLER]],
         get: function () { return smp ? st.synth : patch[role].synth; },
         set: function (v) {
           if (labPitched(v) !== labPitched(st.synth)) { st.method = 0; }   /* Method and Model share a field (3d) */
           st.synth = v;
-          if (!FsRoles.isSampler(v) && v !== patch[role].synth) {   /* digital: the live patch, exactly as with lab mode off */
+          var was = FsRoles.isSampler(patch[role].synth) ? patch[role].digital : patch[role].synth;   /* 6a: the digital synth before a sampler */
+          if (!FsRoles.isSampler(v) && v !== was) {   /* a new digital synth: its own timbres */
             pset(patch, role + ".synth", v); var P = paramsFor(v);
             if (P.harm) { pset(patch, role + ".harm", P.harm.def); } if (P.index) { pset(patch, role + ".index", P.index.def); }
             commitPatch(f, patch);
-          }
+          } else if (!FsRoles.isSampler(v)) { pset(patch, role + ".synth", v); commitPatch(f, patch); }   /* the same one again: timbres kept */
           if (!FsRoles.isSampler(v)) { st.harm = pget(patch, role + ".harm"); st.index = pget(patch, role + ".index"); }   /* the live synth back: its own timbres kept (3c I2) */
           labSaveSoon(f); renderPatchPanel();
         } });
-      out.push({ eqRow: role });                       /* 6: every voice's EQ, digital or sampler */
-      out.push({ liveRow: role });                     /* 3c.1 F4: its level while sound plays (6c: digital too; notes are a sampler's) */
       if (!smp) { return; }
       var lab = function (k, label, min, max, step, fmt) { return { k: role + "." + k, label: label, min: min, max: max, step: step, fmt: fmt, def: k === "tune" ? 1 : k === "octave" ? 0 : 0.5,
         get: function () { return st[k]; }, set: function (v) { st[k] = +v; labSaveSoon(f); } }; };
@@ -13109,6 +13102,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         g.setAttribute("aria-valuenow", String(b[k][1]));
         g.classList.toggle("on", b[k][1] !== 0);
       });
+      var btn = document.getElementById("pp-" + role + "-eqbtn"); if (btn) { eqSpark(btn, b); }
     };
     var show = function (k) { var b = bands(); read.textContent = k == null ? "" : eqHzText(b[k][0]) + " " + eqDbText(b[k][1]); };
     var put = function (k, hz, db) {
@@ -13152,6 +13146,58 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     box.appendChild(svg); draw();
     return box;
   }
+  /* 6a: a voice's live notes and level in its on/off row's readout cell (ids as the 3c.1 row's: the updater finds them) */
+  function labLiveCell(row, role) {
+    var cell = row.querySelector("i"); if (!cell) { return; }
+    cell.textContent = ""; cell.className = "pplive-cell";
+    var notes = document.createElement("span"); notes.className = "pplive-notes"; notes.id = "pp-" + role + "-notes";
+    var meter = document.createElement("b"); meter.className = "pplive-meter"; meter.id = "pp-" + role + "-meter"; meter.dataset.db = "-120";
+    meter.appendChild(document.createElement("b"));
+    cell.appendChild(notes); cell.appendChild(meter);
+  }
+  /* 6a: the EQ behind a button showing its curve; the graph opens over the column and closes on Escape or a click away */
+  function eqSpark(btn, bands) {
+    var d = "", sr = (core && core.ctx && core.ctx.sampleRate) || 48000;
+    for (var k = 0; k <= 32; k++) { var x = 2 + k * 44 / 32, y = 8 - Math.max(-12, Math.min(12, FsRoles.eqResponse(bands, eqHz(EQ_PX + k / 32 * (EQ_W - 2 * EQ_PX)), sr))) / 12 * 6; d += (d ? "L" : "M") + x.toFixed(1) + " " + y.toFixed(1); }
+    btn.querySelector("path").setAttribute("d", d);
+    btn.classList.toggle("on", bands.some(function (b) { return b[1] !== 0; }));
+  }
+  function labEqButton(row, role, f) {
+    var cell = row.querySelector("i"); if (!cell) { return; }
+    var NS = "http://www.w3.org/2000/svg", S = labSession(), st = S.state(role);
+    var btn = document.createElement("button"); btn.type = "button"; btn.className = "ppeq-btn"; btn.id = "pp-" + role + "-eqbtn";
+    btn.setAttribute("aria-expanded", "false"); btn.setAttribute("aria-label", "EQ, " + ({ voice: "First voice", sect: "Second voice", v3: "Third voice" })[role]);
+    btn.title = "EQ";
+    var svg = document.createElementNS(NS, "svg"); svg.setAttribute("viewBox", "0 0 48 16"); svg.setAttribute("aria-hidden", "true");
+    svg.appendChild(document.createElementNS(NS, "path")); btn.appendChild(svg);
+    cell.textContent = ""; cell.appendChild(btn);
+    eqSpark(btn, st.eq || FsRoles.eqDefault());
+    btn.addEventListener("click", function (e) {
+      e.preventDefault(); e.stopPropagation();
+      var open = document.getElementById("pp-eq-pop"), mine = open && open.dataset.role === role;
+      eqClose();
+      if (mine) { return; }
+      var col = row.closest(".ppcol") || row.parentNode, pop = document.createElement("div");
+      pop.id = "pp-eq-pop"; pop.className = "ppeq-pop"; pop.dataset.role = role;
+      pop.style.top = (row.offsetTop + row.offsetHeight) + "px";
+      pop.appendChild(labEqBlock(role, f));
+      col.appendChild(pop); btn.setAttribute("aria-expanded", "true");
+      var first = pop.querySelector(".eq-band"); if (first) { first.focus(); }
+    });
+  }
+  function eqClose() {
+    var p = document.getElementById("pp-eq-pop"); if (!p) { return; }
+    var b = document.getElementById("pp-" + p.dataset.role + "-eqbtn"); if (b) { b.setAttribute("aria-expanded", "false"); }
+    p.remove();
+  }
+  document.addEventListener("pointerdown", function (e) {
+    var p = document.getElementById("pp-eq-pop");
+    if (p && !p.contains(e.target) && !(e.target.closest && e.target.closest(".ppeq-btn"))) { eqClose(); }
+  }, true);
+  document.addEventListener("keydown", function (e) {   /* first, and only it: the page's own Escape deselects the route */
+    var p = document.getElementById("pp-eq-pop");
+    if (p && e.key === "Escape") { e.stopImmediatePropagation(); e.preventDefault(); var b = document.getElementById("pp-" + p.dataset.role + "-eqbtn"); eqClose(); if (b) { b.focus(); } }
+  }, true);
   function labLiveRow(role) {
     var row = document.createElement("div"); row.className = "pprow pplive"; row.dataset.role = role;
     var name = document.createElement("span"); name.textContent = "now"; row.appendChild(name);
@@ -13163,7 +13209,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   /* the engine's roles, ~30 a second (core-lab only): notes by name, the meter -60 … 0 dB */
   var LAB_ROLE_AT = { voice: 0, sect: 1, v3: 2 };
   function labLiveUpdate(roles) {
-    if (!labOn() || $("#patchpanel").hidden) { return; }
+    if (!samplersOn() || $("#patchpanel").hidden) { return; }
     ["voice", "sect", "v3"].forEach(function (r) {
       var nEl = document.getElementById("pp-" + r + "-notes"), mEl = document.getElementById("pp-" + r + "-meter");
       if (!nEl || !mEl) { return; }
@@ -13221,8 +13267,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     }
     if (!lb) { return; }
     var stretchPt = !/^(hits|grains)$/.test(f.properties.audio_mode || "");
-    lb.hidden = !labOn(); if (lr) { lr.hidden = !labOn() || !stretchPt; }
-    if (!labOn()) { return; }
+    lb.hidden = !samplersOn(); if (lr) { lr.hidden = !samplersOn() || !stretchPt; }
+    if (!samplersOn()) { return; }
     var id = f.properties.id, inp = $("#rp-lab-follow"), out = $("#rp-lab-follow-v"), lp = labRoutes[id], pt = (lp && lp.point) || {};
     inp.value = String(pt.follow || 0); out.textContent = Math.round(100 * +inp.value) + " %";
     inp.oninput = function () { var v = +inp.value; out.textContent = Math.round(100 * v) + " %"; labPointSave(id, { follow: v }); };
@@ -13232,13 +13278,6 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       ri.oninput = function () { var v = +ri.value; ro.textContent = Math.round(100 * v) + " %"; labPointSave(id, { resonate: v }); };
       rb.onchange = function () { labPointSave(id, { body: +rb.value }); };
     }
-  }
-  function labToggle() {
-    labWanted = !labWanted; labEngineFailed = false;
-    try { localStorage.setItem(LAB_KEY, labWanted ? "1" : "0"); } catch (e) { /* none */ }
-    labMsg("");
-    if (!labOn() && labRoles) { labRoles.loadedFor = null; }
-    renderPatchPanel(); labChanged();
   }
 
   function commitPatch(f, patch) {
@@ -13262,7 +13301,6 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     }
   }
 
-  $("#pp-lab").addEventListener("click", labToggle);
   $("#pp-close").addEventListener("click", function () {
     $("#patchpanel").hidden = true;
     if (traceRAF) { cancelAnimationFrame(traceRAF); traceRAF = null; }
