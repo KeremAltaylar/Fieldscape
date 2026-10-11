@@ -430,6 +430,12 @@ try {
   check("8a: a grains point's panel gets its level and its recent grains from the engine", !!gp && gp.grains.length > 0 && gp.db > -60 && +(await ev("(document.querySelector('#rp-meter') || { dataset: {} }).dataset.db || -120")) > -60, gp && [gp.db, gp.grains.length]);
   const marks = await ev("(function(){ var c = document.querySelector('#rp-body .grainwave'); if (!c) return -1; var d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data, n = 0; for (var i = 0; i < d.length; i += 4) if (d[i + 1] > 200 && d[i] > 180) n++; return n; })()");
   check("8a: the grains are drawn on the waveform again", marks > 20, marks);
+  /* 8c: resonate and body in a grains point's cloud, saved in its rhythm and sent to the engine */
+  check("8c: a grains point's panel has resonate and body beside follow chord", await ev("!!document.querySelector('#rp-body input[data-k=\"resonate\"]') && !!document.querySelector('#rp-body select[data-k=\"body\"]') && !!document.querySelector('#rp-body input[data-k=\"follow\"]')"), null);
+  await ev("(function(){ var b = document.querySelector('#rp-body select[data-k=\"body\"]'); b.value = '2'; b.dispatchEvent(new Event('change')); var s = document.querySelector('#rp-body input[data-k=\"resonate\"]'); s.value = '0.7'; s.dispatchEvent(new Event('input')); return 1; })()");
+  await sleep(600);
+  const gs = JSON.parse(await ev(`__fa.coreSentFeature('${PTG}') || 'null'`) || "null");
+  check("8c: resonate and body are saved in the point's rhythm and reach the engine", !!gs && gs.properties.rhythm.resonate === 0.7 && +gs.properties.rhythm.body === 2, gs && gs.properties.rhythm);
   await ev("fsListen.sound()"); await sleep(800);
   await ev("(function(){ var b = document.querySelector('#rp-close'); b && b.click(); return 0; })()");
   const ptPub = await ptProps(); ptPub.published = true; ptPub.storage_path = `${PTP}/take.wav`;

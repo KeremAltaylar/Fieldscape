@@ -2344,6 +2344,63 @@ int main() {
         std::printf("\n");
         assert(worst > -10);
     }
+    {   /* 8c (Kerem 2026-10-11: "grain points in super consonance ... resonate ... even the vary option will create variation in
+           key and in harmony"): noise grains on a route held on D minor 7, its own voices off - the share of the energy within 25
+           cents of D F A C; vary's pitch jumps chord intervals when the grains are in harmony, as before when not */
+        const char *route = "{\"version\":17,\"key\":50,\"prog\":[{\"r\":0,\"q\":\"m7\"}],\"voice\":{\"on\":false},\"sect\":{\"on\":false},\"v3\":{\"on\":false},\"bed\":{\"on\":false},\"rfx\":{\"drive\":0,\"delayWet\":0,\"revWet\":0,\"cutoff\":20000}}";   /* the rhythm bus clean: a level is the resonator's own */
+        const int n = (int)(4 * SR); short *pcm = (short *)std::malloc(sizeof(short) * n);
+        /* noise rolled off above ~4 kHz, as a field recording is (white noise kept half its energy above the rhythm bus's low-pass,
+           which the strings' low ringing does not lose - a 3 dB difference that was the test signal's, not the resonator's) */
+        { uint32_t sd = 5; double lp = 0; for (int i = 0; i < n; i++) { sd = sd * 1664525u + 1013904223u; const double w = (((int)(sd >> 8) - 8388608) / 8388608.0);
+            lp += 0.4 * (w - lp); pcm[i] = (short)(16000 * lp); } }
+        struct GL { std::vector<double> rate; } gl;
+        auto lg = [](void *p, int role, double f, double, double, double) { if (role == 20) ((GL *)p)->rate.push_back(f); };
+        double busE = 0; int busN = 0;   /* the grains bus itself (the point meter, before the rhythm effects) */
+        auto play = [&](const char *cfg, double secs, double *worst_ms) {
+            busE = 0; busN = 0;
+            gl.rate.clear(); unsigned seed = 21; fs_device *pc = fs_create("piece"); fs_prepare(pc, SR, B); fs_piece_test_hooks(pc, fixed_draw, &seed, lg, &gl);
+            const int r = fs_piece_add_route(pc, route);
+            const int h = fs_piece_rhythm_add(pc, cfg, 1);
+            fs_piece_rhythm_source(pc, h, 0, 1, n, pcm); fs_piece_rhythm_gain(pc, h, 1);
+            std::vector<float> o; double worst = 0;
+            for (int b2 = 0; b2 < (int)(secs * SR / B); b2++) { fs_piece_walk(pc, r, 0.3, 0);
+                auto c0 = std::chrono::steady_clock::now(); fs_process(pc, B); worst = std::fmax(worst, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - c0).count());
+                const float *l = fs_out(pc, 0); o.insert(o.end(), l, l + B);
+                if (b2 > (int)(3 * SR / B)) { float pm[2 + 3 * 4]; if (fs_piece_point(pc, h, pm, 4) >= 0) { busE += std::pow(10.0, pm[0] / 10); busN++; } } }
+            fs_destroy(pc); if (worst_ms) *worst_ms = worst; return o; };
+        auto share = [&](const std::vector<float> &x) {
+            const int N = 65536; FFT fft; fft.reserve(N); fft.plan(N); fft.twiddles(0, N);
+            std::vector<float> b(4 * N); float *ar = b.data(), *ai = ar + N, *br = ai + N, *bi = br + N; const size_t s0 = x.size() - N;
+            for (int i = 0; i < N; i++) { ar[i] = (float)(x[s0 + i] * (0.5 - 0.5 * std::cos(2 * 3.141592653589793 * i / N))); ai[i] = 0; }
+            for (int p = 0; p < fft.passes; p++) { if (p % 2 == 0) fft.pass(p, ar, ai, br, bi, 0, fft.butterflies(p)); else fft.pass(p, br, bi, ar, ai, 0, fft.butterflies(p)); }
+            const float *re = fft.passes % 2 ? br : ar, *im = fft.passes % 2 ? bi : ai; double in = 0, all = 0;
+            for (int k = (int)(55.0 * N / SR); k < (int)(8000.0 * N / SR); k++) {
+                const double e = (double)re[k] * re[k] + (double)im[k] * im[k], c = std::fmod(1200 * std::log2(k * SR / N / 440.0) + 900 + 1200 * 64, 1200.0);
+                all += e; for (double pc : { 200.0, 500.0, 900.0, 0.0 }) { double d = std::fmod(std::fabs(c - pc), 1200.0); if (d > 600) d = 1200 - d; if (d < 25) { in += e; break; } }
+            }
+            return in / all; };
+        auto rms = [](const std::vector<float> &x) { double e = 0; for (size_t i = x.size() / 2; i < x.size(); i++) e += (double)x[i] * x[i]; return 10 * std::log10(e / (x.size() / 2) + 1e-30); };
+        double w0 = 0, w1 = 0;
+        const auto dry = play("{\"grains\":{\"vary\":0}}", 6, &w0); const double busDry = 10 * std::log10(busE / std::max(1, busN));
+        const auto off = play("{\"grains\":{\"vary\":0},\"resonate\":0}", 6, nullptr);
+        const auto str = play("{\"grains\":{\"vary\":0},\"resonate\":1}", 6, &w1); const double busStr = 10 * std::log10(busE / std::max(1, busN));
+        const auto bell = play("{\"grains\":{\"vary\":0},\"resonate\":1,\"body\":2}", 6, nullptr);
+        /* the String trim at another density: a sparse cloud (2 per pulse) */
+        const auto sdry = play("{\"grains\":{\"vary\":0,\"count\":2}}", 6, nullptr), sstr = play("{\"grains\":{\"vary\":0,\"count\":2},\"resonate\":1}", 6, nullptr);
+        std::printf("8c bus level: String %+.1f dB against dry, before the rhythm effects; a sparse cloud (2 per pulse) String %+.1f dB\n", busStr - busDry, rms(sstr) - rms(sdry));
+        play("{\"grains\":{\"vary\":1,\"count\":12},\"resonate\":0.5}", 8, nullptr); const auto vin = gl.rate;
+        play("{\"grains\":{\"vary\":1,\"count\":12}}", 8, nullptr); const auto vout = gl.rate;
+        auto intervals = [](const std::vector<double> &r, bool &all_chord, bool &any_other) {
+            all_chord = true; any_other = false;
+            for (double x : r) { const int st = (int)std::lround(12 * std::log2(x)); const int m = ((st % 12) + 12) % 12;
+                const bool chord = m == 0 || m == 3 || m == 7 || m == 10; if (!chord) { all_chord = false; any_other = true; } } };
+        bool in_all, in_other, out_all, out_other; intervals(vin, in_all, in_other); intervals(vout, out_all, out_other);
+        const double s_dry = share(dry), s_str = share(str), s_bell = share(bell);
+        std::printf("8c grains resonate: D F A C share %.0f%% dry, %.0f%% String, %.0f%% Bell (level %+.1f dB, Bell %+.1f dB); off identical %d; vary in harmony all chord intervals %d (%zu grains), vary as before has others %d; worst process %.3f ms (dry %.3f)\n",
+            100 * s_dry, 100 * s_str, 100 * s_bell, rms(str) - rms(dry), rms(bell) - rms(dry), (int)(off == dry), (int)in_all, vin.size(), (int)out_other, w1, w0);
+        assert(off == dry && s_dry < 0.3 && s_str >= 0.5 && s_bell >= 0.45 && std::fabs(rms(str) - rms(dry)) < 1.5 && std::fabs(rms(bell) - rms(dry)) < 1.5 && std::fabs(rms(sstr) - rms(sdry)) < 2 && in_all && vin.size() > 20 && out_other && w1 < 1.33 * 1.5);
+        std::free(pcm);
+    }
     {   /* 8a (Kerem 2026-10-11: "level meters to stretch and grains objects", "the grain visualization on the waveform - put it
            back"): a rhythm point reports its own level and its recent grains (place and length as fractions of the recording) */
         fs_device *pc = fs_create("piece"); fs_prepare(pc, SR, B); unsigned seed = 9; fs_piece_test_hooks(pc, fixed_draw, &seed, nullptr, nullptr);

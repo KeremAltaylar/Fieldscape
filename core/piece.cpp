@@ -291,6 +291,7 @@ struct GrainCfg { double pulses, rotate, offset, grain, count, spread, scatter, 
 struct Combo { int pulses, rotate; };
 struct RhythmCfg {
     bool on = true; int steps = 64; Div div; double gain = 0.85, idiom = 0.35; int sentence_bars = 8; double follow = 0;
+    double resonate = 0; int body = 0;   /* 8c: grains rung by the chord (0 String, 1 Tube, 2 Bell) */
     HitCfg v[4]; GrainCfg g; Combo sentence[4][4]; bool has_sentence = false;
 };
 
@@ -344,6 +345,8 @@ static void rhythm_of(const Json *j, RhythmCfg &r, Rng &rnd) {
     r.gain = j ? j->n("gain", 0.85) : 0.85;
     r.idiom = j ? j->n("idiom", 0.35) : 0.35;
     r.follow = j ? std::max(0.0, std::min(1.0, j->n("follow", 0))) : 0;   /* 5 */
+    r.resonate = j ? std::max(0.0, std::min(1.0, j->n("resonate", 0))) : 0;   /* 8c */
+    { const Json *b = j ? j->get("body") : nullptr; r.body = b ? (b->kind == Json::NUM ? (int)b->num : std::atoi(j->s("body", "0").c_str())) : 0; r.body = std::max(0, std::min(2, r.body)); }
     r.sentence_bars = j ? (int)j->n("sentenceBars", 8) : 8;
     const Json *vs = j ? j->get("voices") : nullptr;
     for (int s = 0; s < 4; s++) {
@@ -526,6 +529,14 @@ struct HitSlot {
     Shaper shp;
 };
 struct GrainV { bool on = false; double pos, rate, at, a, d, hold, s, w, len; };
+/* 8c: the chord a grains point rings - a tuned loop per chord note (String: all overtones; Tube: half a period, inverted -
+   the odd ones) or four bell modes, its fundamental the lowest octave from 55 Hz; retuned with a 0.3 s glide on a chord change */
+struct ChordRes {
+    float line[8][1024] = {}; int w = 0, nn = 0;
+    double N[8] = {}, Nt[8] = {}, lp[8] = {};
+    double y1[8][4] = {}, y2[8][4] = {};
+    double ms_dry = 0, ms_wet = 0, agc = 1; long long sig = -1;
+};
 struct Trk { const float *tf = nullptr, *tc = nullptr; int n = 0; double hop = 0.02, f0 = 0; };   /* 5: a source's pitch track */
 struct Rhythm {
     bool used = false, dying = false; double free_at = 0;
@@ -541,6 +552,7 @@ struct Rhythm {
     bool live = false; Combo lv[4]; int bars = 0, sentence_idx = 0; bool fx_ready = false;
     double lvl = 0;                   /* 8a: its own output, ~0.1 s mean square, for the point's meter */
     struct GMark { double at, pos, len; } gm[96]; int gmi = 0, gmn = 0;   /* 8a: its recent grains, for the waveform (a dense cloud's 1.4 s) */
+    ChordRes cr;                      /* 8c */
 };
 
 /* ------------------------------------------------------------------ the device */
@@ -1137,7 +1149,13 @@ struct Piece : Device {
             o.count = std::round(cl((g.count ? g.count : 6) * (1 + r() * v * 1.1), 1, 32));
             o.spread = cl(g.spread + r() * v * 0.6, 0, 1);
             o.scatter = cl(g.scatter + r() * v * 0.5, 0, 1);
-            o.pitch = g.pitch + std::round(r() * v * 7);
+            const double jump = r() * v * 7;
+            if ((R.cfg.resonate > 0 || R.cfg.follow > 0) && H.ntones > 0) {   /* 8c: in harmony - the chord's own intervals, nearest the jump */
+                double best = 0, bd = 1e9;
+                for (int k = 0; k < H.ntones; k++) { const int iv = ((H.tones[k] - H.tones[0]) % 12 + 12) % 12;
+                    for (int c : { iv, iv - 12 }) if (c >= -7 && c <= 7 && std::fabs(c - jump) < bd) { bd = std::fabs(c - jump); best = c; } }
+                o.pitch = g.pitch + best;
+            } else o.pitch = g.pitch + std::round(jump);
             o.gain = cl(g.gain * (1 + r() * v * 0.45), 0.02, 1);
             o.attack = cl(g.attack * (1 + r() * v * 0.6), 0.002, 1);
             o.decay = cl(g.decay + r() * v * 0.35, 0, 1);
@@ -1329,7 +1347,7 @@ struct Piece : Device {
             auto &op = in.r[h]; Rhythm &R = rh[h];
             if (op.op == 1) {
                 R.used = true; R.dying = false; R.cfg = op.cfg; R.grains = op.grains; for (auto &k : R.trk) k = Trk{};
-                R.lvl = 0; R.gmi = R.gmn = 0;
+                R.lvl = 0; R.gmi = R.gmn = 0; R.cr = ChordRes();
                 R.tick = 0; R.step = 0; R.live = false; R.bars = 0; R.sentence_idx = 0; R.fx_ready = false;
                 R.gain.init(0);
                 for (auto &g : R.gv) g.on = false;
@@ -1389,6 +1407,59 @@ struct Piece : Device {
     /* a rhythm point's level: what the walk gave it, unless another point is soloed */
     float rhythm_level(const Rhythm &R, int h) const {
         return (solo < 0 || solo == h) ? R.host_g * (R.cfg.on ? R.cfg.gain : 0) : 0.0f;
+    }
+    void chord_res(Rhythm &R, float *bl, float *br, int n) {
+        ChordRes &c = R.cr; const int body = R.cfg.body; const double res = R.cfg.resonate;
+        static const double BR[4] = { 1.0, 2.76, 5.40, 8.93 }, BW[4] = { 1.0, 0.6, 0.35, 0.2 };
+        long long sig = body; for (int k = 0; k < H.ntones; k++) sig = sig * 131 + H.tones[k];
+        if (sig != c.sig) {   /* a new chord: the loops' targets (a first one taken at once) */
+            const bool first = c.sig == -1; c.sig = sig; c.nn = std::min(8, H.ntones);
+            for (int k = 0; k < c.nn; k++) {
+                double f = 440 * std::pow(2.0, (H.tones[k] - 69) / 12.0); while (f >= 110) f /= 2; while (f < 55) f *= 2;
+                c.Nt[k] = sr / f * (body == 1 ? 0.5 : 1); if (first || c.N[k] <= 0) c.N[k] = c.Nt[k];
+            }
+        }
+        /* the level matched over 2 s: grains come in bursts and the loops ring on between them - a short window chased each burst */
+        const double kg = 1 - std::exp(-n / (0.3 * sr)), T60 = 1.2, kl = 1 - std::exp(-n / (2.0 * sr));
+        for (int k = 0; k < c.nn; k++) c.N[k] += (c.Nt[k] - c.N[k]) * kg;
+        double mb0[8][4], ma1[8][4], ma2[8][4], la[8];
+        double ld[8], lg[8];
+        for (int k = 0; k < c.nn; k++) {
+            const double f = sr / c.N[k] * (body == 1 ? 0.5 : 1), w = 2 * 3.141592653589793 * f / sr;   /* the note the loop sounds */
+            la[k] = 1 - std::exp(-2 * 3.141592653589793 * 3 * f / sr);   /* the loop's damping at 3x its note */
+            ld[k] = sampler::lp_delay(1 - la[k], body == 1 ? 2 * w : w); lg[k] = sampler::lp_gain(1 - la[k], body == 1 ? 2 * w : w);
+        }
+        if (body == 2) for (int k = 0; k < c.nn; k++) {   /* bell modes at the gliding pitch */
+            const double f = sr / c.N[k];
+            for (int m = 0; m < 4; m++) { const double fk = std::fmin(f * BR[m], 0.45 * sr), wk = 2 * 3.141592653589793 * fk / sr, rr = std::pow(10.0, -3.0 / (T60 * (1 - 0.15 * m) * sr));
+                ma1[k][m] = -2 * rr * std::cos(wk); ma2[k][m] = rr * rr; mb0[k][m] = (1 - rr) * BW[m]; }
+        }
+        double ed = 0, ew = 0;
+        for (int i = 0; i < n; i++) {
+            const double x = 0.5 * (bl[i] + br[i]); double wet = 0;
+            for (int k = 0; k < c.nn; k++) {
+                if (body == 2) { for (int m = 0; m < 4; m++) { const double o = mb0[k][m] * x - ma1[k][m] * c.y1[k][m] - ma2[k][m] * c.y2[k][m]; c.y2[k][m] = c.y1[k][m]; c.y1[k][m] = std::fabs(o) < 1e-20 ? 0 : o; wet += o; } continue; }
+                const double N = c.N[k], rp = c.w - (N - ld[k]); int i0 = (int)std::floor(rp); const double fr = rp - i0;   /* the damping's own delay taken out: in tune */
+                const double rd = c.line[k][i0 & 1023] * (1 - fr) + c.line[k][(i0 + 1) & 1023] * fr;
+                c.lp[k] += la[k] * (rd - c.lp[k]); if (std::fabs(c.lp[k]) < 1e-20) c.lp[k] = 0;   /* its first few overtones: an octave, a fifth */
+                const double g = std::fmin(0.9995, std::pow(10.0, -3.0 * (body == 1 ? 2 * N : N) / (sr * T60)) / lg[k]);   /* its loss made up */
+                const double y = x + (body == 1 ? -g : g) * c.lp[k];
+                c.line[k][c.w & 1023] = (float)y; wet += y - x;   /* its ringing only, not the noise that struck it */
+            }
+            c.w++;
+            wet *= c.agc;
+            ed += 0.5 * ((double)bl[i] * bl[i] + (double)br[i] * br[i]); ew += wet * wet;   /* per channel, as heard */
+            const float o = (float)(wet * res);
+            bl[i] = (float)(bl[i] * (1 - res)) + o; br[i] = (float)(br[i] * (1 - res)) + o;
+        }
+        /* its level matched to the grains' own (only while they sound: a silence is never raised) */
+        /* the output's own power held to the grains' (a feedback on what is heard: the loops ring on between bursts, so matching
+           the raw averages left the strings ~3 dB loud) */
+        /* the two 2 s averages give the gain directly (no lag on top). ponytail: the loops (String, Tube) ring on between bursts,
+           which reads ~3 dB over the grains (measured on noise grains, 6 per pulse) - a fixed -3 dB trim; a loudness model if
+           sparse clouds show it is off */
+        c.ms_dry += (ed / n - c.ms_dry) * kl; c.ms_wet += (ew / n / (c.agc * c.agc + 1e-30) - c.ms_wet) * kl;
+        if (c.ms_dry > 1e-10 && c.ms_wet > 1e-14) c.agc = std::fmin(100.0, std::sqrt(c.ms_dry / c.ms_wet)) * (body == 2 ? 1.0 : 0.708);
     }
     void render_rhythm(Rhythm &R, float *L, float *Rr, int n, double t0) {
         double te = t0 + n / sr;
@@ -1474,6 +1545,7 @@ struct Piece : Device {
                 }
             }
         }
+        if (R.grains && R.cfg.resonate > 0 && H.ntones > 0) chord_res(R, bl, br, n);   /* 8c */
         /* 8a: the point's meter - its own sound at its own gain, not where the walker stands (as a stretch point's is) */
         double e = 0; const double own = R.cfg.on ? R.cfg.gain : 0;
         for (int i = 0; i < n; i++) { float g = R.gain.at(i, n); L[i] += bl[i] * g; Rr[i] += br[i] * g; e += 0.5 * ((double)bl[i] * bl[i] + (double)br[i] * br[i]); }

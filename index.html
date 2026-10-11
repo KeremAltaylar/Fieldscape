@@ -5526,6 +5526,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   /* 6a: grains and hits onto the chord (rhythm.follow; a pitched recording only - its track file says) */
   var FOLLOW_FIELD = { k: "follow", label: "follow chord", min: 0, max: 1, step: 0.05,
     hint: "pitched grains and hits move onto the chord's notes (0 = as recorded)" };
+  /* 8c: grains rung by the chord - a tuned body per chord note mixed in, vary kept in the chord */
+  var RESONATE_FIELDS = [
+    { k: "resonate", label: "resonate", min: 0, max: 1, step: 0.05, def: 0, fmt: pctFmt,
+      hint: "the grains ring the chord's notes: 0 = dry, 100 % = only the ringing" },
+    { k: "body", label: "body", options: function () { return ["0", "1", "2"]; },
+      fmt: function (v) { return ["String", "Tube", "Bell"][+v]; },
+      hint: "what rings: String (all overtones), Tube (odd ones, hollow), Bell (bright, inharmonic)" }
+  ];
   var RHYTHM_FIELDS = [
     { k: "on", label: "rhythm", toggle: true },
     { k: "steps", label: "steps", min: 4, max: 64, step: 1,
@@ -5772,6 +5780,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var cloud = [ppHeading("The cloud", "Three randomnesses kept apart on purpose: roam, scatter and vary")];
     GRAIN_FIELDS.slice(2).forEach(function (fl) { cloud.push(gRow(fl, commitR)); });
     cloud.push(buildRhythmRow(FOLLOW_FIELD, r, function () { commitR(); if (r.follow > 0) { ensureTrack(f); } }));   /* 6a */
+    if (r.resonate === undefined) { r.resonate = 0; }
+    r.body = String(r.body || 0);   /* a select's value; the engine reads "2" as 2 */
+    RESONATE_FIELDS.forEach(function (fl) { cloud.push(buildRhythmRow(fl, r, commitR)); });   /* 8c */
 
     var env = [ppHeading("The grain envelope",
       "Four stages as fractions of the grain, so it keeps its shape when the size varies")];
@@ -6706,6 +6717,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         }
       });
     }
+    input.dataset.k = fl.k;
     row.appendChild(input); row.appendChild(val);
     return row;
   }
