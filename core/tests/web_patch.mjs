@@ -77,9 +77,12 @@ try {
     check(p("dragging the knob up raises the tempo"), tempo1 > tempo0, [tempo0, tempo1]);
     check(p("…and its readout says so"), new RegExp(tempo1 + " bpm").test(await ev("(document.querySelector(\"#pp-body .knob[data-k='tempo']\").closest('.pprow')||{}).textContent")), await ev("(document.querySelector(\"#pp-body .knob[data-k='tempo']\").closest('.pprow')||{}).textContent"));
     await ev("document.querySelector(\"#pp-body .knob[data-k='tempo']\").focus(), 0");
-    await s.send("Input.dispatchKeyEvent", { type: "keyDown", key: "ArrowUp", code: "ArrowUp", windowsVirtualKeyCode: 38 });
-    await s.send("Input.dispatchKeyEvent", { type: "keyUp", key: "ArrowUp", code: "ArrowUp", windowsVirtualKeyCode: 38 }); await sleep(600);
-    check(p("ArrowUp adds a step"), (await ev(`fsListen.route(${JSON.stringify(route)}).tempo`)) === tempo1 + 1, await ev(`fsListen.route(${JSON.stringify(route)}).tempo`));
+    /* at the top of its range (the live route's tempo can sit near it), the step is ArrowDown's */
+    const tmax = +(await ev("(document.querySelector(\"#pp-body input[data-k='tempo']\") || {}).max"));
+    const atTop = tempo1 >= tmax, key = atTop ? "ArrowDown" : "ArrowUp", code = atTop ? 40 : 38;
+    await s.send("Input.dispatchKeyEvent", { type: "keyDown", key, code: key, windowsVirtualKeyCode: code });
+    await s.send("Input.dispatchKeyEvent", { type: "keyUp", key, code: key, windowsVirtualKeyCode: code }); await sleep(600);
+    check(p("an arrow key moves one step"), (await ev(`fsListen.route(${JSON.stringify(route)}).tempo`)) === tempo1 + (atTop ? -1 : 1), [tempo1, tmax, await ev(`fsListen.route(${JSON.stringify(route)}).tempo`)]);
     const k2 = await box("#pp-body .knob[data-k='tempo']");
     if (mobile) { await down(k2.x, k2.y); await up(k2.x, k2.y); await sleep(120); await down(k2.x, k2.y); await up(k2.x, k2.y); }
     else { await s.send("Input.dispatchMouseEvent", { type: "mousePressed", x: k2.x, y: k2.y, button: "left", clickCount: 1 }); await s.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: k2.x, y: k2.y, button: "left", clickCount: 1 });

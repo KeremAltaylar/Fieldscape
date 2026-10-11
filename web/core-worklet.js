@@ -127,6 +127,7 @@ class FieldscapeEngine extends AudioWorkletProcessor {
     this.liveEvery = Math.max(1, Math.round(sampleRate / 128 / 30)); this.liveN = 0;
     this.morphs = x.malloc(7 * 24 * 8); this.nums = x.malloc(24); this.label = x.malloc(32);
     this.rolesP = x.fs_engine_roles ? x.malloc(4 * 24) : 0;     /* 3c.1: each role's level and notes (lab build only) */
+    this.pointP = x.fs_engine_point ? x.malloc(4 * (2 + 3 * 32)) : 0; this.watching = false;   /* 8a: the open point's level, grains */
     this.port.onmessage = (ev) => {
       const m = ev.data;
       try {
@@ -159,6 +160,9 @@ class FieldscapeEngine extends AudioWorkletProcessor {
           bufs.forEach((p) => x.free(p)); x.free(ptrs);
         } else if (m.type === "analysis") {
           const p = this.bytes(m.bytes); x.fs_engine_role_analysis(this.e, m.role, p); x.free(p);
+        } else if (m.type === "watch" && x.fs_engine_watch) {
+          const id = this.bytes(Uint8Array.from((m.id || "") + "", (ch) => ch.charCodeAt(0)));
+          x.fs_engine_watch(this.e, id); x.free(id); this.watching = !!m.id;
         } else if (m.type === "track" && x.fs_engine_source_track) {   /* 5 lab mode: a point recording's pitch track */
           const p = this.bytes(m.bytes), id = this.bytes(Uint8Array.from(m.id + "", (ch) => ch.charCodeAt(0)));
           x.fs_engine_source_track(this.e, m.kind.charCodeAt(0), m.index, m.sub, id, p);
@@ -183,8 +187,14 @@ class FieldscapeEngine extends AudioWorkletProcessor {
     m.set(new Float64Array(x.memory.buffer, this.morphs, m.length));
     let roles = null;
     if (this.rolesP) { x.fs_engine_roles(this.e, this.rolesP, 6); roles = new Float32Array(24); roles.set(new Float32Array(x.memory.buffer, this.rolesP, 24)); }
+    let point = null;
+    if (this.pointP && this.watching) {
+      const c = x.fs_engine_point(this.e, this.pointP, 32);
+      if (c >= 0) { point = new Float32Array(2 + 3 * c); point.set(new Float32Array(x.memory.buffer, this.pointP, 2 + 3 * c)); }
+    }
+    const tr = [m.buffer]; if (roles) { tr.push(roles.buffer); } if (point) { tr.push(point.buffer); }
     this.port.postMessage({ type: "live", n, clock: v.getFloat64(0, true), root: v.getInt32(8, true), shown: v.getInt32(12, true),
-      route: x.fs_engine_route(this.e), chord: { step, count: v.getInt32(16, true), label: this.cstr(this.label) }, morphs: m, roles }, roles ? [m.buffer, roles.buffer] : [m.buffer]);
+      route: x.fs_engine_route(this.e), chord: { step, count: v.getInt32(16, true), label: this.cstr(this.label) }, morphs: m, roles, point }, tr);
   }
   bytes(u8) {      /* a NUL-terminated copy in wasm memory; free it after the call */
     const p = this.x.malloc(u8.length + 1);

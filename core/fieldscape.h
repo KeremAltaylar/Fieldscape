@@ -185,6 +185,9 @@ void fs_piece_role_analysis(fs_device *d, int role, const char *analysis_json);
 /* 3c.1: each role's level (dB, >= -120) and sounding note frequencies: [level, count, f1..f_max] for voice, sect, v3.
    Returns 3 * (2 + max_notes). Called on the audio thread, between renders. */
 int fs_piece_roles(fs_device *d, float *out, int max_notes);
+/* 8a: a rhythm point (handle) - its level (dB, ~0.1 s) and its recent grains: out[0] level, out[1] count, then (age s, place, length)
+   per grain, places and lengths as fractions of the recording, newest first, at most max. -1 for no such point. */
+int fs_piece_point(fs_device *d, int handle, float *out, int max);
 /* A route's progression for the lab's audition bench: each chord's notes (MIDI) and their frequencies
    in the given tuning (0 equal, 1 just), plus the scale of one section's mode. JSON into out; returns
    the length needed, and writes nothing if size is too small. */
@@ -252,6 +255,9 @@ void fs_engine_solo(fs_engine *e, const char *id);
 void fs_engine_role_source(fs_engine *e, int role, int channels, long long frames, const float *const *pcm);
 void fs_engine_role_analysis(fs_engine *e, int role, const char *analysis_json);
 int fs_engine_roles(fs_engine *e, float *out, int max_notes);
+/* 8a: the point the screen shows ("" none); fs_engine_point: its level, and a rhythm point's recent grains (as fs_piece_point) */
+void fs_engine_watch(fs_engine *e, const char *id);
+int fs_engine_point(fs_engine *e, float *out, int max);
 
 /* Whole-recording resampling at load (core/resample.cpp): windowed sinc, 16-bit in and out. */
 long long fs_resample_length(long long frames, double from_rate, double to_rate);

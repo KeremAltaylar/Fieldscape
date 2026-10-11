@@ -2344,6 +2344,28 @@ int main() {
         std::printf("\n");
         assert(worst > -10);
     }
+    {   /* 8a (Kerem 2026-10-11: "level meters to stretch and grains objects", "the grain visualization on the waveform - put it
+           back"): a rhythm point reports its own level and its recent grains (place and length as fractions of the recording) */
+        fs_device *pc = fs_create("piece"); fs_prepare(pc, SR, B); unsigned seed = 9; fs_piece_test_hooks(pc, fixed_draw, &seed, nullptr, nullptr);
+        fs_piece_add_route(pc, "{}");
+        const int h = fs_piece_rhythm_add(pc, "{}", 1);
+        const int n = (int)(3 * SR); short *pcm = (short *)std::malloc(sizeof(short) * n);
+        for (int i = 0; i < n; i++) pcm[i] = (short)(8000 * std::sin(2 * sampler::PI * 311 * i / SR));
+        fs_piece_rhythm_source(pc, h, 0, 1, n, pcm);
+        fs_process(pc, B);                                    /* the point is the engine's now, silent */
+        float before[2 + 3 * 32]; const int k0 = fs_piece_point(pc, h, before, 32);
+        fs_piece_rhythm_gain(pc, h, 1);
+        float out[2 + 3 * 32]; int k = 0; float loudest = -120;
+        for (int b2 = 0; b2 < (int)(6 * SR / B); b2++) { fs_piece_walk(pc, 0, 0.3, 0); fs_process(pc, B); if (fs_piece_point(pc, h, out, 32) >= 0) loudest = std::fmax(loudest, out[0]); }
+        k = fs_piece_point(pc, h, out, 32);
+        bool sane = k >= 0 && out[1] > 0;
+        for (int i = 0; i < (int)out[1] && sane; i++) { const float age = out[2 + 3 * i], pos = out[3 + 3 * i], len = out[4 + 3 * i]; sane = age >= 0 && age < 5 && pos >= 0 && pos <= 1 && len > 0 && len <= 1; }
+        float none[2 + 3 * 4]; const int kn = fs_piece_point(pc, 99, none, 4);
+        std::printf("8a point: grains level up to %.1f dB, %d recent grains (newest at %.2f of the recording, %.3f long); before any sound %.0f dB; no such point %d\n",
+            loudest, (int)out[1], out[3], out[4], before[0], kn);
+        assert(sane && loudest > -50 && before[0] <= -100 && k0 >= 0 && kn < 0);
+        fs_destroy(pc);
+    }
     {   /* 7 (Kerem 2026-10-08: "total super consonance", the stretch last): Resonate inside the stretch. White noise (no pitch
            at all), a D minor chord: the share of the energy (55 Hz - 8 kHz) within 25 cents of a pitch-class set, by FFT */
         std::vector<float> noise((size_t)(8 * SR)); { uint32_t s = 99; for (auto &x : noise) { s = s * 1664525u + 1013904223u; x = 0.3f * (((int)(s >> 8) - 8388608) / 8388608.0f); } }
