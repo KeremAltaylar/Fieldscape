@@ -2388,6 +2388,24 @@ int main() {
         }
         assert(all);
     }
+    {   /* final review 8b I3: a sampler's decay reaches its sustain in about the decay time (as the synths' do); raising the sustain
+           on a held note brings it back up (it froze), never faster than ~20 ms (a 5 ms decay made a jump) */
+        const std::vector<float> wind = noise_src(8, 0.5f, 9);
+        sampler::Resonator r; r.init(48000); r.body = sampler::STRING; r.excite = sampler::BOWED;
+        const float *p[1] = { wind.data() }; r.set_source(1, (long long)wind.size(), p);
+        tone::EnvSpec e1{ 0.01, 1.0, 0.0, 0.6, false, true };
+        r.shape(&e1); r.attack(220, 0.0, 0.5);
+        std::vector<float> L(128), R(128); double t = 0;
+        auto env = [&]() { double m = 0; for (auto &x : r.v) if (x.active) m = std::fmax(m, x.env); return m; };
+        auto until = [&](double t1) { while (t < t1 - 1e-9) { r.render(L.data(), R.data(), 128, t); t += 128 / 48000.0; } };
+        until(1.0); const double at_d = env();                       /* after the decay time, sustain 0: */
+        tone::EnvSpec e2{ 0.01, 0.2, 0.1, 0.6, false, true }; r.shape(&e2); until(1.5);
+        r.shape(nullptr); until(2.0); const double back = env();      /* the instrument's own again: sustain 1 */
+        tone::EnvSpec e3{ 0.01, 0.005, 0.1, 0.6, false, true }; r.shape(&e3); until(2.5);
+        tone::EnvSpec e4{ 0.01, 0.005, 0.9, 0.6, false, true }; r.shape(&e4); const double before = env(); until(2.5 + 0.005); const double up5 = env();
+        std::printf("8b sampler decay: %.3f after its 1 s decay to 0; held note back to %.2f when sustain returns to 1; 0.1 -> 0.9 in 5 ms reaches %.2f (from %.2f)\n", at_d, back, up5, before);
+        assert(at_d < 0.03 && back > 0.9 && up5 < 0.35);
+    }
     {   /* 8d (Kerem 2026-10-11: "a low end boost section ... creates also low end for these good high end partials (but not
            boomy, I want good bass pitches like partials)"): a stretch of noise with no bass (high-passed at 400 Hz) on D minor -
            Low end adds bass partials one or two octaves under the chord, struck by the recording - a real share of the sound

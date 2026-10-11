@@ -847,7 +847,9 @@ struct Resonator : tone::Synth {
            pi/2 x a straight line's, so the shortest attack is 8 ms - no steeper than the old 5 ms line (A-2) */
         const double up = 1.0 / (std::fmax(0.008, att) * sr);
         const double kr = std::pow(1e-4, 1.0 / (std::fmax(0.03, rel) * sr)), ka = 1 - std::exp(-1.0 / (0.3 * sr));
-        const double kt = 1 - std::exp(-1.0 / (0.01 * sr)), ks = 1 - std::exp(-1.0 / (3.0 * sr)), kd = 1 - std::exp(-1.0 / (std::fmax(0.005, dec) * sr));
+        const double kt = 1 - std::exp(-1.0 / (0.01 * sr)), ks = 1 - std::exp(-1.0 / (3.0 * sr)), kd = 1 - std::exp(-4.6 / (std::fmax(0.005, dec) * sr)),
+                     ku = 1 - std::exp(-1.0 / (0.02 * sr));   /* 8b: the decay reaches its sustain in about its time (-40 dB), as a synth's
+                                                                  does; a sustain raised comes back no faster than 20 ms (final review 8b I3) */
         if (tune_s < 0) tune_s = tune;
         std::vector<double> &tu = tune_buf; tu.resize((size_t)n);
         for (int i = 0; i < n; i++) { tune_s += (tune - tune_s) * kt; if (std::fabs(tune - tune_s) < 1e-9) tune_s = tune; tu[(size_t)i] = tune_s; }
@@ -867,7 +869,7 @@ struct Resonator : tone::Synth {
                     }
                 } else if (x.releasing) { x.env *= kr; if (x.env < 1e-4) { if (x.has_next) { x.env = 0; x.steal_at = 0; continue; } x.active = false; break; } }
                 else if (x.aph < 1) { x.aph = std::fmin(1.0, x.aph + up); x.env = 0.5 - 0.5 * std::cos(PI * x.aph); }
-                else if (sus < 1) x.env += (sus - x.env) * kd;   /* 8b: the decay */
+                else x.env += (sus - x.env) * (sus > x.env ? std::fmin(kd, ku) : kd);   /* 8b: the decay (at sustain 1 env is exactly 1: unchanged) */
                 const double in = src.at(x.pos++);
                 const bool part = x.synth != RESONATE;
                 double exc = in;

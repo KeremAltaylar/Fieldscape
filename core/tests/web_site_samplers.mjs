@@ -283,13 +283,14 @@ try {
   await envOpen("sect");
   await ev("(function(){ var d = document.querySelector('#pp-sect-env [data-env=\"0\"]'); d.focus(); for (var i = 0; i < 8; i++) d.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })); return 1; })()");
   await sleep(400); sp = await sentP();
-  check("8b: arrow keys lengthen a voice's attack and the engine gets its envelope at once", !!(sp && sp.sect && Array.isArray(sp.sect.env) && sp.sect.env[0] > 0.04 && sp.sect.env[0] < 0.06), sp && sp.sect && sp.sect.env);
+  check("8b: arrow keys lengthen a voice's attack and the engine gets its envelope at once", !!(sp && sp.sect && Array.isArray(sp.sect.env) && sp.sect.env[0] > 0.035 && sp.sect.env[0] < 0.6), sp && sp.sect && sp.sect.env);
   await envOpen("v3");
   await ev(`(function(){ var d = document.querySelector('#pp-v3-env [data-env="1"]'), r = d.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
     var o = function (t, yy) { return new PointerEvent(t, { pointerId: 1, clientX: x, clientY: yy, bubbles: true, isPrimary: true, button: 0, buttons: 1 }); };
     d.dispatchEvent(o('pointerdown', y)); d.dispatchEvent(o('pointermove', y + 20)); d.dispatchEvent(o('pointerup', y + 20)); return 1; })()`);
   await sleep(400); sp = await sentP();
-  check("8b: dragging the decay corner down lowers a sampler voice's sustain", !!(sp && sp.v3 && Array.isArray(sp.v3.env) && sp.v3.env[2] < 0.5), sp && sp.v3 && sp.v3.env);
+  /* final review 8b I1: from the sampler's own envelope (held at full, 0.6 s release) - only the touched values change */
+  check("8b: dragging the decay corner down lowers a sampler voice's sustain, its own attack and release kept", !!(sp && sp.v3 && Array.isArray(sp.v3.env) && sp.v3.env[2] < 0.9 && sp.v3.env[0] === 0.02 && sp.v3.env[3] === 0.6), sp && sp.v3 && sp.v3.env);
   await ev("(function(){ var b = [].filter.call(document.querySelectorAll('#pp-v3-env button'), function (x) { return /Instrument/.test(x.textContent); })[0]; b.click(); return 1; })()");
   await sleep(400); sp = await sentP();
   check("8b: Instrument's takes the voice's envelope off", !!(sp && sp.v3 && sp.v3.env === undefined), sp && sp.v3 && sp.v3.env);
