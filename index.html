@@ -6356,7 +6356,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       R({ label: "grit", k: "grit", min: 0, max: 1, step: 0.02, def: 0, fmt: fx.two,
         hint: "bitcrush and drive on the stretched sound" }, q),
       /* 8d: a bass foundation under the recording's partials - pitched on the chord, banded, never boomy */
-      heading("Low end", "Bass partials on the chord's notes, under the chord, struck by the recording; the level stays the same."),
+      heading("Low end", "Bass partials on the chord's notes, struck by the recording: −1 oct sits at 90–300 Hz, −2 oct at 45–150 Hz. The overall level stays the same."),
       R({ label: "low end", k: "low", min: 0, max: 1, step: 0.05, def: 0, fmt: fx.pct,
         hint: "how much of the sound moves into pitched bass (0 = none)" }, sh),
       buildPxSelect("depth", sh, "depth", ["−1 oct", "−2 oct"], commitLive)

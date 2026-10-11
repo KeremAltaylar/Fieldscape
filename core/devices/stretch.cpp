@@ -85,6 +85,7 @@ struct Voice {
     /* shaping */
     Controls cc{};
     std::vector<float> shp[2], sm[2], pre[2], tt[2], binc, table;
+    std::vector<float> lowb; double eb = 0, lowg = 0;   /* 8d: the Low end's shape this frame (both channels), its energy, its gain */
     /* 7 Resonate: each bin's pitch in cents from A440 (unfolded), the chord's response per bin, its peaks, the frame's
        running sums (its colour, smoothed over +-1/6 octave) */
     std::vector<float> bina, rtab; std::vector<double> pfx[2];
@@ -115,7 +116,7 @@ struct Voice {
         binc.assign(nmax / 2 + 1, 0.0f); bina.assign(nmax / 2 + 1, 0.0f); rtab.assign(nmax / 2 + 1, 0.0f);
         for (auto &p : pfx) p.assign(nmax / 2 + 2, 0.0);
         for (int k = 1; k <= 24; k++) log2k[k] = 1200.0 * std::log2((double)k);
-        table.assign(CENTS, 0.0f);
+        table.assign(CENTS, 0.0f); lowb.assign(nmax / 2 + 1, 0.0f);
         for (int c = 0; c < 2; c++) {
             shp[c].assign(nmax / 2 + 1, 0.0f); sm[c].assign(nmax / 2 + 1, 0.0f);
             pre[c].assign(nmax / 2 + 1, 0.0f); tt[c].assign(nmax / 2 + 1, 0.0f);
@@ -244,25 +245,27 @@ struct Voice {
         return m[i] + (m[i + 1] - m[i]) * f;
     }
 
-    /* 8d: Low end - bass partials on the chord's notes, one or two octaves under the chord (a steep band: 90-300 Hz, or
-       45-150 Hz - no rumble under it, no mud over it), struck by the recording's own strength this frame (its RMS per bin):
-       a recording whose partials are all high still gets a foundation, and it breathes with it. A narrow comb (never
-       narrower than a bin) makes them pitches, not boom; the frame goes back to the stretch's own energy after. */
-    float low_end(int ch, int j, int M) {
-        const double f = (double)j * sr / N; const float bc = binc[j];
+    /* 8d: Low end - bass partials on the chord's notes in a bass band (90-300 Hz, or 45-150 Hz one octave deeper; steep edges:
+       no rumble under it, no mud over it). This is its shape only; S_SH_NORM gives it a share of the frame's energy (final review
+       8d I1-I3: a level per bin grew with the bins' width, and tune left it alone with the recording's energy). A bin too coarse
+       to hold a pitch (over 80 cents wide, fading in from 40) is left out, and so is one whose window reaches under 40 Hz: at a
+       small window or a high rate it fades away instead of turning into boom. */
+    float low_end(int j) {
+        const double f = (double)j * sr / N, df = sr / N; const float bc = binc[j];
         const double lo = cc.depth == 2 ? 45 : 90, hi = cc.depth == 2 ? 150 : 300;
-        if (f < 0.6 * lo || f > 2 * hi || bc < 0) return 0;
-        const double r4 = std::pow(f / lo, 4), band = r4 / (1 + r4) / (1 + std::pow(f / hi, 4));
-        const double w = std::fmax(12.0, 0.6 * 1200 * std::log2((f + sr / N) / f));
+        if (f < 0.6 * lo || f > 1.5 * hi || f - 2 * df < 40 || bc < 0) return 0;
+        const double wb = 1200 * std::log2((f + df) / f), q = std::fmin(1.0, std::fmax(0.0, (80 - wb) / 40));
+        if (q <= 0) return 0;
+        const double r4 = std::pow(f / lo, 4), band = r4 / (1 + r4) / (1 + std::pow(f / hi, 4)), w = std::fmax(12.0, 0.6 * wb);
         double v = 0;
         for (int i = 0; i < 5; i++) {
             if (gnote[i] < 0) continue;
             double d = std::fabs(std::fmod(bc - std::fmod(gnote[i] * 100.0, 1200.0) + 1200.0 * 64, 1200.0)); if (d > 600) d = 1200 - d;
             if (d < 4 * w) v += std::exp(-0.5 * (d / w) * (d / w));
         }
-        return (float)(LOW_GAIN * cc.low * band * std::fmin(v, 1.0) * std::sqrt(e0[ch] / M));
+        return (float)(q * band * std::fmin(v, 1.0));
     }
-    static constexpr double LOW_GAIN = 25;   /* measured: at Low end 1 the bass is ~1/5 of the sound */
+    static constexpr double LOW_SHARE = 0.2;   /* at Low end 1, a fifth of the frame's energy */
 
     /* Result buffers after the forward or inverse passes. */
     float *res_r() { return fft.passes % 2 ? br.data() : ar.data(); }
@@ -408,7 +411,7 @@ struct Voice {
         case S_SH_IN:
             /* the stretch's magnitudes for this frame (onset-interpolated as the phase stage would), and their energy */
             if (a == 0) {
-                e0[0] = e0[1] = e1[0] = e1[1] = 0;
+                e0[0] = e0[1] = e1[0] = e1[1] = 0; eb = 0;
                 sh_T = std::pow(2.0, cc.transpose / 12.0);
                 if (cc.follow > 0 && cc.tn > 0) {   /* 5: the recording's pitch here, toward the chord's nearest note, gliding */
                     const int fi = (int)(fpos / sr / (cc.thop > 0 ? cc.thop : 0.02));
@@ -473,20 +476,27 @@ struct Voice {
                     for (int r = 0; r < nr; r++) l += at(tt[ch].data(), j / ratio[r], M);
                     x = x * (1 - cc.harmony) + l / nr * cc.harmony;
                 }
-                if (cc.low > 0) x += low_end(ch, j, M);
                 if (cc.tune > 0) {
                     const float bc = binc[j];
                     x *= (1 - cc.tune) + cc.tune * (bc < 0 ? 0.0f : table[(int)bc % CENTS]);
                 }
                 if (cc.blur > 0) { sm[ch][j] = have_sm ? sm[ch][j] + (x - sm[ch][j]) * blur_k : x; x = sm[ch][j]; }
                 shp[ch][j] = x; e1[ch] += (double)x * x;
+                if (cc.low > 0 && ch == 0) { const float u = low_end(j); lowb[j] = u; eb += (double)u * u; }
             }
             break;
         }
         case S_SH_NORM:
             /* the frame's energy back to the stretch's own (A-18: these are timbre, not level) */
-            if (a == 0) for (int ch = 0; ch < 2; ch++) sh_g[ch] = e1[ch] > 1e-30 ? (float)std::sqrt(e0[ch] / e1[ch]) : 0.0f;
+            if (a == 0) {
+                /* 8d: with Low end, the recording keeps 1 - share of the energy and the bass gets the share - the same in both
+                   channels, from their mean (final review 8d I4) */
+                const double sl = cc.low > 0 && eb > 1e-30 ? LOW_SHARE * cc.low : 0;
+                for (int ch = 0; ch < 2; ch++) sh_g[ch] = e1[ch] > 1e-30 ? (float)std::sqrt((sl > 0 ? 1 - sl : 1.0) * e0[ch] / e1[ch]) : 0.0f;
+                lowg = sl > 0 ? std::sqrt(sl * 0.5 * (e0[0] + e0[1]) / eb) : 0;
+            }
             for (int ch = 0; ch < 2; ch++) for (int j = a; j < b; j++) shp[ch][j] *= sh_g[ch];
+            if (lowg > 0) for (int ch = 0; ch < 2; ch++) for (int j = a; j < b; j++) shp[ch][j] += (float)(lowb[j] * lowg);
             if (b == N / 2 + 1) have_sm = cc.blur > 0;
             break;
         case S_PHASE:
@@ -499,6 +509,7 @@ struct Voice {
                 float ps = TWO_PI * rng.uniform();
                 float p0 = ps + width * TWO_PI * (rng.uniform() - 0.5f);
                 float p1 = ps + width * TWO_PI * (rng.uniform() - 0.5f);
+                if (cc.shaping && lowg > 0 && lowb[j] > 0) p1 = p0;   /* 8d I4: the bass in the middle (a phone's mono speaker sums it) */
                 /* Build conj(W), W = Y0 + i Y1, so the forward passes compute the inverse transform. */
                 if (j == 0) { ar[0] = ai[0] = 0; continue; }                     /* DC removed */
                 if (j == N / 2) {                                               /* Nyquist: random sign */

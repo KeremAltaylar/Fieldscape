@@ -2347,7 +2347,9 @@ int main() {
     {   /* 8d (Kerem 2026-10-11: "a low end boost section ... creates also low end for these good high end partials (but not
            boomy, I want good bass pitches like partials)"): a stretch of noise with no bass (high-passed at 400 Hz) on D minor -
            Low end adds bass partials one or two octaves under the chord, struck by the recording - a real share of the sound
-           (8-35 % in 45-250 Hz), on the chord's notes, nothing below 35 Hz, at the stretch's own level; at 0 nothing changes */
+           (8-35 % in 45-250 Hz), on the chord's notes, nothing below 35 Hz, at the stretch's own level; at 0 nothing changes.
+           Final review 8d: at the page's default window (I5); never louder or unpitched at a small window (I1, I2: a share of the
+           energy, coarse bins left out); tune does not make it take over (I3); the same in both channels (I4) */
         std::vector<float> hiss((size_t)(8 * SR));
         { uint32_t s = 7; double l1 = 0, l2 = 0; const double k = 1 - std::exp(-2 * 3.141592653589793 * 400 / SR);
           for (auto &x : hiss) { s = s * 1664525u + 1013904223u; const double w = (((int)(s >> 8) - 8388608) / 8388608.0);
@@ -2363,7 +2365,7 @@ int main() {
                 for (int k = 0; k < N / 2; k++) P[k] += (double)re[k] * re[k] + (double)im[k] * im[k];
             }
             return N; };
-        struct Bands { double bass, deep, sub, tuned, low2; };
+        struct Bands { double bass, deep, sub, tuned; };
         auto bands = [&](const std::vector<float> &x) {
             std::vector<double> P; const int N = spec(x, P); double all = 0, bass = 0, deep = 0, sub = 0, in = 0;
             for (int k = 1; k < (int)(16000.0 * N / SR); k++) {
@@ -2373,27 +2375,41 @@ int main() {
                 if (f >= 45 && f < 250) { bass += e; const double c = std::fmod(1200 * std::log2(f / 440.0) + 900 + 1200 * 64, 1200.0);
                     for (double pc : { 200.0, 500.0, 900.0 }) { double d = std::fabs(c - pc); if (d > 600) d = 1200 - d; if (d < 25) { in += e; break; } } }
             }
-            return Bands{ bass / all, deep / std::max(bass, 1e-30), sub / all, in / std::max(bass, 1e-30), 0 }; };
-        auto render = [&](const char *shape) {
+            return Bands{ bass / all, deep / std::max(bass, 1e-30), sub / all, in / std::max(bass, 1e-30) }; };
+        std::vector<float> right;
+        auto render = [&](const char *shape, double window) {
             fs_device *d = fs_create("stretch"); fs_prepare(d, SR, B);
             const float *pp[1] = { hiss.data() }; fs_set_source(d, 1, (int)hiss.size(), pp);
-            fs_set_param(d, 0, 0); fs_set_param(d, 1, 0.68f);   /* the page's default window (fft 0.7: hop 16384) - bins fine enough for bass notes */
+            fs_set_param(d, 0, 0); fs_set_param(d, 1, (float)window);
             fs_stretch_shape(d, shape);
             const float dm[6] = { 62, 65, 69, -1, -1, 62 };
             for (int k = 0; k < 6; k++) fs_set_param(d, 18 + k, dm[k]);
-            std::vector<float> o;
-            for (int b2 = 0; b2 < (int)(7 * SR / B); b2++) { fs_process(d, B); const float *l = fs_out(d, 0); o.insert(o.end(), l, l + B); }
+            std::vector<float> o; right.clear();
+            for (int b2 = 0; b2 < (int)(7 * SR / B); b2++) { fs_process(d, B); const float *l = fs_out(d, 0), *r = fs_out(d, 1); o.insert(o.end(), l, l + B); right.insert(right.end(), r, r + B); }
             fs_destroy(d); return o; };
         auto rms = [](const std::vector<float> &x) { double e = 0; for (size_t i = x.size() / 2; i < x.size(); i++) e += (double)x[i] * x[i]; return 10 * std::log10(e / (x.size() / 2) + 1e-30); };
-        const auto dry = render("{\"glide\":0.5}"), off = render("{\"glide\":0.5,\"low\":0}"),
-                   one = render("{\"glide\":0.5,\"low\":1}"), two = render("{\"glide\":0.5,\"low\":1,\"depth\":1}");
-        const Bands bd = bands(dry), b1 = bands(one), b2 = bands(two);
+        auto bass_corr = [&](const std::vector<float> &l, const std::vector<float> &r) {   /* L/R correlation under ~200 Hz */
+            const double k = 1 - std::exp(-2 * 3.141592653589793 * 200 / SR); double a1 = 0, a2 = 0, b1 = 0, b2 = 0, lr = 0, ll = 0, rr = 0;
+            for (size_t i = 0; i < l.size(); i++) { a1 += k * (l[i] - a1); a2 += k * (a1 - a2); b1 += k * (r[i] - b1); b2 += k * (b1 - b2);
+                if (i > l.size() / 2) { lr += a2 * b2; ll += a2 * a2; rr += b2 * b2; } }
+            return lr / std::sqrt(ll * rr + 1e-30); };
+        const double W = 16384 / SR, Ws = 2048 / SR;   /* the page's default (fft 0.7: N 16384), and a small one (fft 0.4) */
+        const auto dry = render("{\"glide\":0.5}", W), off = render("{\"glide\":0.5,\"low\":0}", W);
+        const auto one = render("{\"glide\":0.5,\"low\":1}", W); const double corr = bass_corr(one, right);
+        const auto two = render("{\"glide\":0.5,\"low\":1,\"depth\":1}", W);
+        const auto tun = render("{\"glide\":0.5,\"low\":1,\"tune\":1,\"focus\":0}", W);
+        const auto sm1 = render("{\"glide\":0.5,\"low\":1}", Ws), sm2 = render("{\"glide\":0.5,\"low\":1,\"depth\":1}", Ws);
+        const Bands bd = bands(dry), b1 = bands(one), b2 = bands(two), bt = bands(tun), s1 = bands(sm1), s2 = bands(sm2);
         std::printf("8d low end: bass (45-250 Hz) %.1f%% dry, %.1f%% at -1 oct, %.1f%% at -2 oct; on D F A %.0f%% / %.0f%%; below 35 Hz %.2f%% / %.2f%% (dry %.2f%%); "
                     "45-125 Hz of the bass %.0f%% at -1, %.0f%% at -2; level %+.1f / %+.1f dB; off identical %d\n",
             100 * bd.bass, 100 * b1.bass, 100 * b2.bass, 100 * b1.tuned, 100 * b2.tuned, 100 * b1.sub, 100 * b2.sub, 100 * bd.sub,
             100 * b1.deep, 100 * b2.deep, rms(one) - rms(dry), rms(two) - rms(dry), (int)(off == dry));
+        std::printf("8d low end, final review: with tune 1 the bass is %.1f%%; a small window (2048) %.1f%% / %.1f%% bass, on D F A %.0f%% / %.0f%%, below 35 Hz %.2f%% / %.2f%%; bass L/R correlation %.2f\n",
+            100 * bt.bass, 100 * s1.bass, 100 * s2.bass, 100 * s1.tuned, 100 * s2.tuned, 100 * s1.sub, 100 * s2.sub, corr);
         assert(off == dry && b1.bass > 0.08 && b1.bass < 0.35 && b2.bass > 0.08 && b2.bass < 0.35 && b1.tuned >= 0.5 && b2.tuned >= 0.5 && b1.sub < 0.005 && b2.sub < 0.005
                && b2.deep > b1.deep && std::fabs(rms(one) - rms(dry)) < 1 && std::fabs(rms(two) - rms(dry)) < 1);
+        assert(bt.bass < 0.35 && s1.bass < 0.35 && s2.bass < 0.35 && (s1.tuned >= 0.5 || s1.bass < 0.03) && (s2.tuned >= 0.5 || s2.bass < 0.03)
+               && s1.sub < 0.005 && s2.sub < 0.005 && corr > 0.9);
     }
     {   /* 8c (Kerem 2026-10-11: "grain points in super consonance ... resonate ... even the vary option will create variation in
            key and in harmony"): noise grains on a route held on D minor 7, its own voices off - the share of the energy within 25
