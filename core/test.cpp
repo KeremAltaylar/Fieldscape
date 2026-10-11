@@ -2356,26 +2356,27 @@ int main() {
         struct GL { std::vector<double> rate; } gl;
         auto lg = [](void *p, int role, double f, double, double, double) { if (role == 20) ((GL *)p)->rate.push_back(f); };
         double busE = 0; int busN = 0;   /* the grains bus itself (the point meter, before the rhythm effects) */
+        double rate = SR;                /* final review 8c C1: the hardware's rate, 96 kHz on some desktops */
         auto play = [&](const char *cfg, double secs, double *worst_ms) {
             busE = 0; busN = 0;
-            gl.rate.clear(); unsigned seed = 21; fs_device *pc = fs_create("piece"); fs_prepare(pc, SR, B); fs_piece_test_hooks(pc, fixed_draw, &seed, lg, &gl);
+            gl.rate.clear(); unsigned seed = 21; fs_device *pc = fs_create("piece"); fs_prepare(pc, rate, B); fs_piece_test_hooks(pc, fixed_draw, &seed, lg, &gl);
             const int r = fs_piece_add_route(pc, route);
             const int h = fs_piece_rhythm_add(pc, cfg, 1);
             fs_piece_rhythm_source(pc, h, 0, 1, n, pcm); fs_piece_rhythm_gain(pc, h, 1);
             std::vector<float> o; double worst = 0;
-            for (int b2 = 0; b2 < (int)(secs * SR / B); b2++) { fs_piece_walk(pc, r, 0.3, 0);
+            for (int b2 = 0; b2 < (int)(secs * rate / B); b2++) { fs_piece_walk(pc, r, 0.3, 0);
                 auto c0 = std::chrono::steady_clock::now(); fs_process(pc, B); worst = std::fmax(worst, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - c0).count());
                 const float *l = fs_out(pc, 0); o.insert(o.end(), l, l + B);
-                if (b2 > (int)(3 * SR / B)) { float pm[2 + 3 * 4]; if (fs_piece_point(pc, h, pm, 4) >= 0) { busE += std::pow(10.0, pm[0] / 10); busN++; } } }
+                if (b2 > (int)(3 * rate / B)) { float pm[2 + 3 * 4]; if (fs_piece_point(pc, h, pm, 4) >= 0) { busE += std::pow(10.0, pm[0] / 10); busN++; } } }
             fs_destroy(pc); if (worst_ms) *worst_ms = worst; return o; };
         auto share = [&](const std::vector<float> &x) {
-            const int N = 65536; FFT fft; fft.reserve(N); fft.plan(N); fft.twiddles(0, N);
+            const int N = rate > 50000 ? 131072 : 65536;   /* the same bins in Hz at 96 kHz (25 cents at 55 Hz needs them) */ FFT fft; fft.reserve(N); fft.plan(N); fft.twiddles(0, N);
             std::vector<float> b(4 * N); float *ar = b.data(), *ai = ar + N, *br = ai + N, *bi = br + N; const size_t s0 = x.size() - N;
             for (int i = 0; i < N; i++) { ar[i] = (float)(x[s0 + i] * (0.5 - 0.5 * std::cos(2 * 3.141592653589793 * i / N))); ai[i] = 0; }
             for (int p = 0; p < fft.passes; p++) { if (p % 2 == 0) fft.pass(p, ar, ai, br, bi, 0, fft.butterflies(p)); else fft.pass(p, br, bi, ar, ai, 0, fft.butterflies(p)); }
             const float *re = fft.passes % 2 ? br : ar, *im = fft.passes % 2 ? bi : ai; double in = 0, all = 0;
-            for (int k = (int)(55.0 * N / SR); k < (int)(8000.0 * N / SR); k++) {
-                const double e = (double)re[k] * re[k] + (double)im[k] * im[k], c = std::fmod(1200 * std::log2(k * SR / N / 440.0) + 900 + 1200 * 64, 1200.0);
+            for (int k = (int)(55.0 * N / rate); k < (int)(8000.0 * N / rate); k++) {
+                const double e = (double)re[k] * re[k] + (double)im[k] * im[k], c = std::fmod(1200 * std::log2(k * rate / N / 440.0) + 900 + 1200 * 64, 1200.0);
                 all += e; for (double pc : { 200.0, 500.0, 900.0, 0.0 }) { double d = std::fmod(std::fabs(c - pc), 1200.0); if (d > 600) d = 1200 - d; if (d < 25) { in += e; break; } }
             }
             return in / all; };
@@ -2399,6 +2400,80 @@ int main() {
         std::printf("8c grains resonate: D F A C share %.0f%% dry, %.0f%% String, %.0f%% Bell (level %+.1f dB, Bell %+.1f dB); off identical %d; vary in harmony all chord intervals %d (%zu grains), vary as before has others %d; worst process %.3f ms (dry %.3f)\n",
             100 * s_dry, 100 * s_str, 100 * s_bell, rms(str) - rms(dry), rms(bell) - rms(dry), (int)(off == dry), (int)in_all, vin.size(), (int)out_other, w1, w0);
         assert(off == dry && s_dry < 0.3 && s_str >= 0.5 && s_bell >= 0.45 && std::fabs(rms(str) - rms(dry)) < 1.5 && std::fabs(rms(bell) - rms(dry)) < 1.5 && std::fabs(rms(sstr) - rms(sdry)) < 2 && in_all && vin.size() > 20 && out_other && w1 < 1.33 * 1.5);
+
+        /* final review 8c I1: each body in tune - the power-weighted pitch within 40 cents of each chord note's fundamental
+           (55..110 Hz), from a long averaged spectrum */
+        auto tune = [&](const std::vector<float> &x) {
+            const int N = 262144; FFT fft; fft.reserve(N); fft.plan(N); fft.twiddles(0, N);
+            std::vector<float> b(4 * N); std::vector<double> P(N / 2, 0.0);
+            for (size_t s0 = x.size() / 4; s0 + N <= x.size(); s0 += N / 4) {
+                float *ar = b.data(), *ai = ar + N, *br = ai + N, *bi = br + N;
+                for (int i = 0; i < N; i++) { ar[i] = (float)(x[s0 + i] * (0.5 - 0.5 * std::cos(2 * 3.141592653589793 * i / N))); ai[i] = 0; }
+                for (int p = 0; p < fft.passes; p++) { if (p % 2 == 0) fft.pass(p, ar, ai, br, bi, 0, fft.butterflies(p)); else fft.pass(p, br, bi, ar, ai, 0, fft.butterflies(p)); }
+                const float *re = fft.passes % 2 ? br : ar, *im = fft.passes % 2 ? bi : ai;
+                for (int k = 0; k < N / 2; k++) P[k] += (double)re[k] * re[k] + (double)im[k] * im[k];
+            }
+            double worst = 0;
+            for (double f0 : { 73.416, 87.307, 55.0, 65.406 }) {   /* D F A C: the centroid above a straight floor between the window's edges */
+                const int k0 = (int)std::ceil(f0 * std::pow(2, -40 / 1200.0) * N / rate), k1 = (int)std::floor(f0 * std::pow(2, 40 / 1200.0) * N / rate);
+                double sw = 0, sc = 0;
+                for (int k = k0; k <= k1; k++) {
+                    const double fl = P[k0] + (P[k1] - P[k0]) * (k - k0) / (double)(k1 - k0), e = std::fmax(0.0, P[k] - fl);
+                    sw += e; sc += e * 1200 * std::log2(k * rate / N / f0); }
+                worst = std::fmax(worst, std::fabs(sc / sw));
+            }
+            return worst; };
+        const auto tstr = play("{\"grains\":{\"vary\":0},\"resonate\":1}", 14, nullptr), ttub = play("{\"grains\":{\"vary\":0},\"resonate\":1,\"body\":1}", 14, nullptr);
+        const double c_str = tune(tstr), c_tub = tune(ttub);
+        /* final review 8c C1: at 96 kHz the String's loops still sound the chord */
+        rate = 96000; const auto hi = play("{\"grains\":{\"vary\":0},\"resonate\":1}", 6, nullptr); const double s_hi = share(hi); rate = SR;
+        std::printf("8c tuning: worst String %.1f cents, Tube %.1f cents; at 96 kHz String D F A C share %.0f%%\n", c_str, c_tub, 100 * s_hi);
+        assert(c_str < 8 && c_tub < 8 && s_hi >= 0.5);   /* C reads ~-6 cents in both bodies, before and after the Tube fix: the measure's own */
+
+        /* final review 8c I2, I3: the ringing never steps - (0) the grains fall silent and the walker crosses onto a route on a
+           smaller chord (m7 -> maj): the loops ring out through the route change and the dropped note (C) rings out unstruck;
+           the noise grains (a sine strikes only one partial, which the damping takes in ~0.1 s); (1) resonate moved 1 <-> 0.3 every 0.5 s while sine grains play. The largest sample-to-sample step against the peak of
+           the same stretch (a 220 Hz sine's own: 0.029) */
+        {
+            const int n2 = (int)(4 * SR);
+            auto sine = [&]() { short *sn = (short *)std::malloc(sizeof(short) * n2); for (int i = 0; i < n2; i++) sn[i] = (short)(12000 * std::sin(2 * 3.141592653589793 * 220 * i / SR)); return sn; };
+            const char *ra = "{\"version\":17,\"key\":50,\"prog\":[{\"r\":0,\"q\":\"m7\"}],\"voice\":{\"on\":false},\"sect\":{\"on\":false},\"v3\":{\"on\":false},\"bed\":{\"on\":false},\"rfx\":{\"drive\":0,\"delayWet\":0,\"revWet\":0,\"cutoff\":20000}}";
+            const char *rb = "{\"version\":17,\"key\":50,\"prog\":[{\"r\":0,\"q\":\"maj\"}],\"voice\":{\"on\":false},\"sect\":{\"on\":false},\"v3\":{\"on\":false},\"bed\":{\"on\":false},\"rfx\":{\"drive\":0,\"delayWet\":0,\"revWet\":0,\"cutoff\":20000}}";
+            const char *soft = "{\"grains\":{\"vary\":0,\"attack\":0.4,\"decay\":0,\"sustain\":1,\"release\":0.5},\"resonate\":1}";
+            const char *half = "{\"grains\":{\"vary\":0,\"attack\":0.4,\"decay\":0,\"sustain\":1,\"release\":0.5},\"resonate\":0.3}";
+            auto steps = [&](int what) {
+                unsigned seed = 21; fs_device *pc = fs_create("piece"); fs_prepare(pc, SR, B); fs_piece_test_hooks(pc, fixed_draw, &seed, nullptr, nullptr);
+                const int r1 = fs_piece_add_route(pc, ra), r2 = fs_piece_add_route(pc, rb);
+                const int h = fs_piece_rhythm_add(pc, soft, 1);
+                if (what == 0) { short *nz = (short *)std::malloc(sizeof(short) * n); std::memcpy(nz, pcm, sizeof(short) * n); fs_piece_rhythm_source(pc, h, 0, 1, n, nz); }
+                else fs_piece_rhythm_source(pc, h, 0, 1, n2, sine()); fs_piece_rhythm_gain(pc, h, 1);
+                double peak = 0, step = 0; float last = 0; bool tog = false, hushed = false;
+                const double from = what == 0 ? 5.2 : 2, to = what == 0 ? 9 : 12; std::vector<float> o0;
+                for (int b2 = 0; b2 < (int)(to * SR / B); b2++) {
+                    const double t = b2 * B / SR;
+                    if (what == 0 && t > 4.9 && !hushed) { hushed = true; fs_piece_rhythm_source(pc, h, 0, 1, n2, (short *)std::calloc(n2, sizeof(short))); }
+                    fs_piece_walk(pc, what == 0 && t > 5 ? r2 : r1, 0.3, 0);
+                    if (what == 1 && t > 3 && std::fmod(t, 0.5) < B / SR) { tog = !tog; fs_piece_rhythm_config(pc, h, tog ? half : soft); }
+                    fs_process(pc, B); const float *l = fs_out(pc, 0);
+                    if (what == 0 && t > 5.2) o0.insert(o0.end(), l, l + B);
+                    for (int i = 0; i < B; i++) { if (t > from) { peak = std::fmax(peak, std::fabs(l[i])); step = std::fmax(step, std::fabs(l[i] - last)); } last = l[i]; }
+                }
+                fs_destroy(pc);
+                if (what == 0) {   /* a ring-out: each step against the level of the 20 ms before it (the tail falls 50 dB in 1.2 s) */
+                    const int w20 = (int)(0.02 * SR); double e = 0, worst = 0;
+                    for (size_t i = 1; i < o0.size(); i++) {
+                        if (i > (size_t)w20) { e += (double)o0[i - 1] * o0[i - 1] - (double)o0[i - 1 - w20] * o0[i - 1 - w20];
+                            const double lv = std::sqrt(std::fmax(e, 0.0) / w20);
+                            if (lv > 1e-5) worst = std::fmax(worst, std::fabs(o0[i] - o0[i - 1]) / lv); }
+                        else e += (double)o0[i - 1] * o0[i - 1];
+                    }
+                    return worst;
+                }
+                return step / (peak + 1e-30); };
+            const double j0 = steps(0), j1 = steps(1);
+            std::printf("8c steps: ringing out across a route change to a smaller chord %.3f, resonate moved %.3f\n", j0, j1);
+            assert(j0 < 0.15 && j1 < 0.05);
+        }
         std::free(pcm);
     }
     {   /* 8a (Kerem 2026-10-11: "level meters to stretch and grains objects", "the grain visualization on the waveform - put it
