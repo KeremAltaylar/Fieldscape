@@ -11425,7 +11425,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   }
 
   var MORPH_SHAPES = ["drift", "breath", "pulse", "ramp", "tide"];
-  var MORPH_DESTS = ["voice.cutoff", "sect.cutoff", "sect.index", "voice.gain", "voice.index", "voice.harm", "voice.drive",
+  /* the core's DEST_KEYS order, by index (fs_engine_morphs) - its own name: a second MORPH_DESTS here replaced the panel's
+     {k, label} list, and every morph's destination menu went blank (2026-10-11) */
+  var MORPH_DEST_KEYS = ["voice.cutoff", "sect.cutoff", "sect.index", "voice.gain", "voice.index", "voice.harm", "voice.drive",
     "voice.warp", "sect.harm", "sect.drive", "sect.warp", "v3.cutoff", "v3.harm", "v3.index", "v3.drive", "v3.warp"];
   /* On the core the cells draw the engine's morphs (fs_engine_morphs), not the patch's list run on
      the page's own clock - since the core became the default (2026-09-26) that clock was wall time,
@@ -11436,7 +11438,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var out = [];
     for (var i = 0; i < Math.max(0, L.n); i++) {
       var b = 7 * i;
-      out.push({ id: "e" + i, on: true, shape: MORPH_SHAPES[L.morphs[b]] || "drift", dest: MORPH_DESTS[L.morphs[b + 2]] || "voice.cutoff",
+      out.push({ id: "e" + i, on: true, shape: MORPH_SHAPES[L.morphs[b]] || "drift", dest: MORPH_DEST_KEYS[L.morphs[b + 2]] || "voice.cutoff",
                  seed: L.morphs[b + 3], v: L.morphs[b + 4], dv: L.morphs[b + 5], ph: L.morphs[b + 6] });
     }
     return out;
@@ -12577,7 +12579,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         o.value = d.k; o.textContent = destLabel(d.k, patch);
         dst.appendChild(o);
       });
-      dst.value = m.dest;
+      /* a destination that is not one (the 2026-10-11 bug saved "undefined"): said so, to be chosen again - it moves nothing */
+      if (!MORPH_DESTS.some(function (d) { return d.k === m.dest; })) {
+        var none = document.createElement("option"); none.value = ""; none.textContent = "choose a parameter…"; none.disabled = true;
+        dst.insertBefore(none, dst.firstChild); dst.value = "";
+      } else { dst.value = m.dest; }
       dst.title = "What this morph moves";
       dst.addEventListener("change", function () {
         m.dest = dst.value; commitPatch(f, patch); showPer();

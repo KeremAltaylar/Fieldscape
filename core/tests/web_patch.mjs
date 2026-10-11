@@ -58,6 +58,10 @@ try {
       await sleep(1500);
       check(p("…and back on, they play again"), (await ev("__fa.coreLive.n")) > 0, await ev("__fa.coreLive.n"));
     }
+    /* 2026-10-11 (Kerem: "the drift section doesn't show which parameters I select"): every morph names its destination - a second
+       MORPH_DESTS (plain names, for the cells) had replaced the panel's {k, label} list, so each menu's values were "undefined" */
+    const dests = JSON.parse(await ev("JSON.stringify([].map.call(document.querySelectorAll('#pp-body .ppmorph select, #pp-body [class*=morph] select'), function (s) { return [s.value, s.selectedIndex, (s.options[s.selectedIndex] || {}).text || '']; }).filter(function (x) { return /\./.test(x[0]) || x[0] === 'undefined' || x[1] < 0; }))"));
+    check(p("every morph's destination menu shows the parameter it drives"), dests.length > 0 && dests.every((d) => d[0] !== "undefined" && d[1] >= 0 && d[2]) && !dests.some((d) => d[2] === ""), dests.slice(0, 4));
 
     /* Task 1: knobs */
     const counts = JSON.parse(await ev("JSON.stringify({ ranges: document.querySelectorAll('#pp-body input[type=range]').length, knobs: document.querySelectorAll('#pp-body .knob').length })"));
