@@ -26,8 +26,9 @@ test("a 220 Hz sine analysed within 5 cents", () => {
   assert.ok(Math.abs(1200 * Math.log2(j.f0 / 220)) < 5);
 });
 
-test("the live site's engine file is not the lab's", () => {
-  assert.notDeepEqual(readFileSync("web/core.wasm"), readFileSync("web/core-lab.wasm"));
+/* 6a (Kerem 2026-10-09): the public engine IS the lab engine now - the guard that kept them apart (D1) became this */
+test("the site's engine is the lab's (sample harmony 6a)", () => {
+  assert.deepEqual(readFileSync("web/core.wasm"), readFileSync("web/core-lab.wasm"));
 });
 
 test("the lab's engine has the bench: a bowed string on noise creates its pitch", () => {
