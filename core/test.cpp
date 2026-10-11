@@ -2365,6 +2365,20 @@ int main() {
             loudest, (int)out[1], out[3], out[4], before[0], kn);
         assert(sane && loudest > -50 && before[0] <= -100 && k0 >= 0 && kn < 0);
         fs_destroy(pc);
+        /* 8a review I2: the meter is the point's own sound (its own gain), not where the walker stands - a point heard at a tenth
+           (far off) reads as loud as one heard in full; review M1: a dense cloud keeps more than 32 grains for the 1.4 s marks */
+        auto metered = [&](float walk_gain, int &grains) {
+            fs_device *q = fs_create("piece"); fs_prepare(q, SR, B); unsigned sd = 9; fs_piece_test_hooks(q, fixed_draw, &sd, nullptr, nullptr);
+            fs_piece_add_route(q, "{}");
+            const int hh = fs_piece_rhythm_add(q, "{\"grains\":{\"count\":24,\"grain\":30}}", 1);
+            fs_piece_rhythm_source(q, hh, 0, 1, n, pcm); fs_process(q, B); fs_piece_rhythm_gain(q, hh, walk_gain);
+            float o[2 + 3 * 96]; float loud = -120; grains = 0;
+            for (int b2 = 0; b2 < (int)(6 * SR / B); b2++) { fs_piece_walk(q, 0, 0.3, 0); fs_process(q, B); if (fs_piece_point(q, hh, o, 96) >= 0) { loud = std::fmax(loud, o[0]); grains = std::max(grains, (int)o[1]); } }
+            fs_destroy(q); return loud; };
+        int g1 = 0, g2 = 0; const double full = metered(1, g1), far = metered(0.1f, g2);
+        std::printf("8a point meter: heard in full %.1f dB, heard at a tenth %.1f dB; recent grains kept up to %d\n", full, far, g1);
+        assert(std::fabs(full - far) < 1 && g1 > 32);
+        std::free(pcm);
     }
     {   /* 7 (Kerem 2026-10-08: "total super consonance", the stretch last): Resonate inside the stretch. White noise (no pitch
            at all), a D minor chord: the share of the energy (55 Hz - 8 kHz) within 25 cents of a pitch-class set, by FFT */

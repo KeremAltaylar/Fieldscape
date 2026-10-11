@@ -456,12 +456,14 @@ void fs_engine_source_track(fs_engine *e, int kind, int index, int sub, const ch
 }
 void fs_engine_process(fs_engine *e, int frames) {
     fs_mix_process(e->mix, frames); e->frames += frames;
-    if (!e->watch.empty()) {   /* 8a: a stretch point's own output, ~0.1 s mean square, before the walk's level */
-        double ms = 0; bool found = false;
+    if (!e->watch.empty()) {   /* 8a: a stretch point's own sound at its own gain, ~0.1 s mean square - not where the walker stands */
+        double ms = 0, own = 1; bool found = false;
+        for (auto &p : e->points) if (p.id == e->watch) { own = p.gain; break; }
         for (auto &s : e->slot) if (s.active && s.id == e->watch) {
             const float *l = fs_out(s.dev, 0), *r = fs_out(s.dev, 1); found = true;
             for (int i = 0; i < frames; i++) ms += 0.5 * ((double)l[i] * l[i] + (double)r[i] * r[i]);
         }
+        ms *= own * own;
         e->watch_ms += ((found ? ms / std::max(1, frames) : 0) - e->watch_ms) * (1 - std::exp(-frames / (0.1 * e->sr)));
     }
 }

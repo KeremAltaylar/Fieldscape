@@ -8309,16 +8309,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var an = ctx.createAnalyser(); an.fftSize = 4096; gain.connect(an);
       var buf = new Float32Array(an.fftSize);
       window.__fa.coreLevel = function () { an.getFloatTimeDomainData(buf); var s = 0; for (var i = 0; i < buf.length; i++) { s += buf[i] * buf[i]; } return 10 * Math.log10(s / buf.length + 1e-12); };
-      /* 8a: the master meter - what is heard, RMS and its peak, while the patch panel is open */
-      var masterTick = function () {
-        if (core !== me) { return; }
-        requestAnimationFrame(masterTick);
-        if ($("#patchpanel").hidden || document.hidden) { return; }
-        an.getFloatTimeDomainData(buf); var s2 = 0, pk = 0;
-        for (var i = 0; i < buf.length; i++) { s2 += buf[i] * buf[i]; var av = Math.abs(buf[i]); if (av > pk) { pk = av; } }
-        meterSet($("#pp-master"), core.on ? 10 * Math.log10(s2 / buf.length + 1e-12) : -120, core.on ? 20 * Math.log10(pk + 1e-12) : -120);
-      };
-      requestAnimationFrame(masterTick);
+      me.an = an; me.abuf = buf; masterStart();   /* 8a: the master meter reads this analyser */
       if (core !== me) { node.disconnect(); return; }       /* replaced while it loaded (lab mode turned) */
       core.node = node; core.gain = gain;
       window.__fa.coreWasm = wasmUrl; window.__fa.coreNodes = (window.__fa.coreNodes || 0) + 1;
@@ -8341,6 +8332,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     coreButton(false);
     coreRamp(0, SOUND_FADE_OUT);
     if (typeof labLiveUpdate === "function") { labLiveUpdate(null); }     /* 3c.1: nothing sounds - no notes, no level */
+    core.point = null; meterSet($("#rp-meter"), -120);                    /* 8a review I1: nor the open point */
     setTimeout(function () { if (core && !core.on) { core.ctx.suspend(); releaseAwakeIfUnneeded(); } }, SOUND_FADE_OUT * 1000 + 80);
   }
   function coreRamp(to, seconds) {
@@ -8469,6 +8461,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   window.__fa.roleSends = 0;     /* role buffers sent to the engine (tests: a control move sends none) */
   /* test hooks (6a): the engine's last roles (8 floats a voice: level dB, note count, notes); a route's patch edited as a
      panel control would; the panel's voices read again from the patch */
+  window.__fa.redrawPointPanel = function () { renderRhythmPanel(); return 1; };   /* test hook: what an edit like Generate does */
   window.__fa.corePoint = function () { return core && core.point ? { db: core.point.db, grains: core.point.grains } : null; };   /* 8a */
   window.__fa.coreRoles = function () { return core && core.roles ? Array.prototype.slice.call(core.roles) : null; };
   window.__fa.patchEdit = function (id, fn) { var f = feature(id); if (!f) { return false; } var p = patchOf(f); fn(p); commitPatch(f, p); labChanged(); return true; };
@@ -8564,10 +8557,25 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   /* test hook: go to a park, as picking it in the place list does */
   window.__fa.goPlace = function (id) { var p = places.filter(function (x) { return x.properties.id === id; })[0]; return p ? setPlace(p).then(function () { return true; }) : false; };
   /* 8a: the open point (the engine reports its level and recent grains with each live read) */
+  /* 8a: the master meter - what is heard, RMS and its peak - drawn only while the patch panel is open (review M3: a phone
+     walking with the panel shut does no work) */
+  var masterRAF = null;
+  function masterStart() { if (!masterRAF && core && core.an && !$("#patchpanel").hidden) { masterRAF = requestAnimationFrame(masterTick); } }
+  function masterTick() {
+    masterRAF = null;
+    if (!core || !core.an || $("#patchpanel").hidden) { return; }
+    masterRAF = requestAnimationFrame(masterTick); window.__fa.masterTicks = (window.__fa.masterTicks || 0) + 1;
+    if (document.hidden) { return; }
+    var an = core.an, buf = core.abuf, s2 = 0, pk = 0;
+    an.getFloatTimeDomainData(buf);
+    for (var i = 0; i < buf.length; i++) { s2 += buf[i] * buf[i]; var av = Math.abs(buf[i]); if (av > pk) { pk = av; } }
+    meterSet($("#pp-master"), core.on ? 10 * Math.log10(s2 / buf.length + 1e-12) : -120, core.on ? 20 * Math.log10(pk + 1e-12) : -120);
+  }
   function coreWatch(id) {
     if (!core) { return; }
+    if ((id || "") === core.watch && core.node) { return; }   /* the same point drawn again: keep its meter (8a review M2) */
     core.watch = id || ""; core.point = null;
-    if (core.node) { core.node.port.postMessage({ type: "watch", id: core.watch }); }
+    if (core.node) { core.node.port.postMessage({ type: "watch", id: core.watch }); window.__fa.watchPosts = (window.__fa.watchPosts || 0) + 1; }
     meterSet($("#rp-meter"), -120);
   }
   function meterSet(el, db, peak) {
@@ -8635,7 +8643,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       core.live = m;
       window.__fa.coreLive = m;
       if (m.roles) { core.roles = m.roles; labLiveUpdate(m.roles); }       /* 3c.1 F4: each role's notes and level */
-      if (m.point) {   /* 8a: the open point's level and its recent grains */
+      if (m.point && core.on) {   /* 8a: the open point's level and its recent grains (not during the fade after Stop: review I1) */
         var gr = []; for (var gi = 0; gi < m.point[1]; gi++) { gr.push({ age: m.point[2 + 3 * gi], pos: m.point[3 + 3 * gi], len: m.point[4 + 3 * gi] }); }
         core.point = { db: m.point[0], grains: gr, t: performance.now() };
         if (!$("#rhythmpanel").hidden) { meterSet($("#rp-meter"), m.point[0]); }
@@ -12358,6 +12366,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        touching it. */
     var sections = [], cur = null, totalRows = 0;
     var lab = samplersOn();
+    masterStart();   /* 8a */
     (lab ? labFields(PATCH_FIELDS, patch, f) : PATCH_FIELDS).forEach(function (fl) {
       if (fl.sec) { cur = { title: fl.sec, col: fl.col, rows: [] }; sections.push(cur); return; }
       if (!cur) { cur = { title: "", rows: [] }; sections.push(cur); }

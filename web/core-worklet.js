@@ -127,7 +127,7 @@ class FieldscapeEngine extends AudioWorkletProcessor {
     this.liveEvery = Math.max(1, Math.round(sampleRate / 128 / 30)); this.liveN = 0;
     this.morphs = x.malloc(7 * 24 * 8); this.nums = x.malloc(24); this.label = x.malloc(32);
     this.rolesP = x.fs_engine_roles ? x.malloc(4 * 24) : 0;     /* 3c.1: each role's level and notes (lab build only) */
-    this.pointP = x.fs_engine_point ? x.malloc(4 * (2 + 3 * 32)) : 0; this.watching = false;   /* 8a: the open point's level, grains */
+    this.pointP = x.fs_engine_point ? x.malloc(4 * (2 + 3 * 96)) : 0; this.watching = false;   /* 8a: the open point's level, grains */
     this.port.onmessage = (ev) => {
       const m = ev.data;
       try {
@@ -189,7 +189,7 @@ class FieldscapeEngine extends AudioWorkletProcessor {
     if (this.rolesP) { x.fs_engine_roles(this.e, this.rolesP, 6); roles = new Float32Array(24); roles.set(new Float32Array(x.memory.buffer, this.rolesP, 24)); }
     let point = null;
     if (this.pointP && this.watching) {
-      const c = x.fs_engine_point(this.e, this.pointP, 32);
+      const c = x.fs_engine_point(this.e, this.pointP, 96);
       if (c >= 0) { point = new Float32Array(2 + 3 * c); point.set(new Float32Array(x.memory.buffer, this.pointP, 2 + 3 * c)); }
     }
     const tr = [m.buffer]; if (roles) { tr.push(roles.buffer); } if (point) { tr.push(point.buffer); }

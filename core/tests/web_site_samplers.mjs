@@ -413,6 +413,15 @@ try {
   await ev("fsListen.sound()"); await sleep(800);
   let pdb = -120; for (let i = 0; i < 30 && pdb <= -60; i++) { await ev(`__fa.walkTo(${ptAt[0]}, ${ptAt[1]})`); await sleep(500); pdb = +(await ev("(document.querySelector('#rp-meter') || { dataset: {} }).dataset.db || -120")); }
   check("8a: a stretch point's panel has a level meter that moves while it plays", pdb > -60, pdb);
+  /* 8a review: re-drawing the panel (an edit) keeps watching the same point - the engine is not told again (M2) */
+  const wp0 = await ev("__fa.watchPosts || 0");
+  await ev("(function(){ var s = document.querySelector('#rp-body input[data-k=\"resonate\"]'); s.value = '0.65'; s.dispatchEvent(new Event('input')); renderRhythmPanel && 0; return 1; })()");
+  await ev("__fa.redrawPointPanel(), 0"); await sleep(300); await ev("__fa.redrawPointPanel(), 0"); await sleep(300);
+  check("8a: the same point's panel drawn again does not reset its meter (final review M2)", (await ev("__fa.watchPosts || 0")) === wp0, [wp0, await ev("__fa.watchPosts")]);
+  /* 8a review I1: sound stopped, the meter says so */
+  await ev("fsListen.sound()"); await sleep(1500);
+  check("8a: when sound stops the point meter falls silent, not frozen at its last level (final review I1)", +(await ev("(document.querySelector('#rp-meter') || { dataset: {} }).dataset.db || -120")) < -100, await ev("(document.querySelector('#rp-meter') || { dataset: {} }).dataset.db"));
+  await ev("fsListen.sound()"); await sleep(800);
   /* 8a: a grains point - its meter, and its grains on the waveform again */
   await until(`__fa.features().some(function (f) { return f.properties.id === '${PTG}'; })`, 20000);
   await ev(`fsListen.select('${PTG}'), 0`); await sleep(900);
@@ -432,6 +441,11 @@ try {
   await ev("fsListen.sound()"); await sleep(1500);
   const mdb0 = +(await ev("(document.querySelector('#pp-master') || { dataset: {} }).dataset.db || -120"));
   check("8a: the patch panel's master meter shows what is heard, and falls when sound stops", mdb > -60 && mdb0 < -100, [mdb, mdb0]);
+  /* 8a review M3: the master meter draws only while its panel is open (a phone walking with the panel shut does no work) */
+  await ev("document.querySelector('#pp-close').click(), 0"); await sleep(400);
+  const mt0 = await ev("__fa.masterTicks || 0"); await sleep(1200); const mt1 = await ev("__fa.masterTicks || 0");
+  check("8a: with the patch panel closed the master meter's drawing stops (final review M3)", mt1 === mt0, [mt0, mt1]);
+  await openPanel(DRAFT);
 
   /* final review 6a I2: Reset to default stays reset - the next sampler or EQ touch writes no old sampler back */
   await openPanel(DRAFT); await until(`__fa.rolesFor === '${DRAFT}'`, 8000);
