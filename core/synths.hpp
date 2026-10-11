@@ -57,6 +57,16 @@ struct Synth {
     /* applyTimbre's destinations: which 0 = harm, 1 = index */
     virtual void timbre(int which, double v, double ramp, double now) = 0;
     virtual void render(float *L, float *R, int n, double t0) = 0;
+    /* 8b: a voice's own note envelope (its "env"), or - null - the instrument's own back, as it was when first shaped */
+    virtual Envelope *amp() { return nullptr; }
+    EnvSpec own{}; bool own_kept = false, user_env = false;
+    virtual void shape(const EnvSpec *e) {
+        user_env = e != nullptr;
+        Envelope *v = amp(); if (!v) return;
+        if (!own_kept) { own = EnvSpec{ v->attack, v->decay, v->sustain, v->release, v->attack_exp, v->release_exp }; own_kept = true; }
+        const EnvSpec &u = e ? *e : own;
+        v->set(u.a, u.d, u.s, u.r, own.aexp, own.rexp);
+    }
 };
 
 /* ---- ModulationSynth / FMSynth / AMSynth: carrier and modulator Synths at -10 dB each ---- */
@@ -66,6 +76,7 @@ struct ModSynth : Synth {
     Envelope env, menv;
     Param freq;
     Ctl harm, index;
+    Envelope *amp() override { return &env; }
     void init(double s) override {
         Synth::init(s);
         env.init(s); menv.init(s);
@@ -107,6 +118,7 @@ struct ModSynth : Synth {
 struct MonoSynth : Synth {
     Osc osc;
     Envelope env, fenv;
+    Envelope *amp() override { return &env; }
     Param freq;
     Ctl Q, detune;
     Biquad bq;
@@ -167,6 +179,7 @@ struct DuoSynth : Synth {
         harm.init(1.5); amount.init(0.5);
     }
     void set(const Settings &st) override { harm.p.set(st.harm, 0); harm.a = harm.b = (float)st.harm; }
+    void shape(const EnvSpec *e) override { v0.shape(e); v1.shape(e); }   /* 8b: both voices */
     void attack(double f, double t, double vel) override {
         v0.env.triggerAttack(t, vel); v0.fenv.triggerAttack(t); v1.env.triggerAttack(t, vel); v1.fenv.triggerAttack(t);
         v0.freq.setValueAtTime(f, t); v1.freq.setValueAtTime(f, t);
@@ -193,6 +206,7 @@ struct DuoSynth : Synth {
 struct SimpleSynth : Synth {
     Osc osc;
     Envelope env;
+    Envelope *amp() override { return &env; }
     Param freq;
     Ctl detune;
     void init(double s) override {
@@ -208,7 +222,7 @@ struct SimpleSynth : Synth {
     void attack(double f, double t, double vel) override { env.triggerAttack(t, vel); freq.setValueAtTime(f, t); }
     void release(double t) override { env.triggerRelease(t); }
     void timbre(int which, double v, double ramp, double now) override {
-        if (which == 0) detune.p.linearRampTo(v, ramp, now); else env.release = v;
+        if (which == 0) detune.p.linearRampTo(v, ramp, now); else if (!user_env) env.release = v;   /* 8b: a voice's own envelope has the release */
     }
     void render(float *L, float *R, int n, double t0) override {
         double te = t0 + n / sr;
@@ -241,6 +255,7 @@ struct Noise {
 struct NoiseSynth : Synth {
     Noise noise;
     Envelope env;
+    Envelope *amp() override { return &env; }
     double (*rnd)(void *) = nullptr; void *rnd_ctx = nullptr;
     void init(double s) override { Synth::init(s); env.init(s); noise.init(); }
     void attack(double, double t, double vel) override { env.triggerAttack(t, vel); noise.gate(t, 1e300, rnd(rnd_ctx)); }
@@ -274,6 +289,8 @@ struct PluckSynth : Synth {
         lfcf.resonance.p.setValueAtTime(resonance, t);
     }
     void release(double t) override { lfcf.resonance.p.linearRampTo(0, release_s, t); }
+    /* 8b: a plucked string is its own attack and decay - the envelope's release is how long it rings on after */
+    void shape(const EnvSpec *e) override { if (!own_kept) { own.r = release_s; own_kept = true; } release_s = e ? e->r : own.r; }
     void timbre(int which, double v, double, double) override {
         if (which == 0) { dampening = v; lfcf.lp.set(v, sr); } else resonance = v;
     }
@@ -291,6 +308,7 @@ struct PluckSynth : Synth {
 struct MetalSynth : Synth {
     Osc car[6], mod[6];
     Envelope env;
+    Envelope *amp() override { return &env; }
     Param freq;
     Biquad hp[2];
     double harmonicity = 5.1, modulationIndex = 32, resonance = 4000, octaves = 1.5;
@@ -371,6 +389,7 @@ struct WavetableVoice : Followed {
     Osc a, b;
     Ctl ga, gb;
     Envelope env;
+    Envelope *amp() override { return &env; }
     Param freq;
     Filter tone;
     int idx = -1;
@@ -415,6 +434,7 @@ struct CombVoice : Followed {
     Noise noise;
     Filter exc;
     Envelope env;
+    Envelope *amp() override { return &env; }
     LowpassComb comb;
     double (*rnd)(void *) = nullptr; void *rnd_ctx = nullptr;
     void init(double s) override {
@@ -457,6 +477,7 @@ struct FormantVoice : Followed {
     Filter tilt, bp[5];
     Ctl g[5], sum;
     Envelope env;
+    Envelope *amp() override { return &env; }
     Param freq;
     void init(double s) override {
         Synth::init(s);

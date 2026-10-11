@@ -2344,6 +2344,50 @@ int main() {
         std::printf("\n");
         assert(worst > -10);
     }
+    {   /* 8b (Kerem 2026-10-11: "I want an envelope graph in the route patch voices, like the grains have one, so I can adjust
+           the envelope of notes"): a voice's "env": [attack s, decay s, sustain 0..1, release s] reaches whatever plays it -
+           every digital synth with an amplitude envelope and the samplers. Measured on the Voice's own level (fs_piece_roles):
+           a slow attack (1.5 s) rises slowly; a low sustain after a short decay sits lower; a long release rings longer; an
+           absent env and "env": null are as before */
+        std::vector<float> nz = noise_src(20, 0.5f, 5); const float *np[1] = { nz.data() };
+        auto run = [&](const char *synth, const char *env, std::vector<float> *out = nullptr, bool sect = false) {
+            unsigned seed = 77; fs_device *d = fs_create("piece"); fs_prepare(d, 48000, 128); fs_piece_test_hooks(d, fixed_draw, &seed, nullptr, nullptr);
+            fs_piece_role_source(d, sect ? 1 : 0, 1, (long long)nz.size(), np);
+            const std::string me = std::string("{\"synth\":\"") + synth + "\"" + (env ? std::string(",\"env\":") + env : std::string()) + "}";
+            std::string js = std::string("{\"version\":17,\"prog\":[{\"r\":0,\"q\":\"m9\"},{\"r\":5,\"q\":\"maj7#11\"}],\"morph\":{\"on\":false,\"list\":[]},\"bed\":{\"on\":false},\"zones\":{\"on\":false},\"v3\":{\"on\":false},")
+                + (sect ? "\"voice\":{\"on\":false},\"sect\":" + me : "\"sect\":{\"on\":false},\"voice\":" + me) + "}";
+            const int r = fs_piece_add_route(d, js.c_str()); fs_piece_walk(d, r, 0.3, 0);
+            std::vector<double> lv; float ro[3 * (2 + 8)];
+            for (int i = 0; i < (int)(12 * SR / 128); i++) { fs_process(d, 128); if (out) { const float *l = fs_out(d, 0); out->insert(out->end(), l, l + 128); }
+                fs_piece_roles(d, ro, 8); lv.push_back(std::pow(10.0, ro[sect ? 2 + 8 : 0] / 20)); }
+            fs_destroy(d); return lv; };
+        auto rise = [&](const std::vector<double> &lv) {   /* the largest rise of the Voice's level in 0.1 s, against its peak */
+            const int w = (int)(0.1 * SR / 128); double pk = 1e-12, best = 0;
+            for (double x : lv) pk = std::fmax(pk, x);
+            for (size_t i = w; i < lv.size(); i++) best = std::fmax(best, lv[i] - lv[i - w]);
+            return best / pk; };
+        auto mean_db = [](const std::vector<double> &lv) { double e = 0; for (size_t i = lv.size() / 4; i < lv.size(); i++) e += lv[i] * lv[i]; return 10 * std::log10(e / (lv.size() * 3 / 4) + 1e-30); };
+        auto p10_db = [](std::vector<double> lv) {   /* the quiet moments: the level 10 % of the time is under (gaps filled or not) */
+            lv.erase(lv.begin(), lv.begin() + lv.size() / 4); std::sort(lv.begin(), lv.end()); return 20 * std::log10(lv[lv.size() / 10] + 1e-6); };
+        bool all = true;
+        for (const char *sy : { "fm", "am", "duo", "mono", "simple", "metal", "membrane", "wavetable", "comb", "formant", "s-resonator", "s-harmonic", "s-retune" }) {
+            const bool perc = !std::strcmp(sy, "metal") || !std::strcmp(sy, "membrane");   /* no sustain of their own to lower */
+            const bool metal = !std::strcmp(sy, "metal");   /* its high-pass follows its envelope: its level is not the envelope's */
+            std::vector<float> o0, o1;
+            const auto a0 = run(sy, nullptr, &o0); run(sy, "null", &o1);
+            const auto slow = run(sy, "[1.5,0.1,1,0.6]");
+            const auto low = run(sy, "[0.01,0.15,0.1,0.6]"), full = run(sy, "[0.01,0.15,1,0.6]");
+            /* release on the Second voice: its notes are short, with gaps (the Voice holds its bass under the chord) */
+            const auto shortr = run(sy, "[0.01,0.1,1,0.05]", nullptr, true), longr = run(sy, "[0.01,0.1,1,4]", nullptr, true);
+            const double r0 = rise(a0), r1 = rise(slow), dlow = mean_db(full) - mean_db(low), drel = p10_db(longr) - p10_db(shortr);
+            /* a resonating sampler builds slowly by itself (as it was 0.21): there a slow attack is under 0.2 */
+            const bool ok = o0 == o1 && (perc ? r1 < 0.8 * r0 : r1 < 0.4 && (r1 < 0.6 * r0 || r1 < 0.2)) && (perc || dlow > 6) && (metal || drel > 6);
+            std::printf("8b env %-11s: rise in 0.1 s %.2f as it was, %.2f at a 1.5 s attack; sustain 0.1 %.1f dB under 1; quiet moments at release 4 s %.1f dB over 0.05 s (Second voice); null as before %d%s\n",
+                sy, r0, r1, dlow, drel, (int)(o0 == o1), ok ? "" : "  <- FAIL");
+            all = all && ok;
+        }
+        assert(all);
+    }
     {   /* 8d (Kerem 2026-10-11: "a low end boost section ... creates also low end for these good high end partials (but not
            boomy, I want good bass pitches like partials)"): a stretch of noise with no bass (high-passed at 400 Hz) on D minor -
            Low end adds bass partials one or two octaves under the chord, struck by the recording - a real share of the sound

@@ -97,6 +97,11 @@ try {
       const fit = JSON.parse(await ev("JSON.stringify((function(){ var pp = document.getElementById('patchpanel'), b = document.getElementById('pp-body'); return { page: document.documentElement.scrollHeight - innerHeight, panel: pp.scrollHeight - pp.clientHeight, body: b.scrollHeight - b.clientHeight }; })())"));
       check(p("the whole panel fits one screen"), fit.page === 0 && fit.panel <= 0 && fit.body <= 0, fit);
       await shot("desk-patch");
+      /* 8b: a voice's envelope graph opens over its column and stays on screen */
+      const envFit = JSON.parse(await ev("JSON.stringify((function(){ var b = document.getElementById('pp-v3-envbtn'); if (!b) return null; b.click(); var p = document.getElementById('pp-env-pop'); if (!p) return null; var r = p.getBoundingClientRect(); return { bottom: r.bottom, right: r.right, h: innerHeight, w: innerWidth }; })())"));
+      check(p("8b: a voice's envelope graph opens on screen"), !!envFit && envFit.bottom <= envFit.h && envFit.right <= envFit.w, envFit);
+      await shot("desk-patch-env");
+      await ev("(function(){ document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); return 1; })()");
     } else {
       check(p("the phone panel has five tabs"), (await ev("[].map.call(document.querySelectorAll('#pp-tabs [data-tab]'), function (b) { return b.textContent; }).join(' ')")) === "Chords Voices Effects Morphs Rhythm", await ev("(document.querySelector('#pp-tabs')||{}).textContent"));
       for (const tab of ["chords", "voices", "effects", "morphs", "rhythm"]) {

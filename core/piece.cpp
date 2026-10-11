@@ -172,6 +172,7 @@ struct Patch {
     int tuning = -1;   /* "just" 1, "equal" 0, absent -1: the piece's default (sample harmony) */
     SamplerCfg smp[3];  /* voice, sect, v3: their "sampler" object (3a) */
     double eq[3][5][3] = {};   /* 6 (lab): each role's EQ, [band][Hz, dB, Q]; an absent "eq" is flat */
+    EnvSpec env[3] = {}; bool env_on[3] = {};   /* 8b: each voice's note envelope; absent or null: the instrument's own */
 };
 static SamplerCfg smp_of(const Json *role) {
     SamplerCfg c; const Json *j = role ? role->get("sampler") : nullptr;
@@ -254,6 +255,13 @@ static void patch_of(const Json *p, Patch &P) {
             for (int k = 0; k < 5; k++) {
                 const Json *b = e ? e->at(k) : nullptr; const Json *f = b ? b->at(0) : nullptr, *g = b ? b->at(1) : nullptr, *qq = b ? b->at(2) : nullptr;
                 P.eq[q][k][0] = f ? f->num : F[k]; P.eq[q][k][1] = g ? g->num : 0; P.eq[q][k][2] = qq ? qq->num : Q[k];
+            }
+            /* 8b: "env": [attack s, decay s, sustain, release s] */
+            const Json *ev = rj[q] ? rj[q]->get("env") : nullptr; P.env_on[q] = false;
+            if (ev && ev->kind == Json::ARR && ev->size() >= 4 && ev->at(0)->kind == Json::NUM && ev->at(1)->kind == Json::NUM && ev->at(2)->kind == Json::NUM && ev->at(3)->kind == Json::NUM) {
+                auto cl = [](double x, double lo, double hi) { return std::isfinite(x) ? std::max(lo, std::min(hi, x)) : lo; };
+                P.env[q] = EnvSpec{ cl(ev->at(0)->num, 0.002, 8), cl(ev->at(1)->num, 0.005, 8), cl(ev->at(2)->num, 0, 1), cl(ev->at(3)->num, 0.01, 12), false, true };
+                P.env_on[q] = true;
             }
         }
     }
@@ -703,6 +711,11 @@ struct Piece : Device {
         sectr.st = role_settings(p.sect.harm, p.sect.index, SINE, TRIANGLE, { 0.012, 0.35, 0.18, 1.1, false, true }, { 0.04, 0.5, 0.1, 0.8, false, true });
         v3r.st = role_settings(p.v3.harm, p.v3.index, TRIANGLE, SINE, { 0.5, 1.2, 0.6, 3.2, false, true }, { 1.2, 1.6, 0.4, 2.4, false, true });
     }
+    /* 8b: the role's voice envelope onto what plays it (rec is the voice: 0 the Voice's bass and top, 1 sect, 2 v3) */
+    void shape_role(Role &r) {
+        Synth *s = r.sy(); if (!s || r.rec < 0 || r.rec > 2) return;
+        s->shape(patch.env_on[r.rec] ? &patch.env[r.rec] : nullptr);
+    }
     /* swapSynth */
     void swap(Role &r, int type, double now) {
         if (r.cur == type && r.cur >= 0) return;
@@ -714,6 +727,7 @@ struct Piece : Device {
         Synth *s = r.inst[type].get();
         if (!s) return;
         s->set(r.st);              /* a SELF_VOICED synth reads only the two numbers */
+        shape_role(r);             /* 8b */
         /* Kerem 2026-10-06: "Second voice should be louder in general for samplers" - on its short sector notes a sampler sat
            3.4-6.2 dB under the same sampler on the Voice (measured); +7 dB puts every one at or above it */
         const double smp_db = is_sampler(type) && &r == &sectr ? 7 : 0;
@@ -811,6 +825,7 @@ struct Piece : Device {
         if (bass.cur != p.voice.synth) { swap(bass, p.voice.synth, now); swap(top, p.voice.synth, now); H.held = false; }
         if (sectr.cur != p.sect.synth) swap(sectr, p.sect.synth, now);
         if (v3r.cur != p.v3.synth) swap(v3r, p.v3.synth, now);
+        for (Role *r : { &bass, &top, &sectr, &v3r }) shape_role(*r);   /* 8b: a changed envelope on the same instrument */
         fx2.apply(p.fx2, p.tempo, now);
         if (sect_div != p.sect.rhythm.s) { sect_div = p.sect.rhythm.s; C.tick = 0; }
         apply_rhythm_fx(p, now);
