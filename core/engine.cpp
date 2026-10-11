@@ -77,6 +77,7 @@ struct fs_engine {
     std::vector<std::string> rhythm_names;
     std::string route_name;
     std::string solo;                 /* Listen: that point alone ("" none) */
+    std::string watch; double watch_ms = 0;   /* 8a: the point whose panel is open - its level for the meter */
     double now() const { return (double)frames / sr; }
 };
 
@@ -453,7 +454,28 @@ void fs_engine_source_track(fs_engine *e, int kind, int index, int sub, const ch
         fs_piece_rhythm_track(e->piece, index, sub, json);
     }
 }
-void fs_engine_process(fs_engine *e, int frames) { fs_mix_process(e->mix, frames); e->frames += frames; }
+void fs_engine_process(fs_engine *e, int frames) {
+    fs_mix_process(e->mix, frames); e->frames += frames;
+    if (!e->watch.empty()) {   /* 8a: a stretch point's own sound at its own gain, ~0.1 s mean square - not where the walker stands */
+        double ms = 0, own = 1; bool found = false;
+        for (auto &p : e->points) if (p.id == e->watch) { own = p.gain; break; }
+        for (auto &s : e->slot) if (s.active && s.id == e->watch) {
+            const float *l = fs_out(s.dev, 0), *r = fs_out(s.dev, 1); found = true;
+            for (int i = 0; i < frames; i++) ms += 0.5 * ((double)l[i] * l[i] + (double)r[i] * r[i]);
+        }
+        ms *= own * own;
+        e->watch_ms += ((found ? ms / std::max(1, frames) : 0) - e->watch_ms) * (1 - std::exp(-frames / (0.1 * e->sr)));
+    }
+}
+/* 8a: the point the screen shows; its level (and a rhythm point's recent grains) through fs_engine_point */
+void fs_engine_watch(fs_engine *e, const char *id) { e->watch = id ? id : ""; e->watch_ms = 0; }
+int fs_engine_point(fs_engine *e, float *out, int max) {
+    if (e->watch.empty() || !out) return -1;
+    auto h = e->handle.find(e->watch);
+    if (h != e->handle.end()) return fs_piece_point(e->piece, h->second, out, max);
+    out[0] = (float)std::fmax(-120.0, 10 * std::log10(e->watch_ms + 1e-30)); out[1] = 0;
+    return 0;
+}
 float *fs_engine_out(fs_engine *e, int ch) { return fs_mix_out(e->mix, ch); }
 const char *fs_engine_state(fs_engine *e) { return e->state.c_str(); }
 void fs_engine_solo(fs_engine *e, const char *id) { e->solo = id ? id : ""; }

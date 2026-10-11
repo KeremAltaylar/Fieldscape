@@ -1319,6 +1319,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 }
 .ppcol { min-width: 0; }
 .ppcol h2:first-child { margin-top: 0; }
+@media (min-width: 1000px) { .ppcol h2 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } }   /* 8a: a heading is one line on the desk */
 
 #pp-body h2, #rp-body h2 { margin: var(--s-2) 0 var(--s-1); break-after: avoid; }
 /* A column that opens on a module lines its heading up with the plain headings beside it. */
@@ -1326,14 +1327,24 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 #pp-body h2:first-child { margin-top: 0; }
 /* 3c.1: a sampler role's sample - upload, name, warning, waveform - the full width of its column */
 #pp-body .ppsample { display: grid; gap: 4px; margin: 2px 0 var(--s-1); min-width: 0; flex: 0 0 100%; box-sizing: border-box; }   /* a full row in the phone's wrapping columns too */
-#pp-body .ppsample-top > span { font-family: var(--font-mono); font-size: var(--t-xs); letter-spacing: 0.04em; text-transform: uppercase; color: var(--faint); }
+#pp-body .ppsample-top > span:first-child { font-family: var(--font-mono); font-size: var(--t-xs); letter-spacing: 0.04em; text-transform: uppercase; color: var(--faint); }
 #pp-body .ppsample-top button { padding: 1px var(--s-1); font-size: var(--t-xs); }
 #pp-body .ppsample-top { display: flex; align-items: center; justify-content: space-between; gap: var(--s-1); min-width: 0; }
-#pp-body .ppsample-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; font-size: var(--t-xs); color: var(--dim); }
+#pp-body .ppsample-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; font-size: var(--t-xs); color: var(--dim); }
+#pp-body .pppair-sel { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-1); min-width: 0; }
+#pp-body .pppair-sel select { min-width: 0; }
 #pp-body .ppsample-warn:empty { display: none; }
 #pp-body .ppsample-warn { color: var(--lamp); font-size: var(--t-xs); }
-#pp-body .ppsample-wave { width: 100%; height: 40px; display: block; cursor: pointer; }
+#pp-body .ppsample-wave { width: 100%; height: 28px; display: block; cursor: pointer; }
 #pp-body .ppcol { position: relative; }
+/* 8a: header meters - a point's own level (rhythm panel), the master out (patch panel); -60 ... 0 dB */
+.hdr-meter { display: inline-flex; align-items: center; gap: var(--s-1); margin-left: auto; margin-right: var(--s-2); font-family: var(--font-mono); font-size: var(--t-xs); color: var(--faint); }
+.hdr-meter > i { font-style: normal; text-transform: uppercase; letter-spacing: 0.04em; }
+.hdr-meter > b { position: relative; display: block; width: 7rem; height: 6px; background: var(--hairline); border-radius: 3px; overflow: hidden; }
+.hdr-meter > b > b { display: block; height: 100%; width: 0; background: var(--accent); transition: width 80ms linear; }
+.hdr-meter > b > s { position: absolute; top: 0; bottom: 0; width: 2px; left: 0; background: var(--lamp); text-decoration: none; }
+.hdr-meter > em { font-style: normal; min-width: 3.4em; text-align: right; color: var(--dim); }
+.hdr-meter.hot > b > b { background: var(--lamp); }
 #pp-body .ppeq-btn { display: block; width: 100%; height: 1.4rem; padding: 0 2px; background: transparent; border: 1px solid var(--hairline); border-radius: 2px; cursor: pointer; }
 #pp-body .ppeq-btn svg { width: 100%; height: 100%; display: block; }
 #pp-body .ppeq-btn path { fill: none; stroke: var(--faint); stroke-width: 1.4; }
@@ -1387,7 +1398,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 /* Two class names, not one: .ppgrid is declared after this and at equal specificity would
    win the column count back. W-7, again. */
 .ppgrid.ppproggrid { grid-template-columns: repeat(16, minmax(0, 1fr)); gap: var(--s-1); }
-@media (max-width: 1500px) {
+@media (max-width: 1399px) {   /* 8a: one row of sixteen from 1400 px (two rows took ~85 px the sampler voices need) */
   .ppgrid.ppproggrid { grid-template-columns: repeat(8, minmax(0, 1fr)); }
 }
 @media (max-width: 900px) {
@@ -1949,6 +1960,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   <div id="rhythmpanel" hidden>
     <div class="viewerbar">
       <span id="rp-title">Rhythm</span>
+      <span class="hdr-meter" id="rp-meter" title="This point's level" aria-label="This point's level"><i>level</i><b><b></b></b><em></em></span>
       <button type="button" id="rp-reset" class="ghost">Reset to default</button>
       <button type="button" id="rp-close">Close</button>
     </div>
@@ -1958,6 +1970,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   <div id="patchpanel" hidden>
     <div class="viewerbar">
       <span id="pp-title">Patch</span>
+      <span class="hdr-meter" id="pp-master" title="Everything you hear, out" aria-label="Master out"><i>master</i><b><b></b><s></s></b><em></em></span>
       <button type="button" id="pp-reset" class="ghost">Reset to default</button>
       <button type="button" id="pp-close">Close</button>
     </div>
@@ -5840,6 +5853,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     /* What actually played. Newest brightest; a grain's own length is its width, so a
        500ms grain of a four-second file reads as a wide mark and a 20ms one as a hair. */
     var R = (bed && bed.rhythms) ? bed.rhythms[f.properties.id] : null;
+    if (core && core.point && core.watch === f.properties.id) {   /* 8a: the core engine's grains, as it played them */
+      var P = core.point;
+      R = { recent: P.grains.map(function (q) { return { at: P.t - q.age * 1000, pos: q.pos, len: q.len, a: g.attack, d: g.decay, s: g.sustain, r: g.release }; }) };
+    }
     if (!R || !R.recent) { return; }
     var now = performance.now();
     var mid = h / 2, amp = h / 2 - 1;
@@ -5944,6 +5961,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var r = rhythmOf(f), q = soundOf(f), body = $("#rp-body");
     $("#rp-title").textContent = "Sound · " + MODE_LABEL[modeOf(f)] + " · " + label(f);
     body.textContent = "";
+    coreWatch(f.properties.id);   /* 8a: its meter, its grains on the waveform */
 
     /* Every point has a presence whether or not it has anything to play, so This point is the
        first column of all three panels and the sound is what may be missing. */
@@ -6725,7 +6743,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     $("#rhythmpanel").hidden = false;
     renderRhythmPanel();
   });
-  $("#rp-close").addEventListener("click", function () { $("#rhythmpanel").hidden = true; });
+  $("#rp-close").addEventListener("click", function () { $("#rhythmpanel").hidden = true; coreWatch(""); });
   $("#rp-reset").addEventListener("click", function () {
     var f = feature(selected);
     if (!f) { return; }
@@ -8291,10 +8309,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var an = ctx.createAnalyser(); an.fftSize = 4096; gain.connect(an);
       var buf = new Float32Array(an.fftSize);
       window.__fa.coreLevel = function () { an.getFloatTimeDomainData(buf); var s = 0; for (var i = 0; i < buf.length; i++) { s += buf[i] * buf[i]; } return 10 * Math.log10(s / buf.length + 1e-12); };
+      me.an = an; me.abuf = buf; masterStart();   /* 8a: the master meter reads this analyser */
       if (core !== me) { node.disconnect(); return; }       /* replaced while it loaded (lab mode turned) */
       core.node = node; core.gain = gain;
       window.__fa.coreWasm = wasmUrl; window.__fa.coreNodes = (window.__fa.coreNodes || 0) + 1;
       node.port.onmessage = coreMessage;
+      if (!$("#rhythmpanel").hidden && selected) { setTimeout(function () { coreWatch(selected); }, 0); }   /* 8a: a panel already open */
       var enc = new TextEncoder(), feats = visible();
       node.port.postMessage({ type: "places", bytes: enc.encode(JSON.stringify({ type: "FeatureCollection", features: places })) });
       node.port.postMessage({ type: "features", bytes: enc.encode(JSON.stringify({ type: "FeatureCollection", features: feats })) });
@@ -8312,6 +8332,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     coreButton(false);
     coreRamp(0, SOUND_FADE_OUT);
     if (typeof labLiveUpdate === "function") { labLiveUpdate(null); }     /* 3c.1: nothing sounds - no notes, no level */
+    core.point = null; meterSet($("#rp-meter"), -120);                    /* 8a review I1: nor the open point */
     setTimeout(function () { if (core && !core.on) { core.ctx.suspend(); releaseAwakeIfUnneeded(); } }, SOUND_FADE_OUT * 1000 + 80);
   }
   function coreRamp(to, seconds) {
@@ -8440,6 +8461,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   window.__fa.roleSends = 0;     /* role buffers sent to the engine (tests: a control move sends none) */
   /* test hooks (6a): the engine's last roles (8 floats a voice: level dB, note count, notes); a route's patch edited as a
      panel control would; the panel's voices read again from the patch */
+  window.__fa.redrawPointPanel = function () { renderRhythmPanel(); return 1; };   /* test hook: what an edit like Generate does */
+  window.__fa.corePoint = function () { return core && core.point ? { db: core.point.db, grains: core.point.grains } : null; };   /* 8a */
   window.__fa.coreRoles = function () { return core && core.roles ? Array.prototype.slice.call(core.roles) : null; };
   window.__fa.patchEdit = function (id, fn) { var f = feature(id); if (!f) { return false; } var p = patchOf(f); fn(p); commitPatch(f, p); labChanged(); return true; };
   window.__fa.reloadSession = function () { if (labRoles) { labRoles.loadedFor = null; } if (!$("#patchpanel").hidden) { renderPatchPanel(); } labKey = {}; labSentFor = null; labChanged(); };
@@ -8533,6 +8556,37 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   window.__fa.features = function () { return visible(); };
   /* test hook: go to a park, as picking it in the place list does */
   window.__fa.goPlace = function (id) { var p = places.filter(function (x) { return x.properties.id === id; })[0]; return p ? setPlace(p).then(function () { return true; }) : false; };
+  /* 8a: the open point (the engine reports its level and recent grains with each live read) */
+  /* 8a: the master meter - what is heard, RMS and its peak - drawn only while the patch panel is open (review M3: a phone
+     walking with the panel shut does no work) */
+  var masterRAF = null;
+  function masterStart() { if (!masterRAF && core && core.an && !$("#patchpanel").hidden) { masterRAF = requestAnimationFrame(masterTick); } }
+  function masterTick() {
+    masterRAF = null;
+    if (!core || !core.an || $("#patchpanel").hidden) { return; }
+    masterRAF = requestAnimationFrame(masterTick); window.__fa.masterTicks = (window.__fa.masterTicks || 0) + 1;
+    if (document.hidden) { return; }
+    var an = core.an, buf = core.abuf, s2 = 0, pk = 0;
+    an.getFloatTimeDomainData(buf);
+    for (var i = 0; i < buf.length; i++) { s2 += buf[i] * buf[i]; var av = Math.abs(buf[i]); if (av > pk) { pk = av; } }
+    meterSet($("#pp-master"), core.on ? 10 * Math.log10(s2 / buf.length + 1e-12) : -120, core.on ? 20 * Math.log10(pk + 1e-12) : -120);
+  }
+  function coreWatch(id) {
+    if (!core) { return; }
+    if ((id || "") === core.watch && core.node) { return; }   /* the same point drawn again: keep its meter (8a review M2) */
+    core.watch = id || ""; core.point = null;
+    if (core.node) { core.node.port.postMessage({ type: "watch", id: core.watch }); window.__fa.watchPosts = (window.__fa.watchPosts || 0) + 1; }
+    meterSet($("#rp-meter"), -120);
+  }
+  function meterSet(el, db, peak) {
+    if (!el) { return; }
+    var w = function (d) { return Math.max(0, Math.min(100, (d + 60) / 60 * 100)); };
+    el.querySelector("b > b").style.width = w(db) + "%";
+    var pk = el.querySelector("b > s"); if (pk) { pk.style.left = "calc(" + w(peak === undefined ? db : peak) + "% - 2px)"; }
+    el.querySelector("em").textContent = db > -60 ? Math.round(db) + " dB" : "";
+    el.classList.toggle("hot", (peak === undefined ? db : peak) > -3);
+    el.dataset.db = String(Math.round(db));
+  }
   function coreMessage(ev) {
     var m = ev.data, dec = new TextDecoder();
     if (m.type === "need") {
@@ -8589,6 +8643,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       core.live = m;
       window.__fa.coreLive = m;
       if (m.roles) { core.roles = m.roles; labLiveUpdate(m.roles); }       /* 3c.1 F4: each role's notes and level */
+      if (m.point && core.on) {   /* 8a: the open point's level and its recent grains (not during the fade after Stop: review I1) */
+        var gr = []; for (var gi = 0; gi < m.point[1]; gi++) { gr.push({ age: m.point[2 + 3 * gi], pos: m.point[3 + 3 * gi], len: m.point[4 + 3 * gi] }); }
+        core.point = { db: m.point[0], grains: gr, t: performance.now() };
+        if (!$("#rhythmpanel").hidden) { meterSet($("#rp-meter"), m.point[0]); }
+      }
       fsListen._changed();
     } else if (m.type === "error") {
       console.error("core engine: " + m.message);
@@ -11338,7 +11397,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      the list says so: "pad · damping" on a pluck, "pad · ratio" on FM. The destination is
      the same either way — it is the name that was hiding what it does. */
   function destLabel(k, patch) {
-    var base = k;
+    var base = MORPH_DESTS.some(function (d) { return d.k === k; }) ? k : "no parameter";   /* 2026-10-11: "undefined" saved by the old bug */
     for (var i = 0; i < MORPH_DESTS.length; i++) {
       if (MORPH_DESTS[i].k === k) { base = MORPH_DESTS[i].label; break; }
     }
@@ -11425,7 +11484,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   }
 
   var MORPH_SHAPES = ["drift", "breath", "pulse", "ramp", "tide"];
-  var MORPH_DESTS = ["voice.cutoff", "sect.cutoff", "sect.index", "voice.gain", "voice.index", "voice.harm", "voice.drive",
+  /* the core's DEST_KEYS order, by index (fs_engine_morphs) - its own name: a second MORPH_DESTS here replaced the panel's
+     {k, label} list, and every morph's destination menu went blank (2026-10-11) */
+  var MORPH_DEST_KEYS = ["voice.cutoff", "sect.cutoff", "sect.index", "voice.gain", "voice.index", "voice.harm", "voice.drive",
     "voice.warp", "sect.harm", "sect.drive", "sect.warp", "v3.cutoff", "v3.harm", "v3.index", "v3.drive", "v3.warp"];
   /* On the core the cells draw the engine's morphs (fs_engine_morphs), not the patch's list run on
      the page's own clock - since the core became the default (2026-09-26) that clock was wall time,
@@ -11436,7 +11497,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var out = [];
     for (var i = 0; i < Math.max(0, L.n); i++) {
       var b = 7 * i;
-      out.push({ id: "e" + i, on: true, shape: MORPH_SHAPES[L.morphs[b]] || "drift", dest: MORPH_DESTS[L.morphs[b + 2]] || "voice.cutoff",
+      out.push({ id: "e" + i, on: true, shape: MORPH_SHAPES[L.morphs[b]] || "drift", dest: MORPH_DEST_KEYS[L.morphs[b + 2]] || "voice.cutoff",
                  seed: L.morphs[b + 3], v: L.morphs[b + 4], dv: L.morphs[b + 5], ph: L.morphs[b + 6] });
     }
     return out;
@@ -12305,6 +12366,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        touching it. */
     var sections = [], cur = null, totalRows = 0;
     var lab = samplersOn();
+    masterStart();   /* 8a */
     (lab ? labFields(PATCH_FIELDS, patch, f) : PATCH_FIELDS).forEach(function (fl) {
       if (fl.sec) { cur = { title: fl.sec, col: fl.col, rows: [] }; sections.push(cur); return; }
       if (!cur) { cur = { title: "", rows: [] }; sections.push(cur); }
@@ -12367,11 +12429,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var host = colEls[Math.min(place[idx], colEls.length - 1)];
       if (sc.title) {
         var h = document.createElement("h2");
-        h.textContent = sc.title;
+        h.textContent = sc.title; h.title = sc.title;   /* 8a: one line in a column (the full text on hover) */
         host.appendChild(h);
       }
       sc.rows.forEach(function (fl) {
         if (fl.sampleRow) { host.appendChild(labSampleBlock(fl.sampleRow, f)); return; }
+        if (fl.pair) { host.appendChild(labPairRow(fl.pair, patch, f)); return; }
         var row = buildRow(fl, patch, f);
         /* 6a: a voice's EQ (a button, the graph floating over the column) and its live notes and level sit in the readout
            cells of rows it already has - the desk panel still fits one screen (C-8) */
@@ -12577,7 +12640,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         o.value = d.k; o.textContent = destLabel(d.k, patch);
         dst.appendChild(o);
       });
-      dst.value = m.dest;
+      /* a destination that is not one (the 2026-10-11 bug saved "undefined"): said so, to be chosen again - it moves nothing */
+      if (!MORPH_DESTS.some(function (d) { return d.k === m.dest; })) {
+        var none = document.createElement("option"); none.value = ""; none.textContent = "choose a parameter…"; none.disabled = true;
+        dst.insertBefore(none, dst.firstChild); dst.value = "";
+      } else { dst.value = m.dest; }
       dst.title = "What this morph moves";
       dst.addEventListener("change", function () {
         m.dest = dst.value; commitPatch(f, patch); showPer();
@@ -13037,8 +13104,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var NAMES = { body: ["String", "Tube", "Bell"], excite: ["Bowed", "Plucked"], method: ["Bank", "Spectral", "Comb"], mode: ["Dry", "Ringing"] };
       var menu = function (k) { return { k: role + "." + k, label: k, options: function () { return NAMES[k].map(function (x, i) { return String(i); }); },
         fmt: function (v) { return NAMES[k][+v]; }, get: function () { return String(st[k]); }, set: function (v) { st[k] = +v; labSaveSoon(f); } }; };
-      if (st.synth === "s-resonator") { out.push(menu("body"), menu("excite")); }
-      if (st.synth === "s-harmonic" || st.synth === "s-formant") { out.push(menu("method"), menu("mode")); }
+      /* 8a: a sampler voice's two menus share one row (the desk panel fits one screen with sampler voices) */
+      if (st.synth === "s-resonator") { out.push({ pair: [menu("body"), menu("excite")] }); }
+      if (st.synth === "s-harmonic" || st.synth === "s-formant") { out.push({ pair: [menu("method"), menu("mode")] }); }
       if (!labPitched(st.synth)) { out.push(lab("focus", "focus", 0, 1, 0.01)); }
       else {                                            /* 3d: the pitch sampler's model, and where in the recording it reads */
         out.push({ k: role + ".method", label: "model", options: function () { return ["0", "1", "2"]; },
@@ -13103,10 +13171,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     btn.textContent = st.sample ? "Replace sample" : "Upload sample";
     btn.addEventListener("click", function () { input.click(); });
     input.addEventListener("change", function () { if (input.files[0]) { S.upload(role, input.files[0], f.properties.id).then(function () { labSaveSoon(f); }); } });
-    top.appendChild(btn); top.appendChild(input); box.appendChild(top);
-    var name = document.createElement("div"); name.className = "ppsample-name"; name.id = "pp-" + role + "-name";
+    var name = document.createElement("span"); name.className = "ppsample-name"; name.id = "pp-" + role + "-name";   /* 8a: on the header line */
     var nm = st.sample ? FsRoles.sampleLabel(st.sample.name, st.sample.analysis, st.sampleNote) : "";
-    name.textContent = nm; name.title = nm; box.appendChild(name);
+    name.textContent = nm; name.title = nm;
+    top.appendChild(name); top.appendChild(btn); top.appendChild(input); box.appendChild(top);
     var warn = document.createElement("div"); warn.className = "ppsample-warn"; warn.id = "pp-" + role + "-warn";
     warn.textContent = !st.sample ? "no sample - this role is silent"
       : /missing|failed|could not/.test(st.sampleNote || "") ? st.sampleNote
@@ -13127,7 +13195,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   }
   function labDrawWave(cv, role, st) {
     var S = labSession(), raw = S.raw(role), kept = S.kept(role), B = S.block(role);
-    var w = Math.max(100, Math.round(cv.getBoundingClientRect().width || 240)), h = 40, dpr = window.devicePixelRatio || 1;
+    var w = Math.max(100, Math.round(cv.getBoundingClientRect().width || 240)), h = 28, dpr = window.devicePixelRatio || 1;
     cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
     var g = cv.getContext("2d"); g.scale(dpr, dpr); g.clearRect(0, 0, w, h);
     if (!raw) { return; }
@@ -13235,6 +13303,15 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     flat.addEventListener("click", function () { st.eq = null; draw(); show(null); labSaveSoon(f); });
     box.appendChild(svg); draw();
     return box;
+  }
+  /* 8a: two menus in one row - "body · excite" - each its own select (data-k kept) */
+  function labPairRow(pair, patch, f) {
+    var row = document.createElement("div"); row.className = "pprow pppair";
+    var name = document.createElement("span"); name.textContent = pair.map(function (fl) { return fl.label; }).join(" · "); row.appendChild(name);
+    var both = document.createElement("span"); both.className = "pppair-sel";
+    pair.forEach(function (fl) { var sel = buildRow(fl, patch, f).querySelector("select"); sel.setAttribute("aria-label", fl.label); both.appendChild(sel); });
+    row.appendChild(both); row.appendChild(document.createElement("i"));
+    return row;
   }
   /* 6a: a voice's live notes and level in its on/off row's readout cell (ids as the 3c.1 row's: the updater finds them) */
   function labLiveCell(row, role) {

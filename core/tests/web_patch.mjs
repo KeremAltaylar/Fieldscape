@@ -58,6 +58,10 @@ try {
       await sleep(1500);
       check(p("…and back on, they play again"), (await ev("__fa.coreLive.n")) > 0, await ev("__fa.coreLive.n"));
     }
+    /* 2026-10-11 (Kerem: "the drift section doesn't show which parameters I select"): every morph names its destination - a second
+       MORPH_DESTS (plain names, for the cells) had replaced the panel's {k, label} list, so each menu's values were "undefined" */
+    const dests = JSON.parse(await ev("JSON.stringify([].map.call(document.querySelectorAll('#pp-body .ppmorph select, #pp-body [class*=morph] select'), function (s) { return [s.value, s.selectedIndex, (s.options[s.selectedIndex] || {}).text || '']; }).filter(function (x) { return /\./.test(x[0]) || x[0] === 'undefined' || x[1] < 0; }))"));
+    check(p("every morph's destination menu shows the parameter it drives"), dests.length > 0 && dests.every((d) => d[0] !== "undefined" && d[1] >= 0 && d[2]) && !dests.some((d) => d[2] === ""), dests.slice(0, 4));
 
     /* Task 1: knobs */
     const counts = JSON.parse(await ev("JSON.stringify({ ranges: document.querySelectorAll('#pp-body input[type=range]').length, knobs: document.querySelectorAll('#pp-body .knob').length })"));
@@ -73,9 +77,12 @@ try {
     check(p("dragging the knob up raises the tempo"), tempo1 > tempo0, [tempo0, tempo1]);
     check(p("…and its readout says so"), new RegExp(tempo1 + " bpm").test(await ev("(document.querySelector(\"#pp-body .knob[data-k='tempo']\").closest('.pprow')||{}).textContent")), await ev("(document.querySelector(\"#pp-body .knob[data-k='tempo']\").closest('.pprow')||{}).textContent"));
     await ev("document.querySelector(\"#pp-body .knob[data-k='tempo']\").focus(), 0");
-    await s.send("Input.dispatchKeyEvent", { type: "keyDown", key: "ArrowUp", code: "ArrowUp", windowsVirtualKeyCode: 38 });
-    await s.send("Input.dispatchKeyEvent", { type: "keyUp", key: "ArrowUp", code: "ArrowUp", windowsVirtualKeyCode: 38 }); await sleep(600);
-    check(p("ArrowUp adds a step"), (await ev(`fsListen.route(${JSON.stringify(route)}).tempo`)) === tempo1 + 1, await ev(`fsListen.route(${JSON.stringify(route)}).tempo`));
+    /* at the top of its range (the live route's tempo can sit near it), the step is ArrowDown's */
+    const tmax = +(await ev("(document.querySelector(\"#pp-body input[data-k='tempo']\") || {}).max"));
+    const atTop = tempo1 >= tmax, key = atTop ? "ArrowDown" : "ArrowUp", code = atTop ? 40 : 38;
+    await s.send("Input.dispatchKeyEvent", { type: "keyDown", key, code: key, windowsVirtualKeyCode: code });
+    await s.send("Input.dispatchKeyEvent", { type: "keyUp", key, code: key, windowsVirtualKeyCode: code }); await sleep(600);
+    check(p("an arrow key moves one step"), (await ev(`fsListen.route(${JSON.stringify(route)}).tempo`)) === tempo1 + (atTop ? -1 : 1), [tempo1, tmax, await ev(`fsListen.route(${JSON.stringify(route)}).tempo`)]);
     const k2 = await box("#pp-body .knob[data-k='tempo']");
     if (mobile) { await down(k2.x, k2.y); await up(k2.x, k2.y); await sleep(120); await down(k2.x, k2.y); await up(k2.x, k2.y); }
     else { await s.send("Input.dispatchMouseEvent", { type: "mousePressed", x: k2.x, y: k2.y, button: "left", clickCount: 1 }); await s.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: k2.x, y: k2.y, button: "left", clickCount: 1 });

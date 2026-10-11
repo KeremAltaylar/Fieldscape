@@ -36,8 +36,9 @@ await db.from("features").delete().eq("id", DRAFT);
 /* the published route's patch with its three voices on at their default levels: the Freeze checks hear the Third voice
    against the others, and a setter may have changed them on the live route (2026-10-07: Third voice off on one route,
    0.15 under a First voice at 1.0 on the other) */
-const pp0 = pubRow.properties.patch, lv = (k, g) => Object.assign({}, pp0[k], { on: true, gain: g });
-const draftPatch = Object.assign({}, pp0, { voice: lv("voice", 0.45), sect: lv("sect", 0.8), v3: lv("v3", 0.55) });
+/* ...and digital synths, no sampler keys: the live route may have sampler voices now (2026-10-11: Koşuyolu does) */
+const pp0 = pubRow.properties.patch, lv = (k, g, syn) => { const q = Object.assign({}, pp0[k], { on: true, gain: g, synth: syn }); for (const x of ["sampler", "sample", "eq", "digital"]) delete q[x]; return q; };
+const draftPatch = Object.assign({}, pp0, { voice: lv("voice", 0.45, "fm"), sect: lv("sect", 0.8, "fm"), v3: lv("v3", 0.55, "am") });
 const draftFeature = { type: "Feature", geometry: { type: "LineString", coordinates: pubRow.geometry.coordinates.map((c) => [c[0], c[1] + 0.01]) },
   properties: { id: DRAFT, kind: "route", place: pubRow.place, published: false, name: "lab site draft", patch: draftPatch } };
 /* 6a points: a published probe stretch point with its own recording (a 3 s 330 Hz tone), beside the draft; removed after */
@@ -52,6 +53,17 @@ const ptAt = (() => { const c = draftFeature.geometry.coordinates; return [c[Mat
   await db.from("features").insert({ id: PTP, place: pubRow.place, kind: "point", geometry: { type: "Point", coordinates: ptAt },
     properties: { id: PTP, kind: "point", place: pubRow.place, name: "probe 6a point", published: true, has_audio: true, storage_path: `${PTP}/take.wav`,
       audio: { name: "tone.wav", type: "audio/wav", size: b.length }, sound: { radius: 140, gain: 0.9, zoneR: 25, stretch: 0 } } }); }
+/* 8a: a published probe grains point with the same tone, a little further along */
+const PTG = "00000000-0000-4000-8000-0000000008a1", ptgAt = [ptAt[0] + 0.0012, ptAt[1]];
+{ await db.from("features").delete().eq("id", PTG);
+  const sr = 48000, n = sr * 3, b = Buffer.alloc(44 + n * 2);
+  b.write("RIFF", 0); b.writeUInt32LE(36 + n * 2, 4); b.write("WAVEfmt ", 8); b.writeUInt32LE(16, 16); b.writeUInt16LE(1, 20); b.writeUInt16LE(1, 22);
+  b.writeUInt32LE(sr, 24); b.writeUInt32LE(sr * 2, 28); b.writeUInt16LE(2, 32); b.writeUInt16LE(16, 34); b.write("data", 36); b.writeUInt32LE(n * 2, 40);
+  for (let i = 0; i < n; i++) b.writeInt16LE(Math.round(9000 * Math.sin(2 * Math.PI * 330 * i / sr)), 44 + 2 * i);
+  await db.storage.from("recordings").upload(`${PTG}/take.wav`, b, { contentType: "audio/wav", upsert: true });
+  await db.from("features").insert({ id: PTG, place: pubRow.place, kind: "point", geometry: { type: "Point", coordinates: ptgAt },
+    properties: { id: PTG, kind: "point", place: pubRow.place, name: "probe 8a grains", published: true, has_audio: true, storage_path: `${PTG}/take.wav`, audio_mode: "grains",
+      audio: { name: "tone.wav", type: "audio/wav", size: b.length }, sound: { radius: 140, gain: 0.9, zoneR: 25 }, rhythm: { on: true, gain: 0.85 } } }); }
 await db.from("features").insert({ id: DRAFT, place: pubRow.place, kind: "route", geometry: draftFeature.geometry, properties: draftFeature.properties });
 const dbPatch0 = JSON.stringify((await db.from("features").select("properties").eq("id", DRAFT).single()).data.properties.patch);
 
@@ -397,9 +409,43 @@ try {
   const tp3 = (await ptProps()).sound.track_path;
   const tj3 = JSON.parse(await (await db.storage.from("recordings").download(tp3)).data.text());
   check("6a: the track kept is the new recording's (660 Hz), not the one being made when it was replaced (final review I3)", Math.abs(1200 * Math.log2(tj3.f0 / 660)) < 30, [tp3, tj3.f0]);
+  /* 8a: the open stretch point's level meter, while it plays */
+  await ev("fsListen.sound()"); await sleep(800);
+  let pdb = -120; for (let i = 0; i < 30 && pdb <= -60; i++) { await ev(`__fa.walkTo(${ptAt[0]}, ${ptAt[1]})`); await sleep(500); pdb = +(await ev("(document.querySelector('#rp-meter') || { dataset: {} }).dataset.db || -120")); }
+  check("8a: a stretch point's panel has a level meter that moves while it plays", pdb > -60, pdb);
+  /* 8a review: re-drawing the panel (an edit) keeps watching the same point - the engine is not told again (M2) */
+  const wp0 = await ev("__fa.watchPosts || 0");
+  await ev("(function(){ var s = document.querySelector('#rp-body input[data-k=\"resonate\"]'); s.value = '0.65'; s.dispatchEvent(new Event('input')); renderRhythmPanel && 0; return 1; })()");
+  await ev("__fa.redrawPointPanel(), 0"); await sleep(300); await ev("__fa.redrawPointPanel(), 0"); await sleep(300);
+  check("8a: the same point's panel drawn again does not reset its meter (final review M2)", (await ev("__fa.watchPosts || 0")) === wp0, [wp0, await ev("__fa.watchPosts")]);
+  /* 8a review I1: sound stopped, the meter says so */
+  await ev("fsListen.sound()"); await sleep(1500);
+  check("8a: when sound stops the point meter falls silent, not frozen at its last level (final review I1)", +(await ev("(document.querySelector('#rp-meter') || { dataset: {} }).dataset.db || -120")) < -100, await ev("(document.querySelector('#rp-meter') || { dataset: {} }).dataset.db"));
+  await ev("fsListen.sound()"); await sleep(800);
+  /* 8a: a grains point - its meter, and its grains on the waveform again */
+  await until(`__fa.features().some(function (f) { return f.properties.id === '${PTG}'; })`, 20000);
+  await ev(`fsListen.select('${PTG}'), 0`); await sleep(900);
+  await ev("(function(){ var b = document.querySelector('#ls-card #f-rhythm') || document.querySelector('#f-rhythm'); b && b.click(); return 0; })()");
+  let gp = null; for (let i = 0; i < 40 && !(gp && gp.grains.length && gp.db > -60); i++) { await ev(`__fa.walkTo(${ptgAt[0]}, ${ptgAt[1]})`); await sleep(500); gp = await ev("__fa.corePoint ? __fa.corePoint() : null"); }
+  check("8a: a grains point's panel gets its level and its recent grains from the engine", !!gp && gp.grains.length > 0 && gp.db > -60 && +(await ev("(document.querySelector('#rp-meter') || { dataset: {} }).dataset.db || -120")) > -60, gp && [gp.db, gp.grains.length]);
+  const marks = await ev("(function(){ var c = document.querySelector('#rp-body .grainwave'); if (!c) return -1; var d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data, n = 0; for (var i = 0; i < d.length; i += 4) if (d[i + 1] > 200 && d[i] > 180) n++; return n; })()");
+  check("8a: the grains are drawn on the waveform again", marks > 20, marks);
+  await ev("fsListen.sound()"); await sleep(800);
   await ev("(function(){ var b = document.querySelector('#rp-close'); b && b.click(); return 0; })()");
   const ptPub = await ptProps(); ptPub.published = true; ptPub.storage_path = `${PTP}/take.wav`;
   await db.from("features").update({ properties: ptPub }).eq("id", PTP);
+
+  /* 8a: the master meter in the route's patch panel, moving while sound plays, silent when it stops */
+  await openPanel(DRAFT); await ev("fsListen.sound()");
+  let mdb = -120; for (let i = 0; i < 30 && mdb <= -60; i++) { await ev(`__fa.walkTo(${mid[0]}, ${mid[1]})`); await sleep(400); mdb = +(await ev("(document.querySelector('#pp-master') || { dataset: {} }).dataset.db || -120")); }
+  await ev("fsListen.sound()"); await sleep(1500);
+  const mdb0 = +(await ev("(document.querySelector('#pp-master') || { dataset: {} }).dataset.db || -120"));
+  check("8a: the patch panel's master meter shows what is heard, and falls when sound stops", mdb > -60 && mdb0 < -100, [mdb, mdb0]);
+  /* 8a review M3: the master meter draws only while its panel is open (a phone walking with the panel shut does no work) */
+  await ev("document.querySelector('#pp-close').click(), 0"); await sleep(400);
+  const mt0 = await ev("__fa.masterTicks || 0"); await sleep(1200); const mt1 = await ev("__fa.masterTicks || 0");
+  check("8a: with the patch panel closed the master meter's drawing stops (final review M3)", mt1 === mt0, [mt0, mt1]);
+  await openPanel(DRAFT);
 
   /* final review 6a I2: Reset to default stays reset - the next sampler or EQ touch writes no old sampler back */
   await openPanel(DRAFT); await until(`__fa.rolesFor === '${DRAFT}'`, 8000);
@@ -437,6 +483,9 @@ try {
   await db.from("lab_route_roles").delete().eq("route_id", DRAFT);
   await db.from("features").delete().eq("id", DRAFT);
   await db.from("features").delete().eq("id", PTP);
+  await db.from("features").delete().eq("id", PTG);
+  const { data: gfiles } = await db.storage.from("recordings").list(PTG);
+  if (gfiles && gfiles.length) await db.storage.from("recordings").remove(gfiles.map((o) => `${PTG}/${o.name}`));
   const { data: pfiles } = await db.storage.from("recordings").list(PTP);
   if (pfiles && pfiles.length) await db.storage.from("recordings").remove(pfiles.map((o) => `${PTP}/${o.name}`));
   await db.from("audit").delete().eq("setter_id", userId);

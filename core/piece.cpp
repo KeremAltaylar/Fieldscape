@@ -539,6 +539,8 @@ struct Rhythm {
     GrainV gv[192];
     long tick = 0; int step = 0;
     bool live = false; Combo lv[4]; int bars = 0, sentence_idx = 0; bool fx_ready = false;
+    double lvl = 0;                   /* 8a: its own output, ~0.1 s mean square, for the point's meter */
+    struct GMark { double at, pos, len; } gm[96]; int gmi = 0, gmn = 0;   /* 8a: its recent grains, for the waveform (a dense cloud's 1.4 s) */
 };
 
 /* ------------------------------------------------------------------ the device */
@@ -1169,6 +1171,7 @@ struct Piece : Device {
             if (!gv) continue;                  /* ponytail: 192 grains at once per point */
             double w = lvl * (1 - 0.35 * ((double)i / std::max(1, n)));
             *gv = GrainV{ true, off * sr, rate, at, aS, dS, hold, sus, w, grainSec };
+            R.gm[R.gmi] = { at, dur > 0 ? off / dur : 0, dur > 0 ? std::min(1.0, grainSec / dur) : 0 }; R.gmi = (R.gmi + 1) % 96; R.gmn = std::min(96, R.gmn + 1);
             if (on_note) on_note(note_ctx, 20, rate, off, at, 0);
         }
     }
@@ -1326,6 +1329,7 @@ struct Piece : Device {
             auto &op = in.r[h]; Rhythm &R = rh[h];
             if (op.op == 1) {
                 R.used = true; R.dying = false; R.cfg = op.cfg; R.grains = op.grains; for (auto &k : R.trk) k = Trk{};
+                R.lvl = 0; R.gmi = R.gmn = 0;
                 R.tick = 0; R.step = 0; R.live = false; R.bars = 0; R.sentence_idx = 0; R.fx_ready = false;
                 R.gain.init(0);
                 for (auto &g : R.gv) g.on = false;
@@ -1470,7 +1474,10 @@ struct Piece : Device {
                 }
             }
         }
-        for (int i = 0; i < n; i++) { float g = R.gain.at(i, n); L[i] += bl[i] * g; Rr[i] += br[i] * g; }
+        /* 8a: the point's meter - its own sound at its own gain, not where the walker stands (as a stretch point's is) */
+        double e = 0; const double own = R.cfg.on ? R.cfg.gain : 0;
+        for (int i = 0; i < n; i++) { float g = R.gain.at(i, n); L[i] += bl[i] * g; Rr[i] += br[i] * g; e += 0.5 * ((double)bl[i] * bl[i] + (double)br[i] * br[i]); }
+        R.lvl += (e * own * own / std::max(1, n) - R.lvl) * (1 - std::exp(-n / (0.1 * sr)));
     }
 
     void render(float *outL, float *outR, int n, double t0) {
@@ -1595,6 +1602,20 @@ void fs_piece_role_analysis(fs_device *d, int role, const char *json) {
     k.f0 = j.n("f0", 0); k.hop = j.n("hop_s", 0.02);
     k.tf = tf && tc ? tf : nullptr; k.tc = tf && tc ? tc : nullptr; k.tn = tf && tc ? n : 0;
     p->in.rrec[role] = k; p->in.rrec_set[role] = true;
+}
+/* 8a: a rhythm point's own level and its recent grains (newest first; only those already sounding) */
+int fs_piece_point(fs_device *d, int h, float *out, int max) {
+    Piece *p = P(d); if (!p || !out || h < 0 || h >= FS_MAX_VOICES || !p->rh[h].used) return -1;
+    const Rhythm &R = p->rh[h]; const double now = (double)p->frame / p->sr;
+    out[0] = (float)std::fmax(-120.0, 10 * std::log10(R.lvl + 1e-30)); out[1] = 0;
+    int c = 0;
+    for (int k = 0; k < R.gmn && c < max; k++) {
+        const auto &g = R.gm[((R.gmi - 1 - k) % 96 + 96) % 96];
+        if (g.at > now) continue;
+        out[2 + 3 * c] = (float)(now - g.at); out[3 + 3 * c] = (float)g.pos; out[4 + 3 * c] = (float)g.len; c++;
+    }
+    out[1] = (float)c;
+    return c;
 }
 int fs_piece_roles(fs_device *d, float *out, int max_notes) {
     Piece *p = P(d); if (!p || !out || max_notes < 0) return 0;
