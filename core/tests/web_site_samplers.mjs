@@ -413,6 +413,12 @@ try {
   await ev("fsListen.sound()"); await sleep(800);
   let pdb = -120; for (let i = 0; i < 30 && pdb <= -60; i++) { await ev(`__fa.walkTo(${ptAt[0]}, ${ptAt[1]})`); await sleep(500); pdb = +(await ev("(document.querySelector('#rp-meter') || { dataset: {} }).dataset.db || -120")); }
   check("8a: a stretch point's panel has a level meter that moves while it plays", pdb > -60, pdb);
+  /* 8d: Low end and its depth in the stretch point's panel, saved in its shape and sent to the engine */
+  check("8d: a stretch point's panel has Low end and depth", await ev("!!document.querySelector('#rp-body input[data-k=\"low\"]') && !!document.querySelector('#rp-body select[data-k=\"depth\"]')"), null);
+  await ev("(function(){ var d = document.querySelector('#rp-body select[data-k=\"depth\"]'); d.value = '1'; d.dispatchEvent(new Event('change')); var s = document.querySelector('#rp-body input[data-k=\"low\"]'); s.value = '0.6'; s.dispatchEvent(new Event('input')); return 1; })()");
+  await sleep(600);
+  const ls = JSON.parse(await ev(`__fa.coreSentFeature('${PTP}') || 'null'`) || "null");
+  check("8d: low end and depth are saved in the point's shape and reach the engine", !!ls && ls.properties.sound.shape.low === 0.6 && ls.properties.sound.shape.depth === 1, ls && ls.properties.sound.shape);
   /* 8a review: re-drawing the panel (an edit) keeps watching the same point - the engine is not told again (M2) */
   const wp0 = await ev("__fa.watchPosts || 0");
   await ev("(function(){ var s = document.querySelector('#rp-body input[data-k=\"resonate\"]'); s.value = '0.65'; s.dispatchEvent(new Event('input')); renderRhythmPanel && 0; return 1; })()");

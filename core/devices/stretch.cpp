@@ -56,6 +56,7 @@ struct Controls {
     float chord[5], root;
     float follow; const float *tf, *tc; int tn; double thop;   /* 5: the recording's pitch track, and how far it follows the chord */
     float resonate; int body;                                  /* 7: the chord rung by the recording (0 String, 1 Tube, 2 Bell) */
+    float low; int depth;                                      /* 8d: its partials one or two octaves down, in the bass, on the chord */
 };
 
 enum Stage { S_WIN, S_TWID, S_GAIN, S_READ, S_FWD, S_MAG, S_ONSET, S_BINC, S_COMB, S_RCLR, S_RTAB, S_SH_IN, S_SH_T, S_SH_E, S_SH_R, S_SH_L, S_SH_NORM, S_PHASE, S_INV, S_OUT, S_FINISH };
@@ -167,7 +168,7 @@ struct Voice {
             if (onset_on) add(S_ONSET, 0, 1, 64);
         }
         if (c.shaping) {
-            if ((c.tune > 0 || c.resonate > 0) && !binc_ready) add(S_BINC, 0, N / 2 + 1, 60);
+            if ((c.tune > 0 || c.resonate > 0 || c.low > 0) && !binc_ready) add(S_BINC, 0, N / 2 + 1, 60);
             if (c.resonate > 0 && res_key != rtab_key) { res_peaks(); add(S_RCLR, 0, N / 2 + 1, 1); add(S_RTAB, 0, (int)std::max(1LL, npaint), 10); }
             if (c.tune > 0 && comb_key != table_key) add(S_COMB, 0, CENTS, 40 + 25 * (int)std::lround(c.partials < 1 ? 1 : c.partials > 24 ? 24 : c.partials));
             /* split per bin like the FFT, so no callback carries a whole spectrum (measured: 7.8 ms in one) */
@@ -242,6 +243,26 @@ struct Voice {
         int i = (int)x; float f = (float)(x - i);
         return m[i] + (m[i + 1] - m[i]) * f;
     }
+
+    /* 8d: Low end - bass partials on the chord's notes, one or two octaves under the chord (a steep band: 90-300 Hz, or
+       45-150 Hz - no rumble under it, no mud over it), struck by the recording's own strength this frame (its RMS per bin):
+       a recording whose partials are all high still gets a foundation, and it breathes with it. A narrow comb (never
+       narrower than a bin) makes them pitches, not boom; the frame goes back to the stretch's own energy after. */
+    float low_end(int ch, int j, int M) {
+        const double f = (double)j * sr / N; const float bc = binc[j];
+        const double lo = cc.depth == 2 ? 45 : 90, hi = cc.depth == 2 ? 150 : 300;
+        if (f < 0.6 * lo || f > 2 * hi || bc < 0) return 0;
+        const double r4 = std::pow(f / lo, 4), band = r4 / (1 + r4) / (1 + std::pow(f / hi, 4));
+        const double w = std::fmax(12.0, 0.6 * 1200 * std::log2((f + sr / N) / f));
+        double v = 0;
+        for (int i = 0; i < 5; i++) {
+            if (gnote[i] < 0) continue;
+            double d = std::fabs(std::fmod(bc - std::fmod(gnote[i] * 100.0, 1200.0) + 1200.0 * 64, 1200.0)); if (d > 600) d = 1200 - d;
+            if (d < 4 * w) v += std::exp(-0.5 * (d / w) * (d / w));
+        }
+        return (float)(LOW_GAIN * cc.low * band * std::fmin(v, 1.0) * std::sqrt(e0[ch] / M));
+    }
+    static constexpr double LOW_GAIN = 25;   /* measured: at Low end 1 the bass is ~1/5 of the sound */
 
     /* Result buffers after the forward or inverse passes. */
     float *res_r() { return fft.passes % 2 ? br.data() : ar.data(); }
@@ -452,6 +473,7 @@ struct Voice {
                     for (int r = 0; r < nr; r++) l += at(tt[ch].data(), j / ratio[r], M);
                     x = x * (1 - cc.harmony) + l / nr * cc.harmony;
                 }
+                if (cc.low > 0) x += low_end(ch, j, M);
                 if (cc.tune > 0) {
                     const float bc = binc[j];
                     x *= (1 - cc.tune) + cc.tune * (bc < 0 ? 0.0f : table[(int)bc % CENTS]);
@@ -611,10 +633,12 @@ static const fs_param STRETCH_PARAMS[] = {
     { "follow", "Follow", "", 0.0f, 1.0f, 0.0f },   /* 5: a pitched recording onto the chord (0 = as recorded) */
     { "resonate", "Resonate", "", 0.0f, 1.0f, 0.0f },   /* 7: the chord rung by the recording, inside the stretch */
     { "body", "Body", "", 0.0f, 2.0f, 0.0f },           /* 7: 0 String, 1 Tube, 2 Bell */
+    { "low", "Low end", "", 0.0f, 1.0f, 0.0f },         /* 8d: its partials in the bass, on the chord */
+    { "depth", "Low end depth", "", 0.0f, 1.0f, 0.0f },   /* 8d: 0 an octave under the chord, 1 two (the page's select index) */
 };
 enum { P_STRETCH, P_WINDOW, P_FREEZE, P_ONSET, P_WIDTH, P_SHAPE, P_SEED,
        P_TRANSPOSE, P_TUNE, P_FOCUS, P_PARTIALS, P_LAYERS, P_HARMONY, P_GLIDE, P_DRIFT, P_BLUR, P_START, P_END,
-       P_CHORD0, P_ROOT = P_CHORD0 + 5, P_FOLLOW, P_RESONATE, P_BODY, P_COUNT };
+       P_CHORD0, P_ROOT = P_CHORD0 + 5, P_FOLLOW, P_RESONATE, P_BODY, P_LOW, P_DEPTH, P_COUNT };
 
 struct Stretch : Device {
     float value[P_COUNT];
@@ -658,7 +682,8 @@ struct Stretch : Device {
         if (any) chord_seen = true;
         c.follow = chord_seen ? value[P_FOLLOW] : 0; c.tn = (int)trk_f.size();   /* before any chord, no follow (5 I2) */ c.tf = c.tn ? trk_f.data() : nullptr; c.tc = c.tn ? trk_c.data() : nullptr; c.thop = trk_hop;
         c.resonate = value[P_RESONATE]; c.body = (int)std::lround(value[P_BODY]);
-        c.shaping = std::fabs(c.transpose) > 1e-4 || c.tune > 0 || (c.layers >= 0.5f && c.harmony > 0) || c.blur > 0 || (c.follow > 0 && c.tn > 0) || c.resonate > 0;
+        c.low = value[P_LOW]; c.depth = value[P_DEPTH] >= 0.5f ? 2 : 1;
+        c.shaping = std::fabs(c.transpose) > 1e-4 || c.tune > 0 || (c.layers >= 0.5f && c.harmony > 0) || c.blur > 0 || (c.follow > 0 && c.tn > 0) || c.resonate > 0 || c.low > 0;
         return c;
     }
     int target_n() {
@@ -736,7 +761,7 @@ Device *make_stretch() { return new Stretch(); }
 /* The host's side of the shaping, shared by the web engine and both apps' walks, so every platform
    reads a point the same way. The shaping's own names (properties.sound.shape); anything missing
    takes the parameter's default, which is dry (A-8). */
-static const char *const SHAPE_KEYS[] = { "transpose", "tune", "focus", "partials", "layers", "harmony", "glide", "drift", "blur", "start", "end", "width", "follow", "resonate", "body" };
+static const char *const SHAPE_KEYS[] = { "transpose", "tune", "focus", "partials", "layers", "harmony", "glide", "drift", "blur", "start", "end", "width", "follow", "resonate", "body", "low", "depth" };
 static int stretch_param(const char *id) { for (int i = 0; i < P_COUNT; i++) if (!std::strcmp(STRETCH_PARAMS[i].id, id)) return i; return -1; }
 
 extern "C" void fs_stretch_shape(fs_device *d, const char *shape_json) {

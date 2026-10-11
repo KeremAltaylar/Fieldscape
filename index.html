@@ -6303,7 +6303,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        properties.sound.shape and read by the core's stretch. All dry by default (A-8). */
     if (!q.shape) { q.shape = {}; }
     var sh = q.shape, SHD = { transpose: 0, tune: 0, focus: 0.5, partials: 8, layers: 0, harmony: 0.5, glide: 2,
-                              drift: 0, blur: 0, width: 1, start: 0, end: 1, follow: 0, resonate: 0, body: 0 };
+                              drift: 0, blur: 0, width: 1, start: 0, end: 1, follow: 0, resonate: 0, body: 0, low: 0, depth: 0 };
     Object.keys(SHD).forEach(function (k) { if (sh[k] === undefined) { sh[k] = SHD[k]; } });
     var colStretch = [
       heading("Time", "The stretch itself, and the part of the recording it reads."),
@@ -6354,7 +6354,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       R({ label: "width", k: "width", min: 0, max: 1, step: 0.01, def: 1, fmt: fx.two,
         hint: "stereo spread" }, sh),
       R({ label: "grit", k: "grit", min: 0, max: 1, step: 0.02, def: 0, fmt: fx.two,
-        hint: "bitcrush and drive on the stretched sound" }, q)
+        hint: "bitcrush and drive on the stretched sound" }, q),
+      /* 8d: a bass foundation under the recording's partials - pitched on the chord, banded, never boomy */
+      heading("Low end", "Bass partials on the chord's notes, under the chord, struck by the recording; the level stays the same."),
+      R({ label: "low end", k: "low", min: 0, max: 1, step: 0.05, def: 0, fmt: fx.pct,
+        hint: "how much of the sound moves into pitched bass (0 = none)" }, sh),
+      buildPxSelect("depth", sh, "depth", ["−1 oct", "−2 oct"], commitLive)
     ];
 
     /* One screen, always (C-8): four columns where there is room, tabs where there is not.
