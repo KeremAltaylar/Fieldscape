@@ -274,6 +274,27 @@ try {
   let sp = await sentP();
   check("6: arrow keys on a digital voice's EQ band raise it (+2 dB) and the engine gets it at once", !!(sp && sp.sect && sp.sect.eq && sp.sect.eq[2][1] === 2 && sp.sect.synth !== undefined && !/^s-/.test(sp.sect.synth)), sp && sp.sect);
   check("6: the curve is redrawn", curve0 !== "" && curve0 !== (await ev("document.querySelector('#pp-sect-eq path.eq-curve').getAttribute('d')")), curve0.slice(0, 40));
+  /* 8b (Kerem 2026-10-11: "envelope graph in route patch voices ... so I can adjust the envelope of notes"): every voice has an
+     envelope button beside its EQ; arrows move a handle and the engine gets "env" at once; a drag sets the sustain; Instrument's
+     takes it off again */
+  const envOpen = (r) => ev(`(function(){ var p = document.getElementById('pp-env-pop'); if (p && p.dataset.role === '${r}') return 1; var b = document.getElementById('pp-${r}-envbtn'); if (!b) return 0; b.click(); return document.getElementById('pp-env-pop') ? 1 : 0; })()`);
+  const envAll = []; for (const r of ["voice", "sect", "v3"]) { await envOpen(r); envAll.push(await ev(`!!document.querySelector('#pp-${r}-env svg') && !document.getElementById('pp-eq-pop')`)); }
+  check("8b: every voice has a note envelope beside its EQ - one graph open at a time", envAll.every(Boolean), envAll);
+  await envOpen("sect");
+  await ev("(function(){ var d = document.querySelector('#pp-sect-env [data-env=\"0\"]'); d.focus(); for (var i = 0; i < 8; i++) d.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })); return 1; })()");
+  await sleep(400); sp = await sentP();
+  check("8b: arrow keys lengthen a voice's attack and the engine gets its envelope at once", !!(sp && sp.sect && Array.isArray(sp.sect.env) && sp.sect.env[0] > 0.035 && sp.sect.env[0] < 0.6), sp && sp.sect && sp.sect.env);
+  await envOpen("v3");
+  await ev(`(function(){ var d = document.querySelector('#pp-v3-env [data-env="1"]'), r = d.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
+    var o = function (t, yy) { return new PointerEvent(t, { pointerId: 1, clientX: x, clientY: yy, bubbles: true, isPrimary: true, button: 0, buttons: 1 }); };
+    d.dispatchEvent(o('pointerdown', y)); d.dispatchEvent(o('pointermove', y + 20)); d.dispatchEvent(o('pointerup', y + 20)); return 1; })()`);
+  await sleep(400); sp = await sentP();
+  /* final review 8b I1: from the sampler's own envelope (held at full, 0.6 s release) - only the touched values change */
+  check("8b: dragging the decay corner down lowers a sampler voice's sustain, its own attack and release kept", !!(sp && sp.v3 && Array.isArray(sp.v3.env) && sp.v3.env[2] < 0.9 && sp.v3.env[0] === 0.02 && sp.v3.env[3] === 0.6), sp && sp.v3 && sp.v3.env);
+  await ev("(function(){ var b = [].filter.call(document.querySelectorAll('#pp-v3-env button'), function (x) { return /Instrument/.test(x.textContent); })[0]; b.click(); return 1; })()");
+  await sleep(400); sp = await sentP();
+  check("8b: Instrument's takes the voice's envelope off", !!(sp && sp.v3 && sp.v3.env === undefined), sp && sp.v3 && sp.v3.env);
+  check("8b: Escape closes the envelope, and only it", await ev(`(function(){ document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); return !document.getElementById('pp-env-pop') && !document.getElementById('patchpanel').hidden; })()`), null);
   /* a drag: a band's dot pulled up 20 px reads a positive gain */
   await eqOpen("v3");
   await ev(`(function(){ var d = document.querySelector('#pp-v3-eq [data-band="4"]'), r = d.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
@@ -413,6 +434,12 @@ try {
   await ev("fsListen.sound()"); await sleep(800);
   let pdb = -120; for (let i = 0; i < 30 && pdb <= -60; i++) { await ev(`__fa.walkTo(${ptAt[0]}, ${ptAt[1]})`); await sleep(500); pdb = +(await ev("(document.querySelector('#rp-meter') || { dataset: {} }).dataset.db || -120")); }
   check("8a: a stretch point's panel has a level meter that moves while it plays", pdb > -60, pdb);
+  /* 8d: Low end and its depth in the stretch point's panel, saved in its shape and sent to the engine */
+  check("8d: a stretch point's panel has Low end and depth", await ev("!!document.querySelector('#rp-body input[data-k=\"low\"]') && !!document.querySelector('#rp-body select[data-k=\"depth\"]')"), null);
+  await ev("(function(){ var d = document.querySelector('#rp-body select[data-k=\"depth\"]'); d.value = '1'; d.dispatchEvent(new Event('change')); var s = document.querySelector('#rp-body input[data-k=\"low\"]'); s.value = '0.6'; s.dispatchEvent(new Event('input')); return 1; })()");
+  await sleep(600);
+  const ls = JSON.parse(await ev(`__fa.coreSentFeature('${PTP}') || 'null'`) || "null");
+  check("8d: low end and depth are saved in the point's shape and reach the engine", !!ls && ls.properties.sound.shape.low === 0.6 && ls.properties.sound.shape.depth === 1, ls && ls.properties.sound.shape);
   /* 8a review: re-drawing the panel (an edit) keeps watching the same point - the engine is not told again (M2) */
   const wp0 = await ev("__fa.watchPosts || 0");
   await ev("(function(){ var s = document.querySelector('#rp-body input[data-k=\"resonate\"]'); s.value = '0.65'; s.dispatchEvent(new Event('input')); renderRhythmPanel && 0; return 1; })()");

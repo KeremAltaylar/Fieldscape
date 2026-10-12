@@ -2344,6 +2344,135 @@ int main() {
         std::printf("\n");
         assert(worst > -10);
     }
+    {   /* 8b (Kerem 2026-10-11: "I want an envelope graph in the route patch voices, like the grains have one, so I can adjust
+           the envelope of notes"): a voice's "env": [attack s, decay s, sustain 0..1, release s] reaches whatever plays it -
+           every digital synth with an amplitude envelope and the samplers. Measured on the Voice's own level (fs_piece_roles):
+           a slow attack (1.5 s) rises slowly; a low sustain after a short decay sits lower; a long release rings longer; an
+           absent env and "env": null are as before */
+        std::vector<float> nz = noise_src(20, 0.5f, 5); const float *np[1] = { nz.data() };
+        auto run = [&](const char *synth, const char *env, std::vector<float> *out = nullptr, bool sect = false) {
+            unsigned seed = 77; fs_device *d = fs_create("piece"); fs_prepare(d, 48000, 128); fs_piece_test_hooks(d, fixed_draw, &seed, nullptr, nullptr);
+            fs_piece_role_source(d, sect ? 1 : 0, 1, (long long)nz.size(), np);
+            const std::string me = std::string("{\"synth\":\"") + synth + "\"" + (env ? std::string(",\"env\":") + env : std::string()) + "}";
+            std::string js = std::string("{\"version\":17,\"prog\":[{\"r\":0,\"q\":\"m9\"},{\"r\":5,\"q\":\"maj7#11\"}],\"morph\":{\"on\":false,\"list\":[]},\"bed\":{\"on\":false},\"zones\":{\"on\":false},\"v3\":{\"on\":false},")
+                + (sect ? "\"voice\":{\"on\":false},\"sect\":" + me : "\"sect\":{\"on\":false},\"voice\":" + me) + "}";
+            const int r = fs_piece_add_route(d, js.c_str()); fs_piece_walk(d, r, 0.3, 0);
+            std::vector<double> lv; float ro[3 * (2 + 8)];
+            for (int i = 0; i < (int)(12 * SR / 128); i++) { fs_process(d, 128); if (out) { const float *l = fs_out(d, 0); out->insert(out->end(), l, l + 128); }
+                fs_piece_roles(d, ro, 8); lv.push_back(std::pow(10.0, ro[sect ? 2 + 8 : 0] / 20)); }
+            fs_destroy(d); return lv; };
+        auto rise = [&](const std::vector<double> &lv) {   /* the largest rise of the Voice's level in 0.1 s, against its peak */
+            const int w = (int)(0.1 * SR / 128); double pk = 1e-12, best = 0;
+            for (double x : lv) pk = std::fmax(pk, x);
+            for (size_t i = w; i < lv.size(); i++) best = std::fmax(best, lv[i] - lv[i - w]);
+            return best / pk; };
+        auto mean_db = [](const std::vector<double> &lv) { double e = 0; for (size_t i = lv.size() / 4; i < lv.size(); i++) e += lv[i] * lv[i]; return 10 * std::log10(e / (lv.size() * 3 / 4) + 1e-30); };
+        auto p10_db = [](std::vector<double> lv) {   /* the quiet moments: the level 10 % of the time is under (gaps filled or not) */
+            lv.erase(lv.begin(), lv.begin() + lv.size() / 4); std::sort(lv.begin(), lv.end()); return 20 * std::log10(lv[lv.size() / 10] + 1e-6); };
+        bool all = true;
+        for (const char *sy : { "fm", "am", "duo", "mono", "simple", "metal", "membrane", "wavetable", "comb", "formant", "s-resonator", "s-harmonic", "s-retune" }) {
+            const bool perc = !std::strcmp(sy, "metal") || !std::strcmp(sy, "membrane");   /* no sustain of their own to lower */
+            const bool metal = !std::strcmp(sy, "metal");   /* its high-pass follows its envelope: its level is not the envelope's */
+            std::vector<float> o0, o1;
+            const auto a0 = run(sy, nullptr, &o0); run(sy, "null", &o1);
+            const auto slow = run(sy, "[1.5,0.1,1,0.6]");
+            const auto low = run(sy, "[0.01,0.15,0.1,0.6]"), full = run(sy, "[0.01,0.15,1,0.6]");
+            /* release on the Second voice: its notes are short, with gaps (the Voice holds its bass under the chord) */
+            const auto shortr = run(sy, "[0.01,0.1,1,0.05]", nullptr, true), longr = run(sy, "[0.01,0.1,1,4]", nullptr, true);
+            const double r0 = rise(a0), r1 = rise(slow), dlow = mean_db(full) - mean_db(low), drel = p10_db(longr) - p10_db(shortr);
+            /* a resonating sampler builds slowly by itself (as it was 0.21): there a slow attack is under 0.2 */
+            const bool ok = o0 == o1 && (perc ? r1 < 0.8 * r0 : r1 < 0.4 && (r1 < 0.6 * r0 || r1 < 0.2)) && (perc || dlow > 6) && (metal || drel > 6);
+            std::printf("8b env %-11s: rise in 0.1 s %.2f as it was, %.2f at a 1.5 s attack; sustain 0.1 %.1f dB under 1; quiet moments at release 4 s %.1f dB over 0.05 s (Second voice); null as before %d%s\n",
+                sy, r0, r1, dlow, drel, (int)(o0 == o1), ok ? "" : "  <- FAIL");
+            all = all && ok;
+        }
+        assert(all);
+    }
+    {   /* final review 8b I3: a sampler's decay reaches its sustain in about the decay time (as the synths' do); raising the sustain
+           on a held note brings it back up (it froze), never faster than ~20 ms (a 5 ms decay made a jump) */
+        const std::vector<float> wind = noise_src(8, 0.5f, 9);
+        sampler::Resonator r; r.init(48000); r.body = sampler::STRING; r.excite = sampler::BOWED;
+        const float *p[1] = { wind.data() }; r.set_source(1, (long long)wind.size(), p);
+        tone::EnvSpec e1{ 0.01, 1.0, 0.0, 0.6, false, true };
+        r.shape(&e1); r.attack(220, 0.0, 0.5);
+        std::vector<float> L(128), R(128); double t = 0;
+        auto env = [&]() { double m = 0; for (auto &x : r.v) if (x.active) m = std::fmax(m, x.env); return m; };
+        auto until = [&](double t1) { while (t < t1 - 1e-9) { r.render(L.data(), R.data(), 128, t); t += 128 / 48000.0; } };
+        until(1.0); const double at_d = env();                       /* after the decay time, sustain 0: */
+        tone::EnvSpec e2{ 0.01, 0.2, 0.1, 0.6, false, true }; r.shape(&e2); until(1.5);
+        r.shape(nullptr); until(2.0); const double back = env();      /* the instrument's own again: sustain 1 */
+        tone::EnvSpec e3{ 0.01, 0.005, 0.1, 0.6, false, true }; r.shape(&e3); until(2.5);
+        tone::EnvSpec e4{ 0.01, 0.005, 0.9, 0.6, false, true }; r.shape(&e4); const double before = env(); until(2.5 + 0.005); const double up5 = env();
+        std::printf("8b sampler decay: %.3f after its 1 s decay to 0; held note back to %.2f when sustain returns to 1; 0.1 -> 0.9 in 5 ms reaches %.2f (from %.2f)\n", at_d, back, up5, before);
+        assert(at_d < 0.03 && back > 0.9 && up5 < 0.35);
+    }
+    {   /* 8d (Kerem 2026-10-11: "a low end boost section ... creates also low end for these good high end partials (but not
+           boomy, I want good bass pitches like partials)"): a stretch of noise with no bass (high-passed at 400 Hz) on D minor -
+           Low end adds bass partials one or two octaves under the chord, struck by the recording - a real share of the sound
+           (8-35 % in 45-250 Hz), on the chord's notes, nothing below 35 Hz, at the stretch's own level; at 0 nothing changes.
+           Final review 8d: at the page's default window (I5); never louder or unpitched at a small window (I1, I2: a share of the
+           energy, coarse bins left out); tune does not make it take over (I3); the same in both channels (I4) */
+        std::vector<float> hiss((size_t)(8 * SR));
+        { uint32_t s = 7; double l1 = 0, l2 = 0; const double k = 1 - std::exp(-2 * 3.141592653589793 * 400 / SR);
+          for (auto &x : hiss) { s = s * 1664525u + 1013904223u; const double w = (((int)(s >> 8) - 8388608) / 8388608.0);
+              l1 += k * (w - l1); const double h1 = w - l1; l2 += k * (h1 - l2); x = (float)(0.3 * (h1 - l2)); } }
+        auto spec = [&](const std::vector<float> &x, std::vector<double> &P) {
+            const int N = 65536; FFT fft; fft.reserve(N); fft.plan(N); fft.twiddles(0, N);
+            std::vector<float> b(4 * N); P.assign(N / 2, 0.0);
+            for (size_t s0 = x.size() / 3; s0 + N <= x.size(); s0 += N / 2) {
+                float *ar = b.data(), *ai = ar + N, *br = ai + N, *bi = br + N;
+                for (int i = 0; i < N; i++) { ar[i] = (float)(x[s0 + i] * (0.5 - 0.5 * std::cos(2 * 3.141592653589793 * i / N))); ai[i] = 0; }
+                for (int p = 0; p < fft.passes; p++) { if (p % 2 == 0) fft.pass(p, ar, ai, br, bi, 0, fft.butterflies(p)); else fft.pass(p, br, bi, ar, ai, 0, fft.butterflies(p)); }
+                const float *re = fft.passes % 2 ? br : ar, *im = fft.passes % 2 ? bi : ai;
+                for (int k = 0; k < N / 2; k++) P[k] += (double)re[k] * re[k] + (double)im[k] * im[k];
+            }
+            return N; };
+        struct Bands { double bass, deep, sub, tuned; };
+        auto bands = [&](const std::vector<float> &x) {
+            std::vector<double> P; const int N = spec(x, P); double all = 0, bass = 0, deep = 0, sub = 0, in = 0;
+            for (int k = 1; k < (int)(16000.0 * N / SR); k++) {
+                const double f = k * SR / N, e = P[k]; all += e;
+                if (f < 35) sub += e;
+                if (f >= 45 && f < 125) deep += e;
+                if (f >= 45 && f < 250) { bass += e; const double c = std::fmod(1200 * std::log2(f / 440.0) + 900 + 1200 * 64, 1200.0);
+                    for (double pc : { 200.0, 500.0, 900.0 }) { double d = std::fabs(c - pc); if (d > 600) d = 1200 - d; if (d < 25) { in += e; break; } } }
+            }
+            return Bands{ bass / all, deep / std::max(bass, 1e-30), sub / all, in / std::max(bass, 1e-30) }; };
+        std::vector<float> right;
+        auto render = [&](const char *shape, double window) {
+            fs_device *d = fs_create("stretch"); fs_prepare(d, SR, B);
+            const float *pp[1] = { hiss.data() }; fs_set_source(d, 1, (int)hiss.size(), pp);
+            fs_set_param(d, 0, 0); fs_set_param(d, 1, (float)window);
+            fs_stretch_shape(d, shape);
+            const float dm[6] = { 62, 65, 69, -1, -1, 62 };
+            for (int k = 0; k < 6; k++) fs_set_param(d, 18 + k, dm[k]);
+            std::vector<float> o; right.clear();
+            for (int b2 = 0; b2 < (int)(7 * SR / B); b2++) { fs_process(d, B); const float *l = fs_out(d, 0), *r = fs_out(d, 1); o.insert(o.end(), l, l + B); right.insert(right.end(), r, r + B); }
+            fs_destroy(d); return o; };
+        auto rms = [](const std::vector<float> &x) { double e = 0; for (size_t i = x.size() / 2; i < x.size(); i++) e += (double)x[i] * x[i]; return 10 * std::log10(e / (x.size() / 2) + 1e-30); };
+        auto bass_corr = [&](const std::vector<float> &l, const std::vector<float> &r) {   /* L/R correlation under ~200 Hz */
+            const double k = 1 - std::exp(-2 * 3.141592653589793 * 200 / SR); double a1 = 0, a2 = 0, b1 = 0, b2 = 0, lr = 0, ll = 0, rr = 0;
+            for (size_t i = 0; i < l.size(); i++) { a1 += k * (l[i] - a1); a2 += k * (a1 - a2); b1 += k * (r[i] - b1); b2 += k * (b1 - b2);
+                if (i > l.size() / 2) { lr += a2 * b2; ll += a2 * a2; rr += b2 * b2; } }
+            return lr / std::sqrt(ll * rr + 1e-30); };
+        const double W = 16384 / SR, Ws = 2048 / SR;   /* the page's default (fft 0.7: N 16384), and a small one (fft 0.4) */
+        const auto dry = render("{\"glide\":0.5}", W), off = render("{\"glide\":0.5,\"low\":0}", W);
+        const auto one = render("{\"glide\":0.5,\"low\":1}", W); const double corr = bass_corr(one, right);
+        const auto two = render("{\"glide\":0.5,\"low\":1,\"depth\":1}", W);
+        const auto tun = render("{\"glide\":0.5,\"low\":1,\"tune\":1,\"focus\":0}", W);
+        const auto sm1 = render("{\"glide\":0.5,\"low\":1}", Ws), sm2 = render("{\"glide\":0.5,\"low\":1,\"depth\":1}", Ws);
+        const Bands bd = bands(dry), b1 = bands(one), b2 = bands(two), bt = bands(tun), s1 = bands(sm1), s2 = bands(sm2);
+        std::printf("8d low end: bass (45-250 Hz) %.1f%% dry, %.1f%% at -1 oct, %.1f%% at -2 oct; on D F A %.0f%% / %.0f%%; below 35 Hz %.2f%% / %.2f%% (dry %.2f%%); "
+                    "45-125 Hz of the bass %.0f%% at -1, %.0f%% at -2; level %+.1f / %+.1f dB; off identical %d\n",
+            100 * bd.bass, 100 * b1.bass, 100 * b2.bass, 100 * b1.tuned, 100 * b2.tuned, 100 * b1.sub, 100 * b2.sub, 100 * bd.sub,
+            100 * b1.deep, 100 * b2.deep, rms(one) - rms(dry), rms(two) - rms(dry), (int)(off == dry));
+        std::printf("8d low end, final review: with tune 1 the bass is %.1f%%; a small window (2048) %.1f%% / %.1f%% bass, on D F A %.0f%% / %.0f%%, below 35 Hz %.2f%% / %.2f%%; bass L/R correlation %.2f\n",
+            100 * bt.bass, 100 * s1.bass, 100 * s2.bass, 100 * s1.tuned, 100 * s2.tuned, 100 * s1.sub, 100 * s2.sub, corr);
+        assert(off == dry && b1.bass > 0.08 && b1.bass < 0.35 && b2.bass > 0.08 && b2.bass < 0.35 && b1.tuned >= 0.5 && b2.tuned >= 0.5 && b1.sub < 0.005 && b2.sub < 0.005
+               && b2.deep > b1.deep && std::fabs(rms(one) - rms(dry)) < 1 && std::fabs(rms(two) - rms(dry)) < 1);
+        assert(bt.bass < 0.35 && s1.bass < 0.35 && s2.bass < 0.35 && (s1.tuned >= 0.5 || s1.bass < 0.03) && (s2.tuned >= 0.5 || s2.bass < 0.03)
+               && s1.sub < 0.005 && s2.sub < 0.005 && corr > 0.9);
+    }
     {   /* 8c (Kerem 2026-10-11: "grain points in super consonance ... resonate ... even the vary option will create variation in
            key and in harmony"): noise grains on a route held on D minor 7, its own voices off - the share of the energy within 25
            cents of D F A C; vary's pitch jumps chord intervals when the grains are in harmony, as before when not */

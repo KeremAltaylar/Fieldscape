@@ -97,6 +97,23 @@ try {
       const fit = JSON.parse(await ev("JSON.stringify((function(){ var pp = document.getElementById('patchpanel'), b = document.getElementById('pp-body'); return { page: document.documentElement.scrollHeight - innerHeight, panel: pp.scrollHeight - pp.clientHeight, body: b.scrollHeight - b.clientHeight }; })())"));
       check(p("the whole panel fits one screen"), fit.page === 0 && fit.panel <= 0 && fit.body <= 0, fit);
       await shot("desk-patch");
+      /* 8b: a voice's envelope graph opens over its column and stays on screen */
+      const envFit = JSON.parse(await ev("JSON.stringify((function(){ var b = document.getElementById('pp-v3-envbtn'); if (!b) return null; b.click(); var p = document.getElementById('pp-env-pop'); if (!p) return null; var r = p.getBoundingClientRect(); return { bottom: r.bottom, right: r.right, h: innerHeight, w: innerWidth }; })())"));
+      check(p("8b: a voice's envelope graph opens on screen"), !!envFit && envFit.bottom <= envFit.h && envFit.right <= envFit.w, envFit);
+      await shot("desk-patch-env");
+      /* final review 8b I2: a drag is heard while it moves (pointer moves 30 ms apart; the engine has the envelope before the
+         pointer lets go); M1: with an envelope set, its readout fits the popover's top line */
+      const rid = await ev("(function(){ var t = document.getElementById('pp-title').textContent.split(' · ').slice(1).join(' · '); var r = __fa.features().filter(function (f) { return f.properties.kind === 'route' && f.properties.name === t; })[0]; return r ? r.properties.id : ''; })()");
+      await ev(`(function(){ var d = document.querySelector('#pp-v3-env [data-env="1"]'), r = d.getBoundingClientRect(); window.__ex = r.left + r.width / 2; window.__ey = r.top + r.height / 2;
+        d.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 3, clientX: __ex, clientY: __ey, bubbles: true, isPrimary: true, button: 0, buttons: 1 })); return 1; })()`);
+      for (let i = 1; i <= 12; i++) { await ev(`document.querySelector('#pp-v3-env [data-env="1"]').dispatchEvent(new PointerEvent('pointermove', { pointerId: 3, clientX: __ex, clientY: __ey + ${i * 2}, bubbles: true, buttons: 1 })), 0`); await sleep(30); }
+      const midEnv = JSON.parse((await ev(`__fa.coreSentPatch('${rid}') || 'null'`)) || "null");
+      await ev("document.querySelector('#pp-v3-env [data-env=\"1\"]').dispatchEvent(new PointerEvent('pointerup', { pointerId: 3, bubbles: true })), 0");
+      check(p("8b: mid-drag, the engine already has the voice's envelope (final review 8b I2)"), !!(midEnv && midEnv.v3 && Array.isArray(midEnv.v3.env)), [rid, midEnv && midEnv.v3 && midEnv.v3.env]);
+      const readFit = JSON.parse(await ev("JSON.stringify((function(){ var t = document.querySelector('#pp-v3-env .ppeq-top'); return t ? { sw: t.scrollWidth, cw: t.clientWidth, text: t.textContent } : null; })())"));
+      check(p("8b: the envelope's readout fits its popover (final review 8b M1)"), !!readFit && readFit.sw <= readFit.cw, readFit);
+      await ev("(function(){ var b = [].filter.call(document.querySelectorAll('#pp-v3-env button'), function (x) { return /Instrument/.test(x.textContent); })[0]; if (b) b.click(); return 1; })()");
+      await ev("(function(){ document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); return 1; })()");
     } else {
       check(p("the phone panel has five tabs"), (await ev("[].map.call(document.querySelectorAll('#pp-tabs [data-tab]'), function (b) { return b.textContent; }).join(' ')")) === "Chords Voices Effects Morphs Rhythm", await ev("(document.querySelector('#pp-tabs')||{}).textContent"));
       for (const tab of ["chords", "voices", "effects", "morphs", "rhythm"]) {

@@ -56,6 +56,7 @@ struct Controls {
     float chord[5], root;
     float follow; const float *tf, *tc; int tn; double thop;   /* 5: the recording's pitch track, and how far it follows the chord */
     float resonate; int body;                                  /* 7: the chord rung by the recording (0 String, 1 Tube, 2 Bell) */
+    float low; int depth;                                      /* 8d: its partials one or two octaves down, in the bass, on the chord */
 };
 
 enum Stage { S_WIN, S_TWID, S_GAIN, S_READ, S_FWD, S_MAG, S_ONSET, S_BINC, S_COMB, S_RCLR, S_RTAB, S_SH_IN, S_SH_T, S_SH_E, S_SH_R, S_SH_L, S_SH_NORM, S_PHASE, S_INV, S_OUT, S_FINISH };
@@ -84,6 +85,7 @@ struct Voice {
     /* shaping */
     Controls cc{};
     std::vector<float> shp[2], sm[2], pre[2], tt[2], binc, table;
+    std::vector<float> lowb; double eb = 0, lowg = 0;   /* 8d: the Low end's shape this frame (both channels), its energy, its gain */
     /* 7 Resonate: each bin's pitch in cents from A440 (unfolded), the chord's response per bin, its peaks, the frame's
        running sums (its colour, smoothed over +-1/6 octave) */
     std::vector<float> bina, rtab; std::vector<double> pfx[2];
@@ -114,7 +116,7 @@ struct Voice {
         binc.assign(nmax / 2 + 1, 0.0f); bina.assign(nmax / 2 + 1, 0.0f); rtab.assign(nmax / 2 + 1, 0.0f);
         for (auto &p : pfx) p.assign(nmax / 2 + 2, 0.0);
         for (int k = 1; k <= 24; k++) log2k[k] = 1200.0 * std::log2((double)k);
-        table.assign(CENTS, 0.0f);
+        table.assign(CENTS, 0.0f); lowb.assign(nmax / 2 + 1, 0.0f);
         for (int c = 0; c < 2; c++) {
             shp[c].assign(nmax / 2 + 1, 0.0f); sm[c].assign(nmax / 2 + 1, 0.0f);
             pre[c].assign(nmax / 2 + 1, 0.0f); tt[c].assign(nmax / 2 + 1, 0.0f);
@@ -167,7 +169,7 @@ struct Voice {
             if (onset_on) add(S_ONSET, 0, 1, 64);
         }
         if (c.shaping) {
-            if ((c.tune > 0 || c.resonate > 0) && !binc_ready) add(S_BINC, 0, N / 2 + 1, 60);
+            if ((c.tune > 0 || c.resonate > 0 || c.low > 0) && !binc_ready) add(S_BINC, 0, N / 2 + 1, 60);
             if (c.resonate > 0 && res_key != rtab_key) { res_peaks(); add(S_RCLR, 0, N / 2 + 1, 1); add(S_RTAB, 0, (int)std::max(1LL, npaint), 10); }
             if (c.tune > 0 && comb_key != table_key) add(S_COMB, 0, CENTS, 40 + 25 * (int)std::lround(c.partials < 1 ? 1 : c.partials > 24 ? 24 : c.partials));
             /* split per bin like the FFT, so no callback carries a whole spectrum (measured: 7.8 ms in one) */
@@ -242,6 +244,28 @@ struct Voice {
         int i = (int)x; float f = (float)(x - i);
         return m[i] + (m[i + 1] - m[i]) * f;
     }
+
+    /* 8d: Low end - bass partials on the chord's notes in a bass band (90-300 Hz, or 45-150 Hz one octave deeper; steep edges:
+       no rumble under it, no mud over it). This is its shape only; S_SH_NORM gives it a share of the frame's energy (final review
+       8d I1-I3: a level per bin grew with the bins' width, and tune left it alone with the recording's energy). A bin too coarse
+       to hold a pitch (over 80 cents wide, fading in from 40) is left out, and so is one whose window reaches under 40 Hz: at a
+       small window or a high rate it fades away instead of turning into boom. */
+    float low_end(int j) {
+        const double f = (double)j * sr / N, df = sr / N; const float bc = binc[j];
+        const double lo = cc.depth == 2 ? 45 : 90, hi = cc.depth == 2 ? 150 : 300;
+        if (f < 0.6 * lo || f > 1.5 * hi || f - 2 * df < 40 || bc < 0) return 0;
+        const double wb = 1200 * std::log2((f + df) / f), q = std::fmin(1.0, std::fmax(0.0, (80 - wb) / 40));
+        if (q <= 0) return 0;
+        const double r4 = std::pow(f / lo, 4), band = r4 / (1 + r4) / (1 + std::pow(f / hi, 4)), w = std::fmax(12.0, 0.6 * wb);
+        double v = 0;
+        for (int i = 0; i < 5; i++) {
+            if (gnote[i] < 0) continue;
+            double d = std::fabs(std::fmod(bc - std::fmod(gnote[i] * 100.0, 1200.0) + 1200.0 * 64, 1200.0)); if (d > 600) d = 1200 - d;
+            if (d < 4 * w) v += std::exp(-0.5 * (d / w) * (d / w));
+        }
+        return (float)(q * band * std::fmin(v, 1.0));
+    }
+    static constexpr double LOW_SHARE = 0.2;   /* at Low end 1, a fifth of the frame's energy */
 
     /* Result buffers after the forward or inverse passes. */
     float *res_r() { return fft.passes % 2 ? br.data() : ar.data(); }
@@ -387,7 +411,7 @@ struct Voice {
         case S_SH_IN:
             /* the stretch's magnitudes for this frame (onset-interpolated as the phase stage would), and their energy */
             if (a == 0) {
-                e0[0] = e0[1] = e1[0] = e1[1] = 0;
+                e0[0] = e0[1] = e1[0] = e1[1] = 0; eb = 0;
                 sh_T = std::pow(2.0, cc.transpose / 12.0);
                 if (cc.follow > 0 && cc.tn > 0) {   /* 5: the recording's pitch here, toward the chord's nearest note, gliding */
                     const int fi = (int)(fpos / sr / (cc.thop > 0 ? cc.thop : 0.02));
@@ -458,13 +482,21 @@ struct Voice {
                 }
                 if (cc.blur > 0) { sm[ch][j] = have_sm ? sm[ch][j] + (x - sm[ch][j]) * blur_k : x; x = sm[ch][j]; }
                 shp[ch][j] = x; e1[ch] += (double)x * x;
+                if (cc.low > 0 && ch == 0) { const float u = low_end(j); lowb[j] = u; eb += (double)u * u; }
             }
             break;
         }
         case S_SH_NORM:
             /* the frame's energy back to the stretch's own (A-18: these are timbre, not level) */
-            if (a == 0) for (int ch = 0; ch < 2; ch++) sh_g[ch] = e1[ch] > 1e-30 ? (float)std::sqrt(e0[ch] / e1[ch]) : 0.0f;
+            if (a == 0) {
+                /* 8d: with Low end, the recording keeps 1 - share of the energy and the bass gets the share - the same in both
+                   channels, from their mean (final review 8d I4) */
+                const double sl = cc.low > 0 && eb > 1e-30 ? LOW_SHARE * cc.low : 0;
+                for (int ch = 0; ch < 2; ch++) sh_g[ch] = e1[ch] > 1e-30 ? (float)std::sqrt((sl > 0 ? 1 - sl : 1.0) * e0[ch] / e1[ch]) : 0.0f;
+                lowg = sl > 0 ? std::sqrt(sl * 0.5 * (e0[0] + e0[1]) / eb) : 0;
+            }
             for (int ch = 0; ch < 2; ch++) for (int j = a; j < b; j++) shp[ch][j] *= sh_g[ch];
+            if (lowg > 0) for (int ch = 0; ch < 2; ch++) for (int j = a; j < b; j++) shp[ch][j] += (float)(lowb[j] * lowg);
             if (b == N / 2 + 1) have_sm = cc.blur > 0;
             break;
         case S_PHASE:
@@ -477,6 +509,7 @@ struct Voice {
                 float ps = TWO_PI * rng.uniform();
                 float p0 = ps + width * TWO_PI * (rng.uniform() - 0.5f);
                 float p1 = ps + width * TWO_PI * (rng.uniform() - 0.5f);
+                if (cc.shaping && lowg > 0 && lowb[j] > 0) p1 = p0;   /* 8d I4: the bass in the middle (a phone's mono speaker sums it) */
                 /* Build conj(W), W = Y0 + i Y1, so the forward passes compute the inverse transform. */
                 if (j == 0) { ar[0] = ai[0] = 0; continue; }                     /* DC removed */
                 if (j == N / 2) {                                               /* Nyquist: random sign */
@@ -611,10 +644,12 @@ static const fs_param STRETCH_PARAMS[] = {
     { "follow", "Follow", "", 0.0f, 1.0f, 0.0f },   /* 5: a pitched recording onto the chord (0 = as recorded) */
     { "resonate", "Resonate", "", 0.0f, 1.0f, 0.0f },   /* 7: the chord rung by the recording, inside the stretch */
     { "body", "Body", "", 0.0f, 2.0f, 0.0f },           /* 7: 0 String, 1 Tube, 2 Bell */
+    { "low", "Low end", "", 0.0f, 1.0f, 0.0f },         /* 8d: its partials in the bass, on the chord */
+    { "depth", "Low end depth", "", 0.0f, 1.0f, 0.0f },   /* 8d: 0 an octave under the chord, 1 two (the page's select index) */
 };
 enum { P_STRETCH, P_WINDOW, P_FREEZE, P_ONSET, P_WIDTH, P_SHAPE, P_SEED,
        P_TRANSPOSE, P_TUNE, P_FOCUS, P_PARTIALS, P_LAYERS, P_HARMONY, P_GLIDE, P_DRIFT, P_BLUR, P_START, P_END,
-       P_CHORD0, P_ROOT = P_CHORD0 + 5, P_FOLLOW, P_RESONATE, P_BODY, P_COUNT };
+       P_CHORD0, P_ROOT = P_CHORD0 + 5, P_FOLLOW, P_RESONATE, P_BODY, P_LOW, P_DEPTH, P_COUNT };
 
 struct Stretch : Device {
     float value[P_COUNT];
@@ -658,7 +693,8 @@ struct Stretch : Device {
         if (any) chord_seen = true;
         c.follow = chord_seen ? value[P_FOLLOW] : 0; c.tn = (int)trk_f.size();   /* before any chord, no follow (5 I2) */ c.tf = c.tn ? trk_f.data() : nullptr; c.tc = c.tn ? trk_c.data() : nullptr; c.thop = trk_hop;
         c.resonate = value[P_RESONATE]; c.body = (int)std::lround(value[P_BODY]);
-        c.shaping = std::fabs(c.transpose) > 1e-4 || c.tune > 0 || (c.layers >= 0.5f && c.harmony > 0) || c.blur > 0 || (c.follow > 0 && c.tn > 0) || c.resonate > 0;
+        c.low = value[P_LOW]; c.depth = value[P_DEPTH] >= 0.5f ? 2 : 1;
+        c.shaping = std::fabs(c.transpose) > 1e-4 || c.tune > 0 || (c.layers >= 0.5f && c.harmony > 0) || c.blur > 0 || (c.follow > 0 && c.tn > 0) || c.resonate > 0 || c.low > 0;
         return c;
     }
     int target_n() {
@@ -736,7 +772,7 @@ Device *make_stretch() { return new Stretch(); }
 /* The host's side of the shaping, shared by the web engine and both apps' walks, so every platform
    reads a point the same way. The shaping's own names (properties.sound.shape); anything missing
    takes the parameter's default, which is dry (A-8). */
-static const char *const SHAPE_KEYS[] = { "transpose", "tune", "focus", "partials", "layers", "harmony", "glide", "drift", "blur", "start", "end", "width", "follow", "resonate", "body" };
+static const char *const SHAPE_KEYS[] = { "transpose", "tune", "focus", "partials", "layers", "harmony", "glide", "drift", "blur", "start", "end", "width", "follow", "resonate", "body", "low", "depth" };
 static int stretch_param(const char *id) { for (int i = 0; i < P_COUNT; i++) if (!std::strcmp(STRETCH_PARAMS[i].id, id)) return i; return -1; }
 
 extern "C" void fs_stretch_shape(fs_device *d, const char *shape_json) {
