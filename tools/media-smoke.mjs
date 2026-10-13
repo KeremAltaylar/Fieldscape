@@ -9,7 +9,7 @@ import { createClient } from "@supabase/supabase-js";
 const WORKER = process.env.FS_MEDIA || "https://fieldscape-media.keremaltaylar.workers.dev";
 const db = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY, { auth: { persistSession: false } });
 const PUB = "00000000-0000-4000-8000-0000000001b1", PRIV = "00000000-0000-4000-8000-0000000001b2", SENS = "00000000-0000-4000-8000-0000000001b3";
-const users = [["probe-media-setter@fieldarc.test", true], ["probe-media-walker@fieldarc.test", false]], PASSWORD = "probe-" + "m".repeat(16);
+const users = [["probe-media-setter@fieldarc.test", true], ["probe-media-walker@fieldarc.test", false]], PASSWORD = "probe-" + crypto.randomUUID()   /* a new one each run: the repo is public (R2 final review I1) */;
 let failed = 0;
 const check = (name, ok, got) => { console.log((ok ? "PASS " : "FAIL ") + name + (ok ? "" : "  (got " + JSON.stringify(got) + ")")); if (!ok) failed++; };
 

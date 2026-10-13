@@ -34,8 +34,9 @@ today's access rules. Supabase keeps the database and sign-in (2–6 % of their 
 | `PUT /o/<path>` | setter only; `x-upsert: false` refuses an existing key (409), as Supabase's `upsert:false` | 200 `{ path }` |
 | `OPTIONS` | CORS preflight for the allowed origins (authorization, content-type, x-upsert) | 204 |
 
-- Checks call Supabase REST with the anon key (public check) or the user's token (setter check); answers are cached in
-  the Worker's Cache API: public per folder 60 s, setter per token 300 s. A Supabase failure denies (fail closed).
+- Checks call Supabase REST with the anon key (public check: in `public_features` and not `fuzzed` - a sensitive point's
+  WAV can carry its true coordinates, migration 0016) or the user's token (setter check), afresh on every request: no
+  grant outlives a feature's state, and a Supabase failure denies (fail closed) without being remembered.
 - Path hygiene: decoded, no `..`, no leading `/`, ≤ 512 chars; content type stored with the object and returned.
 - The logic is one module (`handle(request, env, deps)`) with fetch/R2/cache injected, unit-tested in node; the
   deployed Worker gets a live smoke test with probe files only.

@@ -8,7 +8,8 @@ import { handle } from "../workers/media/handle.mjs";
 const PUB = "11111111-1111-4111-8111-111111111111", PRIV = "22222222-2222-4222-8222-222222222222";
 const SENS = "33333333-3333-4333-8333-333333333333";   /* published but sensitive: the view lists it, fuzzed (migration 0016) */
 const SETTER = "setter-token", WALKER = "walker-token";
-function world({ supabaseDown = false } = {}) {
+function world({ supabaseDown = false, cache = null } = {}) {
+  const state = { published: new Set([PUB]), down: supabaseDown };
   const objects = new Map([[PUB + "/take.wav", { body: "pub-audio", type: "audio/wav" }], [PRIV + "/take.wav", { body: "priv-audio", type: "audio/wav" }], [SENS + "/take.wav", { body: "sens-audio", type: "audio/wav" }]]);
   const calls = [];
   const env = {
@@ -22,18 +23,18 @@ function world({ supabaseDown = false } = {}) {
   const deps = {
     async fetch(url, init) {
       calls.push(url);
-      if (supabaseDown) throw new Error("down");
+      if (state.down) throw new Error("down");
       const auth = (init.headers.Authorization || init.headers.authorization || "");
       if (url.includes("/rest/v1/public_features")) {   /* the view: published and not sensitive */
         const id = new URL(url).searchParams.get("id").replace("eq.", "");
-        return new Response(JSON.stringify(id === PUB ? [{ id, fuzzed: null }] : id === SENS ? [{ id, fuzzed: true }] : []), { status: 200 });
+        return new Response(JSON.stringify(state.published.has(id) ? [{ id, fuzzed: null }] : id === SENS ? [{ id, fuzzed: true }] : []), { status: 200 });
       }
       if (url.includes("/rest/v1/rpc/is_setter")) return new Response(JSON.stringify(auth === "Bearer " + SETTER), { status: auth === "Bearer anon" ? 401 : 200 });
       return new Response("?", { status: 404 });
     },
-    cache: null,
+    cache,
   };
-  return { env, deps, objects, calls };
+  return { env, deps, objects, calls, state };
 }
 const req = (method, path, { token, body, headers = {} } = {}) => new Request("https://m.example/o/" + path, {
   method, body, headers: { ...(token ? { Authorization: "Bearer " + token } : {}), Origin: "https://keremaltaylar.github.io", ...headers } });
@@ -96,4 +97,19 @@ test("other methods and routes are refused", async () => {
   const w = world();
   assert.equal((await handle(new Request("https://m.example/o/" + PUB + "/take.wav", { method: "DELETE", headers: { Authorization: "Bearer " + SETTER } }), w.env, w.deps)).status, 405);
   assert.equal((await handle(new Request("https://m.example/other"), w.env, w.deps)).status, 404);
+});
+
+/* R2 final review I2: with a working cache (a custom domain), a grant must not outlive the feature's state - migration 0016:
+   "unpublishing a feature revokes access to its audio on the very next request" - and a Supabase blip must not be remembered */
+function memCache() { const m = new Map(); return { async match(k) { const r = m.get(k.url); return r ? r.clone() : undefined; }, async put(k, r) { m.set(k.url, r); } }; }
+test("unpublishing revokes on the very next request, cache or not", async () => {
+  const w = world({ cache: memCache() });
+  assert.equal((await handle(req("GET", PUB + "/take.wav"), w.env, w.deps)).status, 200);
+  w.state.published.delete(PUB);
+  assert.equal((await handle(req("GET", PUB + "/take.wav"), w.env, w.deps)).status, 403);
+});
+test("a Supabase blip is not remembered", async () => {
+  const w = world({ cache: memCache() });
+  w.state.down = true; assert.equal((await handle(req("GET", PUB + "/take.wav"), w.env, w.deps)).status, 403);
+  w.state.down = false; assert.equal((await handle(req("GET", PUB + "/take.wav"), w.env, w.deps)).status, 200);
 });
