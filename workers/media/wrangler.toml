@@ -1,0 +1,15 @@
+# Phase 1b: Fieldscape's recordings from the private R2 bucket (docs/superpowers/specs/2026-10-13-media-r2-design.md)
+name = "fieldscape-media"
+main = "index.mjs"
+compatibility_date = "2026-10-01"
+account_id = "09fcbf538032058894e03f3ff6f76c16"
+
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "fieldscape-media"
+
+[vars]
+SUPABASE_URL = "https://ujdygmcpqsbyeysggypc.supabase.co"
+# public by design, as in index.html (row-level security is the guard)
+SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVqZHlnbWNwcXNieWV5c2dneXBjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNDE4NDIsImV4cCI6MjEwNDYxNzg0Mn0.SJlrNKQftKxdM0G6f18e6PsRCvdhIH8fco5tW3CktwM"
+ALLOW_ORIGINS = "https://keremaltaylar.github.io,http://localhost:8765"
