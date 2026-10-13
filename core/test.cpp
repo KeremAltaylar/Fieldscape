@@ -2344,6 +2344,39 @@ int main() {
         std::printf("\n");
         assert(worst > -10);
     }
+    {   /* 6b: the apps' one call per voice, fs_piece_role_sample, is the website's path - the splice (fs_role_compact), the
+           pitch track's frames in cut blocks dropped, then fs_piece_role_source / _analysis: a Retune voice sounds the same
+           sample for sample (the silence leads, so a track left unfiltered would start the voice 0.8 s later); and silence handed to a voice silences it (a route with no sample there) */
+        const int n = (int)(3 * SR); std::vector<float> s((size_t)n, 0.0f);
+        for (int i = 0; i < n; i++) { const double t = i / SR; s[(size_t)i] = t >= 0.8 ? (float)(0.5 * std::sin(2 * 3.141592653589793 * 220 * t)) : 0.0f; }
+        std::string ana = "{\"f0\":220,\"hop_s\":0.02,\"track\":[";
+        for (int i = 0; i < (int)(3 / 0.02); i++) { const double t = i * 0.02; ana += std::string(i ? "," : "") + (t < 0.8 ? "[0,0]" : "[220,0.95]"); }
+        ana += "]}";
+        const char *route = "{\"version\":17,\"prog\":[{\"r\":0,\"q\":\"m9\"},{\"r\":5,\"q\":\"maj7#11\"}],\"morph\":{\"on\":false,\"list\":[]},\"bed\":{\"on\":false},\"sect\":{\"on\":false},\"zones\":{\"on\":false},\"v3\":{\"on\":false},\"voice\":{\"synth\":\"s-retune\"}}";
+        auto run = [&](int how) {   /* 0 the website's path, 1 fs_piece_role_sample, 2 then silence */
+            unsigned seed = 77; fs_device *d = fs_create("piece"); fs_prepare(d, 48000, 128); fs_piece_test_hooks(d, fixed_draw, &seed, nullptr, nullptr);
+            const float *pp[1] = { s.data() };
+            if (how == 0) {
+                std::vector<float> o((size_t)n); float *op[1] = { o.data() }; std::vector<unsigned char> kept((size_t)n / 2400 + 2);
+                const long long m = fs_role_compact(pp, 1, n, 48000, op, kept.data(), (int)kept.size());
+                const float *cp[1] = { o.data() }; fs_piece_role_source(d, 0, 1, m, cp);
+                std::string a = "{\"f0\":220,\"hop_s\":0.02,\"track\":[", sep;
+                for (int i = 0; i < (int)(3 / 0.02); i++) { const int b = (int)std::floor(i * 0.02 * 48000 / 2400); if (!kept[(size_t)b]) continue; const double t = i * 0.02;
+                    a += sep + (t < 0.8 ? "[0,0]" : "[220,0.95]"); sep = ","; }
+                a += "]}"; fs_piece_role_analysis(d, 0, a.c_str());
+            } else fs_piece_role_sample(d, 0, 1, n, pp, ana.c_str());
+            const int r = fs_piece_add_route(d, route); fs_piece_walk(d, r, 0.3, 0);
+            std::vector<float> o; float ro[3 * (2 + 8)]; double late = -120;
+            for (int i = 0; i < (int)(8 * SR / 128); i++) {
+                if (how == 2 && i == (int)(4 * SR / 128)) { std::vector<float> z(128, 0.0f); const float *zp[1] = { z.data() }; fs_piece_role_sample(d, 0, 1, 128, zp, nullptr); }
+                fs_process(d, 128); const float *l = fs_out(d, 0); o.insert(o.end(), l, l + 128);
+                if (i > (int)(6 * SR / 128)) { fs_piece_roles(d, ro, 8); late = std::fmax(late, ro[0]); }
+            }
+            fs_destroy(d); return std::make_pair(o, late); };
+        const auto web = run(0), app = run(1), hush = run(2);
+        std::printf("6b role sample: the apps' call is the website's path %d; the voice at %.0f dB, after silence %.0f dB\n", (int)(web.first == app.first), app.second, hush.second);
+        assert(web.first == app.first && app.second > -60 && hush.second < -90);
+    }
     {   /* 8b (Kerem 2026-10-11: "I want an envelope graph in the route patch voices, like the grains have one, so I can adjust
            the envelope of notes"): a voice's "env": [attack s, decay s, sustain 0..1, release s] reaches whatever plays it -
            every digital synth with an amplitude envelope and the samplers. Measured on the Voice's own level (fs_piece_roles):

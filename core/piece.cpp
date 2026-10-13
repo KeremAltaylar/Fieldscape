@@ -1675,6 +1675,79 @@ void fs_piece_role_source(fs_device *d, int role, int channels, long long frames
     p->known[role].spec = spec; p->known[role].spec_n = spec ? (int)sp.size() : 0;
     p->in.rrec[role] = p->known[role]; p->in.rrec_set[role] = true;
 }
+/* 6b: web/lab-roles.js compactPlan + compactData, line for line (tests/role-compact.test.mjs holds them to each other) */
+static std::vector<unsigned char> role_plan(const float *const *pcm, int ch, long long n, double sr, long long &B, std::vector<std::pair<long long, long long>> &segs) {
+    B = std::max(1LL, (long long)std::llround(0.05 * sr));
+    const long long nb = (n + B - 1) / B; std::vector<double> e((size_t)nb); double top = 0;
+    for (long long b = 0; b < nb; b++) {
+        double s = 0; const long long z = std::min(n, (b + 1) * B);
+        for (int c = 0; c < ch; c++) for (long long i = b * B; i < z; i++) s += (double)pcm[c][i] * pcm[c][i];
+        e[(size_t)b] = s / ((double)(z - b * B) * ch); if (e[(size_t)b] > top) top = e[(size_t)b];
+    }
+    std::vector<unsigned char> kept((size_t)nb);
+    for (long long b = 0; b < nb; b++) kept[(size_t)b] = top > 0 && e[(size_t)b] >= top * 1e-4 ? 1 : 0;
+    if (top <= 0) std::fill(kept.begin(), kept.end(), 1);
+    const long long gap = (long long)std::ceil(0.25 / 0.05);
+    for (long long b = 0; b < nb; b++) {
+        if (kept[(size_t)b]) continue;
+        long long r = b; while (r < nb && !kept[(size_t)r]) r++;
+        if (b > 0 && r < nb && r - b < gap) for (long long k = b; k < r; k++) kept[(size_t)k] = 1;
+        b = r;
+    }
+    segs.clear();
+    for (long long b = 0; b < nb; b++) if (kept[(size_t)b] && (b == 0 || !kept[(size_t)b - 1])) { long long q = b; while (q < nb && kept[(size_t)q]) q++; segs.push_back({ b * B, std::min(n, q * B) }); }
+    return kept;
+}
+long long fs_role_compact(const float *const *pcm, int ch, long long n, double sr, float *const *out, unsigned char *kept_out, int kept_max) {
+    if (!pcm || !out || ch < 1 || n <= 0) return 0;
+    long long B; std::vector<std::pair<long long, long long>> segs;
+    const std::vector<unsigned char> kept = role_plan(pcm, ch, n, sr, B, segs);
+    const long long F = std::max(1LL, (long long)std::llround(0.005 * sr));
+    const bool whole = segs.size() == 1 && segs[0].first == 0 && segs[0].second == n;
+    long long o = 0;
+    for (size_t si = 0; si < segs.size(); si++) {
+        const long long a = segs[si].first, len = segs[si].second - a;
+        for (int c = 0; c < ch; c++) {
+            std::copy(pcm[c] + a, pcm[c] + a + len, out[c] + o);
+            if (whole) continue;
+            for (long long i = 0; i < std::min(F, len); i++) {
+                const float g = (float)(0.5 - 0.5 * std::cos(3.141592653589793 * (i + 0.5) / F));   /* raised cosine: no step at a join */
+                if (si > 0 || a > 0) out[c][o + i] *= g;
+                if (si < segs.size() - 1 || segs[si].second < n) out[c][o + len - 1 - i] *= g;
+            }
+        }
+        o += len;
+    }
+    if (kept_out) for (int b = 0; b < kept_max && b < (int)kept.size(); b++) kept_out[b] = kept[(size_t)b];
+    return o;
+}
+static void role_analysis_arrays(Piece *p, int role, double f0, double hop, float *tf, float *tc, int n);
+void fs_piece_role_sample(fs_device *d, int role, int channels, long long frames, const float *const *pcm, const char *json) {
+    Piece *p = P(d); if (!p || role < 0 || role > 2 || !pcm || frames <= 0 || channels < 1) return;
+    const int ch = channels > 1 ? 2 : 1;
+    const long long n = std::min(frames, (long long)std::llround(30.0 * p->sr));   /* the first 30 s (lab-roles MAX_S) */
+    std::vector<std::vector<float>> o((size_t)ch, std::vector<float>((size_t)n));
+    float *op[2] = { o[0].data(), ch > 1 ? o[1].data() : nullptr };
+    long long B; std::vector<std::pair<long long, long long>> segs;
+    const std::vector<unsigned char> kept = role_plan(pcm, ch, n, p->sr, B, segs);
+    const long long m = fs_role_compact(pcm, ch, n, p->sr, op, nullptr, 0);
+    const float *cp[2] = { op[0], op[1] };
+    fs_piece_role_source(d, role, ch, std::max(1LL, m), cp);
+    /* the analysis: its track's frames in kept blocks only (compactData's filter) */
+    Json j = Json::parse(json ? json : "{}");
+    const Json *tr = j.get("track"); const double hop = j.n("hop_s", 0.02);
+    std::vector<float> f, c;
+    for (int i = 0; tr && i < (int)tr->size(); i++) {
+        const long long b = (long long)std::floor(i * hop * p->sr / B);
+        if (b >= (long long)kept.size() || !kept[(size_t)b]) continue;
+        const Json *fr = tr->at(i); const Json *a = fr ? fr->at(0) : nullptr, *q = fr ? fr->at(1) : nullptr;
+        f.push_back(a ? (float)a->num : 0); c.push_back(q ? (float)q->num : 0);
+    }
+    float *tf = f.empty() ? nullptr : (float *)std::malloc(sizeof(float) * f.size());
+    float *tc = f.empty() ? nullptr : (float *)std::malloc(sizeof(float) * f.size());
+    if (tf && tc) { std::copy(f.begin(), f.end(), tf); std::copy(c.begin(), c.end(), tc); }
+    role_analysis_arrays(p, role, j.n("f0", 0), hop, tf, tc, (int)f.size());
+}
 void fs_piece_role_analysis(fs_device *d, int role, const char *json) {
     Piece *p = P(d); if (!p || role < 0 || role > 2 || !json) return;
     Json j = Json::parse(json);
@@ -1684,10 +1757,13 @@ void fs_piece_role_analysis(fs_device *d, int role, const char *json) {
         const Json *fr = tr->at(i); const Json *a = fr ? fr->at(0) : nullptr, *b = fr ? fr->at(1) : nullptr;
         tf[i] = a ? (float)a->num : 0; tc[i] = b ? (float)b->num : 0;
     }
+    role_analysis_arrays(p, role, j.n("f0", 0), j.n("hop_s", 0.02), tf, tc, n);
+}
+static void role_analysis_arrays(Piece *p, int role, double f0, double hop, float *tf, float *tc, int n) {
     std::lock_guard<std::mutex> g(p->mu); sweep(p);
     if (tf) p->keep.b.push_back(tf); if (tc) p->keep.b.push_back(tc);
     RoleRec &k = p->known[role];
-    k.f0 = j.n("f0", 0); k.hop = j.n("hop_s", 0.02);
+    k.f0 = f0; k.hop = hop;
     k.tf = tf && tc ? tf : nullptr; k.tc = tf && tc ? tc : nullptr; k.tn = tf && tc ? n : 0;
     p->in.rrec[role] = k; p->in.rrec_set[role] = true;
 }

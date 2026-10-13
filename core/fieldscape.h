@@ -182,6 +182,14 @@ void fs_piece_default_tuning(fs_device *d, int tuning);
    and its analysis (fs_analyse's JSON) - copied; the audio thread takes them at its next block */
 void fs_piece_role_source(fs_device *d, int role, int channels, long long frames, const float *const *pcm);
 void fs_piece_role_analysis(fs_device *d, int role, const char *analysis_json);
+/* 6b: a voice's sample as the website prepares it (web/lab-roles.js prepare): the first 30 s, its silences cut (50 ms
+   blocks, a block sounds at the loudest one's -40 dB, silent runs under 0.25 s kept, 5 ms raised-cosine joins), its pitch
+   track's frames in cut blocks dropped - then fs_piece_role_source / _analysis. pcm planar at the piece's rate; analysis
+   may be null. The apps' one call per voice. */
+void fs_piece_role_sample(fs_device *d, int role, int channels, long long frames, const float *const *pcm, const char *analysis_json);
+/* 6b: the splice alone (FsRoles.compactData's samples): out[c] hold frames each; kept gets each 50 ms block's 1/0 (up to
+   kept_max); returns the compacted length. */
+long long fs_role_compact(const float *const *pcm, int channels, long long frames, double sr, float *const *out, unsigned char *kept, int kept_max);
 /* 3c.1: each role's level (dB, >= -120) and sounding note frequencies: [level, count, f1..f_max] for voice, sect, v3.
    Returns 3 * (2 + max_notes). Called on the audio thread, between renders. */
 int fs_piece_roles(fs_device *d, float *out, int max_notes);
