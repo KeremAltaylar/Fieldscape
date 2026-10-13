@@ -3,6 +3,7 @@
      node --env-file=.env.local tools/carry-over-6a.mjs                 a dry run: every change printed, nothing written
      node --env-file=.env.local tools/carry-over-6a.mjs --run           the changes written
      ... --only <id,id>                                                 only these rows (the tests use probe rows)
+     ... --except <id,id>                                               never these (a route Kerem set by hand: Koşuyolu)
    A route's sampler voice: its lab sample copied to <route id>/<role>-<ms>.wav, its analysis (from the lab row) written
    beside it as .json, and synth / sampler / eq / sample into properties.patch.<role>; a digital voice with an EQ gets eq only.
    A point: follow / resonate / body into properties.sound.shape (stretch) or rhythm.follow (grains, hits); following, its
@@ -17,6 +18,7 @@ import { targets, session } from "./cdp.mjs";
 
 const RUN = process.argv.includes("--run");
 const oi = process.argv.indexOf("--only"), ONLY = oi > 0 ? new Set(process.argv[oi + 1].split(",")) : null;
+const xi = process.argv.indexOf("--except"), EXCEPT = new Set(xi > 0 ? process.argv[xi + 1].split(",") : []);
 const URL = process.env.FS_URL || "http://localhost:8765/";
 const db = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY, { auth: { persistSession: false } });
 const store = db.storage.from("recordings");
@@ -53,7 +55,7 @@ async function upload(path, body, type) {
 }
 
 try {
-  const rows = ((await db.from("lab_route_roles").select("route_id, roles")).data || []).filter((r) => !ONLY || ONLY.has(r.route_id));
+  const rows = ((await db.from("lab_route_roles").select("route_id, roles")).data || []).filter((r) => (!ONLY || ONLY.has(r.route_id)) && !EXCEPT.has(r.route_id));
   for (const row of rows) {
     const { data: f } = await db.from("features").select("id, kind, properties").eq("id", row.route_id).maybeSingle();
     if (!f) { console.log(row.route_id.slice(0, 8) + " skipped: no such feature"); continue; }
