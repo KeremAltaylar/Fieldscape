@@ -84,6 +84,9 @@ try {
       }
       await ev("document.getElementById('rp-close').click(), 0"); await sleep(400);
     }
+    /* phase 1b: the recordings came through the media Worker (R2), none from Supabase */
+    const med = JSON.parse(await ev("JSON.stringify(window.__fa && __fa.media ? __fa.media : null)"));
+    check(p("recordings come from the media Worker (R2), none from Supabase"), !!med && med.reads > 0 && med.fallbacks === 0, med);
     check(p("no page errors"), errors.length === 0, errors);
     errors.length = 0;
   }

@@ -2095,6 +2095,45 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     ? null
     : supabase.createClient(FA_CONFIG.url, FA_CONFIG.anonKey,
         { auth: { persistSession: true, autoRefreshToken: true } });
+  /* Phase 1b (docs/superpowers/specs/2026-10-13-media-r2-design.md): recordings from Cloudflare R2 through the media Worker,
+     which keeps Storage's rules (published and not sensitive: anyone; a setter: everything). The shape of Supabase's bucket
+     ({data, error}), so the call sites only change their store. During the move: a file R2 does not have (404) or a Worker
+     that cannot be reached is read from Supabase; an upload goes to R2, then to Supabase too (the installed apps read it) */
+  var MEDIA_URL = "https://fieldscape-media.keremaltaylar.workers.dev";
+  var media = (function () {
+    var stats = { reads: 0, fallbacks: 0, writes: 0 };
+    var bucket = function () { return sb.storage.from("recordings"); };
+    var url = function (path) { return MEDIA_URL + "/o/" + String(path).split("/").map(encodeURIComponent).join("/"); };
+    var auth = function () {
+      return (sb ? sb.auth.getSession() : Promise.resolve({ data: {} })).then(function (r) {
+        var t = r.data && r.data.session && r.data.session.access_token; return t ? { Authorization: "Bearer " + t } : {};
+      }, function () { return {}; });
+    };
+    var fallback = function (path) { stats.fallbacks++; return sb ? bucket().download(path) : Promise.resolve({ data: null, error: { message: "offline" } }); };
+    return {
+      stats: stats,
+      download: function (path) {
+        return auth().then(function (h) { return fetch(url(path), { headers: h }); }).then(function (r) {
+          if (r.ok) { stats.reads++; return r.blob().then(function (b) { return { data: b, error: null }; }); }
+          if (r.status === 404) { return fallback(path); }
+          return { data: null, error: { message: "media " + r.status, status: r.status } };
+        }, function () { return fallback(path); });
+      },
+      upload: function (path, blob, opts) {
+        opts = opts || {};
+        var also = function () { return sb ? bucket().upload(path, blob, opts).catch(function () { return null; }) : null; };
+        return auth().then(function (h) {
+          h["Content-Type"] = opts.contentType || blob.type || "application/octet-stream";
+          if (opts.upsert === false) { h["x-upsert"] = "false"; }
+          return fetch(url(path), { method: "PUT", headers: h, body: blob });
+        }).then(function (r) {
+          if (!r.ok) { return { data: null, error: { message: r.status === 409 ? "The resource already exists" : "media " + r.status, status: r.status } }; }
+          stats.writes++;
+          return Promise.resolve(also()).then(function () { return { data: { path: path }, error: null }; });
+        }, function () { return sb ? bucket().upload(path, blob, opts) : { data: null, error: { message: "offline" } }; });   /* the Worker unreachable: Supabase alone */
+      }
+    };
+  })();
   var EXPORT_KEY = "fieldarc.export";
   var TRASH_KEY = "fieldarc.trash";
   var TRASH_DAYS = 30;
@@ -3105,7 +3144,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         if (!blob) { return Promise.reject(new Error(missing)); }
         return fitForStorage(key, blob).then(function (fit) {
           var path = pathFor(fit);
-          return sb.storage.from("recordings")
+          return media
             .upload(path, fit, { upsert: true, contentType: fit.type })
             .then(function (r) { return r.error ? Promise.reject(new Error(r.error.message)) : path; });
         });
@@ -4033,7 +4072,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     map.on("moveend", renderLabels);
     map.on("zoomend", renderLabels);
   });
-  window.__fa = { map: map, errors: [] };   // debug hook — inspect state from the console
+  window.__fa = { map: map, errors: [], media: media.stats };   // debug hook — inspect state from the console
   window.__fa.sb = sb;   /* null offline, a client otherwise — measurable either way */
   /* tests (3c): lab mode's state (they sign in through __fa.sb; this page never asks for a password) */
   Object.defineProperty(window.__fa, "samplers", { get: function () { return samplersOn(); } });
@@ -4795,7 +4834,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function audioBlob(key, path) {
     return getAudio(key).then(function (blob) {
       if (blob || !sb || !path) { return blob; }
-      return sb.storage.from("recordings").download(path).then(function (r) {
+      return media.download(path).then(function (r) {
         if (r.error || !r.data) { return null; }
         /* Cached or not, it still plays now — a failed write must not lose the blob. */
         return putAudio(key, r.data).then(function () { return r.data; },
@@ -8402,7 +8441,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function pointTrack(eng, kind, index, sub, id) {
     var f = feature(id), path = f && trackPathOf(f, kind, sub);
     if (!f || !path || !sb || !follows(f, kind)) { return; }
-    (trackFiles[path] = trackFiles[path] || sb.storage.from("recordings").download(path).then(function (d) {
+    (trackFiles[path] = trackFiles[path] || media.download(path).then(function (d) {
       if (d.error || !d.data) { throw new Error((d.error && d.error.message) || "not found"); }
       return d.data.text();
     })).then(function (text) {
@@ -8445,7 +8484,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           /* the recording replaced while this one was read: not its track (I3) */
           if (rc.slot ? !(p.hits && p.hits[rc.slot] === rc.h) : ((p.audio && p.audio.added_at) || "") !== token) { stale = true; return; }
           var path = id + "/track-" + (rc.slot ? rc.slot + "-" : "") + Date.now() + ".json";
-          return sb.storage.from("recordings").upload(path, new Blob([JSON.stringify(t)], { type: "application/json" }), { upsert: false, contentType: "application/json" }).then(function (u) {
+          return media.upload(path, new Blob([JSON.stringify(t)], { type: "application/json" }), { upsert: false, contentType: "application/json" }).then(function (u) {
             if (u.error) { throw new Error(u.error.message); }
             if (rc.slot) { rc.h.track_path = path; } else { (p.sound = p.sound || {}).track_path = path; }
             trackFiles[path] = Promise.resolve(JSON.stringify(t));
@@ -8459,7 +8498,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   }
   /* the carry-over (tools/carry-over-6a.mjs): a published recording's track, read here */
   window.__fa.trackFor = function (path) {
-    return sb.storage.from("recordings").download(path).then(function (d) {
+    return media.download(path).then(function (d) {
       if (d.error || !d.data) { throw new Error((d.error && d.error.message) || "not found"); }
       return trackOfBlob(d.data);
     });
@@ -8517,7 +8556,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var key = "p:" + path;
       if (labKey[r] === key || labKey[r] === key + " loading") { return; }
       labKey[r] = key + " loading";
-      (labSound[path] = labSound[path] || FsRoles.decodeSample(sb, ctx, rr.sample)).then(function (p) {
+      (labSound[path] = labSound[path] || FsRoles.decodeSample(sb, ctx, rr.sample, media)).then(function (p) {
         if (labSentFor !== id || !core || !core.node || core.node.port !== port || labKey[r] !== key + " loading") { return; }
         labKey[r] = key; labSend(port, r, p.buf, p.analysis);       /* the silence cut out (3c.1) */
       }, function (e) {
@@ -13060,7 +13099,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function labCtx() { if (!labCtx.c) { labCtx.c = new (window.AudioContext || window.webkitAudioContext)(); } return labCtx.c; }
   function labSession() {
     if (!labRoles) {
-      labRoles = FsRoles.session({ sb: sb, ctx: labCtx, analyse: analyseMono, folder: function (id) { return id + "/"; }, analysisFiles: true,
+      labRoles = FsRoles.session({ sb: sb, store: media, ctx: labCtx, analyse: analyseMono, folder: function (id) { return id + "/"; }, analysisFiles: true,
         onChange: function () { if (!$("#patchpanel").hidden) { renderPatchPanel(); } } });   /* an upload saves itself when it is up */
     }
     return labRoles;
