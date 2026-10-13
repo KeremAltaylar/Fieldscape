@@ -7,7 +7,7 @@ import { anon, service } from "./clients.mjs";
 
 const db = service();
 const EMAIL = "probe-lab-setter@fieldarc.test";
-const PASSWORD = "probe-" + "y".repeat(16);
+const PASSWORD = "probe-" + crypto.randomUUID()   /* a new one each run: the repo is public (R2 final review I1) */;
 const DRAFT = "00000000-0000-4000-8000-00000000003b";      /* an unpublished route (an id no other test file uses: c1/c2 are publish and fuzz) */
 /* a published route: one of the real ones - a published fixture shows in public_features, which other test files read
    whole while they run in parallel (they failed with one present, measured) */

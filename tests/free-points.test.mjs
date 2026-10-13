@@ -8,7 +8,7 @@ const html = readFileSync("index.html", "utf8").replace(/\r\n/g, "\n");
 const ID = "0f0e0d0c-0b0a-4009-8008-700600500400";
 const db = service();
 const EMAIL = "free-point-probe@fieldarc.test";
-const PASSWORD = "probe-" + "z".repeat(16);
+const PASSWORD = "probe-" + crypto.randomUUID()   /* a new one each run: the repo is public (R2 final review I1) */;
 let userId = null;
 
 /* I7: the round-trip below used to run entirely through service(), which bypasses RLS — as

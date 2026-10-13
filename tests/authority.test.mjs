@@ -5,7 +5,7 @@ import { anon, service } from "./clients.mjs";
 
 const db = service();
 const EMAIL = "probe-setter@fieldarc.test";
-const PASSWORD = "probe-" + "x".repeat(16);
+const PASSWORD = "probe-" + crypto.randomUUID()   /* a new one each run: the repo is public (R2 final review I1) */;
 const ID = "00000000-0000-4000-8000-0000000000b1";
 let userId = null;
 

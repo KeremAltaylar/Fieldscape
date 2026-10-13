@@ -166,8 +166,8 @@ test("a listener's playback falls back to the bucket and caches what it download
   const fnAt = html.indexOf("function audioBlob(key, path)");
   assert.ok(fnAt > 0, "audioBlob() — the IndexedDB-then-bucket read — must exist");
   const fn = html.slice(fnAt, html.indexOf("\n  }", fnAt));
-  assert.match(fn, /sb\.storage\.from\("recordings"\)\s*\.download\(path\)/,
-    "the miss path must download from the recordings bucket");
+  assert.match(fn, /media\.download\(path\)/,
+    "the miss path must download the recording (phase 1b: through the media store - R2, Supabase as its fallback)");
   assert.match(fn, /putAudio\(key, r\.data\)/,
     "a downloaded blob must be cached, or a listener's second offline walk is silent again");
   assert.match(fn, /if \(blob \|\| !sb \|\| !path\) \{ return blob; \}/,

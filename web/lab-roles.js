@@ -156,8 +156,8 @@
     var room = Math.max(0, len - from - 2), tail = Math.min(0.5 * sr, 0.5 * room);
     return from + Math.min(1, Math.max(0, v)) * (room - tail);
   }
-  function decodeSample(sb, ctx, smp) {
-    var store = sb.storage.from("recordings");
+  function decodeSample(sb, ctx, smp, media) {   /* media: the page's R2 store (phase 1b); Supabase's bucket without one */
+    var store = media || sb.storage.from("recordings");
     /* 6a: the analysis from its file beside the sample (a lab row carries it inline) */
     var ana = smp.analysis ? Promise.resolve(smp.analysis) : smp.analysis_path ? store.download(smp.analysis_path).then(function (d) {
       if (d.error || !d.data) { throw new Error("analysis " + ((d.error && d.error.message) || "not found")); }
@@ -233,7 +233,7 @@
           if (Array.isArray(rr.eq)) { x.eq = rr.eq; }
           x.sample = rr.sample || null; x.sampleNote = rr.sample ? "loading…" : "";
           if (rr.sample && rr.sample.path) {
-            decodeSample(o.sb, o.ctx(), rr.sample).then(function (b) {
+            decodeSample(o.sb, o.ctx(), rr.sample, o.store).then(function (b) {
               if (gen !== s.gen) { return; } keep(r, b); recIds[r]++; x.sampleNote = ""; changed(r);
             }, function (e) {
               if (gen !== s.gen) { return; } bufs[r] = silence(o.ctx()); anas[r] = null; raws[r] = null; kepts[r] = null; recIds[r]++;
@@ -255,7 +255,7 @@
         x.eq = rr.eq || null;
         x.sample = isSampler(rr.synth) && rr.sample ? rr.sample : null; x.sampleNote = x.sample ? "loading…" : "";
         if (x.sample && o.ctx && o.ctx()) {
-          decodeSample(o.sb, o.ctx(), x.sample).then(function (b) {
+          decodeSample(o.sb, o.ctx(), x.sample, o.store).then(function (b) {
             if (gen !== s.gen) { return; } keep(r, b); recIds[r]++; x.sample.analysis = b.analysis; x.sampleNote = ""; changed(r);
           }, function (e) {
             if (gen !== s.gen) { return; } bufs[r] = silence(o.ctx()); anas[r] = null; raws[r] = null; kepts[r] = null; recIds[r]++;
@@ -276,7 +276,7 @@
         keep(r, prepare(o.ctx(), res.buf, res.analysis)); recIds[r]++;   /* the silence cut out; the upload stays as recorded */
         x.sample = { path: null, name: file.name, analysis: res.analysis };
         if (!o.sb || !id) { x.sampleNote = "not saved: log in as a setter on the site to save"; changed(r); return; }
-        var path = folder(id) + r + "-" + Date.now() + ".wav", jpath = path.replace(/\.wav$/, ".json"), store = o.sb.storage.from("recordings");
+        var path = folder(id) + r + "-" + Date.now() + ".wav", jpath = path.replace(/\.wav$/, ".json"), store = o.store || o.sb.storage.from("recordings");
         x.sampleNote = "uploading…"; changed(r);
         /* 6a: its analysis beside it, so a listener never analyses; the sample counts as saved once both are up */
         var ana = o.analysisFiles ? store.upload(jpath, new Blob([JSON.stringify(res.analysis)], { type: "application/json" }), { upsert: false, contentType: "application/json" }) : Promise.resolve({ error: null });

@@ -7,7 +7,7 @@ import { anon, service, sql } from "./clients.mjs";
 const db = service();
 const html = readFileSync("index.html", "utf8");
 const EMAIL = "storage-probe@fieldarc.test";
-const PASSWORD = "probe-" + "z".repeat(16);
+const PASSWORD = "probe-" + crypto.randomUUID()   /* a new one each run: the repo is public (R2 final review I1) */;
 const PATH = "probe/hello.txt";
 let userId = null;
 

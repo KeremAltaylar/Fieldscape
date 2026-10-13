@@ -7,11 +7,11 @@ import { readFileSync } from "node:fs";
 const db = service();
 const html = readFileSync("index.html", "utf8");
 const EMAIL = "publish-probe@fieldarc.test";
-const PASSWORD = "probe-" + "y".repeat(16);
+const PASSWORD = "probe-" + crypto.randomUUID()   /* a new one each run: the repo is public (R2 final review I1) */;
 /* A second setter, because two of the rules below are only observable when the person
    publishing is not the person who set the point. */
 const EMAIL_B = "publish-probe-b@fieldarc.test";
-const PASSWORD_B = "probe-" + "w".repeat(16);
+const PASSWORD_B = "probe-" + crypto.randomUUID()   /* a new one each run: the repo is public (R2 final review I1) */;
 const ID = "00000000-0000-4000-8000-0000000000c1";
 /* Not ...c2: that id is fuzz.test.mjs's malformed-radius fixture, and test files run in
    parallel processes against one shared database. Colliding on it made that suite fail. */

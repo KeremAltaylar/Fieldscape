@@ -12,7 +12,7 @@ import { targets, session } from "../../tools/cdp.mjs";
 
 const URL = (process.env.FS_URL || "http://localhost:8765/") + "lab.html";
 const db = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY, { auth: { persistSession: false } });
-const EMAIL = "probe-lab-ui@fieldarc.test", PASSWORD = "probe-" + "z".repeat(16);
+const EMAIL = "probe-lab-ui@fieldarc.test", PASSWORD = "probe-" + crypto.randomUUID()   /* a new one each run: the repo is public (R2 final review I1) */;
 const DRAFT = "00000000-0000-4000-8000-00000000003c";      /* an id no other test file uses */
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let failed = 0, userId = null;
