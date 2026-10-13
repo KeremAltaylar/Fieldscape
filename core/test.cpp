@@ -2539,11 +2539,11 @@ int main() {
         auto lg = [](void *p, int role, double f, double, double, double) { if (role == 20) ((GL *)p)->rate.push_back(f); };
         double busE = 0; int busN = 0;   /* the grains bus itself (the point meter, before the rhythm effects) */
         double rate = SR;                /* final review 8c C1: the hardware's rate, 96 kHz on some desktops */
-        auto play = [&](const char *cfg, double secs, double *worst_ms) {
+        auto play = [&](const char *cfg, double secs, double *worst_ms, int grains = 1) {
             busE = 0; busN = 0;
             gl.rate.clear(); unsigned seed = 21; fs_device *pc = fs_create("piece"); fs_prepare(pc, rate, B); fs_piece_test_hooks(pc, fixed_draw, &seed, lg, &gl);
             const int r = fs_piece_add_route(pc, route);
-            const int h = fs_piece_rhythm_add(pc, cfg, 1);
+            const int h = fs_piece_rhythm_add(pc, cfg, grains);
             fs_piece_rhythm_source(pc, h, 0, 1, n, pcm); fs_piece_rhythm_gain(pc, h, 1);
             std::vector<float> o; double worst = 0;
             for (int b2 = 0; b2 < (int)(secs * rate / B); b2++) { fs_piece_walk(pc, r, 0.3, 0);
@@ -2582,6 +2582,15 @@ int main() {
         std::printf("8c grains resonate: D F A C share %.0f%% dry, %.0f%% String, %.0f%% Bell (level %+.1f dB, Bell %+.1f dB); off identical %d; vary in harmony all chord intervals %d (%zu grains), vary as before has others %d; worst process %.3f ms (dry %.3f)\n",
             100 * s_dry, 100 * s_str, 100 * s_bell, rms(str) - rms(dry), rms(bell) - rms(dry), (int)(off == dry), (int)in_all, vin.size(), (int)out_other, w1, w0);
         assert(off == dry && s_dry < 0.3 && s_str >= 0.5 && s_bell >= 0.45 && std::fabs(rms(str) - rms(dry)) < 1.5 && std::fabs(rms(bell) - rms(dry)) < 1.5 && std::fabs(rms(sstr) - rms(sdry)) < 2 && in_all && vin.size() > 20 && out_other && w1 < 1.33 * 1.5);
+
+        /* Kerem 2026-10-13 ("don't we tune the unpitched ... with resonate"): a rhythm point's hits ring the chord too - noise hits,
+           the same share of D F A C as grains (resonate was grains points only), and resonate 0 is as before */
+        const auto hdry = play("{}", 6, nullptr, 0), hoff = play("{\"resonate\":0}", 6, nullptr, 0), hres = play("{\"resonate\":1}", 6, nullptr, 0), hbell = play("{\"resonate\":1,\"body\":2}", 6, nullptr, 0);
+        const double h_dry = share(hdry), h_res = share(hres), h_bell = share(hbell);
+        std::printf("8c hits resonate: D F A C share %.0f%% dry, %.0f%% String, %.0f%% Bell at resonate 1 (level %+.1f dB); off identical %d\n", 100 * h_dry, 100 * h_res, 100 * h_bell, rms(hres) - rms(hdry), (int)(hoff == hdry));
+        /* measured: hits reach less than grains (String 37 %, Bell 46 % against 58 / 82 %) - sparse bursts strike the loops, not a
+           steady stream; the bar is "clearly onto the chord", the ear judges the rest */
+        assert(hoff == hdry && h_res > 2 * h_dry && h_bell > 2.5 * h_dry && std::fabs(rms(hres) - rms(hdry)) < 3);
 
         /* final review 8c I1: each body in tune - the power-weighted pitch within 40 cents of each chord note's fundamental
            (55..110 Hz), from a long averaged spectrum */

@@ -6050,6 +6050,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       "Rotation turns a pattern without changing it. Everything runs on the route's tempo.")];
     RHYTHM_FIELDS.slice(0, 4).forEach(function (fl) { line.push(buildRhythmRow(fl, r, commitR)); });
     line.push(buildRhythmRow(FOLLOW_FIELD, r, function () { commitR(); if (r.follow > 0) { ensureTrack(f); } }));   /* 6a */
+    /* Kerem 2026-10-13: unpitched hits ring the chord too (resonate was grains points only) */
+    if (r.resonate === undefined) { r.resonate = 0; }
+    r.body = String(r.body || 0);
+    RESONATE_FIELDS.forEach(function (fl) { line.push(buildRhythmRow(fl, r, commitR)); });
     var phrase = [ppHeading("Phrase", "Four related patterns, cycled one phrase at a time")];
     RHYTHM_FIELDS.slice(4).forEach(function (fl) { phrase.push(buildRhythmRow(fl, r, commitR)); });
 

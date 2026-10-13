@@ -1564,7 +1564,8 @@ struct Piece : Device {
                 }
             }
         }
-        if (R.grains && (R.cfg.resonate > 0 || R.cr.res > 1e-4) && (H.ntones > 0 || R.cr.sig != -1)) chord_res(R, bl, br, n);   /* 8c */
+        /* 8c; and hits too (Kerem 2026-10-13: unpitched hits ring the chord as grains do) */
+        if ((R.cfg.resonate > 0 || R.cr.res > 1e-4) && (H.ntones > 0 || R.cr.sig != -1)) chord_res(R, bl, br, n);
         /* 8a: the point's meter - its own sound at its own gain, not where the walker stands (as a stretch point's is) */
         double e = 0; const double own = R.cfg.on ? R.cfg.gain : 0;
         for (int i = 0; i < n; i++) { float g = R.gain.at(i, n); L[i] += bl[i] * g; Rr[i] += br[i] * g; e += 0.5 * ((double)bl[i] * bl[i] + (double)br[i] * br[i]); }
