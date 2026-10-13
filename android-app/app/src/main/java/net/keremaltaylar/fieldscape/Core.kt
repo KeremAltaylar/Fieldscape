@@ -38,9 +38,15 @@ object Core {
     @JvmStatic external fun pieceStart(features: String)
     @JvmStatic external fun pieceBedVoices(): Int
     @JvmStatic external fun piecePlace(rings: Array<DoubleArray>?, area: Double)
-    /** One fix; returns the rhythm recordings to fetch, "handle slot id path" per line. */
+    /** One fix; returns what to fetch, one per line: "R handle slot id path", "T handle slot id path". */
     @JvmStatic external fun pieceStep(lon: Double, lat: Double): String
     @JvmStatic external fun pieceSource(handle: Int, slot: Int, id: String, interleaved: java.nio.ByteBuffer, channels: Int, frames: Int, rate: Double)
+    /** 6b: a rhythm point's pitch track (JSON), a route voice's sample + analysis, a stretch point's pitch track. */
+    @JvmStatic external fun pieceTrack(handle: Int, slot: Int, id: String, json: String)
+    @JvmStatic external fun pieceRole(role: Int, route: Int, interleaved: java.nio.ByteBuffer, channels: Int, frames: Int, rate: Double, analysis: String)
+    @JvmStatic external fun stretchTrack(slot: Int, json: String)
+    /** 6b: the playing route changed - its voices' samples to fetch, "V voice route path analysis" per line. */
+    @JvmStatic external fun pieceVoices(): String
     @JvmStatic external fun pieceRoute(): String
     @JvmStatic external fun pieceRouteStarts(): String
     @JvmStatic external fun pieceRoutes(): String

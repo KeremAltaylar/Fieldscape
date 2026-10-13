@@ -28,11 +28,14 @@ import kotlin.math.sin
  * placeAt for the park underfoot; a fix worse than 40 m holds the walk (A-15). Compose reads the
  * state below.
  */
+const val MEDIA_URL = "https://fieldscape-media.keremaltaylar.workers.dev"
+
 class Walk(private val context: Context, private val engineRate: Double) : LocationListener {
     data class Point(val id: String, val name: String, val lon: Double, val lat: Double, val radius: Double, val gain: Double,
                      val stretch: Float, val windowSamples: Double, val grit: Float, val freeze: Float, val onset: Float,
                      val shape: String,   // properties.sound.shape as JSON, "" none (fs_stretch_shape)
-                     val brightest: Double, val path: String?, val sounds: Boolean)
+                     val brightest: Double, val path: String?, val sounds: Boolean,
+                     val track: String? = null)   // 6b: properties.sound.track_path, the recording's pitch track (follow)
     sealed interface Phase { data object Playing : Phase; data object Decoding : Phase; data class Downloading(val fraction: Double, val bytes: Long) : Phase }
     data class Row(val id: String, val name: String, val level: Double, val dist: Double, val phase: Phase)
     sealed interface Mode { data object Waiting : Mode; data object Denied : Mode; data class Live(val accuracy: Double) : Mode; data class Holding(val accuracy: Double) : Mode
@@ -168,7 +171,8 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
                   windowSamples = 2.0.pow((7 + 10 * px.optDouble("fft", 0.7).coerceIn(0.0, 1.0)).roundToInt().toDouble()),  // pxBufsize
                   brightest = (if (centroid.isNaN()) 2000.0 else centroid).times(2.2).coerceIn(600.0, 14000.0),
                   path = p.optString("storage_path").ifEmpty { null },
-                  sounds = p.optBoolean("has_audio") && mode != "hits" && mode != "grains")
+                  sounds = p.optBoolean("has_audio") && mode != "hits" && mode != "grains",
+                  track = q.optString("track_path").ifEmpty { null })
         }
         Core.pieceStart(features.toString())
         /* every point's card, and the routes with their patches */
@@ -209,6 +213,7 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
             val r = Core.piecePlayingRoute()
             if (r != playingRoute) { playingRoute = r; cells = r >= 0 && Core.pieceMorphs()[2] != 0.0 }
             val k = if (r >= 0) Core.pieceChordStep() else -1; if (k != chordStep) chordStep = k
+            Core.pieceVoices().lines().filter { it.isNotBlank() }.forEach { load(it) }   /* 6b */
             main.postDelayed(this, 500)
         } })
     }
@@ -273,7 +278,7 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
         nearest = if (chosen.isEmpty()) (0 until n).filter { points[it].sounds }.minByOrNull { dist[it] }?.let {
             Nearest(points[it].name, dist[it], direction(lon, lat, points[it].lon, points[it].lat)) } else null
         updatePlace(lon, lat)
-        Core.pieceStep(lon, lat).lines().filter { it.isNotBlank() }.forEach { loadRhythm(it) }
+        Core.pieceStep(lon, lat).lines().filter { it.isNotBlank() }.forEach { load(it) }
         route = Core.pieceRoute().ifEmpty { null }
         rhythms = Core.pieceRhythms()
         Core.collect()
@@ -307,20 +312,30 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
                     Core.gain(slot, earned[p.id] ?: 0f)              // sounds now, even standing still
                     refreshRows()
                 }
+                /* 6b: following the chord needs the recording's pitch track */
+                p.track?.let { t -> val json = recording(t, p.id + "#track").readText(); main.post { if (slotOf[p.id] == slot) Core.stretchTrack(slot, json) } }
             } catch (e: Throwable) {                               // OutOfMemoryError included: report, never crash
                 main.post { failure = "Could not load ${p.name}: ${e.message}"; phase.remove(p.id); refreshRows() }
             }
         }.start()
     }
 
-    /** A rhythm point's recording ("handle slot id path"): fetched and decoded as the soundscape's are. */
-    private fun loadRhythm(line: String) {
-        val (h, slot, id, path) = line.split(" ", limit = 4)
+    /** What the piece asks for (pieceStep): a rhythm recording "R handle slot id path", fetched and decoded as the
+        soundscape's are; its pitch track "T handle slot id path" (6b); a route voice's sample "V voice route path analysis" (6b). */
+    private fun load(line: String) {
+        val w = line.split(" ")
+        if (w[0] != "R") android.util.Log.i("fieldscape", "6b asks: $line")
         Thread {
             runCatching {
-                val pcm = Decode.pcm(recording(path, "$id#$slot"))
-                main.post { Core.pieceSource(h.toInt(), slot.toInt(), id, pcm.data, pcm.channels, pcm.frames, pcm.rate.toDouble()); Core.freeDirect(pcm.data) }
-            }
+                when (w[0]) {
+                    "R" -> { val pcm = Decode.pcm(recording(w[4], "${w[3]}#${w[2]}"))
+                             main.post { Core.pieceSource(w[1].toInt(), w[2].toInt(), w[3], pcm.data, pcm.channels, pcm.frames, pcm.rate.toDouble()); Core.freeDirect(pcm.data) } }
+                    "T" -> { val json = recording(w[4], "${w[3]}#${w[2]}#track").readText(); main.post { Core.pieceTrack(w[1].toInt(), w[2].toInt(), w[3], json) } }
+                    "V" -> { val ana = if (w[4] == "-") "{}" else recording(w[4], "route#${w[1]}#analysis").readText()
+                             val pcm = Decode.pcm(recording(w[3], "route#${w[1]}"))
+                             main.post { Core.pieceRole(w[1].toInt(), w[2].toInt(), pcm.data, pcm.channels, pcm.frames, pcm.rate.toDouble(), ana); Core.freeDirect(pcm.data) } }
+                }
+            }.onFailure { android.util.Log.w("fieldscape", "6b could not load \"$line\": ${it.message}") }
         }.start()
     }
 
@@ -329,8 +344,8 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
         val dir = File(context.cacheDir, "recordings").apply { mkdirs() }
         val file = File(dir, path.replace("/", "__"))
         if (file.exists() && file.length() > 0) return file
-        val c = URL("${Supa.URL}/storage/v1/object/authenticated/recordings/$path").openConnection() as HttpURLConnection
-        c.setRequestProperty("apikey", Supa.ANON); c.setRequestProperty("Authorization", "Bearer ${Supa.ANON}")
+        /* phase 1b: from R2 through the media Worker - a published point's files need no sign-in */
+        val c = URL("$MEDIA_URL/o/" + path.split("/").joinToString("/") { java.net.URLEncoder.encode(it, "UTF-8").replace("+", "%20") }).openConnection() as HttpURLConnection
         if (c.responseCode != 200) throw IllegalStateException("HTTP ${c.responseCode}")
         val size = c.contentLengthLong
         val part = File(dir, file.name + ".part")
