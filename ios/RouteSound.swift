@@ -10,7 +10,11 @@ final class RouteSound {
         let centroid: Double, onsets: Double, audio: Bool, plain: Bool
         var zone = fs_zone_state()
     }
-    private struct Beat { let id: String, name: String, lon: Double, lat: Double, radius: Double, gain: Double, grains: Bool, json: String, paths: [String?] }
+    private struct Beat { let id: String, name: String, lon: Double, lat: Double, radius: Double, gain: Double, grains: Bool, json: String, paths: [String?], tracks: [String?] }
+    /* 6b: each route's sampler voices - a voice's sample and its analysis (patch.<voice>.sample), nil none */
+    private var routeRoles: [[(path: String, ana: String?)?]] = []
+    private var played = -2, roleOn = [false, false, false]
+    private var voiceTimer: Timer?
 
     private let core: Core
     private var piece: OpaquePointer { core.piece }
@@ -41,8 +45,49 @@ final class RouteSound {
     private(set) var rhythmNames: [String] = []
     private var soloHandle: Int32 = -1
 
-    init(core: Core) { self.core = core }
-    deinit { routes.forEach { fs_route_destroy($0) }; if let s = sections { fs_sections_destroy(s) } }
+    init(core: Core) {
+        self.core = core
+        /* 6b: the route the piece plays is taken on the audio thread, a moment after the walk names it - so asked on a timer,
+           not only on a fix (a walker standing still gets no new fix) */
+        voiceTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.voices() }
+    }
+    deinit { voiceTimer?.invalidate(); routes.forEach { fs_route_destroy($0) }; if let s = sections { fs_sections_destroy(s) } }
+
+    /* 6b: the playing route changed - its sampler voices' samples (the web's routeSamples): the last route's voices silenced
+       first, so its sample never plays on this one; each sample prepared as the website does (fs_piece_role_sample) */
+    private func voices() {
+        let pr = Int(fs_piece_route(piece))
+        guard pr != played else { return }
+        played = pr
+        for q in 0..<3 where roleOn[q] { silence(q) }
+        guard pr >= 0, pr < routeRoles.count else { return }
+        let sr = core.sampleRate
+        for (q, spec) in routeRoles[pr].enumerated() {
+            guard let spec else { continue }
+            Task { @MainActor [weak self] in
+                guard let walk = self?.walk, let data = try? await walk.recording(spec.path, for: "route#\(q)") else { return }
+                var anaData: Data? = nil
+                if let a = spec.ana { anaData = try? await walk.recording(a, for: "route#\(q)#analysis") }
+                guard let pcm = try? await Decode.pcm16(data, sampleRate: sr) else { return }
+                defer { pcm.free() }
+                guard let self, self.played == pr, pcm.frames > 0 else { return }
+                let n = pcm.frames, c = min(pcm.planar.count, 2)
+                let f = (0..<c).map { k -> UnsafeMutablePointer<Float> in
+                    let p = UnsafeMutablePointer<Float>.allocate(capacity: n); for i in 0..<n { p[i] = Float(pcm.planar[k][i]) / 32768 }; return p }
+                defer { f.forEach { $0.deallocate() } }
+                var ptrs: [UnsafePointer<Float>?] = f.map { UnsafePointer($0) }
+                let js = anaData.map { String(decoding: $0, as: UTF8.self) } ?? "{}"
+                fs_piece_role_sample(self.piece, Int32(q), Int32(c), Int64(n), &ptrs, js)
+                self.roleOn[q] = true
+                NSLog("6b voice %d sample: route %d, %d frames", q, pr, n)
+            }
+        }
+    }
+    private func silence(_ q: Int) {
+        var z = [Float](repeating: 0, count: 128)
+        z.withUnsafeMutableBufferPointer { b in var ptrs: [UnsafePointer<Float>?] = [UnsafePointer(b.baseAddress!)]; fs_piece_role_sample(piece, Int32(q), 1, 128, &ptrs, nil) }
+        roleOn[q] = false
+    }
 
     func start(features: [[String: Any]]) {
         for f in features {
@@ -55,11 +100,18 @@ final class RouteSound {
                 routeNames.append(p["name"] as? String ?? "Route")
                 routeLines.append((p["name"] as? String ?? "Route", c, fs_route_length(r)))
                 _ = fs_piece_add_route(piece, RouteSound.json(p["patch"]))
+                let patch = p["patch"] as? [String: Any] ?? [:]
+                routeRoles.append(["voice", "sect", "v3"].map { k in
+                    guard let v = patch[k] as? [String: Any], (v["synth"] as? String ?? "").hasPrefix("s-"),
+                          let sm = v["sample"] as? [String: Any], let path = sm["path"] as? String, !path.isEmpty else { return nil }
+                    return (path, sm["analysis_path"] as? String)
+                })
             } else if g["type"] as? String == "Point", let c = g["coordinates"] as? [Double], c.count >= 2 {
                 let q = p["sound"] as? [String: Any] ?? [:], a = p["audio"] as? [String: Any] ?? [:]
                 let mode = p["audio_mode"] as? String
                 let hits = p["hits"] as? [String: Any] ?? [:]
                 let slots = ["low", "mid", "high", "rand"].map { ((hits[$0] as? [String: Any])?["storage_path"] as? String) }
+                let hitTracks = ["low", "mid", "high", "rand"].map { ((hits[$0] as? [String: Any])?["track_path"] as? String) }   /* 6b */
                 let hasHits = slots.contains { $0 != nil }
                 let hasAudio = p["has_audio"] as? Bool ?? false
                 let radius = (q["radius"] as? Double) ?? 140, gain = (q["gain"] as? Double) ?? 0.9
@@ -68,9 +120,9 @@ final class RouteSound {
                                   audio: hasAudio, plain: !hasAudio && !hasHits && mode != "hits" && mode != "grains"))
                 let id = p["id"] as? String ?? UUID().uuidString, name = p["name"] as? String ?? "Unnamed point"
                 if mode == "hits" && hasHits {
-                    beats.append(Beat(id: id, name: name, lon: c[0], lat: c[1], radius: radius, gain: gain, grains: false, json: RouteSound.json(p["rhythm"]), paths: slots))
+                    beats.append(Beat(id: id, name: name, lon: c[0], lat: c[1], radius: radius, gain: gain, grains: false, json: RouteSound.json(p["rhythm"]), paths: slots, tracks: hitTracks))
                 } else if mode == "grains" && hasAudio {
-                    beats.append(Beat(id: id, name: name, lon: c[0], lat: c[1], radius: radius, gain: gain, grains: true, json: RouteSound.json(p["rhythm"]), paths: [p["storage_path"] as? String]))
+                    beats.append(Beat(id: id, name: name, lon: c[0], lat: c[1], radius: radius, gain: gain, grains: true, json: RouteSound.json(p["rhythm"]), paths: [p["storage_path"] as? String], tracks: [q["track_path"] as? String]))
                 }
             }
         }
@@ -163,6 +215,16 @@ final class RouteSound {
                 for k in 0..<c { let src = pcm.planar[k]; for i in 0..<n { mem[i * c + k] = src[i] } }
                 pcm.free()
                 fs_piece_rhythm_source(self.piece, h, Int32(slot), Int32(c), Int64(n), mem)
+            }
+        }
+        /* 6b: each recording's pitch track (a point that follows the chord) */
+        for (slot, t) in b.tracks.enumerated() {
+            guard let t else { continue }
+            Task { @MainActor [weak self] in
+                guard let walk = self?.walk, let data = try? await walk.recording(t, for: b.id + "#\(slot)#track") else { return }
+                guard let self, self.handle[b.id] == h else { return }
+                fs_piece_rhythm_track(self.piece, h, Int32(slot), String(decoding: data, as: UTF8.self))
+                NSLog("6b rhythm track: handle %d slot %d", h, slot)
             }
         }
     }

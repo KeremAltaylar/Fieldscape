@@ -6,6 +6,8 @@
 import CoreLocation
 import Foundation
 
+let MEDIA_URL = "https://fieldscape-media.keremaltaylar.workers.dev"
+
 final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
     struct Point {
         let id: String, name: String, lon: Double, lat: Double
@@ -13,6 +15,7 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
         let shape: String              /* properties.sound.shape as JSON, "" none (fs_stretch_shape) */
         let brightest: Double          /* the low-pass ceiling: 2.2 x the recording's centroid, 600-14000 Hz */
         let path: String?, sounds: Bool
+        var track: String? = nil       /* 6b: properties.sound.track_path, the recording's pitch track (follow) */
     }
     enum Phase: Equatable { case playing, downloading(fraction: Double, bytes: Int64), decoding }
     struct Row: Identifiable, Equatable { let id: String, name: String; let level: Double, dist: Double; let phase: Phase }
@@ -175,7 +178,8 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
                          shape: (q["shape"] as? [String: Any]).flatMap { try? JSONSerialization.data(withJSONObject: $0) }.map { String(decoding: $0, as: UTF8.self) } ?? "",
                          brightest: max(600, min(14000, (((p["audio"] as? [String: Any])?["centroid_hz"] as? Double) ?? 2000) * 2.2)),
                          path: p["storage_path"] as? String,
-                         sounds: (p["has_audio"] as? Bool ?? false) && mode != "hits" && mode != "grains")
+                         sounds: (p["has_audio"] as? Bool ?? false) && mode != "hits" && mode != "grains",
+                         track: q["track_path"] as? String)
         }
         sound.start(features: (features["features"] as? [[String: Any]]) ?? [])
 
@@ -381,6 +385,8 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
                 self.loaded.insert(p.id)
                 self.core.gain(slot: slot, self.earned[p.id] ?? 0)
                 self.phase[p.id] = nil
+                /* 6b: following the chord needs the recording's pitch track */
+                if let t = p.track, let j = try? await self.recording(t, for: p.id + "#track"), self.slotOf[p.id] == slot { self.core.track(slot: slot, j) }
             } catch {
                 self?.failure = "Could not load \(p.name): \(error.localizedDescription)"
                 self?.phase[p.id] = nil
@@ -395,9 +401,9 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let file = dir.appendingPathComponent(path.replacingOccurrences(of: "/", with: "__"))
         if let d = try? Data(contentsOf: file) { return d }
-        var req = URLRequest(url: URL(string: Supa.url + "/storage/v1/object/authenticated/recordings/" + path)!)
-        req.setValue(Supa.anon, forHTTPHeaderField: "apikey")
-        req.setValue("Bearer " + Supa.anon, forHTTPHeaderField: "Authorization")
+        /* phase 1b: from R2 through the media Worker - a published point's files need no sign-in */
+        let enc = path.split(separator: "/").map { String($0).addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))) ?? String($0) }.joined(separator: "/")
+        let req = URLRequest(url: URL(string: MEDIA_URL + "/o/" + enc)!)
         phase[id] = .downloading(fraction: 0, bytes: 0)
         return try await withCheckedThrowingContinuation { cont in
             var watch: NSKeyValueObservation?

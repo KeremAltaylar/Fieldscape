@@ -10,7 +10,7 @@ import os
 
 /* The test number of this build (docs/TESTS.md): shown first in the developer line, so Kerem can
    see which build he is testing. Bump it with every build handed over. */
-let TEST_BUILD = 11
+let TEST_BUILD = 14
 
 final class Core: ObservableObject {
     struct Param: Identifiable { let id: Int; let key, name, unit: String; let min, max: Float }
@@ -277,6 +277,13 @@ final class Core: ObservableObject {
     func grit(slot: Int, _ a: Float) { fs_mix_set_grit(mix, Int32(slot), a) }
     func param(slot: Int, _ i: Int, _ v: Float) { fs_set_param(voices[slot], Int32(i), v) }
     func shape(slot: Int, _ json: String) { fs_stretch_shape(voices[slot], json) }
+    /* 6b: a stretch point's pitch track (its JSON: track [[f0, confidence]...], hop_s) - follow as its shape says */
+    func track(slot: Int, _ json: Data) {
+        guard let j = try? JSONSerialization.jsonObject(with: json) as? [String: Any], let tr = j["track"] as? [[Double]], !tr.isEmpty else { return }
+        var f0 = tr.map { Float($0.first ?? 0) }, cf = tr.map { Float($0.count > 1 ? $0[1] : 0) }
+        fs_stretch_track(voices[slot], &f0, &cf, Int32(tr.count), (j["hop_s"] as? Double) ?? 0.02, -1)
+        NSLog("6b stretch track: slot %d, %d frames", slot, tr.count)
+    }
 
     /* Sound test: the sliders drive slot 0, which the walk leaves alone while the test is on. */
     func set(_ i: Int, _ v: Float) { values[i] = v; param(slot: 0, i, v) }
