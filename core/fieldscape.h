@@ -226,6 +226,8 @@ void fs_stretch_track(fs_device *stretch, const float *f0s, const float *confs, 
 short *fs_alloc_i16(size_t n);
 /* tests: replace the random stream, and hear every note the steps choose (role 0 bass, 1 top,
    2 sector, 3 third, 4 water zone, 5 zone) */
+/* tests: how many buffers the piece keeps (6b final review I2: a replaced voice sample is freed) */
+int fs_piece_test_kept(fs_device *d);
 void fs_piece_test_hooks(fs_device *d, double (*rnd)(void *), void *rnd_ctx,
                          void (*on_note)(void *, int, double, double, double, double), void *note_ctx);
 void fs_piece_test_walk(fs_device *d, double seconds);                 /* tests: walk the route over this long */

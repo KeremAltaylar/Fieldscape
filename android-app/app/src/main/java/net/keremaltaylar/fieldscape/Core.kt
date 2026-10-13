@@ -38,15 +38,18 @@ object Core {
     @JvmStatic external fun pieceStart(features: String)
     @JvmStatic external fun pieceBedVoices(): Int
     @JvmStatic external fun piecePlace(rings: Array<DoubleArray>?, area: Double)
-    /** One fix; returns what to fetch, one per line: "R handle slot id path", "T handle slot id path". */
+    /** One fix; returns what to fetch, one per line: "R handle slot id path track" ("-" no track). */
     @JvmStatic external fun pieceStep(lon: Double, lat: Double): String
     @JvmStatic external fun pieceSource(handle: Int, slot: Int, id: String, interleaved: java.nio.ByteBuffer, channels: Int, frames: Int, rate: Double)
     /** 6b: a rhythm point's pitch track (JSON), a route voice's sample + analysis, a stretch point's pitch track. */
     @JvmStatic external fun pieceTrack(handle: Int, slot: Int, id: String, json: String)
+    /** route: the generation in its "V" line; safe off the main thread (it prepares the sample there). */
     @JvmStatic external fun pieceRole(role: Int, route: Int, interleaved: java.nio.ByteBuffer, channels: Int, frames: Int, rate: Double, analysis: String)
     @JvmStatic external fun stretchTrack(slot: Int, json: String)
-    /** 6b: the playing route changed - its voices' samples to fetch, "V voice route path analysis" per line. */
+    /** 6b: the playing route changed - its voices' samples to fetch, "V voice generation path analysis" per line. */
     @JvmStatic external fun pieceVoices(): String
+    /** 6b: a voice's "V" line again while its route plays ("" not), to retry a failed fetch. */
+    @JvmStatic external fun pieceVoice(role: Int, route: Int): String
     @JvmStatic external fun pieceRoute(): String
     @JvmStatic external fun pieceRouteStarts(): String
     @JvmStatic external fun pieceRoutes(): String

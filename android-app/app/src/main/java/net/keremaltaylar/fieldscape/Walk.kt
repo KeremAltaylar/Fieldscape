@@ -329,13 +329,19 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
             runCatching {
                 when (w[0]) {
                     "R" -> { val pcm = Decode.pcm(recording(w[4], "${w[3]}#${w[2]}"))
-                             main.post { Core.pieceSource(w[1].toInt(), w[2].toInt(), w[3], pcm.data, pcm.channels, pcm.frames, pcm.rate.toDouble()); Core.freeDirect(pcm.data) } }
-                    "T" -> { val json = recording(w[4], "${w[3]}#${w[2]}#track").readText(); main.post { Core.pieceTrack(w[1].toInt(), w[2].toInt(), w[3], json) } }
+                             main.post { Core.pieceSource(w[1].toInt(), w[2].toInt(), w[3], pcm.data, pcm.channels, pcm.frames, pcm.rate.toDouble()); Core.freeDirect(pcm.data) }
+                             /* its pitch track after it: main posts run in order, and a recording arriving resets the track (final review C2) */
+                             if (w.size > 5 && w[5] != "-") { val json = recording(w[5], "${w[3]}#${w[2]}#track").readText(); main.post { Core.pieceTrack(w[1].toInt(), w[2].toInt(), w[3], json) } } }
                     "V" -> { val ana = if (w[4] == "-") "{}" else recording(w[4], "route#${w[1]}#analysis").readText()
                              val pcm = Decode.pcm(recording(w[3], "route#${w[1]}"))
-                             main.post { Core.pieceRole(w[1].toInt(), w[2].toInt(), pcm.data, pcm.channels, pcm.frames, pcm.rate.toDouble(), ana); Core.freeDirect(pcm.data) } }
+                             /* prepared here, on the download's thread (final review I3: 345 ms on the main thread) */
+                             try { Core.pieceRole(w[1].toInt(), w[2].toInt(), pcm.data, pcm.channels, pcm.frames, pcm.rate.toDouble(), ana) } finally { Core.freeDirect(pcm.data) } }
                 }
-            }.onFailure { android.util.Log.w("fieldscape", "6b could not load \"$line\": ${it.message}") }
+            }.onFailure {
+                android.util.Log.w("fieldscape", "6b could not load \"$line\": ${it.message}")
+                /* a voice's sample: asked again in 10 s while its route still plays (final review I4) - signal comes and goes on a walk */
+                if (w[0] == "V") main.postDelayed({ Core.pieceVoice(w[1].toInt(), w[2].toInt()).takeIf { it.isNotEmpty() }?.let { load(it) } }, 10_000)
+            }
         }.start()
     }
 

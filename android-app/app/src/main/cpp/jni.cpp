@@ -35,7 +35,9 @@ struct Engine {
     AAudioStream *stream = nullptr;
     double sr = 48000;
     std::mutex lock;
-    struct Pending { int slot; short *l, *r; int frames; };
+    /* track: 6b final review C1 - a stretch point's pitch track, applied on the render thread after its recording (a
+       recording arriving resets the track; the main thread setting it raced the render thread's read) */
+    struct Pending { int slot; short *l, *r; int frames; bool only_track = false; std::vector<float> f0, cf; double hop = 0.02; };
     std::vector<Pending> pending;
     std::vector<short *> retired;
     short *live[SLOTS + 1][2] = {};
@@ -53,11 +55,13 @@ aaudio_data_callback_result_t render(AAudioStream *, void *, void *data, int32_t
     auto t0 = std::chrono::steady_clock::now();
     if (E->lock.try_lock()) {
         for (auto &p : E->pending) {
+            if (p.only_track) { if (p.slot < SLOTS) fs_stretch_track(E->voice[p.slot], p.f0.data(), p.cf.data(), (int)p.f0.size(), p.hop, -1); continue; }
             const short *ch[2] = { p.l, p.r };
             fs_set_source_i16(p.slot < SLOTS ? E->voice[p.slot] : E->raw, p.l ? 2 : 0, p.frames, p.l ? ch : nullptr);
             for (short *old : E->live[p.slot]) if (old) E->retired.push_back(old);
             E->live[p.slot][0] = p.l; E->live[p.slot][1] = p.r;
             E->live_frames[p.slot] = p.frames;
+            if (!p.f0.empty() && p.slot < SLOTS) fs_stretch_track(E->voice[p.slot], p.f0.data(), p.cf.data(), (int)p.f0.size(), p.hop, -1);
         }
         E->pending.clear();
         E->lock.unlock();
@@ -317,7 +321,10 @@ struct Walker {
     /* 6b: a route's sampler voices - each voice's sample and its analysis (patch.<voice>.sample), "" none */
     struct RoleSpec { std::string path, ana; };
     std::vector<std::array<RoleSpec, 3>> route_roles;
-    int played = -2; bool role_on[3] = {};   /* the route whose samples were asked for; voices holding a sample */
+    /* the route whose samples were asked for, its generation (a route change), voices holding a sample - under vmu: a
+       sample is prepared on its download's thread (final review I3: 345 ms on the main thread for 30 s) */
+    int played = -2, gen = 0; bool role_on[3] = {};
+    std::mutex vmu;
     std::vector<fs_route *> routes; std::vector<std::string> route_names;
     std::vector<std::string> route_extra;     /* "name", "note", "coords" as JSON, for the route card */
     std::vector<Spot> spots; std::vector<Beat> beats;
@@ -422,8 +429,8 @@ JNIEXPORT void JNICALL FN(piecePlace)(JNIEnv *env, jclass, jobjectArray rings, j
 /* 6b: a voice's sample let go - silence, as the web's routeSamples does, so the last route's never plays on this one */
 static void role_silence(int role) { float z[128] = {}; const float *zp[1] = { z }; fs_piece_role_sample(E->piece, role, 1, 128, zp, nullptr); W->role_on[role] = false; }
 
-/* One fix (worldMove). Returns what to fetch, one per line: "R handle slot id path" a rhythm recording, "T handle slot id
-   path" its pitch track (6b). */
+/* One fix (worldMove). Returns what to fetch, one per line: "R handle slot id path track" a rhythm recording and its pitch
+   track ("-" none; 6b). */
 JNIEXPORT jstring JNICALL FN(pieceStep)(JNIEnv *env, jclass, jdouble lon, jdouble lat) {
     if (!W) return env->NewStringUTF("");
     fs_projection proj{};
@@ -471,8 +478,9 @@ JNIEXPORT jstring JNICALL FN(pieceStep)(JNIEnv *env, jclass, jdouble lon, jdoubl
             if (h < 0) continue;
             W->handle[b.id] = h;
             for (size_t s = 0; s < b.paths.size(); s++) {
-                if (!b.paths[s].empty()) loads += "R " + std::to_string(h) + " " + std::to_string(s) + " " + b.id + " " + b.paths[s] + "\n";
-                if (s < b.tracks.size() && !b.tracks[s].empty()) loads += "T " + std::to_string(h) + " " + std::to_string(s) + " " + b.id + " " + b.tracks[s] + "\n";
+                /* its pitch track on the same line: handed over after the recording, which resets it (final review C2) */
+                if (!b.paths[s].empty()) loads += "R " + std::to_string(h) + " " + std::to_string(s) + " " + b.id + " " + b.paths[s] + " " +
+                                                  (s < b.tracks.size() && !b.tracks[s].empty() ? b.tracks[s] : "-") + "\n";
             }
         }
         fs_piece_rhythm_gain(E->piece, W->handle[b.id], (float)(picked[i] == solo_j ? b.gain : fs_point_gain(bd[picked[i]], b.radius, b.gain)));
@@ -501,6 +509,7 @@ JNIEXPORT void JNICALL FN(pieceSource)(JNIEnv *env, jclass, jint h, jint slot, j
     short *mem = fs_alloc_i16((size_t)n * c);
     for (long long i = 0; i < n; i++) for (int k = 0; k < c; k++) mem[i * c + k] = rs[k][i];
     fs_piece_rhythm_source(E->piece, h, slot, c, n, mem);
+    LOG("6b rhythm source: handle %d slot %d", h, slot);
 }
 
 /* 6b: a rhythm point's pitch track (its JSON), unless the point has left since it was asked for */
@@ -512,9 +521,12 @@ JNIEXPORT void JNICALL FN(pieceTrack)(JNIEnv *env, jclass, jint h, jint slot, js
     LOG("6b rhythm track: handle %d slot %d", h, slot);
 }
 /* 6b: a route voice's sample (interleaved 16-bit, any rate) and its analysis - resampled to the engine's, prepared as the
-   website prepares it (fs_piece_role_sample) - unless another route plays now */
+   website prepares it (fs_piece_role_sample) - unless the route changed since it was asked for (its generation). Called on
+   the download's thread: only a route change meeting a preparation waits for it */
 JNIEXPORT void JNICALL FN(pieceRole)(JNIEnv *env, jclass, jint role, jint route, jobject inter, jint channels, jint frames, jdouble rate, jstring ana) {
-    if (!W || role < 0 || role > 2 || route != W->played) return;
+    if (!W || role < 0 || role > 2) return;
+    { std::lock_guard<std::mutex> g(W->vmu); if (route != W->gen) return; }
+    const auto t0 = std::chrono::steady_clock::now();
     const short *x = (const short *)env->GetDirectBufferAddress(inter);
     if (!x || frames <= 0) return;
     const int c = channels > 1 ? 2 : 1;
@@ -525,19 +537,29 @@ JNIEXPORT void JNICALL FN(pieceRole)(JNIEnv *env, jclass, jint role, jint route,
         if (rate != E->sr) fs_resample_i16(ch.data(), frames, rate, rs.data(), E->sr); else rs = ch;
         f[k].resize((size_t)n); for (long long i = 0; i < n; i++) f[k][(size_t)i] = rs[(size_t)i] / 32768.0f; fp[k] = f[k].data();
     }
-    fs_piece_role_sample(E->piece, role, c, n, fp, jstr(env, ana).c_str());
+    const std::string aj = jstr(env, ana);
+    std::lock_guard<std::mutex> g(W->vmu);
+    if (route != W->gen) return;
+    fs_piece_role_sample(E->piece, role, c, n, fp, aj.c_str());
     W->role_on[role] = true;
-    LOG("6b voice %d sample: route %d, %lld frames", role, route, n);
+    LOG("6b voice %d sample: generation %d, %lld frames, prepared off the main thread in %.0f ms", role, route, n,
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
 }
-/* 6b: a stretch point's pitch track (its JSON: track [[f0, confidence]...], hop_s) - follow as its shape says */
+/* 6b: a stretch point's pitch track (its JSON: track [[f0, confidence]...], hop_s) - follow as its shape says. Through the
+   handoff (final review C1): with the recording still waiting there, applied right after it; else on its own. A recording
+   judged unpitched (f0 0) has no track to follow (final review I1, as the website's engine and the rhythm points) */
 JNIEXPORT void JNICALL FN(stretchTrack)(JNIEnv *env, jclass, jint slot, jstring json) {
     if (!E || slot < 0 || slot >= SLOTS) return;
     Json j = Json::parse(jstr(env, json).c_str());
     const Json *tr = j.get("track"); const int n = tr ? (int)tr->size() : 0;
-    if (n <= 0) return;
+    if (n <= 0 || !(j.n("f0", 0) > 0)) return;
     std::vector<float> f0((size_t)n), cf((size_t)n);
     for (int i = 0; i < n; i++) { const Json *fr = tr->at(i); f0[(size_t)i] = fr && fr->at(0) ? (float)fr->at(0)->num : 0; cf[(size_t)i] = fr && fr->at(1) ? (float)fr->at(1)->num : 0; }
-    fs_stretch_track(E->voice[slot], f0.data(), cf.data(), n, j.n("hop_s", 0.02), -1);
+    std::lock_guard<std::mutex> g(E->lock);
+    for (auto it = E->pending.rbegin(); it != E->pending.rend(); ++it)
+        if (it->slot == slot && !it->only_track) { it->f0 = std::move(f0); it->cf = std::move(cf); it->hop = j.n("hop_s", 0.02); LOG("6b stretch track: slot %d, %d frames, with its recording", slot, n); return; }
+    Engine::Pending p{ slot, nullptr, nullptr, 0 }; p.only_track = true; p.f0 = std::move(f0); p.cf = std::move(cf); p.hop = j.n("hop_s", 0.02);
+    E->pending.push_back(std::move(p));
     LOG("6b stretch track: slot %d, %d frames", slot, n);
 }
 
@@ -548,15 +570,26 @@ JNIEXPORT jstring JNICALL FN(pieceVoices)(JNIEnv *env, jclass) {
     if (!W) return env->NewStringUTF("");
     std::string loads;
     const int pr = fs_piece_route(E->piece);
+    std::lock_guard<std::mutex> g(W->vmu);
     if (pr != W->played) {
         LOG("6b route playing: %d (was %d)", pr, W->played);
-        W->played = pr;
+        W->played = pr; W->gen++;
         for (int q = 0; q < 3; q++) if (W->role_on[q]) role_silence(q);
         if (pr >= 0 && pr < (int)W->route_roles.size())
             for (int q = 0; q < 3; q++) { const auto &sp = W->route_roles[pr][q];
-                if (!sp.path.empty()) loads += "V " + std::to_string(q) + " " + std::to_string(pr) + " " + sp.path + " " + (sp.ana.empty() ? "-" : sp.ana) + "\n"; }
+                if (!sp.path.empty()) loads += "V " + std::to_string(q) + " " + std::to_string(W->gen) + " " + sp.path + " " + (sp.ana.empty() ? "-" : sp.ana) + "\n"; }
     }
     return env->NewStringUTF(loads.c_str());
+}
+
+/* 6b final review I4: a voice's "V" line again, while that route still plays (its generation) - a failed fetch retried */
+JNIEXPORT jstring JNICALL FN(pieceVoice)(JNIEnv *env, jclass, jint role, jint gen) {
+    if (!W || role < 0 || role > 2) return env->NewStringUTF("");
+    std::lock_guard<std::mutex> g(W->vmu);
+    const int pr = W->played;
+    if (gen != W->gen || pr < 0 || pr >= (int)W->route_roles.size() || W->route_roles[pr][role].path.empty()) return env->NewStringUTF("");
+    const auto &sp = W->route_roles[pr][role];
+    return env->NewStringUTF(("V " + std::to_string(role) + " " + std::to_string(gen) + " " + sp.path + " " + (sp.ana.empty() ? "-" : sp.ana)).c_str());
 }
 
 /* every route and where it starts, "name<TAB>lon<TAB>lat" per line: the Go to buttons */

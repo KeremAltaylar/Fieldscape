@@ -629,6 +629,9 @@ struct Piece : Device {
        thread's latest, bound to sampler instances made there; live: what the audio thread has taken from the inbox. */
     RoleRec known[3], live[3];
     struct Keep { std::vector<float *> b; ~Keep() { for (float *q : b) std::free(q); } } keep;
+    /* 6b final review I2: a voice's replaced buffers, freed once the audio thread has taken what replaced them (take_inbox
+       rebinds every instrument of the voice at once, so nothing reads them after) - the apps send one each route change */
+    std::vector<float *> retire[3];
     static void bind(Synth *s, const RoleRec &k) {
         auto *r = static_cast<sampler::Resonator *>(s);
         if (k.pcm) { const float *pp[1] = { k.pcm }; r->set_source(1, k.n, pp); }
@@ -1634,6 +1637,10 @@ static Piece *P(fs_device *d) { return d ? (Piece *)fs_device_impl(d)->cast("pie
 extern "C" {
 
 static void sweep(Piece *p) {    /* under the lock: free what the audio thread let go of */
+    for (int r = 0; r < 3; r++) if (!p->in.rrec_set[r] && !p->retire[r].empty()) {   /* its successor taken: nothing reads these */
+        for (float *q : p->retire[r]) { auto it = std::find(p->keep.b.begin(), p->keep.b.end(), q); if (it != p->keep.b.end()) p->keep.b.erase(it); std::free(q); }
+        p->retire[r].clear();
+    }
     for (short *b : p->in.trash) std::free(b);
     p->in.trash.clear();
     for (int h = 0; h < FS_MAX_VOICES; h++) if (p->in.freed[h]) { p->in.freed[h] = false; p->busy[h] = false; }
@@ -1669,6 +1676,7 @@ void fs_piece_role_source(fs_device *d, int role, int channels, long long frames
     float *spec = sp.empty() ? nullptr : (float *)std::malloc(sizeof(float) * sp.size());
     if (spec) std::copy(sp.begin(), sp.end(), spec);
     std::lock_guard<std::mutex> g(p->mu); sweep(p);
+    for (float *old : { p->known[role].pcm, p->known[role].spec }) if (old) p->retire[role].push_back(old);
     p->keep.b.push_back(m);
     p->known[role].pcm = m; p->known[role].n = frames;
     if (spec) p->keep.b.push_back(spec);
@@ -1761,6 +1769,7 @@ void fs_piece_role_analysis(fs_device *d, int role, const char *json) {
 }
 static void role_analysis_arrays(Piece *p, int role, double f0, double hop, float *tf, float *tc, int n) {
     std::lock_guard<std::mutex> g(p->mu); sweep(p);
+    for (float *old : { p->known[role].tf, p->known[role].tc }) if (old) p->retire[role].push_back(old);
     if (tf) p->keep.b.push_back(tf); if (tc) p->keep.b.push_back(tc);
     RoleRec &k = p->known[role];
     k.f0 = f0; k.hop = hop;
@@ -2002,6 +2011,7 @@ void fs_piece_rhythm_remove(fs_device *d, int h) {
     op.op = 2;
 }
 
+int fs_piece_test_kept(fs_device *d) { Piece *p = P(d); if (!p) return -1; std::lock_guard<std::mutex> g(p->mu); sweep(p); return (int)p->keep.b.size(); }
 void fs_piece_test_hooks(fs_device *d, double (*rnd)(void *), void *rnd_ctx,
                          void (*on_note)(void *, int, double, double, double, double), void *note_ctx) {
     Piece *p = P(d); if (!p) return;

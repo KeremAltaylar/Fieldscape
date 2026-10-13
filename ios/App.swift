@@ -80,9 +80,13 @@ final class Core: ObservableObject {
         }()
         var pending: [(slot: Int, ptrs: [UnsafeMutablePointer<Int16>], consts: [UnsafePointer<Int16>?], frames: Int)] = []
         var retired: [UnsafeMutablePointer<Int16>] = []
+        /* 6b final review C1: a stretch point's pitch track, applied on the render thread after the recordings above (a
+           recording arriving resets the track; setting it on the main thread raced the render thread's read) */
+        var tracks: [(slot: Int, f0: UnsafeMutablePointer<Float>, cf: UnsafeMutablePointer<Float>, n: Int, hop: Double)] = []
+        var retiredF: [UnsafeMutablePointer<Float>] = []
         var live: [[UnsafeMutablePointer<Int16>]] = Array(repeating: [], count: Core.slots + 1)
         var liveFrames: [Int] = Array(repeating: 0, count: Core.slots + 1)
-        init() { pending.reserveCapacity(16); retired.reserveCapacity(64) }
+        init() { pending.reserveCapacity(16); retired.reserveCapacity(64); tracks.reserveCapacity(8); retiredF.reserveCapacity(16) }
     }
     private let handoff = Handoff()
     private var player: OpaquePointer? = nil
@@ -100,6 +104,11 @@ final class Core: ObservableObject {
             h.liveFrames[p.slot] = p.frames
         }
         h.pending.removeAll(keepingCapacity: true)
+        for t in h.tracks where t.slot < Core.slots {
+            fs_stretch_track(voices[t.slot], t.f0, t.cf, Int32(t.n), t.hop, -1)
+        }
+        for t in h.tracks { h.retiredF.append(t.f0); h.retiredF.append(t.cf) }
+        h.tracks.removeAll(keepingCapacity: true)
         os_unfair_lock_unlock(h.lock)
     }
 
@@ -278,11 +287,17 @@ final class Core: ObservableObject {
     func param(slot: Int, _ i: Int, _ v: Float) { fs_set_param(voices[slot], Int32(i), v) }
     func shape(slot: Int, _ json: String) { fs_stretch_shape(voices[slot], json) }
     /* 6b: a stretch point's pitch track (its JSON: track [[f0, confidence]...], hop_s) - follow as its shape says */
+    /* through the handoff (final review C1); a recording judged unpitched (f0 0) has no track to follow (final review I1,
+       as the website's engine and the rhythm points) */
     func track(slot: Int, _ json: Data) {
-        guard let j = try? JSONSerialization.jsonObject(with: json) as? [String: Any], let tr = j["track"] as? [[Double]], !tr.isEmpty else { return }
-        var f0 = tr.map { Float($0.first ?? 0) }, cf = tr.map { Float($0.count > 1 ? $0[1] : 0) }
-        fs_stretch_track(voices[slot], &f0, &cf, Int32(tr.count), (j["hop_s"] as? Double) ?? 0.02, -1)
-        NSLog("6b stretch track: slot %d, %d frames", slot, tr.count)
+        guard let j = try? JSONSerialization.jsonObject(with: json) as? [String: Any], let tr = j["track"] as? [[Double]], !tr.isEmpty,
+              ((j["f0"] as? Double) ?? 0) > 0 else { return }
+        let n = tr.count, f0 = UnsafeMutablePointer<Float>.allocate(capacity: n), cf = UnsafeMutablePointer<Float>.allocate(capacity: n)
+        for i in 0..<n { f0[i] = Float(tr[i].first ?? 0); cf[i] = Float(tr[i].count > 1 ? tr[i][1] : 0) }
+        os_unfair_lock_lock(handoff.lock)
+        handoff.tracks.append((slot, f0, cf, n, (j["hop_s"] as? Double) ?? 0.02))
+        os_unfair_lock_unlock(handoff.lock)
+        NSLog("6b stretch track: slot %d, %d frames", slot, n)
     }
 
     /* Sound test: the sliders drive slot 0, which the walk leaves alone while the test is on. */
@@ -304,10 +319,10 @@ final class Core: ObservableObject {
 
     private func refresh() {
         os_unfair_lock_lock(handoff.lock)
-        let free = handoff.retired
-        handoff.retired.removeAll(keepingCapacity: true)
+        let free = handoff.retired, freeF = handoff.retiredF
+        handoff.retired.removeAll(keepingCapacity: true); handoff.retiredF.removeAll(keepingCapacity: true)
         os_unfair_lock_unlock(handoff.lock)
-        free.forEach { $0.deallocate() }
+        free.forEach { $0.deallocate() }; freeF.forEach { $0.deallocate() }
 
         var late: Int32 = 0, under: Int32 = 0
         for v in voices { var s = fs_stats_t(); fs_stats(v, &s); late += s.late_frames; under += s.underruns }

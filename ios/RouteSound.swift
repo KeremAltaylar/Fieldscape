@@ -13,7 +13,10 @@ final class RouteSound {
     private struct Beat { let id: String, name: String, lon: Double, lat: Double, radius: Double, gain: Double, grains: Bool, json: String, paths: [String?], tracks: [String?] }
     /* 6b: each route's sampler voices - a voice's sample and its analysis (patch.<voice>.sample), nil none */
     private var routeRoles: [[(path: String, ana: String?)?]] = []
-    private var played = -2, roleOn = [false, false, false]
+    /* the route whose samples were asked for, its generation (a route change), voices holding a sample - under vlock: a sample
+       is prepared off the main thread (final review I3) */
+    private var played = -2, gen = 0, roleOn = [false, false, false]
+    private let vlock = NSLock()
     private var voiceTimer: Timer?
 
     private let core: Core
@@ -57,31 +60,44 @@ final class RouteSound {
        first, so its sample never plays on this one; each sample prepared as the website does (fs_piece_role_sample) */
     private func voices() {
         let pr = Int(fs_piece_route(piece))
-        guard pr != played else { return }
-        played = pr
+        vlock.lock()
+        guard pr != played else { vlock.unlock(); return }
+        played = pr; gen += 1
         for q in 0..<3 where roleOn[q] { silence(q) }
+        let g = gen
+        vlock.unlock()
         guard pr >= 0, pr < routeRoles.count else { return }
-        let sr = core.sampleRate
-        for (q, spec) in routeRoles[pr].enumerated() {
-            guard let spec else { continue }
+        for (q, spec) in routeRoles[pr].enumerated() { if let spec { loadVoice(q, g, spec) } }
+    }
+    /* one voice's sample; a failed fetch asked again in 10 s while its route still plays (final review I4) - signal comes and
+       goes on a walk */
+    private func loadVoice(_ q: Int, _ g: Int, _ spec: (path: String, ana: String?)) {
+        let sr = core.sampleRate, piece = self.piece
+        let retry = { [weak self] in DispatchQueue.main.asyncAfter(deadline: .now() + 10) { if let self, self.gen == g { self.loadVoice(q, g, spec) } } }
             Task { @MainActor [weak self] in
-                guard let walk = self?.walk, let data = try? await walk.recording(spec.path, for: "route#\(q)") else { return }
+                guard let walk = self?.walk, let data = try? await walk.recording(spec.path, for: "route#\(q)") else { retry(); return }
                 var anaData: Data? = nil
-                if let a = spec.ana { anaData = try? await walk.recording(a, for: "route#\(q)#analysis") }
-                guard let pcm = try? await Decode.pcm16(data, sampleRate: sr) else { return }
+                if let a = spec.ana { anaData = try? await walk.recording(a, for: "route#\(q)#analysis"); if anaData == nil { retry(); return } }
+                guard let pcm = try? await Decode.pcm16(data, sampleRate: sr) else { retry(); return }
                 defer { pcm.free() }
-                guard let self, self.played == pr, pcm.frames > 0 else { return }
-                let n = pcm.frames, c = min(pcm.planar.count, 2)
-                let f = (0..<c).map { k -> UnsafeMutablePointer<Float> in
-                    let p = UnsafeMutablePointer<Float>.allocate(capacity: n); for i in 0..<n { p[i] = Float(pcm.planar[k][i]) / 32768 }; return p }
-                defer { f.forEach { $0.deallocate() } }
-                var ptrs: [UnsafePointer<Float>?] = f.map { UnsafePointer($0) }
+                guard let self, self.gen == g, pcm.frames > 0 else { return }
+                let n = pcm.frames, c = min(pcm.planar.count, 2), planar = pcm.planar
                 let js = anaData.map { String(decoding: $0, as: UTF8.self) } ?? "{}"
-                fs_piece_role_sample(self.piece, Int32(q), Int32(c), Int64(n), &ptrs, js)
-                self.roleOn[q] = true
-                NSLog("6b voice %d sample: route %d, %d frames", q, pr, n)
+                /* prepared off the main thread; handed over only if the route has not changed since (its generation) */
+                await Task.detached { [weak self] in
+                    guard let self else { return }
+                    let f = (0..<c).map { k -> UnsafeMutablePointer<Float> in
+                        let p = UnsafeMutablePointer<Float>.allocate(capacity: n); for i in 0..<n { p[i] = Float(planar[k][i]) / 32768 }; return p }
+                    defer { f.forEach { $0.deallocate() } }
+                    var ptrs: [UnsafePointer<Float>?] = f.map { UnsafePointer($0) }
+                    let t0 = Date()
+                    self.vlock.lock(); defer { self.vlock.unlock() }
+                    guard self.gen == g else { return }
+                    fs_piece_role_sample(piece, Int32(q), Int32(c), Int64(n), &ptrs, js)
+                    self.roleOn[q] = true
+                    NSLog("6b voice %d sample: generation %d, %d frames, prepared off the main thread in %.0f ms", q, g, n, Date().timeIntervalSince(t0) * 1000)
+                }.value
             }
-        }
     }
     private func silence(_ q: Int) {
         var z = [Float](repeating: 0, count: 128)
@@ -215,15 +231,9 @@ final class RouteSound {
                 for k in 0..<c { let src = pcm.planar[k]; for i in 0..<n { mem[i * c + k] = src[i] } }
                 pcm.free()
                 fs_piece_rhythm_source(self.piece, h, Int32(slot), Int32(c), Int64(n), mem)
-            }
-        }
-        /* 6b: each recording's pitch track (a point that follows the chord) */
-        for (slot, t) in b.tracks.enumerated() {
-            guard let t else { continue }
-            Task { @MainActor [weak self] in
-                guard let walk = self?.walk, let data = try? await walk.recording(t, for: b.id + "#\(slot)#track") else { return }
-                guard let self, self.handle[b.id] == h else { return }
-                fs_piece_rhythm_track(self.piece, h, Int32(slot), String(decoding: data, as: UTF8.self))
+                /* 6b: its pitch track after it - a recording arriving resets the track (final review C2) */
+                guard slot < b.tracks.count, let t = b.tracks[slot], let tj = try? await walk.recording(t, for: b.id + "#\(slot)#track"), self.handle[b.id] == h else { return }
+                fs_piece_rhythm_track(self.piece, h, Int32(slot), String(decoding: tj, as: UTF8.self))
                 NSLog("6b rhythm track: handle %d slot %d", h, slot)
             }
         }

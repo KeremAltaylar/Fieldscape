@@ -2377,6 +2377,26 @@ int main() {
         std::printf("6b role sample: the apps' call is the website's path %d; the voice at %.0f dB, after silence %.0f dB\n", (int)(web.first == app.first), app.second, hush.second);
         assert(web.first == app.first && app.second > -60 && hush.second < -90);
     }
+    {   /* final review 6b I2: a voice's sample replaced (the apps send one on every route change) is freed once the audio thread
+           has taken its successor - the engine's memory stays flat over a walk crossing routes, not +6 MB a voice a crossing */
+        const int n = (int)(2 * SR); std::vector<float> s((size_t)n);
+        for (int i = 0; i < n; i++) s[(size_t)i] = (float)(0.5 * std::sin(2 * 3.141592653589793 * 220 * i / SR));
+        const char *ana = "{\"f0\":220,\"hop_s\":0.02,\"track\":[[220,0.95],[220,0.95]]}";
+        unsigned seed = 3; fs_device *d = fs_create("piece"); fs_prepare(d, 48000, 128); fs_piece_test_hooks(d, fixed_draw, &seed, nullptr, nullptr);
+        const int r = fs_piece_add_route(d, "{\"version\":17,\"voice\":{\"synth\":\"s-retune\"},\"sect\":{\"on\":false},\"v3\":{\"on\":false},\"bed\":{\"on\":false}}");
+        const float *pp[1] = { s.data() }; int first = 0, last = 0;
+        for (int k = 0; k < 20; k++) {
+            fs_piece_role_sample(d, 0, 1, n, pp, ana);
+            for (int b2 = 0; b2 < 20; b2++) { fs_piece_walk(d, r, 0.3, 0); fs_process(d, 128); }
+            if (k == 1) first = fs_piece_test_kept(d);
+            last = fs_piece_test_kept(d);
+        }
+        float ro[3 * (2 + 8)]; double lv = -120;
+        for (int b2 = 0; b2 < (int)(3 * SR / 128); b2++) { fs_piece_walk(d, r, 0.3, 0); fs_process(d, 128); fs_piece_roles(d, ro, 8); lv = std::fmax(lv, ro[0]); }
+        fs_destroy(d);
+        std::printf("6b memory: buffers kept after 2 samples %d, after 20 %d; the voice still sounds at %.0f dB\n", first, last, lv);
+        assert(last <= first && last <= 8 && lv > -60);
+    }
     {   /* 8b (Kerem 2026-10-11: "I want an envelope graph in the route patch voices, like the grains have one, so I can adjust
            the envelope of notes"): a voice's "env": [attack s, decay s, sustain 0..1, release s] reaches whatever plays it -
            every digital synth with an amplitude envelope and the samplers. Measured on the Voice's own level (fs_piece_roles):
