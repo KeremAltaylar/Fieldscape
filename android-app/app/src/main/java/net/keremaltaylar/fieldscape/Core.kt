@@ -16,6 +16,7 @@ object Core {
     @JvmStatic external fun grit(slot: Int, amount: Float)
     @JvmStatic external fun param(slot: Int, index: Int, value: Float)
     @JvmStatic external fun shape(slot: Int, json: String)
+    @JvmStatic external fun pointSound(slot: Int, json: String)   // Test 15: a stretch point's eq and env (fs_point_sound)
     @JvmStatic external fun load(slot: Int, left: ShortArray, right: ShortArray)
     @JvmStatic external fun loadInterleaved(slot: Int, interleaved: java.nio.ByteBuffer, channels: Int, frames: Int, rate: Double)
     @JvmStatic external fun collect()

@@ -1336,7 +1336,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 #pp-body .ppsample-warn:empty { display: none; }
 #pp-body .ppsample-warn { color: var(--lamp); font-size: var(--t-xs); }
 #pp-body .ppsample-wave { width: 100%; height: 28px; display: block; cursor: pointer; }
-#pp-body .ppcol { position: relative; }
+:is(#pp-body, #rp-body) .ppcol { position: relative; }   /* Test 15: a point's EQ and envelope open over their column too */
+#rp-body .ppshape-row > i { grid-column: 2 / 4; }
 /* 8a: header meters - a point's own level (rhythm panel), the master out (patch panel); -60 ... 0 dB */
 .hdr-meter { display: inline-flex; align-items: center; gap: var(--s-1); margin-left: auto; margin-right: var(--s-2); font-family: var(--font-mono); font-size: var(--t-xs); color: var(--faint); }
 .hdr-meter > i { font-style: normal; text-transform: uppercase; letter-spacing: 0.04em; }
@@ -1345,35 +1346,35 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 .hdr-meter > b > s { position: absolute; top: 0; bottom: 0; width: 2px; left: 0; background: var(--lamp); text-decoration: none; }
 .hdr-meter > em { font-style: normal; min-width: 3.4em; text-align: right; color: var(--dim); }
 .hdr-meter.hot > b > b { background: var(--lamp); }
-#pp-body .ppshape { display: flex; gap: 2px; width: 100%; }   /* 8b: EQ and envelope, side by side */
-#pp-body .ppshape .ppeq-btn { flex: 1 1 0; min-width: 0; }
-#pp-body .ppeq .eq-curve.own { stroke: var(--faint); stroke-dasharray: 4 3; }
-#pp-body .ppeq-btn { display: block; width: 100%; height: 1.4rem; padding: 0 2px; background: transparent; border: 1px solid var(--hairline); border-radius: 2px; cursor: pointer; }
-#pp-body .ppeq-btn svg { width: 100%; height: 100%; display: block; }
-#pp-body .ppeq-btn path { fill: none; stroke: var(--faint); stroke-width: 1.4; }
-#pp-body .ppeq-btn.on path { stroke: var(--accent); }
-#pp-body .ppeq-btn:hover, #pp-body .ppeq-btn:focus-visible, #pp-body .ppeq-btn[aria-expanded=true] { border-color: var(--accent); outline: none; }
-#pp-body .ppeq-pop { position: absolute; left: 0; right: 0; z-index: 5; background: var(--panel); border: 1px solid var(--bdr); border-radius: 2px; padding: var(--s-1); box-shadow: 0 6px 18px rgba(0,0,0,.45); }
+:is(#pp-body, #rp-body) .ppshape { display: flex; gap: 2px; width: 100%; }   /* 8b: EQ and envelope, side by side */
+:is(#pp-body, #rp-body) .ppshape .ppeq-btn { flex: 1 1 0; min-width: 0; }
+:is(#pp-body, #rp-body) .ppeq .eq-curve.own { stroke: var(--faint); stroke-dasharray: 4 3; }
+:is(#pp-body, #rp-body) .ppeq-btn { display: block; width: 100%; height: 1.4rem; padding: 0 2px; background: transparent; border: 1px solid var(--hairline); border-radius: 2px; cursor: pointer; }
+:is(#pp-body, #rp-body) .ppeq-btn svg { width: 100%; height: 100%; display: block; }
+:is(#pp-body, #rp-body) .ppeq-btn path { fill: none; stroke: var(--faint); stroke-width: 1.4; }
+:is(#pp-body, #rp-body) .ppeq-btn.on path { stroke: var(--accent); }
+:is(#pp-body, #rp-body) .ppeq-btn:hover, :is(#pp-body, #rp-body) .ppeq-btn:focus-visible, :is(#pp-body, #rp-body) .ppeq-btn[aria-expanded=true] { border-color: var(--accent); outline: none; }
+:is(#pp-body, #rp-body) .ppeq-pop { position: absolute; left: 0; right: 0; z-index: 5; background: var(--panel); border: 1px solid var(--bdr); border-radius: 2px; padding: var(--s-1); box-shadow: 0 6px 18px rgba(0,0,0,.45); }
 #pp-body .pplive-cell { display: grid; gap: 2px; min-width: 0; font-style: normal; }
 #pp-body .pplive-cell .pplive-meter { display: block; height: 3px; background: var(--hairline); border-radius: 2px; overflow: hidden; }
 #pp-body .pplive-cell .pplive-meter b { display: block; height: 100%; width: 0; background: var(--accent); transition: width 80ms linear; }
-#pp-body .ppeq { display: grid; gap: 4px; margin: 2px 0 var(--s-1); min-width: 0; flex: 0 0 100%; box-sizing: border-box; }
-#pp-body .ppeq-top { display: flex; align-items: center; gap: var(--s-1); min-width: 0; }
-#pp-body .ppeq-top > span:first-child { font-family: var(--font-mono); font-size: var(--t-xs); letter-spacing: 0.04em; text-transform: uppercase; color: var(--faint); }
-#pp-body .ppeq-read { flex: 1; text-align: right; font-family: var(--font-mono); font-size: var(--t-xs); color: var(--dim); white-space: nowrap; }
-#pp-body .ppeq-top button { padding: 1px var(--s-1); font-size: var(--t-xs); }
-#pp-body .ppeq svg { width: 100%; height: auto; display: block; touch-action: none; user-select: none; }
-#pp-body .ppeq .eq-grid { stroke: var(--hairline); stroke-width: 1; }
-#pp-body .ppeq .eq-zero { stroke: var(--faint); stroke-width: 1; stroke-dasharray: 2 3; }
-#pp-body .ppeq .eq-label { fill: var(--faint); font-family: var(--font-mono); font-size: 10px; }
-#pp-body .ppeq .eq-curve { fill: none; stroke: var(--accent); stroke-width: 1.6; stroke-linejoin: round; }
-#pp-body .ppeq .eq-band { cursor: grab; outline: none; }
-#pp-body .ppeq .eq-band:active { cursor: grabbing; }
-#pp-body .ppeq .eq-hit { fill: transparent; }
-#pp-body .ppeq .eq-dot { fill: var(--sunk); stroke: var(--dim); stroke-width: 1.5; }
-#pp-body .ppeq .eq-band.on .eq-dot { fill: var(--accent); stroke: var(--accent); }
-#pp-body .ppeq .eq-band:hover .eq-dot, #pp-body .ppeq .eq-band:focus-visible .eq-dot { stroke: var(--ink); stroke-width: 2; }
-#pp-body .ppeq .eq-band:focus-visible .eq-hit { stroke: var(--lamp); stroke-width: 1.5; }
+:is(#pp-body, #rp-body) .ppeq { display: grid; gap: 4px; margin: 2px 0 var(--s-1); min-width: 0; flex: 0 0 100%; box-sizing: border-box; }
+:is(#pp-body, #rp-body) .ppeq-top { display: flex; align-items: center; gap: var(--s-1); min-width: 0; }
+:is(#pp-body, #rp-body) .ppeq-top > span:first-child { font-family: var(--font-mono); font-size: var(--t-xs); letter-spacing: 0.04em; text-transform: uppercase; color: var(--faint); }
+:is(#pp-body, #rp-body) .ppeq-read { flex: 1; text-align: right; font-family: var(--font-mono); font-size: var(--t-xs); color: var(--dim); white-space: nowrap; }
+:is(#pp-body, #rp-body) .ppeq-top button { padding: 1px var(--s-1); font-size: var(--t-xs); }
+:is(#pp-body, #rp-body) .ppeq svg { width: 100%; height: auto; display: block; touch-action: none; user-select: none; }
+:is(#pp-body, #rp-body) .ppeq .eq-grid { stroke: var(--hairline); stroke-width: 1; }
+:is(#pp-body, #rp-body) .ppeq .eq-zero { stroke: var(--faint); stroke-width: 1; stroke-dasharray: 2 3; }
+:is(#pp-body, #rp-body) .ppeq .eq-label { fill: var(--faint); font-family: var(--font-mono); font-size: 10px; }
+:is(#pp-body, #rp-body) .ppeq .eq-curve { fill: none; stroke: var(--accent); stroke-width: 1.6; stroke-linejoin: round; }
+:is(#pp-body, #rp-body) .ppeq .eq-band { cursor: grab; outline: none; }
+:is(#pp-body, #rp-body) .ppeq .eq-band:active { cursor: grabbing; }
+:is(#pp-body, #rp-body) .ppeq .eq-hit { fill: transparent; }
+:is(#pp-body, #rp-body) .ppeq .eq-dot { fill: var(--sunk); stroke: var(--dim); stroke-width: 1.5; }
+:is(#pp-body, #rp-body) .ppeq .eq-band.on .eq-dot { fill: var(--accent); stroke: var(--accent); }
+:is(#pp-body, #rp-body) .ppeq .eq-band:hover .eq-dot, :is(#pp-body, #rp-body) .ppeq .eq-band:focus-visible .eq-dot { stroke: var(--ink); stroke-width: 2; }
+:is(#pp-body, #rp-body) .ppeq .eq-band:focus-visible .eq-hit { stroke: var(--lamp); stroke-width: 1.5; }
 #pp-body .pplive-notes { font-size: var(--t-xs); min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 #pp-body .pplive-meter { display: block; height: 6px; background: var(--hairline); border-radius: 3px; overflow: hidden; }
 #pp-body .pplive-meter b { display: block; height: 100%; width: 0; background: var(--accent); transition: width 80ms linear; }
@@ -5566,6 +5567,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function pctFmt(v) { return Math.round(v * 100) + " %"; }
 
   /* 6a: grains and hits onto the chord (rhythm.follow; a pitched recording only - its track file says) */
+  /* Test 15: grains of a recording with no pitch follow too, each by its own strongest tone where it reads */
+  var GRAIN_FOLLOW_FIELD = { k: "follow", label: "follow chord", min: 0, max: 1, step: 0.05,
+    hint: "every grain moves onto the chord's nearest note - by the recording's pitch, or where it has none, by the grain's own strongest tone (0 = as recorded)" };
   var FOLLOW_FIELD = { k: "follow", label: "follow chord", min: 0, max: 1, step: 0.05,
     hint: "pitched grains and hits move onto the chord's notes (0 = as recorded)" };
   /* 8c: grains rung by the chord - a tuned body per chord note mixed in, vary kept in the chord */
@@ -5703,7 +5707,31 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       "A stream carries further than a nest. These belong to the point, so every point on a " +
       "route can differ.")];
     SOUND_FIELDS.forEach(function (fl) { nodes.push(buildSoundRow(fl, q, commitQ)); });
+    if (f.properties.has_audio || f.properties.hits) { nodes.push(pointShapeRow(f, q, commitQ)); }
     return nodes;
+  }
+  /* Test 15: a point's EQ and its envelope, as a route voice's (one each per point). Stretch: sound.eq, and sound.env - how its
+     pitch arrives on each chord change. Rhythm: rhythm.eq and rhythm.env, every hit's. Grains: rhythm.eq here; their envelope is
+     the grain's own, in its column. */
+  var POINT_ENV_OWN = { soundscape: [0.5, 1, 1, 1.5], hits: [0.005, 0.25, 0.5, 0.3] };
+  function pointShapeRow(f, q, commitQ) {
+    var mode = modeOf(f), o = mode === "soundscape" ? q : rhythmOf(f);
+    var commit = mode === "soundscape" ? commitQ : function () { claimEdit(f); save(); };
+    var row = document.createElement("div"); row.className = "pprow ppshape-row";
+    var name = document.createElement("span"); name.textContent = mode === "grains" ? "eq" : "eq · envelope"; row.appendChild(name);
+    row.appendChild(document.createElement("i"));
+    var put = function (k) { return function (v) { if (v) { o[k] = v; } else { delete o[k]; } commit(); }; };
+    var aria = "this point";
+    shapeButtons(row, { key: "pt", aria: aria, get: function () { return o.eq || null; }, set: put("eq") },
+      mode === "grains" ? null : {
+        key: "pt", aria: aria, ownLabel: "None",
+        ownHint: mode === "soundscape" ? "no envelope: the chord glides in" : "no envelope: each hit plays out",
+        ownText: mode === "soundscape" ? "none · the chord glides" : "none · each hit plays out",
+        get: function () { return Array.isArray(o.env) && o.env.length === 4 ? o.env : null; },
+        own: function () { return POINT_ENV_OWN[mode].slice(); }, set: put("env") });
+    row.title = mode === "soundscape" ? "EQ, and how the recording's pitch arrives on each chord change: the old chord releases, the new one blooms"
+      : mode === "hits" ? "EQ, and every hit's envelope: held for one step, then released" : "EQ on the grains";
+    return row;
   }
 
   function ppHeading(text, hint) {
@@ -5821,20 +5849,20 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
     var cloud = [ppHeading("The cloud", "Three randomnesses kept apart on purpose: roam, scatter and vary")];
     GRAIN_FIELDS.slice(2).forEach(function (fl) { cloud.push(gRow(fl, commitR)); });
-    cloud.push(buildRhythmRow(FOLLOW_FIELD, r, function () { commitR(); if (r.follow > 0) { ensureTrack(f); } }));   /* 6a */
+    cloud.push(buildRhythmRow(GRAIN_FOLLOW_FIELD, r, function () { commitR(); if (r.follow > 0) { ensureTrack(f); } }));   /* 6a */
     if (r.resonate === undefined) { r.resonate = 0; }
     r.body = String(r.body || 0);   /* a select's value; the engine reads "2" as 2 */
     RESONATE_FIELDS.forEach(function (fl) { cloud.push(buildRhythmRow(fl, r, commitR)); });   /* 8c */
 
     var env = [ppHeading("The grain envelope",
       "Four stages as fractions of the grain, so it keeps its shape when the size varies")];
-    GRAIN_ENV_FIELDS.forEach(function (fl) {
-      env.push(gRow(fl, function () { claimEdit(f); save(); grainEnvDraw(); }));
-    });
-    var eshape = document.createElement("canvas");
-    eshape.className = "grainenv";
-    eshape.title = "The shape every grain is cut to, before vary moves it";
-    env.push(eshape);
+    /* Test 15 (Kerem: "per event"): the four stages on the route voices' envelope graph, as fractions of the grain */
+    var genv = envGraph({ key: "grain", aria: "every grain", lin: true, label: "",   /* its heading names it */
+      get: function () { return [g.attack, g.decay, g.sustain, g.release]; },
+      own: function () { return [G.attack, G.decay, G.sustain, G.release]; },
+      set: function (e) { g.attack = e[0]; g.decay = e[1]; g.sustain = e[2]; g.release = e[3]; claimEdit(f); save(); } });
+    genv.title = "The shape every grain is cut to, before vary moves it. Drag the points; double-click one to put it back.";
+    env.push(genv);
 
     soundColumns(body, "grains", [
       { title: "Point", nodes: point },
@@ -6349,7 +6377,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        properties.sound.shape and read by the core's stretch. All dry by default (A-8). */
     if (!q.shape) { q.shape = {}; }
     var sh = q.shape, SHD = { transpose: 0, tune: 0, focus: 0.5, partials: 8, layers: 0, harmony: 0.5, glide: 2,
-                              drift: 0, blur: 0, width: 1, start: 0, end: 1, follow: 0, resonate: 0, body: 0, low: 0, depth: 0 };
+                              drift: 0, blur: 0, width: 1, start: 0, end: 1, follow: 0, resonate: 0, body: 0, low: 0, depth: 0,
+                              sing: 0, contour: 0.5 };
     Object.keys(SHD).forEach(function (k) { if (sh[k] === undefined) { sh[k] = SHD[k]; } });
     var colStretch = [
       heading("Time", "The stretch itself, and the part of the recording it reads."),
@@ -6405,7 +6434,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       heading("Low end", "Bass partials on the chord's notes, struck by the recording: −1 oct sits at 90–300 Hz, −2 oct at 45–150 Hz. The overall level stays the same."),
       R({ label: "low end", k: "low", min: 0, max: 1, step: 0.05, def: 0, fmt: fx.pct,
         hint: "how much of the sound moves into pitched bass (0 = none)" }, sh),
-      buildPxSelect("depth", sh, "depth", ["−1 oct", "−2 oct"], commitLive)
+      buildPxSelect("depth", sh, "depth", ["−1 oct", "−2 oct"], commitLive),
+      /* Test 15: pitch made from a recording that has none - its colour as the chord's body, or its own peaks moved onto it */
+      heading("Sing", "Pitch made from the recording itself, for sounds that have none: the chord in the recording's colour (body), or the recording's own strongest tones moved onto the chord, rising and falling as it does (shape)."),
+      R({ label: "sing", k: "sing", min: 0, max: 1, step: 0.05, def: 0, fmt: fx.pct,
+        hint: "how far the recording becomes pitched (0 = as it is)" }, sh),
+      R({ label: "body · shape", k: "contour", min: 0, max: 1, step: 0.05, def: 0.5, fmt: function (v) { return Math.round((1 - v) * 100) + " · " + Math.round(v * 100); },
+        hint: "body: every chord note, loud where the recording is loud; shape: the recording's own peaks, each on its nearest chord tone" }, sh)
     ];
 
     /* One screen, always (C-8): four columns where there is room, tabs where there is not.
@@ -13290,17 +13325,19 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function eqDb(y) { return Math.max(-12, Math.min(12, (EQ_H / 2 - y) / (EQ_H / 2 - EQ_PY) * 12)); }
   function eqHzText(hz) { return hz >= 1000 ? (hz / 1000).toFixed(hz >= 10000 ? 0 : 1) + " kHz" : Math.round(hz) + " Hz"; }
   function eqDbText(db) { return (db > 0 ? "+" : db < 0 ? "-" : "") + Math.abs(db).toFixed(1) + " dB"; }
-  function labEqBlock(role, f) {
-    var S = labSession(), st = S.state(role), NS = "http://www.w3.org/2000/svg";
-    var bands = function () { return st.eq || FsRoles.eqDefault(); };
-    var box = document.createElement("div"); box.className = "ppeq"; box.id = "pp-" + role + "-eq";
+  /* Test 15: the graph takes its data through o - { key (ids pp-<key>-eq / -eqbtn), aria, get() bands or null (flat), set(bands
+     or null) } - so a route voice and a point share one widget */
+  function eqGraph(o) {
+    var NS = "http://www.w3.org/2000/svg";
+    var bands = function () { return o.get() || FsRoles.eqDefault(); };
+    var box = document.createElement("div"); box.className = "ppeq"; box.id = "pp-" + o.key + "-eq";
     var top = document.createElement("div"); top.className = "ppeq-top";
     var label = document.createElement("span"); label.textContent = "eq"; top.appendChild(label);
     var read = document.createElement("span"); read.className = "ppeq-read"; top.appendChild(read);
     var flat = document.createElement("button"); flat.type = "button"; flat.className = "ghost"; flat.textContent = "Flat";
     top.appendChild(flat); box.appendChild(top);
     var svg = document.createElementNS(NS, "svg"); svg.setAttribute("viewBox", "0 0 " + EQ_W + " " + EQ_H); svg.setAttribute("role", "group");
-    svg.setAttribute("aria-label", "EQ, " + ({ voice: "First voice", sect: "Second voice", v3: "Third voice" })[role]);
+    svg.setAttribute("aria-label", "EQ, " + o.aria);
     var el = function (tag, a, parent) { var e = document.createElementNS(NS, tag); for (var k in a) { e.setAttribute(k, a[k]); } (parent || svg).appendChild(e); return e; };
     [100, 1000, 10000].forEach(function (hz) {
       el("line", { "class": "eq-grid", x1: eqX(hz), x2: eqX(hz), y1: EQ_PY, y2: EQ_H - EQ_PY });
@@ -13323,13 +13360,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         g.setAttribute("aria-valuenow", String(b[k][1]));
         g.classList.toggle("on", b[k][1] !== 0);
       });
-      var btn = document.getElementById("pp-" + role + "-eqbtn"); if (btn) { eqSpark(btn, b); }
+      var btn = document.getElementById("pp-" + o.key + "-eqbtn"); if (btn) { eqSpark(btn, b); }
     };
     var show = function (k) { var b = bands(); read.textContent = k == null ? "" : eqHzText(b[k][0]) + " " + eqDbText(b[k][1]); };
     var put = function (k, hz, db) {
       var b = JSON.parse(JSON.stringify(bands()));
       b[k][0] = Math.round(Math.max(EQ_LO, Math.min(EQ_HI, hz))); b[k][1] = Math.round(Math.max(-12, Math.min(12, db)) * 10) / 10;
-      st.eq = b; draw(); show(k); labSaveSoon(f);
+      o.set(b); draw(); show(k);
     };
     for (var k = 0; k < 5; k++) {
       (function (k) {
@@ -13363,10 +13400,16 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         dots.push(g);
       })(k);
     }
-    flat.addEventListener("click", function () { st.eq = null; draw(); show(null); labSaveSoon(f); });
+    flat.addEventListener("click", function () { o.set(null); draw(); show(null); });
     box.appendChild(svg); draw();
     return box;
   }
+  var ROLE_NAME = { voice: "First voice", sect: "Second voice", v3: "Third voice" };
+  function roleEqOpts(role, f) {
+    var st = labSession().state(role);
+    return { key: role, aria: ROLE_NAME[role], get: function () { return st.eq || null; }, set: function (b) { st.eq = b; labSaveSoon(f); } };
+  }
+  function labEqBlock(role, f) { return eqGraph(roleEqOpts(role, f)); }
   /* 8a: two menus in one row - "body · excite" - each its own select (data-k kept) */
   function labPairRow(pair, patch, f) {
     var row = document.createElement("div"); row.className = "pprow pppair";
@@ -13419,19 +13462,28 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     return (ENV_OWN[synth] || ENV_ROLE_DEFAULT[role]).slice();
   }
   function envOf(f, role) { var p = patchOf(f), e = p[role] && p[role].env; return Array.isArray(e) && e.length === 4 ? e : null; }
-  function envBlock(role, f) {
+  /* Test 15: as the EQ, the data through o - { key, aria, get() e or null (none: the owner's own), own() e, set(e or null),
+     label ("": none), ownLabel (the button that clears it; none: always set), lin (the grain's envelope: each stage a fraction 0-1 on a straight
+     scale, not seconds on a log one) } */
+  function envGraph(o) {
     var NS = "http://www.w3.org/2000/svg";
-    var own = function () { var p = patchOf(f); return envOwnOf(p[role] && p[role].synth, role); };
-    var cur = function () { return envOf(f, role) || own(); };
-    var box = document.createElement("div"); box.className = "ppeq ppenv"; box.id = "pp-" + role + "-env";
+    var segX = function (seg, v) { return o.lin ? ENV_PX + seg * ENV_SEG + Math.max(0, Math.min(1, v)) * ENV_SEG : envSegX(seg, v); };
+    var segS = function (seg, x) { return o.lin ? Math.max(0, Math.min(1, (x - ENV_PX - seg * ENV_SEG) / ENV_SEG)) : envSegS(seg, x); };
+    var text = function (v) { return o.lin ? Math.round(v * 100) + "%" : envSecText(v); };
+    var pts = function (e) { return [[ENV_PX, envY(0)], [segX(0, e[0]), envY(1)], [segX(1, e[1]), envY(e[2])], [ENV_PX + 2 * ENV_SEG, envY(e[2])], [segX(2, e[3]), envY(0)]]; };
+    var cur = function () { return o.get() || o.own(); };
+    var box = document.createElement("div"); box.className = "ppeq ppenv"; box.id = "pp-" + o.key + "-env";
     var top = document.createElement("div"); top.className = "ppeq-top";
-    var label = document.createElement("span"); label.textContent = "envelope"; top.appendChild(label);
+    var label = document.createElement("span"); label.textContent = o.label === undefined ? "envelope" : o.label; top.appendChild(label);
     var read = document.createElement("span"); read.className = "ppeq-read"; top.appendChild(read);
-    var ownBtn = document.createElement("button"); ownBtn.type = "button"; ownBtn.className = "ghost"; ownBtn.textContent = "Instrument's";
-    ownBtn.title = "the instrument's own envelope (none of this voice's)";
-    top.appendChild(ownBtn); box.appendChild(top);
+    var ownBtn = null;
+    if (o.ownLabel) {
+      ownBtn = document.createElement("button"); ownBtn.type = "button"; ownBtn.className = "ghost"; ownBtn.textContent = o.ownLabel;
+      ownBtn.title = o.ownHint || ""; top.appendChild(ownBtn);
+    }
+    box.appendChild(top);
     var svg = document.createElementNS(NS, "svg"); svg.setAttribute("viewBox", "0 0 " + ENV_W + " " + ENV_H); svg.setAttribute("role", "group");
-    svg.setAttribute("aria-label", "Note envelope, " + ({ voice: "First voice", sect: "Second voice", v3: "Third voice" })[role]);
+    svg.setAttribute("aria-label", (o.lin ? "Grain envelope, " : "Note envelope, ") + o.aria);
     var el = function (tag, a, parent) { var e = document.createElementNS(NS, tag); for (var k in a) { e.setAttribute(k, a[k]); } (parent || svg).appendChild(e); return e; };
     [1, 2].forEach(function (k) { el("line", { "class": "eq-grid", x1: ENV_PX + k * ENV_SEG, x2: ENV_PX + k * ENV_SEG, y1: ENV_PY, y2: ENV_H - ENV_PY }); });
     el("line", { "class": "eq-zero", x1: ENV_PX, x2: ENV_W - ENV_PX, y1: envY(0), y2: envY(0) });
@@ -13439,21 +13491,24 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var curve = el("path", { "class": "eq-curve" });
     var handles = [];
     var draw = function () {
-      var e = cur(), pts = envPoints(e), mine = !!envOf(f, role);
-      curve.setAttribute("d", pts.map(function (p, i) { return (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1); }).join(""));
+      var e = cur(), p = pts(e), mine = !!o.get();
+      curve.setAttribute("d", p.map(function (q, i) { return (i ? "L" : "M") + q[0].toFixed(1) + " " + q[1].toFixed(1); }).join(""));
       curve.classList.toggle("own", !mine);
-      [pts[1], pts[2], pts[4]].forEach(function (p, k) {
-        handles[k].setAttribute("transform", "translate(" + p[0].toFixed(1) + " " + p[1].toFixed(1) + ")");
-        handles[k].setAttribute("aria-valuetext", k === 1 ? "decay " + envSecText(e[1]) + ", sustain " + Math.round(e[2] * 100) + "%" : ENV_NAMES[k === 2 ? 3 : 0] + " " + envSecText(e[k === 2 ? 3 : 0]));
+      [p[1], p[2], p[4]].forEach(function (q, k) {
+        handles[k].setAttribute("transform", "translate(" + q[0].toFixed(1) + " " + q[1].toFixed(1) + ")");
+        handles[k].setAttribute("aria-valuetext", k === 1 ? "decay " + text(e[1]) + ", sustain " + Math.round(e[2] * 100) + "%" : ENV_NAMES[k === 2 ? 3 : 0] + " " + text(e[k === 2 ? 3 : 0]));
         handles[k].classList.toggle("on", mine);
       });
-      read.textContent = mine ? envText(e) : "the instrument's own";
-      var btn = document.getElementById("pp-" + role + "-envbtn"); if (btn) { envSpark(btn, e, mine); }
+      read.textContent = mine ? (o.lin ? text(e[0]) + " " + text(e[1]) + " " + Math.round(e[2] * 100) + "% " + text(e[3]) : envText(e)) : (o.ownText || "");
+      var btn = document.getElementById("pp-" + o.key + "-envbtn"); if (btn) { envSpark(btn, e, mine); }
+      if (o.drawn) { o.drawn(); }
     };
     var put = function (e) {
-      var p = patchOf(f); p[role] = p[role] || {};
-      p[role].env = e.map(function (v, i) { var r = ENV_RANGE[i]; v = Math.max(r[0], Math.min(r[1], v)); return i === 2 ? Math.round(v * 100) / 100 : Math.round(v * 1000) / 1000; });
-      commitPatch(f, p); labChanged(); draw();   /* labChanged: heard while a drag moves (final review 8b I2, as the EQ's) */
+      o.set(e.map(function (v, i) {
+        var r = o.lin ? [0, 1] : ENV_RANGE[i]; v = Math.max(r[0], Math.min(r[1], v));
+        return i === 2 || o.lin ? Math.round(v * 100) / 100 : Math.round(v * 1000) / 1000;
+      }));
+      draw();
     };
     ["attack", "decay and sustain", "release"].forEach(function (name, k) {
       var g = el("g", { "class": "eq-band", "data-env": k, tabindex: "0", role: "slider", "aria-label": name });
@@ -13461,7 +13516,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var drag = false;
       var move = function (x, y) {
         var e = cur().slice();
-        if (k === 0) { e[0] = envSegS(0, x); } else if (k === 1) { e[1] = envSegS(1, x); e[2] = envLevel(y); } else { e[3] = envSegS(2, x); }
+        if (k === 0) { e[0] = segS(0, x); } else if (k === 1) { e[1] = segS(1, x); e[2] = envLevel(y); } else { e[3] = segS(2, x); }
         put(e);
       };
       g.addEventListener("pointerdown", function (ev) {
@@ -13471,16 +13526,16 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       g.addEventListener("pointermove", function (ev) {
         if (!drag) { return; }
         var m = svg.getScreenCTM(); if (!m) { return; }
-        var p = svg.createSVGPoint(); p.x = ev.clientX; p.y = ev.clientY; p = p.matrixTransform(m.inverse());
-        move(p.x, p.y);
+        var q = svg.createSVGPoint(); q.x = ev.clientX; q.y = ev.clientY; q = q.matrixTransform(m.inverse());
+        move(q.x, q.y);
       });
       var stop = function () { drag = false; };
       g.addEventListener("pointerup", stop); g.addEventListener("pointercancel", stop);
-      g.addEventListener("dblclick", function () { var e = cur().slice(), d = own(); if (k === 1) { e[1] = d[1]; e[2] = d[2]; } else { e[k === 2 ? 3 : 0] = d[k === 2 ? 3 : 0]; } put(e); });
+      g.addEventListener("dblclick", function () { var e = cur().slice(), d = o.own(); if (k === 1) { e[1] = d[1]; e[2] = d[2]; } else { e[k === 2 ? 3 : 0] = d[k === 2 ? 3 : 0]; } put(e); });
       g.addEventListener("keydown", function (ev) {
         var e = cur().slice(), m = ev.shiftKey ? 4 : 1, t = k === 2 ? 3 : k, step = Math.pow(2, m / 4);
-        if (ev.key === "ArrowRight") { e[t] *= step; }
-        else if (ev.key === "ArrowLeft") { e[t] /= step; }
+        if (ev.key === "ArrowRight") { e[t] = o.lin ? e[t] + 0.02 * m : e[t] * step; }
+        else if (ev.key === "ArrowLeft") { e[t] = o.lin ? e[t] - 0.02 * m : e[t] / step; }
         else if (k === 1 && ev.key === "ArrowUp") { e[2] = Math.min(1, e[2] + 0.05 * m); }
         else if (k === 1 && ev.key === "ArrowDown") { e[2] = Math.max(0, e[2] - 0.05 * m); }
         else { return; }
@@ -13488,58 +13543,61 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       });
       handles.push(g);
     });
-    ownBtn.addEventListener("click", function () { var p = patchOf(f); if (p[role]) { delete p[role].env; } commitPatch(f, p); labChanged(); draw(); });
+    if (ownBtn) { ownBtn.addEventListener("click", function () { o.set(null); draw(); }); }
     box.appendChild(svg); draw();
     return box;
   }
+  function roleEnvOpts(role, f) {
+    return { key: role, aria: ROLE_NAME[role], ownLabel: "Instrument's", ownHint: "the instrument's own envelope (none of this voice's)", ownText: "the instrument's own",
+      get: function () { return envOf(f, role); },
+      own: function () { var p = patchOf(f); return envOwnOf(p[role] && p[role].synth, role); },
+      set: function (e) {
+        var p = patchOf(f); p[role] = p[role] || {};
+        if (e) { p[role].env = e; } else { delete p[role].env; }
+        commitPatch(f, p); labChanged();   /* labChanged: heard while a drag moves (final review 8b I2, as the EQ's) */
+      } };
+  }
+  function envBlock(role, f) { return envGraph(roleEnvOpts(role, f)); }
   function envSpark(btn, e, mine) {
     var d = envPoints(e).map(function (p, i) { return (i ? "L" : "M") + (2 + (p[0] - ENV_PX) / (ENV_W - 2 * ENV_PX) * 44).toFixed(1) + " " + (2 + (p[1] - ENV_PY) / (ENV_H - 2 * ENV_PY) * 12).toFixed(1); }).join("");
     btn.querySelector("path").setAttribute("d", d);
     btn.classList.toggle("on", !!mine);
   }
-  function labEqButton(row, role, f) {
+  /* Test 15: the EQ and envelope buttons in a row's readout cell, each opening its graph over the column; eqo / envo as eqGraph's
+     and envGraph's (envo null: the EQ alone) */
+  function shapeButtons(row, eqo, envo) {
     var cell = row.querySelector("i"); if (!cell) { return; }
-    var NS = "http://www.w3.org/2000/svg", S = labSession(), st = S.state(role);
-    var btn = document.createElement("button"); btn.type = "button"; btn.className = "ppeq-btn"; btn.id = "pp-" + role + "-eqbtn";
-    btn.setAttribute("aria-expanded", "false"); btn.setAttribute("aria-label", "EQ, " + ({ voice: "First voice", sect: "Second voice", v3: "Third voice" })[role]);
-    btn.title = "EQ";
-    var svg = document.createElementNS(NS, "svg"); svg.setAttribute("viewBox", "0 0 48 16"); svg.setAttribute("aria-hidden", "true");
-    svg.appendChild(document.createElementNS(NS, "path")); btn.appendChild(svg);
-    /* 8b: the envelope's button beside it, the two sharing the readout cell */
-    var ebtn = document.createElement("button"); ebtn.type = "button"; ebtn.className = "ppeq-btn"; ebtn.id = "pp-" + role + "-envbtn";
-    ebtn.setAttribute("aria-expanded", "false"); ebtn.setAttribute("aria-label", "Note envelope, " + ({ voice: "First voice", sect: "Second voice", v3: "Third voice" })[role]);
-    ebtn.title = "Note envelope";
-    var esvg = document.createElementNS(NS, "svg"); esvg.setAttribute("viewBox", "0 0 48 16"); esvg.setAttribute("aria-hidden", "true");
-    esvg.appendChild(document.createElementNS(NS, "path")); ebtn.appendChild(esvg);
-    var pair = document.createElement("span"); pair.className = "ppshape"; pair.appendChild(btn); pair.appendChild(ebtn);
+    var NS = "http://www.w3.org/2000/svg", key = eqo.key;
+    var mk = function (kind, title) {
+      var b = document.createElement("button"); b.type = "button"; b.className = "ppeq-btn"; b.id = "pp-" + key + "-" + kind + "btn";
+      b.setAttribute("aria-expanded", "false"); b.setAttribute("aria-label", title + ", " + eqo.aria); b.title = title;
+      var svg = document.createElementNS(NS, "svg"); svg.setAttribute("viewBox", "0 0 48 16"); svg.setAttribute("aria-hidden", "true");
+      svg.appendChild(document.createElementNS(NS, "path")); b.appendChild(svg);
+      return b;
+    };
+    var btn = mk("eq", "EQ"), ebtn = envo ? mk("env", "Note envelope") : null;
+    var pair = document.createElement("span"); pair.className = "ppshape"; pair.appendChild(btn); if (ebtn) { pair.appendChild(ebtn); }
     cell.textContent = ""; cell.appendChild(pair);
-    eqSpark(btn, st.eq || FsRoles.eqDefault());
-    envSpark(ebtn, envOf(f, role) || envOwnOf(patchOf(f)[role] && patchOf(f)[role].synth, role), !!envOf(f, role));
-    ebtn.addEventListener("click", function (e) {
-      e.preventDefault(); e.stopPropagation();
-      var open = document.getElementById("pp-env-pop"), mine = open && open.dataset.role === role;
-      eqClose();
-      if (mine) { return; }
-      var col = row.closest(".ppcol") || row.parentNode, pop = document.createElement("div");
-      pop.id = "pp-env-pop"; pop.className = "ppeq-pop"; pop.dataset.role = role;
-      pop.style.top = (row.offsetTop + row.offsetHeight) + "px";
-      pop.appendChild(envBlock(role, f));
-      col.appendChild(pop); ebtn.setAttribute("aria-expanded", "true");
-      var first = pop.querySelector(".eq-band"); if (first) { first.focus(); }
-    });
-    btn.addEventListener("click", function (e) {
-      e.preventDefault(); e.stopPropagation();
-      var open = document.getElementById("pp-eq-pop"), mine = open && open.dataset.role === role;
-      eqClose();
-      if (mine) { return; }
-      var col = row.closest(".ppcol") || row.parentNode, pop = document.createElement("div");
-      pop.id = "pp-eq-pop"; pop.className = "ppeq-pop"; pop.dataset.role = role;
-      pop.style.top = (row.offsetTop + row.offsetHeight) + "px";
-      pop.appendChild(labEqBlock(role, f));
-      col.appendChild(pop); btn.setAttribute("aria-expanded", "true");
-      var first = pop.querySelector(".eq-band"); if (first) { first.focus(); }
-    });
+    eqSpark(btn, eqo.get() || FsRoles.eqDefault());
+    if (ebtn) { envSpark(ebtn, envo.get() || envo.own(), !!envo.get()); }
+    var open = function (b, popId, block) {
+      return function (e) {
+        e.preventDefault(); e.stopPropagation();
+        var was = document.getElementById(popId), mine = was && was.dataset.role === key;
+        eqClose();
+        if (mine) { return; }
+        var col = row.closest(".ppcol") || row.parentNode, pop = document.createElement("div");
+        pop.id = popId; pop.className = "ppeq-pop"; pop.dataset.role = key;
+        pop.style.top = (row.offsetTop + row.offsetHeight) + "px";
+        pop.appendChild(block());
+        col.appendChild(pop); b.setAttribute("aria-expanded", "true");
+        var first = pop.querySelector(".eq-band"); if (first) { first.focus(); }
+      };
+    };
+    if (ebtn) { ebtn.addEventListener("click", open(ebtn, "pp-env-pop", function () { return envGraph(envo); })); }
+    btn.addEventListener("click", open(btn, "pp-eq-pop", function () { return eqGraph(eqo); }));
   }
+  function labEqButton(row, role, f) { shapeButtons(row, roleEqOpts(role, f), roleEnvOpts(role, f)); }
   /* the open graph (EQ or, 8b, envelope) and its button */
   function shapePop() { var p = document.getElementById("pp-eq-pop") || document.getElementById("pp-env-pop"); return p ? { p: p, b: document.getElementById("pp-" + p.dataset.role + (p.id === "pp-eq-pop" ? "-eqbtn" : "-envbtn")) } : null; }
   function eqClose() {

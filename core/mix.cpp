@@ -8,6 +8,7 @@
    below what each peak needs when that peak leaves the delay line - every value averaged covers
    the peak. Release is a one-pole rise (100 ms). Nothing allocates after fs_mix_prepare. */
 #include "fieldscape.h"
+#include "eq.hpp"
 #include "device.hpp"
 
 #include <cmath>
@@ -34,7 +35,7 @@ struct Lowpass {
    the dry signal by the amount; bits = max(2, round(16 - 13 x amount)). Both glide ~0.2 s. Off at 0. */
 struct Grit { Smoothed amount, bits; };
 
-struct Slot { fs_device *dev = nullptr; Smoothed gain; Lowpass lp; Grit grit; };
+struct Slot { fs_device *dev = nullptr; Smoothed gain; Lowpass lp; Grit grit; Eq5 eq; bool eq_on = false; };   /* eq: Test 15, a point's own */
 
 struct fs_mix {
     std::vector<Slot> slots;
@@ -42,7 +43,7 @@ struct fs_mix {
     float sr = 48000;
     float ceiling = 0.891251f;                 /* -1 dBFS, as the web app's Tone.Limiter(-1) */
     float release = 0;
-    std::vector<float> sum[FS_CHANNELS], out[FS_CHANNELS], delay[FS_CHANNELS];
+    std::vector<float> sum[FS_CHANNELS], out[FS_CHANNELS], delay[FS_CHANNELS], eqb[2];
     std::vector<float> need, avg;              /* rings: required gain (for the min), min values (for the average) */
     std::vector<long long> dq;                 /* monotonic deque of sample times, for the running min */
     int dq_head = 0, dq_n = 0;
@@ -69,6 +70,7 @@ void fs_mix_prepare(fs_mix *m, float sr, int max_block, int max_slots) {
         m->out[c].assign(max_block, 0.0f);
         m->delay[c].assign(m->L, 0.0f);
     }
+    for (auto &v : m->eqb) v.assign(max_block, 0.0f);
     m->need.assign(m->L + 1, 1.0f);
     m->avg.assign(m->L, 1.0f);
     m->dq.assign(m->L + 1, 0);
@@ -117,6 +119,14 @@ void fs_mix_set_ramp(fs_mix *m, int slot, float ms) {
     g.target = t;
 }
 
+/* Test 15: a slot's five-band EQ, [Hz, dB, Q] x5 (the route voices' format). First set: from flat, its history clear. */
+void fs_mix_set_eq(fs_mix *m, int slot, const float *bands) {
+    if (slot < 0 || slot >= (int)m->slots.size() || !bands) return;
+    Slot &s = m->slots[slot];
+    if (!s.eq_on) { s.eq.init(m->sr); s.eq_on = true; }
+    for (int k = 0; k < 5; k++) s.eq.set(k, bands[3 * k], bands[3 * k + 1], bands[3 * k + 2]);
+}
+
 float *fs_mix_out(fs_mix *m, int c) { return m->out[c].data(); }
 
 void fs_mix_process(fs_mix *m, int frames) {
@@ -125,6 +135,11 @@ void fs_mix_process(fs_mix *m, int frames) {
     for (Slot &s : m->slots) {
         fs_process(s.dev, frames);
         const float *a = fs_out(s.dev, 0), *b = fs_out(s.dev, 1);
+        if (s.eq_on) {   /* Test 15: flat, the input untouched */
+            std::copy(a, a + frames, m->eqb[0].begin()); std::copy(b, b + frames, m->eqb[1].begin());
+            s.eq.process(m->eqb[0].data(), m->eqb[1].data(), frames);
+            a = m->eqb[0].data(); b = m->eqb[1].data();
+        }
         Lowpass &f = s.lp;
         for (int i = 0; i < frames; i++) {
             float g = s.gain.next();

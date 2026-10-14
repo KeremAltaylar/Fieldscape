@@ -72,6 +72,7 @@ void fs_mix_set_ramp(fs_mix *m, int slot, float ms);                      /* slo
 void fs_mix_set_lowpass(fs_mix *m, int slot, float hz, float ramp_ms);
 /* A point voice's grit, 0-1 (the web's sound.grit): bit crusher into a tanh drive, blended in. */
 void fs_mix_set_grit(fs_mix *m, int slot, float amount);
+void fs_mix_set_eq(fs_mix *m, int slot, const float *bands);              /* Test 15: [Hz, dB, Q] x5 */
 void fs_mix_process(fs_mix *m, int frames);
 float *fs_mix_out(fs_mix *m, int channel);
 /* Deepest gain reduction since the last call (dB, 0 = none) and samples ever over the ceiling. */
@@ -220,6 +221,9 @@ int fs_bench_ring(fs_device *d, float *dst);
    changes on the bar, not on a GPS fix). */
 void fs_stretch_shape(fs_device *stretch, const char *shape_json);
 void fs_stretch_chord(fs_device *stretch, fs_device *piece);
+void fs_stretch_env(fs_device *stretch, const float *env);   /* Test 15: [a s, d s, s, r s] on each chord change; null: none */
+/* Test 15: a stretch point's properties.sound - its "eq" on the mix slot, its "env" in the stretch (the web engine and both apps) */
+void fs_point_sound(fs_mix *mix, int slot, fs_device *stretch, const char *sound_json);
 /* Sample harmony 5: a stretch's recording's pitch track (f0 and confidence every hop s); follow >= 0 sets how far a
    pitched recording follows the chord (0 = as recorded) */
 void fs_stretch_track(fs_device *stretch, const float *f0s, const float *confs, int n, double hop, float follow);

@@ -13,6 +13,7 @@
 #include "../device.hpp"
 #include "fft.hpp"
 #include "../json.hpp"
+#include "../eq.hpp"
 #include <cstdint>
 #include <cstring>
 
@@ -57,9 +58,13 @@ struct Controls {
     float follow; const float *tf, *tc; int tn; double thop;   /* 5: the recording's pitch track, and how far it follows the chord */
     float resonate; int body;                                  /* 7: the chord rung by the recording (0 String, 1 Tube, 2 Bell) */
     float low; int depth;                                      /* 8d: its partials one or two octaves down, in the bass, on the chord */
+    float sing, contour;                                       /* Test 15: pitch made from the recording - body (0) to shape (1) */
+    int snap;                                                  /* Test 15: bumped when the chord must be taken at once (its envelope at 0) */
 };
 
-enum Stage { S_WIN, S_TWID, S_GAIN, S_READ, S_FWD, S_MAG, S_ONSET, S_BINC, S_COMB, S_RCLR, S_RTAB, S_SH_IN, S_SH_T, S_SH_E, S_SH_R, S_SH_L, S_SH_NORM, S_PHASE, S_INV, S_OUT, S_FINISH };
+enum Stage { S_WIN, S_TWID, S_GAIN, S_READ, S_FWD, S_MAG, S_ONSET, S_BINC, S_COMB, S_RCLR, S_RTAB, S_SH_IN, S_SH_T, S_SH_E, S_SH_R,
+             S_SH_PK, S_SH_PP, S_SH_PS, S_SH_PM, S_SH_L, S_SH_NORM, S_PHASE, S_INV, S_OUT, S_FINISH };
+static const int SING_PEAKS = 8;      /* Test 15: the recording's strongest peaks a frame, moved onto the chord */
 static const int CENTS = 1200;        /* the tune comb: one octave at 1-cent steps */
 static const int BANDS = 32;
 
@@ -101,6 +106,14 @@ struct Voice {
     double drift_off = 0, drift_v = 0;
     int region0 = 0, region1 = 0;
     bool binc_ready = false;          /* each bin's pitch in cents, built as a stage (48 000 log2 at a 2 s window) */
+    /* Test 15 sing: the made spectrum (mono), this frame's peaks (cents, magnitude) and the chord tones they were given (the
+       last frame's too: a peak keeps its tone while it stays near, so it does not flicker between two) */
+    std::vector<float> sv; struct SPk { float cents, mag; }; SPk spk[SING_PEAKS]; int nspk = 0;
+    /* the partials the peaks become, sorted by their first bin, painted bin by bin (an active set slides along) so the work
+       spreads over the hop like every other stage (a peak a step took 5.5 ms in one block at a 2 s window) */
+    struct SPt { float cents, amp, wid; int lo, hi; }; SPt spt[SING_PEAKS * 24]; int nspt = 0, spt_next = 0; int act[SING_PEAKS * 24]; int nact = 0;
+    float pk_c[SING_PEAKS], pk_t[SING_PEAKS], npk_c[SING_PEAKS], npk_t[SING_PEAKS]; int pk_n = 0, npk_n = 0;
+    double es = 0, et[2] = { 0, 0 }; float sg[2] = { 0, 0 }; int snap_seen = 0;
 
     struct Step { int stage, pass, count, weight; };
     Step plan[160];
@@ -116,7 +129,7 @@ struct Voice {
         binc.assign(nmax / 2 + 1, 0.0f); bina.assign(nmax / 2 + 1, 0.0f); rtab.assign(nmax / 2 + 1, 0.0f);
         for (auto &p : pfx) p.assign(nmax / 2 + 2, 0.0);
         for (int k = 1; k <= 24; k++) log2k[k] = 1200.0 * std::log2((double)k);
-        table.assign(CENTS, 0.0f); lowb.assign(nmax / 2 + 1, 0.0f);
+        table.assign(CENTS, 0.0f); lowb.assign(nmax / 2 + 1, 0.0f); sv.assign(nmax / 2 + 1, 0.0f);
         for (int c = 0; c < 2; c++) {
             shp[c].assign(nmax / 2 + 1, 0.0f); sm[c].assign(nmax / 2 + 1, 0.0f);
             pre[c].assign(nmax / 2 + 1, 0.0f); tt[c].assign(nmax / 2 + 1, 0.0f);
@@ -138,7 +151,7 @@ struct Voice {
         cc = c; set_region(src ? src->len : 0);
         onset_on = false; have_mag = false; get_next = true; tau = 0; credit = 0;
         std::memset(bands, 0, sizeof bands);
-        have_sm = false; table_key = -1; rtab_key = -1; drift_off = 0; drift_v = 0; binc_ready = false;
+        have_sm = false; table_key = -1; rtab_key = -1; drift_off = 0; drift_v = 0; binc_ready = false; pk_n = 0;
         setup = true;
         begin_job(c);
     }
@@ -169,15 +182,20 @@ struct Voice {
             if (onset_on) add(S_ONSET, 0, 1, 64);
         }
         if (c.shaping) {
-            if ((c.tune > 0 || c.resonate > 0 || c.low > 0) && !binc_ready) add(S_BINC, 0, N / 2 + 1, 60);
-            if (c.resonate > 0 && res_key != rtab_key) { res_peaks(); add(S_RCLR, 0, N / 2 + 1, 1); add(S_RTAB, 0, (int)std::max(1LL, npaint), 10); }
+            if ((c.tune > 0 || c.resonate > 0 || c.low > 0 || c.sing > 0) && !binc_ready) add(S_BINC, 0, N / 2 + 1, 60);
+            if ((c.resonate > 0 || c.sing > 0) && res_key != rtab_key) { res_peaks(); add(S_RCLR, 0, N / 2 + 1, 1); add(S_RTAB, 0, (int)std::max(1LL, npaint), 10); }
             if (c.tune > 0 && comb_key != table_key) add(S_COMB, 0, CENTS, 40 + 25 * (int)std::lround(c.partials < 1 ? 1 : c.partials > 24 ? 24 : c.partials));
             /* split per bin like the FFT, so no callback carries a whole spectrum (measured: 7.8 ms in one) */
             const int M = N / 2 + 1, L = (int)std::lround(c.layers < 0 ? 0 : c.layers > 4 ? 4 : c.layers);
             /* weights per bin, both channels (measured against the FFT's 3 x radix per butterfly) */
             add(S_SH_IN, 0, M, 10);
             add(S_SH_T, 0, M, 16);
-            if (c.resonate > 0) { add(S_SH_E, 0, M, 4); add(S_SH_R, 0, M, 8); }
+            if (c.resonate > 0 || c.sing > 0) add(S_SH_E, 0, M, 4);
+            if (c.resonate > 0) add(S_SH_R, 0, M, 8);
+            if (c.sing > 0) {   /* Test 15: the body painted and the peaks found per bin, the peaks painted one by one, then the mix */
+                const int P = (int)std::lround(c.partials < 1 ? 1 : c.partials > 24 ? 24 : c.partials);   /* the overlap per bin grows with it */
+                add(S_SH_PK, 0, M, 12); add(S_SH_PP, 0, M, 6 + P / 2); add(S_SH_PS, 0, M, 2); add(S_SH_PM, 0, M, 4);
+            }
             add(S_SH_L, 0, M, 30 + 24 * L);
             add(S_SH_NORM, 0, M, 5);
         }
@@ -190,7 +208,8 @@ struct Voice {
     /* The chord's pitches move toward the target, in semitones, once a frame: `glide` is the time to
        arrive (within 1 %, so to the cent), not a time constant. A voice with none yet takes it at once. */
     void glide_chord() {
-        const double rate = 1.0 - std::exp(-5.0 * H / ((cc.glide > 0.05 ? cc.glide : 0.05) * sr));
+        double rate = 1.0 - std::exp(-5.0 * H / ((cc.glide > 0.05 ? cc.glide : 0.05) * sr));
+        if (cc.snap != snap_seen) { snap_seen = cc.snap; rate = 1; }   /* Test 15: under its envelope, a new chord is taken whole */
         for (int i = 0; i < 5; i++) {
             const double t = cc.chord[i];
             if (t < 0) { gnote[i] = -1; continue; }
@@ -267,6 +286,12 @@ struct Voice {
     }
     static constexpr double LOW_SHARE = 0.2;   /* at Low end 1, a fifth of the frame's energy */
 
+    /* Test 15: the frame's colour at bin j - its magnitude averaged over +-1/6 octave, both channels */
+    double colour(int j) const {
+        const int M = N / 2 + 1; if (j < 1) j = 1; if (j > M - 1) j = M - 1;
+        const int lo = std::max(0, (int)(j * 0.8909)), hi = std::min(M - 1, (int)(j * 1.1225) + 1);
+        return 0.5 * ((pfx[0][hi + 1] - pfx[0][lo]) + (pfx[1][hi + 1] - pfx[1][lo])) / (hi + 1 - lo);
+    }
     /* Result buffers after the forward or inverse passes. */
     float *res_r() { return fft.passes % 2 ? br.data() : ar.data(); }
     float *res_i() { return fft.passes % 2 ? bi.data() : ai.data(); }
@@ -465,6 +490,89 @@ struct Voice {
             }
             break;
         }
+        case S_SH_PK: {
+            /* Test 15 sing, body: every chord partial (Resonate's table) as loud as the recording is there now. And the peaks:
+               local maxima 60 Hz - 6 kHz standing 3x over their colour, the strongest SING_PEAKS kept */
+            const int M = N / 2 + 1; const double binhz = sr / N;
+            if (a == 0) { nspk = 0; et[0] = et[1] = 0; }
+            const int jlo = std::max(2, (int)(60 / binhz)), jhi = std::min(M - 2, (int)(6000 / binhz));
+            for (int j = a; j < b; j++) {
+                const double col = colour(j);
+                sv[j] = (float)((1 - cc.contour) * col * rtab[j]);
+                et[0] += (double)tt[0][j] * tt[0][j]; et[1] += (double)tt[1][j] * tt[1][j];
+                if (j < jlo || j > jhi) continue;
+                const float m = 0.5f * (tt[0][j] + tt[1][j]);
+                if (m < 0.5f * (tt[0][j - 1] + tt[1][j - 1]) || m < 0.5f * (tt[0][j + 1] + tt[1][j + 1]) || m < 3 * col || m <= 0) continue;
+                int at_ = nspk < SING_PEAKS ? nspk++ : -1;
+                if (at_ < 0) { int w = 0; for (int q = 1; q < SING_PEAKS; q++) if (spk[q].mag < spk[w].mag) w = q; if (spk[w].mag >= m) continue; at_ = w; }
+                const float y0 = 0.5f * (tt[0][j - 1] + tt[1][j - 1]), y2 = 0.5f * (tt[0][j + 1] + tt[1][j + 1]), den = y0 - 2 * m + y2;
+                const double jf = j + (std::fabs(den) > 1e-12f ? 0.5 * (y0 - y2) / den : 0);
+                spk[at_] = { (float)(1200 * std::log2(jf * binhz / 440)), m };
+            }
+            if (b == M) npk_n = 0;
+            break;
+        }
+        case S_SH_PP: {
+            /* Test 15 sing, shape: each peak onto the nearest chord tone in its own octave, with overtones weighted by the
+               recording's colour there, painted as Resonate paints (a bell in cents, never narrower than the bins) */
+            static float G[257]; static bool g_ready = false;
+            if (!g_ready) { for (int k = 0; k <= 256; k++) { const double d = k / 64.0; G[k] = (float)std::exp(-0.5 * d * d); } g_ready = true; }
+            if (a == 0) {   /* the partials: at most SING_PEAKS x 24 */
+                nspt = 0; spt_next = 0; nact = 0;
+                const double binhz = sr / N, w0 = 3.0 + std::pow(cc.focus, 1.5) * 80.0, top = std::fmin(12000.0, 0.45 * sr);
+                const int P = (int)std::lround(cc.partials < 1 ? 1 : cc.partials > 24 ? 24 : cc.partials);
+                for (int q = 0; q < nspk && cc.contour > 0; q++) {
+                    const double cp = spk[q].cents; double best = 1e9;
+                    for (int i = 0; i < 5; i++) {
+                        if (gnote[i] < 0) continue;
+                        double d = std::fmod((gnote[i] - 69) * 100.0 - cp, 1200.0); if (d > 600) d -= 1200; if (d < -600) d += 1200;
+                        if (std::fabs(d) < std::fabs(best)) best = d;
+                    }
+                    if (best > 1e8) continue;
+                    double ct = cp + best;
+                    for (int k = 0; k < pk_n; k++)   /* hysteresis (A-9): near where it was, it keeps its tone while that is still near */
+                        if (std::fabs(cp - pk_c[k]) < 80 && std::fabs(cp - pk_t[k]) < 450) { ct = pk_t[k]; break; }
+                    if (npk_n < SING_PEAKS) { npk_c[npk_n] = (float)cp; npk_t[npk_n] = (float)ct; npk_n++; }
+                    const double f1 = 440 * std::pow(2.0, ct / 1200), c0 = colour((int)(440 * std::pow(2.0, cp / 1200) / binhz + 0.5));
+                    for (int h = 1; h <= P; h++) {
+                        const double f = f1 * h; if (f >= top) break;
+                        const double jf = f / binhz;
+                        const double amp = spk[q].mag * cc.contour * std::fmin(1.0, c0 > 1e-12 ? colour((int)(jf + 0.5)) / c0 : 0) / std::sqrt((double)h);
+                        if (amp <= 0) continue;
+                        const double w = std::fmax(w0, 0.6 * 1200 * std::log2((jf + 1) / std::fmax(1.0, jf)));
+                        SPt x{ (float)(ct + log2k[h]), (float)amp, (float)w,
+                               std::max(1, (int)std::floor(jf * std::pow(2.0, -4 * w / 1200))), std::min(N / 2, (int)std::ceil(jf * std::pow(2.0, 4 * w / 1200))) };
+                        int at_ = nspt++;
+                        while (at_ > 0 && spt[at_ - 1].lo > x.lo) { spt[at_] = spt[at_ - 1]; at_--; }
+                        spt[at_] = x;
+                    }
+                }
+                std::memcpy(pk_c, npk_c, sizeof pk_c); std::memcpy(pk_t, npk_t, sizeof pk_t); pk_n = npk_n;
+            }
+            for (int j = a; j < b; j++) {
+                while (spt_next < nspt && spt[spt_next].lo <= j) act[nact++] = spt_next++;
+                float v = 0;
+                for (int k = 0; k < nact;) {
+                    const SPt &x = spt[act[k]];
+                    if (x.hi < j) { act[k] = act[--nact]; continue; }
+                    const double d = std::fabs(bina[j] - x.cents) / x.wid;
+                    if (d < 4) v += x.amp * G[(int)(d * 64)];
+                    k++;
+                }
+                sv[j] += v;
+            }
+            break;
+        }
+        case S_SH_PS:
+            if (a == 0) es = 0;
+            for (int j = a; j < b; j++) es += (double)sv[j] * sv[j];
+            if (b == N / 2 + 1) for (int ch = 0; ch < 2; ch++) sg[ch] = es > 1e-30 ? (float)std::sqrt(et[ch] / es) : 0.0f;
+            break;
+        case S_SH_PM:
+            /* Test 15 sing: the made spectrum at the frame's energy, in for the recording's own by sing (A-18: timbre, not level) */
+            if (es <= 1e-30) break;
+            for (int ch = 0; ch < 2; ch++) for (int j = a; j < b; j++) tt[ch][j] = tt[ch][j] * (1 - cc.sing) + sv[j] * sg[ch] * cc.sing;
+            break;
         case S_SH_L: {
             /* layers (copies at the chord's intervals), then tune (the comb), then blur (smear in time) */
             const int M = N / 2 + 1;
@@ -646,10 +754,19 @@ static const fs_param STRETCH_PARAMS[] = {
     { "body", "Body", "", 0.0f, 2.0f, 0.0f },           /* 7: 0 String, 1 Tube, 2 Bell */
     { "low", "Low end", "", 0.0f, 1.0f, 0.0f },         /* 8d: its partials in the bass, on the chord */
     { "depth", "Low end depth", "", 0.0f, 1.0f, 0.0f },   /* 8d: 0 an octave under the chord, 1 two (the page's select index) */
+    { "sing", "Sing", "", 0.0f, 1.0f, 0.0f },            /* Test 15: pitch made from the recording */
+    { "contour", "Body to shape", "", 0.0f, 1.0f, 0.5f },   /* Test 15: 0 the chord in its colour, 1 its own peaks moved onto the chord */
+    /* Test 15: the pitched part's envelope on each chord change (set by the host from sound.env; off: the chord glides) */
+    { "env_a", "Envelope attack", "s", 0.002f, 8.0f, 0.5f },
+    { "env_d", "Envelope decay", "s", 0.005f, 8.0f, 1.0f },
+    { "env_s", "Envelope sustain", "", 0.0f, 1.0f, 1.0f },
+    { "env_r", "Envelope release", "s", 0.01f, 12.0f, 1.0f },
+    { "env_on", "Envelope on", "", 0.0f, 1.0f, 0.0f },
 };
 enum { P_STRETCH, P_WINDOW, P_FREEZE, P_ONSET, P_WIDTH, P_SHAPE, P_SEED,
        P_TRANSPOSE, P_TUNE, P_FOCUS, P_PARTIALS, P_LAYERS, P_HARMONY, P_GLIDE, P_DRIFT, P_BLUR, P_START, P_END,
-       P_CHORD0, P_ROOT = P_CHORD0 + 5, P_FOLLOW, P_RESONATE, P_BODY, P_LOW, P_DEPTH, P_COUNT };
+       P_CHORD0, P_ROOT = P_CHORD0 + 5, P_FOLLOW, P_RESONATE, P_BODY, P_LOW, P_DEPTH, P_SING, P_CONTOUR,
+       P_ENV_A, P_ENV_D, P_ENV_S, P_ENV_R, P_ENV_ON, P_COUNT };
 
 struct Stretch : Device {
     float value[P_COUNT];
@@ -679,22 +796,52 @@ struct Stretch : Device {
 
     /* the last chord the host gave; off every route the tune keeps it (Dm9 before any) */
     float last_chord[5] = { 62, 65, 69, 72, 76 }, last_root = 62;
+    /* Test 15: the pitched part's envelope. A new chord releases the one held (it keeps sounding, fading, under the old
+       notes), then is taken whole and attacks. Sequential: one voice holds one chord. */
+    float held[5] = { 62, 65, 69, 72, 76 }, held_root = 62; bool held_any = false;
+    int env_phase = 0; double env_t = 0, env_from = 0, env_lvl = 1; int snap = 0;   /* phase 0 held, 1 release, 2 attack-decay */
+    double env_level_now() const {
+        const double A = value[P_ENV_A], D = value[P_ENV_D], S = value[P_ENV_S], R = value[P_ENV_R], k = 4.6;
+        if (env_phase == 1) { const double x = env_t / R; return x >= 1 ? 0 : env_from * (std::exp(-k * x) - std::exp(-k)) / (1 - std::exp(-k)); }
+        if (env_phase == 2) { if (env_t < A) return env_from + (1 - env_from) * env_t / A; return S + (1 - S) * std::exp(-k * (env_t - A) / D); }
+        return env_lvl;
+    }
+    void env_step(int n) {
+        bool any = false, diff = false;
+        for (int i = 0; i < 5; i++) { any |= value[P_CHORD0 + i] >= 0; diff |= value[P_CHORD0 + i] != held[i]; }
+        diff |= any && (value[P_ROOT] >= 0 ? value[P_ROOT] : value[P_CHORD0]) != held_root;
+        const bool on = value[P_ENV_ON] >= 0.5f;
+        auto take = [&]() { for (int i = 0; i < 5; i++) held[i] = value[P_CHORD0 + i]; held_root = value[P_ROOT] >= 0 ? value[P_ROOT] : value[P_CHORD0]; held_any = true; };
+        if (!on) { if (any && diff) take(); env_phase = 0; env_lvl = 1; return; }
+        if (any && !held_any) { take(); snap++; env_phase = 2; env_t = 0; env_from = 0; }   /* the first chord blooms */
+        else if (any && diff && env_phase != 1) { env_from = env_level_now(); env_phase = 1; env_t = 0; }
+        env_t += n / sr;
+        if (env_phase == 1 && env_t >= value[P_ENV_R]) {
+            if (any && diff) { take(); snap++; }
+            env_phase = 2; env_t = 0; env_from = 0;
+        }
+        if (env_phase == 2) env_lvl = env_level_now();
+        else if (env_phase == 1) env_lvl = env_level_now();
+    }
     Controls controls() {
         Controls c{};
         c.log_s = value[P_STRETCH] * std::log(1024.0); c.freeze = value[P_FREEZE] >= 0.5f; c.onset = value[P_ONSET]; c.width = value[P_WIDTH];
         c.transpose = value[P_TRANSPOSE]; c.tune = value[P_TUNE]; c.focus = value[P_FOCUS]; c.partials = value[P_PARTIALS];
         c.layers = value[P_LAYERS]; c.harmony = value[P_HARMONY]; c.glide = value[P_GLIDE]; c.drift = value[P_DRIFT];
         c.blur = value[P_BLUR]; c.start = value[P_START]; c.end = value[P_END];
-        bool any = false;
-        for (int i = 0; i < 5; i++) any |= value[P_CHORD0 + i] >= 0;
-        if (any) { for (int i = 0; i < 5; i++) last_chord[i] = value[P_CHORD0 + i]; last_root = value[P_ROOT] >= 0 ? value[P_ROOT] : value[P_CHORD0]; }
+        bool any = held_any;   /* Test 15: the chord the envelope holds (with it off, the host's at once) */
+        if (any) { for (int i = 0; i < 5; i++) last_chord[i] = held[i]; last_root = held_root; }
         for (int i = 0; i < 5; i++) c.chord[i] = last_chord[i];
         c.root = last_root;
         if (any) chord_seen = true;
         c.follow = chord_seen ? value[P_FOLLOW] : 0; c.tn = (int)trk_f.size();   /* before any chord, no follow (5 I2) */ c.tf = c.tn ? trk_f.data() : nullptr; c.tc = c.tn ? trk_c.data() : nullptr; c.thop = trk_hop;
         c.resonate = value[P_RESONATE]; c.body = (int)std::lround(value[P_BODY]);
         c.low = value[P_LOW]; c.depth = value[P_DEPTH] >= 0.5f ? 2 : 1;
-        c.shaping = std::fabs(c.transpose) > 1e-4 || c.tune > 0 || (c.layers >= 0.5f && c.harmony > 0) || c.blur > 0 || (c.follow > 0 && c.tn > 0) || c.resonate > 0 || c.low > 0;
+        c.sing = value[P_SING]; c.contour = value[P_CONTOUR];
+        c.shaping = std::fabs(c.transpose) > 1e-4 || c.tune > 0 || (c.layers >= 0.5f && c.harmony > 0) || c.blur > 0 || (c.follow > 0 && c.tn > 0) || c.resonate > 0 || c.low > 0 || c.sing > 0;
+        /* Test 15: the pitched part under its envelope (the stretch beneath it keeps going); the shaping stays on, so its path does not switch */
+        if (value[P_ENV_ON] >= 0.5f) { const float e = (float)env_lvl; c.tune *= e; c.resonate *= e; c.low *= e; c.sing *= e; }
+        c.snap = snap;
         return c;
     }
     int target_n() {
@@ -741,6 +888,7 @@ struct Stretch : Device {
     }
 
     void process(int n) override {
+        env_step(n);
         const Controls c = controls();
         Voice &a = v[active], &b = v[active ^ 1];
         const int want_n = target_n(), want_shape = value[P_SHAPE] >= 0.5f;
@@ -772,7 +920,7 @@ Device *make_stretch() { return new Stretch(); }
 /* The host's side of the shaping, shared by the web engine and both apps' walks, so every platform
    reads a point the same way. The shaping's own names (properties.sound.shape); anything missing
    takes the parameter's default, which is dry (A-8). */
-static const char *const SHAPE_KEYS[] = { "transpose", "tune", "focus", "partials", "layers", "harmony", "glide", "drift", "blur", "start", "end", "width", "follow", "resonate", "body", "low", "depth" };
+static const char *const SHAPE_KEYS[] = { "transpose", "tune", "focus", "partials", "layers", "harmony", "glide", "drift", "blur", "start", "end", "width", "follow", "resonate", "body", "low", "depth", "sing", "contour" };
 static int stretch_param(const char *id) { for (int i = 0; i < P_COUNT; i++) if (!std::strcmp(STRETCH_PARAMS[i].id, id)) return i; return -1; }
 
 extern "C" void fs_stretch_shape(fs_device *d, const char *shape_json) {
@@ -781,6 +929,23 @@ extern "C" void fs_stretch_shape(fs_device *d, const char *shape_json) {
         const int i = stretch_param(k);
         fs_set_param(d, i, (float)sh.n(k, STRETCH_PARAMS[i].def));
     }
+}
+/* Test 15: the pitched part's envelope on each chord change - [attack s, decay s, sustain, release s], or none (null) */
+extern "C" void fs_stretch_env(fs_device *d, const float *env) {
+    fs_set_param(d, P_ENV_ON, env ? 1.0f : 0.0f);
+    if (env) for (int k = 0; k < 4; k++) fs_set_param(d, P_ENV_A + k, env[k]);
+}
+/* Test 15: a stretch point's own sound settings (properties.sound) - its EQ on its mix slot (absent: flat; the slot's last
+   point's never carries over) and its envelope on each chord change (absent: none). Shared by the web engine and both apps'
+   walks, as fs_stretch_shape is. */
+extern "C" void fs_point_sound(fs_mix *mix, int slot, fs_device *stretch, const char *sound_json) {
+    const Json q = Json::parse(sound_json ? sound_json : "{}");
+    double eq[5][3], env[4]; bool on = false; eq_env_of(&q, eq, env, on);
+    float b[15], e[4];
+    for (int k = 0; k < 15; k++) b[k] = (float)eq[k / 3][k % 3];
+    for (int k = 0; k < 4; k++) e[k] = (float)env[k];
+    if (mix) fs_mix_set_eq(mix, slot, b);
+    fs_stretch_env(stretch, on ? e : nullptr);
 }
 /* 5: a stretch's recording's pitch track (f0 and confidence every hop s); follow >= 0 also sets how far it follows */
 extern "C" void fs_stretch_track(fs_device *d, const float *f0s, const float *confs, int n, double hop, float follow) {

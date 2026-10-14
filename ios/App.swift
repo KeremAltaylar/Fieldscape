@@ -286,6 +286,7 @@ final class Core: ObservableObject {
     func grit(slot: Int, _ a: Float) { fs_mix_set_grit(mix, Int32(slot), a) }
     func param(slot: Int, _ i: Int, _ v: Float) { fs_set_param(voices[slot], Int32(i), v) }
     func shape(slot: Int, _ json: String) { fs_stretch_shape(voices[slot], json) }
+    func pointSound(slot: Int, _ json: String) { fs_point_sound(mix, Int32(slot), voices[slot], json) }   /* Test 15: eq, env */
     /* 6b: a stretch point's pitch track (its JSON: track [[f0, confidence]...], hop_s) - follow as its shape says */
     /* through the handoff (final review C1); a recording judged unpitched (f0 0) has no track to follow (final review I1,
        as the website's engine and the rhythm points) */

@@ -35,7 +35,8 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
                      val stretch: Float, val windowSamples: Double, val grit: Float, val freeze: Float, val onset: Float,
                      val shape: String,   // properties.sound.shape as JSON, "" none (fs_stretch_shape)
                      val brightest: Double, val path: String?, val sounds: Boolean,
-                     val track: String? = null)   // 6b: properties.sound.track_path, the recording's pitch track (follow)
+                     val track: String? = null,   // 6b: properties.sound.track_path, the recording's pitch track (follow)
+                     val sound: String = "{}")    // Test 15: properties.sound as JSON - its eq and env (fs_point_sound)
     sealed interface Phase { data object Playing : Phase; data object Decoding : Phase; data class Downloading(val fraction: Double, val bytes: Long) : Phase }
     data class Row(val id: String, val name: String, val level: Double, val dist: Double, val phase: Phase)
     sealed interface Mode { data object Waiting : Mode; data object Denied : Mode; data class Live(val accuracy: Double) : Mode; data class Holding(val accuracy: Double) : Mode
@@ -172,7 +173,8 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
                   brightest = (if (centroid.isNaN()) 2000.0 else centroid).times(2.2).coerceIn(600.0, 14000.0),
                   path = p.optString("storage_path").ifEmpty { null },
                   sounds = p.optBoolean("has_audio") && mode != "hits" && mode != "grains",
-                  track = q.optString("track_path").ifEmpty { null })
+                  track = q.optString("track_path").ifEmpty { null },
+                  sound = q.toString())
         }
         Core.pieceStart(features.toString())
         /* every point's card, and the routes with their patches */
@@ -248,7 +250,7 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
         val n = points.size
         val dist = DoubleArray(n) { Core.geoDistance(lon, lat, points[it].lon, points[it].lat) }
         val radius = DoubleArray(n) { points[it].radius }
-        val eligible = BooleanArray(n) { points[it].sounds }
+        val eligible = BooleanArray(n) { points[it].sounds && points[it].gain > 0 }   // Test 15: a point at level 0 takes no voice
         val voices = minOf(Core.SLOTS, Core.pieceBedVoices())             // the playing patch's bed: on, and how many
         /* Listen: a stretch point here, alone; a rhythm or grains point is soloed inside the piece */
         val soloAny = solo?.let { id -> points.indexOfFirst { it.id == id }.takeIf { it >= 0 } }
@@ -298,6 +300,7 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
         Core.grit(slot, p.grit)
         Core.param(slot, 2, p.freeze); Core.param(slot, 3, p.onset)            // px.freeze, px.onset
         Core.shape(slot, p.shape)
+        Core.pointSound(slot, p.sound)
         val path = p.path ?: return
         Thread {
             try {

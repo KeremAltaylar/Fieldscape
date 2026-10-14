@@ -16,6 +16,7 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
         let brightest: Double          /* the low-pass ceiling: 2.2 x the recording's centroid, 600-14000 Hz */
         let path: String?, sounds: Bool
         var track: String? = nil       /* 6b: properties.sound.track_path, the recording's pitch track (follow) */
+        var sound: String = "{}"       /* Test 15: properties.sound as JSON - its eq and env (fs_point_sound) */
     }
     enum Phase: Equatable { case playing, downloading(fraction: Double, bytes: Int64), decoding }
     struct Row: Identifiable, Equatable { let id: String, name: String; let level: Double, dist: Double; let phase: Phase }
@@ -179,7 +180,8 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
                          brightest: max(600, min(14000, (((p["audio"] as? [String: Any])?["centroid_hz"] as? Double) ?? 2000) * 2.2)),
                          path: p["storage_path"] as? String,
                          sounds: (p["has_audio"] as? Bool ?? false) && mode != "hits" && mode != "grains",
-                         track: q["track_path"] as? String)
+                         track: q["track_path"] as? String,
+                         sound: (try? JSONSerialization.data(withJSONObject: q)).map { String(decoding: $0, as: UTF8.self) } ?? "{}")
         }
         sound.start(features: (features["features"] as? [[String: Any]]) ?? [])
 
@@ -276,7 +278,7 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
         let n = points.count
         var dist = points.map { fs_geo_distance(lon, lat, $0.lon, $0.lat) }
         var radius = points.map { $0.radius }
-        var eligible = points.map { UInt8($0.sounds ? 1 : 0) }
+        var eligible = points.map { UInt8($0.sounds && $0.gain > 0 ? 1 : 0) }   /* Test 15: a point at level 0 takes no voice */
         var picked = [Int32](repeating: 0, count: max(n, 1))
         /* the playing patch's bed: bed.on and how many voices (BED.maxVoices) */
         let voices = min(Core.slots - (core.test ? 1 : 0), sound.bedVoices)
@@ -371,6 +373,7 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
         core.grit(slot: slot, p.grit)
         core.param(slot: slot, 2, p.freeze); core.param(slot: slot, 3, p.onset)   /* px.freeze, px.onset */
         core.shape(slot: slot, p.shape)
+        core.pointSound(slot: slot, p.sound)
         guard let path = p.path else { return }
         let sr = core.sampleRate
         Task { @MainActor [weak self] in

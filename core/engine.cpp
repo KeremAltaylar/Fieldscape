@@ -44,6 +44,7 @@ struct Point {                        /* a soundscape recording: a stretch voice
     float stretch, window_s, grit, freeze, onset;
     bool sounds;
     std::string shape;                /* properties.sound.shape as JSON (fs_stretch_shape) */
+    std::string sound = "{}";         /* Test 15: properties.sound as JSON, for its eq and env (fs_point_sound) */
 };
 struct Spot { std::string icon; double lon, lat, radius, zoneR, centroid, onsets; bool audio, plain; fs_zone_state zone{}; std::string id; };
 struct Beat { std::string id, name; double lon, lat, radius, gain; bool grains; std::string json; std::vector<std::string> paths; std::vector<char> have; };
@@ -85,6 +86,9 @@ static void free_slot_source(Slot &s) {
     fs_set_source_i16(s.dev, 0, 0, nullptr);
     for (auto &p : s.planar) { std::free(p); p = nullptr; }
 }
+
+/* Test 15: a stretch point's EQ (on its mix slot) and its chord envelope (in the stretch) */
+static void point_shape(fs_engine *e, int s, const Point &p) { fs_point_sound(e->mix, s, e->slot[s].dev, p.sound.c_str()); }
 
 extern "C" {
 
@@ -185,6 +189,7 @@ static void upsert_one(fs_engine *e, const Json *f) {
         (float)(q ? q->n("grit", 0) : 0), (float)(px && px->flag("freeze", false) ? 1 : 0), (float)(px ? px->n("onset", 0) : 0),
         audio && mode != "hits" && mode != "grains" };
     { const Json *sh = q ? q->get("shape") : nullptr; if (sh) P.shape = dump(sh); }   /* Fieldscape's own shaping */
+    if (q) P.sound = dump(q);
     Spot S{ p->s("icon", ""), lon, lat, radius, q ? q->n("zoneR", 25) : 25, a ? a->n("centroid_hz", 0) : 0,
             a ? a->n("onset_rate", -1) : -1, audio, !audio && !has_hits && mode != "hits" && mode != "grains" };
     S.id = id;
@@ -200,6 +205,7 @@ static void upsert_one(fs_engine *e, const Json *f) {
             fs_set_param(e->slot[s].dev, 2, P.freeze); fs_set_param(e->slot[s].dev, 3, P.onset);
             fs_mix_set_grit(e->mix, s, P.grit);
             fs_stretch_shape(e->slot[s].dev, P.shape.c_str());
+            point_shape(e, s, P);
         }
     }
     int si = find_id(e->spots, id);
@@ -312,7 +318,8 @@ const char *fs_engine_step(fs_engine *e, double lon, double lat) {
     std::vector<double> dp(np);
     for (size_t i = 0; i < np; i++) {
         d[i] = fs_geo_distance(lon, lat, e->points[i].lon, e->points[i].lat); rad[i] = e->points[i].radius;
-        el[i] = e->points[i].sounds && (!soloing || (int)i == sp); dp[i] = (int)i == sp ? 0 : d[i];
+        /* Test 15: a point at level 0 is not picked - silent for certain, its FFTs not run, its bed voice free for one that sounds */
+        el[i] = e->points[i].sounds && e->points[i].gain > 0 && (!soloing || (int)i == sp); dp[i] = (int)i == sp ? 0 : d[i];
     }
     int voices = std::min(SLOTS, fs_piece_bed_voices(e->piece));
     int k = fs_pick_voices(dp.data(), rad.data(), el.data(), (int)np, voices, 0, picked.data());
@@ -345,6 +352,7 @@ const char *fs_engine_step(fs_engine *e, double lon, double lat) {
             fs_set_param(sl.dev, 2, p.freeze); fs_set_param(sl.dev, 3, p.onset);
             fs_mix_set_grit(e->mix, s, p.grit);
             fs_stretch_shape(sl.dev, p.shape.c_str());
+            point_shape(e, s, p);
             fs_stretch_chord(sl.dev, e->piece);
             /* no path yet: a setter's unpublished point, its recording on this device (the page finds it by id) */
             if (p.sounds) e->loads += "S " + std::to_string(s) + " " + p.id + " " + p.path + "\n";

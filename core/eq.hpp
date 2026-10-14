@@ -3,6 +3,8 @@
    frequency, gain and Q glide toward what was set (~30 ms, coefficients per block), so a drag never clicks. A band at
    0 dB that is not gliding passes its input through untouched - a flat EQ is the input, bit for bit - while keeping its
    history, so it comes in without a step. */
+#include "json.hpp"
+#include <algorithm>
 #include <cmath>
 
 struct Eq5 {
@@ -62,3 +64,23 @@ struct Eq5 {
         }
     }
 };
+
+/* Test 15: a point's "eq" ([[Hz, dB, Q] x5], absent: flat) and "env" ([attack s, decay s, sustain, release s], absent: none) -
+   the route voices' formats (6, 8b), read the same way */
+inline void eq_env_of(const Json *j, double eq[5][3], double env[4], bool &env_on) {
+    static const double F[5] = { 80, 250, 1000, 4000, 10000 }, Q[5] = { 0.7, 1, 1, 1, 0.7 };
+    const Json *e = j ? j->get("eq") : nullptr;
+    for (int k = 0; k < 5; k++) {
+        const Json *b = e ? e->at(k) : nullptr; const Json *f = b ? b->at(0) : nullptr, *g = b ? b->at(1) : nullptr, *q = b ? b->at(2) : nullptr;
+        eq[k][0] = f && f->kind == Json::NUM ? f->num : F[k]; eq[k][1] = g && g->kind == Json::NUM ? g->num : 0; eq[k][2] = q && q->kind == Json::NUM ? q->num : Q[k];
+    }
+    const Json *ev = j ? j->get("env") : nullptr; env_on = false;
+    if (ev && ev->kind == Json::ARR && ev->size() >= 4) {
+        bool num = true; for (int k = 0; k < 4; k++) num = num && ev->at(k)->kind == Json::NUM && std::isfinite(ev->at(k)->num);
+        if (num) {
+            auto cl = [](double x, double lo, double hi) { return std::max(lo, std::min(hi, x)); };
+            env[0] = cl(ev->at(0)->num, 0.002, 8); env[1] = cl(ev->at(1)->num, 0.005, 8); env[2] = cl(ev->at(2)->num, 0, 1); env[3] = cl(ev->at(3)->num, 0.01, 12);
+            env_on = true;
+        }
+    }
+}

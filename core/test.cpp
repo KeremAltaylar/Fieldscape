@@ -2876,6 +2876,187 @@ int main() {
         std::printf("6 route eq: %+.1f dB with a -12 dB low shelf at 16 kHz on every role (energy %.3g); flat EQ identical %d\n", drop, hi(none), (int)(flat == none));
         assert(drop < -11 && flat == none);
     }
+    {   /* Test 15 (2026-10-14): Kerem's list after Test 14 - docs/superpowers/specs/2026-10-14-test15-design.md */
+        /* the share of a signal's energy (55 Hz - 8 kHz) within 25 cents of the given pitch classes (MIDI note numbers mod 12) */
+        auto share = [](const std::vector<float> &x, std::initializer_list<int> pcs, size_t at, int N = 65536) {
+            FFT fft; fft.reserve(N); fft.plan(N); fft.twiddles(0, N);
+            std::vector<float> b(4 * (size_t)N); float *ar = b.data(), *ai = ar + N, *br = ai + N, *bi = br + N;
+            for (int i = 0; i < N; i++) { ar[i] = (float)(x[at + i] * (0.5 - 0.5 * std::cos(2 * 3.141592653589793 * i / N))); ai[i] = 0; }
+            for (int p = 0; p < fft.passes; p++) { if (p % 2 == 0) fft.pass(p, ar, ai, br, bi, 0, fft.butterflies(p)); else fft.pass(p, br, bi, ar, ai, 0, fft.butterflies(p)); }
+            const float *re = fft.passes % 2 ? br : ar, *im = fft.passes % 2 ? bi : ai; double in = 0, all = 0;
+            for (int k = (int)(55.0 * N / 48000); k < (int)(8000.0 * N / 48000); k++) {
+                const double e = (double)re[k] * re[k] + (double)im[k] * im[k], c = 1200 * std::log2(k * 48000.0 / N / 440) + 6900;
+                all += e;
+                for (int pc : pcs) { double d = std::fabs(std::fmod(c - pc * 100 + 1200 * 64, 1200.0)); if (d > 600) d = 1200 - d; if (d < 25) { in += e; break; } }
+            }
+            return all > 0 ? in / all : 0; };
+        auto rms_db = [](const std::vector<float> &x, size_t a, size_t b) { double e = 0; for (size_t i = a; i < b; i++) e += (double)x[i] * x[i]; return 10 * std::log10(e / (b - a) + 1e-30); };
+        /* noise rolled off above ~4 kHz, as a field recording is; with an off-chord whistle at 1000 Hz in it if asked */
+        auto field = [](double secs, double whistle) {
+            std::vector<float> r((size_t)(secs * 48000)); uint32_t sd = 9; double lp = 0;
+            for (size_t i = 0; i < r.size(); i++) { sd = sd * 1664525u + 1013904223u; lp += 0.4 * ((((int)(sd >> 8) - 8388608) / 8388608.0) - lp);
+                r[i] = (float)(0.25 * lp + whistle * std::sin(2 * 3.141592653589793 * 1000 * i / 48000.0)); }
+            return r; };
+        /* a stretch device on D minor 7 (D F A C), a 0.34 s window, x4 */
+        auto stretch_run = [&](const std::vector<float> &rec, const char *shape, double secs, const float *env = nullptr,
+                               std::vector<std::pair<double, std::vector<float>>> chords = {}) {
+            fs_device *d = fs_create("stretch"); fs_prepare(d, 48000, 128);
+            const float *pp[1] = { rec.data() }; fs_set_source(d, 1, (int)rec.size(), pp);
+            fs_set_param(d, 0, 0.2f); fs_set_param(d, 1, 0.34f);
+            fs_stretch_shape(d, shape); fs_stretch_env(d, env);
+            const float dm7[6] = { 62, 65, 69, 72, -1, 62 }; for (int k = 0; k < 6; k++) fs_set_param(d, 18 + k, dm7[k]);
+            std::vector<float> o; size_t next = 0;
+            for (int b2 = 0; b2 < (int)(secs * 48000 / 128); b2++) {
+                if (next < chords.size() && b2 * 128.0 / 48000 >= chords[next].first) { for (int k = 0; k < 6; k++) fs_set_param(d, 18 + k, chords[next].second[k]); next++; }
+                fs_process(d, 128); const float *l = fs_out(d, 0); o.insert(o.end(), l, l + 128); }
+            fs_destroy(d); return o; };
+        const auto rec = field(20, 0), recw = field(20, 0.12);
+        {   /* 3: sing - pitch made from an unpitched recording; body (contour 0) and shape (contour 1); level kept (A-18) */
+            const auto dry = stretch_run(rec, "{}", 12), body = stretch_run(rec, "{\"sing\":1,\"contour\":0}", 12), half = stretch_run(rec, "{\"sing\":0.5,\"contour\":0}", 12);
+            const size_t at = (size_t)(8 * 48000);
+            const double s0 = share(dry, { 2, 5, 9, 0 }, at), s1 = share(body, { 2, 5, 9, 0 }, at), sh = share(half, { 2, 5, 9, 0 }, at);
+            const double lv = rms_db(body, at, at + 96000) - rms_db(dry, at, at + 96000);
+            const auto wd = stretch_run(recw, "{}", 12), ws = stretch_run(recw, "{\"sing\":1,\"contour\":1}", 12);
+            std::vector<float> a(wd.begin() + at, wd.begin() + at + 65536), c(ws.begin() + at, ws.begin() + at + 65536);
+            const double d1000 = peak_amp(a, 48000, 1000), d1047 = peak_amp(a, 48000, 1046.5), s1000 = peak_amp(c, 48000, 1000), s1047 = peak_amp(c, 48000, 1046.5);
+            const double ls = rms_db(ws, at, at + 96000) - rms_db(wd, at, at + 96000);
+            std::printf("T15 sing: on D F A C %.0f%% dry, %.0f%% at sing 0.5, %.0f%% at sing 1 (body), level %+.2f dB; shape: a 1000 Hz whistle -> "
+                        "C 1046.5 Hz %.1fx stronger than 1000 Hz (dry %.2fx), level %+.2f dB\n", 100 * s0, 100 * sh, 100 * s1, lv, s1047 / s1000, d1047 / d1000, ls);
+            assert(s1 > 2.5 * s0 && s1 > 0.6 && sh > s0 && sh < s1 && std::fabs(lv) < 1.5);
+            assert(s1047 > 4 * s1000 && d1047 < d1000 && std::fabs(ls) < 1.5);
+            /* 0 is the stretch as it was, bit for bit */
+            assert(stretch_run(rec, "{\"sing\":0,\"contour\":1}", 3) == stretch_run(rec, "{}", 3));
+        }
+        {   /* 2: the stretch's envelope on each chord change - sustain 0 leaves the plain stretch, 1 the tuned; a new chord: the old
+               one releases (still there 0.3 s on), then the new one blooms */
+            const float s0[4] = { 0.2f, 0.4f, 0.0f, 0.5f }, s1[4] = { 0.2f, 0.4f, 1.0f, 1.5f };
+            const size_t at = (size_t)(8 * 48000);
+            const double plain = share(stretch_run(rec, "{}", 12), { 2, 5, 9, 0 }, at), tuned = share(stretch_run(rec, "{\"tune\":1}", 12), { 2, 5, 9, 0 }, at);
+            const double e0 = share(stretch_run(rec, "{\"tune\":1}", 12, s0), { 2, 5, 9, 0 }, at), e1 = share(stretch_run(rec, "{\"tune\":1}", 12, s1), { 2, 5, 9, 0 }, at);
+            /* D minor 7 until 6 s, then E major (E G# B); release 1.5 s */
+            const auto ch = stretch_run(rec, "{\"tune\":1,\"glide\":0.5}", 12, s1, { { 6.0, { 64, 68, 71, -1, -1, 64 } } });
+            const size_t t1 = (size_t)(6.2 * 48000), t2 = (size_t)(10 * 48000);
+            const double old1 = share(ch, { 2, 5, 9, 0 }, t1, 16384), new1 = share(ch, { 4, 8, 11 }, t1, 16384), old2 = share(ch, { 2, 5, 9, 0 }, t2, 16384), new2 = share(ch, { 4, 8, 11 }, t2, 16384);
+            std::printf("T15 stretch env: on D F A C plain %.0f%%, tuned %.0f%%, sustain 0 %.0f%%, sustain 1 %.0f%%; to E major: 0.2 s after D-F-A-C %.0f%% / E-G#-B %.0f%%, 4 s after %.0f%% / %.0f%%\n",
+                        100 * plain, 100 * tuned, 100 * e0, 100 * e1, 100 * old1, 100 * new1, 100 * old2, 100 * new2);
+            assert(e0 < plain * 1.3 && e1 > tuned * 0.85 && old1 > new1 && new2 > 2 * old2);
+            assert(stretch_run(rec, "{\"tune\":1}", 3, nullptr) == stretch_run(rec, "{\"tune\":1}", 3));   /* none: as before */
+        }
+        {   /* 2 + 5 on a rhythm point: the hit's envelope (one step's gate, then the release), its EQ, crush and drive at its own scale */
+            const char *route = "{\"version\":17,\"key\":50,\"tempo\":90,\"prog\":[{\"r\":0,\"q\":\"m7\"}],\"voice\":{\"on\":false},\"sect\":{\"on\":false},\"v3\":{\"on\":false},\"bed\":{\"on\":false},\"rfx\":{\"drive\":0,\"delayWet\":0,\"revWet\":0,\"cutoff\":20000}}";
+            auto hits = [&](const std::string &extra, double amp, std::vector<float> *raw = nullptr) {
+                const int n = (int)(0.6 * 48000); short *pcm = (short *)std::malloc(sizeof(short) * n);
+                uint32_t sd = 3; for (int i = 0; i < n; i++) { sd = sd * 1664525u + 1013904223u; pcm[i] = (short)(32767 * amp * (((int)(sd >> 8) - 8388608) / 8388608.0) * std::exp(-i / (48000 * 0.15))); }
+                unsigned seed = 5; fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128); fs_piece_test_hooks(pc, fixed_draw, &seed, nullptr, nullptr);
+                const int r = fs_piece_add_route(pc, route);
+                const std::string cfg = "{\"on\":true,\"gain\":1,\"steps\":16,\"div\":\"8n\",\"idiom\":0,\"voices\":{\"low\":{\"pulses\":4,\"gain\":1" + extra + "},\"mid\":{\"pulses\":0},\"high\":{\"pulses\":0},\"rand\":{\"pulses\":0}}}";
+                const int h = fs_piece_rhythm_add(pc, cfg.c_str(), 0);
+                fs_piece_rhythm_source(pc, h, 0, 1, n, pcm); fs_piece_rhythm_gain(pc, h, 1);
+                std::vector<float> o;
+                for (int b2 = 0; b2 < (int)(8 * 48000 / 128); b2++) { fs_piece_walk(pc, r, 0.3, 0); fs_process(pc, 128); const float *l = fs_out(pc, 0); o.insert(o.end(), l, l + 128); }
+                fs_destroy(pc); if (raw) *raw = o; return rms_db(o, (size_t)(2 * 48000), o.size()); };
+            /* 5: full crush on a quiet hit (peak 0.08) - it vanished (-245 dB); now within 3 dB of its dry level, and changed */
+            std::vector<float> qd, qc;
+            const double dry_q = hits("", 0.08, &qd), crushed_q = hits(",\"crush\":1", 0.08, &qc), driven = hits(",\"drive\":1", 0.08), both = hits(",\"crush\":1,\"drive\":1", 0.08);
+            double diff = 0; for (size_t i = 0; i < qd.size(); i++) diff += std::fabs(qd[i] - qc[i]);
+            std::printf("T15 hits fx: a quiet hit dry %.1f dB, crush 1 %.1f dB, drive 1 %.1f dB, both %.1f dB; crushed differs %d\n", dry_q, crushed_q, driven, both, (int)(diff > 0));
+            assert(std::fabs(crushed_q - dry_q) < 3 && driven > dry_q - 3 && both > dry_q - 6 && diff > 0);
+            /* 2: an envelope with sustain 0 and a short release cuts each hit's 0.6 s tail; absent, the hit plays as before */
+            auto hits_env = [&](const char *env, std::vector<float> *raw) {
+                const int n = (int)(0.6 * 48000); short *pcm = (short *)std::malloc(sizeof(short) * n);
+                uint32_t sd = 3; for (int i = 0; i < n; i++) { sd = sd * 1664525u + 1013904223u; pcm[i] = (short)(32767 * 0.5 * (((int)(sd >> 8) - 8388608) / 8388608.0) * std::exp(-i / (48000 * 0.15))); }
+                unsigned seed = 5; fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128); fs_piece_test_hooks(pc, fixed_draw, &seed, nullptr, nullptr);
+                const int r = fs_piece_add_route(pc, route);
+                const std::string cfg = std::string("{\"on\":true,\"gain\":1,\"steps\":16,\"div\":\"8n\",\"idiom\":0") + env +
+                                        ",\"voices\":{\"low\":{\"pulses\":4,\"gain\":1},\"mid\":{\"pulses\":0},\"high\":{\"pulses\":0},\"rand\":{\"pulses\":0}}}";
+                const int h = fs_piece_rhythm_add(pc, cfg.c_str(), 0);
+                fs_piece_rhythm_source(pc, h, 0, 1, n, pcm); fs_piece_rhythm_gain(pc, h, 1);
+                std::vector<float> o;
+                for (int b2 = 0; b2 < (int)(8 * 48000 / 128); b2++) { fs_piece_walk(pc, r, 0.3, 0); fs_process(pc, 128); const float *l = fs_out(pc, 0); o.insert(o.end(), l, l + 128); }
+                fs_destroy(pc); *raw = o; };
+            std::vector<float> none, shortE, flatE, cutE;
+            hits_env("", &none); hits_env(",\"env\":[0.002,0.02,0,0.02]", &shortE);
+            hits_env(",\"eq\":[[80,0,0.7],[250,0,1],[1000,0,1],[4000,0,1],[10000,0,0.7]]", &flatE);
+            hits_env(",\"eq\":[[80,0,0.7],[250,0,1],[1000,0,1],[4000,0,1],[3000,-12,0.7]]", &cutE);
+            /* a hit's tail: the energy between 60 ms and 300 ms after each onset, against its first 30 ms */
+            auto tail = [&](const std::vector<float> &o) { double head = 0, t = 0; const size_t step = (size_t)(60.0 / 90 / 2 * 48000 * 4);   /* 4 pulses in 16 eighths: every 4th */
+                for (size_t on = (size_t)(2 * 48000); on + step < o.size(); on += step) {
+                    size_t s0 = on; double mx = 0; for (size_t i = on; i < on + step && i < o.size(); i++) if (std::fabs(o[i]) > mx) { mx = std::fabs(o[i]); s0 = i; }
+                    for (size_t i = s0; i < s0 + 1440; i++) head += (double)o[i] * o[i];
+                    for (size_t i = s0 + 2880; i < s0 + 14400 && i < o.size(); i++) t += (double)o[i] * o[i]; }
+                return 10 * std::log10(t / (head + 1e-30) + 1e-30); };
+            auto band = [&](const std::vector<float> &o) { std::vector<float> w(o.begin() + 96000, o.begin() + 96000 + 65536); return peak_amp(w, 48000, 6000) + peak_amp(w, 48000, 7000) + peak_amp(w, 48000, 8000); };
+            std::printf("T15 hits env/eq: tail vs head %.1f dB without, %.1f dB with a 20 ms sustain-0 envelope; flat EQ identical %d; a -12 dB high shelf at 3 kHz takes 6-8 kHz %.1f dB down\n",
+                        tail(none), tail(shortE), (int)(flatE == none), 20 * std::log10(band(cutE) / band(none)));
+            assert(tail(shortE) < tail(none) - 20 && flatE == none && 20 * std::log10(band(cutE) / band(none)) < -8);
+        }
+        {   /* 4: grains of an unpitched recording follow the chord by their own peaks - tones at 300, 500, 700 Hz (none in D F A C)
+               in noise, each a second long in turn (700 Hz is 4 cents off F; the others are not chord tones); follow 1: every grain's tone lands within 20 cents of a chord tone */
+            const char *route = "{\"version\":17,\"key\":50,\"prog\":[{\"r\":0,\"q\":\"m7\"}],\"voice\":{\"on\":false},\"sect\":{\"on\":false},\"v3\":{\"on\":false},\"bed\":{\"on\":false},\"rfx\":{\"drive\":0,\"delayWet\":0,\"revWet\":0,\"cutoff\":20000}}";
+            const int n = (int)(6 * 48000); const double tones[3] = { 300, 500, 700 };
+            auto make = [&]() { short *pcm = (short *)std::malloc(sizeof(short) * n); uint32_t sd = 11;
+                for (int i = 0; i < n; i++) { sd = sd * 1664525u + 1013904223u; const double t = (double)i / 48000; const double f = tones[(int)t % 3];
+                    pcm[i] = (short)(32767 * (0.05 * (((int)(sd >> 8) - 8388608) / 8388608.0) + 0.3 * std::sin(2 * 3.141592653589793 * f * t))); }
+                return pcm; };
+            struct GL { std::vector<double> rate, off; } gl;
+            auto lg = [](void *p, int role, double f, double off, double, double) { if (role == 20) { ((GL *)p)->rate.push_back(f); ((GL *)p)->off.push_back(off); } };
+            auto run = [&](double follow) {
+                gl.rate.clear(); gl.off.clear();
+                unsigned seed = 21; fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128); fs_piece_test_hooks(pc, fixed_draw, &seed, lg, &gl);
+                const int r = fs_piece_add_route(pc, route);
+                const std::string cfg = "{\"on\":true,\"gain\":1,\"steps\":16,\"div\":\"16n\",\"follow\":" + std::to_string(follow) +
+                                        ",\"grains\":{\"pulses\":8,\"count\":4,\"grain\":80,\"vary\":0,\"roam\":1,\"pitch\":0,\"scatter\":0.5}}";
+                const int h = fs_piece_rhythm_add(pc, cfg.c_str(), 1);
+                fs_piece_rhythm_source(pc, h, 0, 1, n, make()); fs_piece_rhythm_gain(pc, h, 1);
+                double worst = 0;
+                for (int b2 = 0; b2 < (int)(14 * 48000 / 128); b2++) { fs_piece_walk(pc, r, 0.3, 0);
+                    auto c0 = std::chrono::steady_clock::now(); fs_process(pc, 128); worst = std::fmax(worst, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - c0).count()); }
+                fs_destroy(pc);
+                /* grains after the track is made (6 s at one frame a block takes ~2.5 s): the tone each read, as it sounds */
+                int on = 0, all = 0;
+                for (size_t i = gl.rate.size() / 3; i < gl.rate.size(); i++) {
+                    const double mid = gl.off[i] + 0.04; if (std::fmod(mid, 1.0) < 0.1 || std::fmod(mid, 1.0) > 0.9) continue;   /* not across a tone change */
+                    const double hz = tones[(int)mid % 3] * gl.rate[i], c = 1200 * std::log2(hz / 440) + 6900;
+                    double best = 1e9; for (int pc2 : { 2, 5, 9, 0 }) { double d = std::fabs(std::fmod(c - pc2 * 100 + 1200 * 64, 1200.0)); if (d > 600) d = 1200 - d; best = std::fmin(best, d); }
+                    all++; on += best < 20;
+                }
+                return std::make_pair(all ? (double)on / all : 0, worst); };
+            const auto f1 = run(1), f0 = run(0);
+            std::printf("T15 grains follow (unpitched): %.0f%% of grains on D F A C at follow 1, %.0f%% at 0; worst block %.3f ms\n", 100 * f1.first, 100 * f0.first, f1.second);
+            assert(f1.first > 0.9 && f0.first < 0.45 && f1.second < 1.33);   /* at 0 only 700 Hz is near one (F, +4 c): a third */
+        }
+        {   /* 2: a stretch point's EQ on its mix slot (fs_point_sound, which the apps call too): a -12 dB high shelf at 3 kHz takes
+               6-8 kHz down; a flat one, or none, changes nothing */
+            auto play = [&](const char *eq) {
+                fs_engine *e = fs_engine_create(48000, 128);
+                char f[1024]; std::snprintf(f, sizeof f, "{\"type\":\"Feature\",\"geometry\":{\"type\":\"Point\",\"coordinates\":[29.0,41.0]},"
+                    "\"properties\":{\"id\":\"s1\",\"kind\":\"point\",\"name\":\"S\",\"has_audio\":true,\"storage_path\":\"s1.webm\",\"sound\":{\"gain\":0.9,\"stretch\":0.2%s}}}", eq);
+                fs_engine_upsert(e, f);
+                const std::string need = fs_engine_step(e, 29.0, 41.0);
+                const int n = 48000 * 8; short *pcm = fs_alloc_i16((size_t)n);
+                for (int i = 0; i < n; i++) pcm[i] = (short)(32767 * rec[(size_t)i]);
+                fs_engine_source(e, 'S', std::atoi(need.c_str() + 2), 0, "s1", 1, n, pcm);
+                std::vector<float> o;
+                for (int b2 = 0; b2 < (int)(8 * 48000 / 128); b2++) { if (b2 % 40 == 0) fs_engine_step(e, 29.0, 41.0); fs_engine_process(e, 128); const float *l = fs_engine_out(e, 0); o.insert(o.end(), l, l + 128); }
+                fs_engine_destroy(e); return o; };
+            const auto none = play(""), flat = play(",\"eq\":[[80,0,0.7],[250,0,1],[1000,0,1],[4000,0,1],[10000,0,0.7]]"),
+                       cut = play(",\"eq\":[[80,0,0.7],[250,0,1],[1000,0,1],[4000,0,1],[3000,-12,0.7]]");
+            auto band = [&](const std::vector<float> &o) { std::vector<float> w(o.begin() + 4 * 48000, o.begin() + 4 * 48000 + 65536); return peak_amp(w, 48000, 6000) + peak_amp(w, 48000, 7000) + peak_amp(w, 48000, 8000); };
+            const double drop = 20 * std::log10(band(cut) / band(none));
+            std::printf("T15 stretch eq: a -12 dB high shelf at 3 kHz takes 6-8 kHz %.1f dB down; flat identical %d\n", drop, (int)(flat == none));
+            assert(drop < -8 && flat == none);
+        }
+        {   /* 1: a point at level 0 is not picked - its bed voice free for one that sounds */
+            fs_engine *e = fs_engine_create(48000, 128);
+            fs_engine_features(e, "{\"type\":\"FeatureCollection\",\"features\":["
+                "{\"type\":\"Feature\",\"geometry\":{\"type\":\"Point\",\"coordinates\":[29.0,41.0]},\"properties\":{\"id\":\"z\",\"kind\":\"point\",\"name\":\"Z\",\"has_audio\":true,\"storage_path\":\"z.webm\",\"sound\":{\"gain\":0}}},"
+                "{\"type\":\"Feature\",\"geometry\":{\"type\":\"Point\",\"coordinates\":[29.0003,41.0]},\"properties\":{\"id\":\"y\",\"kind\":\"point\",\"name\":\"Y\",\"has_audio\":true,\"storage_path\":\"y.webm\",\"sound\":{\"gain\":0.9}}}]}");
+            const std::string need = fs_engine_step(e, 29.0, 41.0), st = fs_engine_state(e);
+            std::printf("T15 level 0: %s| %s\n", need.c_str(), st.c_str());
+            assert(need.find(" z ") == std::string::npos && need.find(" y ") != std::string::npos && st.find("\"z\"") == std::string::npos);
+            fs_engine_destroy(e);
+        }
+    }
     std::printf("core ok\n");
     return 0;
 }

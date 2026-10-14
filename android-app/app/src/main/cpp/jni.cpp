@@ -211,6 +211,11 @@ JNIEXPORT void JNICALL FN(shape)(JNIEnv *env, jclass, jint slot, jstring json) {
     fs_stretch_shape(E->voice[slot], s);
     env->ReleaseStringUTFChars(json, s);
 }
+JNIEXPORT void JNICALL FN(pointSound)(JNIEnv *env, jclass, jint slot, jstring json) {   /* Test 15: a stretch point's eq and env */
+    const char *s = env->GetStringUTFChars(json, nullptr);
+    fs_point_sound(E->mix, slot, E->voice[slot], s);
+    env->ReleaseStringUTFChars(json, s);
+}
 
 /* A decoded stereo recording (16-bit, engine rate) for a slot; copied into native memory. */
 JNIEXPORT void JNICALL FN(load)(JNIEnv *env, jclass, jint slot, jshortArray l, jshortArray r) {

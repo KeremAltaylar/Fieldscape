@@ -300,6 +300,7 @@ struct Combo { int pulses, rotate; };
 struct RhythmCfg {
     bool on = true; int steps = 64; Div div; double gain = 0.85, idiom = 0.35; int sentence_bars = 8; double follow = 0;
     double resonate = 0; int body = 0;   /* 8c: grains rung by the chord (0 String, 1 Tube, 2 Bell) */
+    double eq[5][3] = {}; double env[4] = {}; bool env_on = false;   /* Test 15: the point's EQ; each hit's note envelope */
     HitCfg v[4]; GrainCfg g; Combo sentence[4][4]; bool has_sentence = false;
 };
 
@@ -356,6 +357,7 @@ static void rhythm_of(const Json *j, RhythmCfg &r, Rng &rnd) {
     r.resonate = j ? std::max(0.0, std::min(1.0, j->n("resonate", 0))) : 0;   /* 8c */
     { const Json *b = j ? j->get("body") : nullptr; r.body = b ? (b->kind == Json::NUM ? (int)b->num : std::atoi(j->s("body", "0").c_str())) : 0; r.body = std::max(0, std::min(2, r.body)); }
     r.sentence_bars = j ? (int)j->n("sentenceBars", 8) : 8;
+    eq_env_of(j, r.eq, r.env, r.env_on);
     const Json *vs = j ? j->get("voices") : nullptr;
     for (int s = 0; s < 4; s++) {
         const Json *v = vs ? vs->get(HIT_SLOTS[s]) : nullptr;
@@ -508,7 +510,10 @@ struct Role {
 };
 
 /* ------------------------------------------------------------------ rhythm points at run time */
-struct Src { short *data = nullptr; int ch = 0; long long frames = 0; };
+/* peak: |sample| max, 0..1 (a hit's effects read it). pk: Test 15, the recording's dominant spectral peak every PK_HOP frames
+   (Hz, then its prominence over its surroundings; Hz 0: none), filled by the audio thread; freed with the samples */
+struct Src { short *data = nullptr; int ch = 0; long long frames = 0; float peak = 1; float *pk = nullptr; int pkn = 0; };
+static const int PK_N = 2048, PK_HOP = 1024;
 static inline void src_read(const Src &s, double pos, float &l, float &r) {
     long long i = (long long)pos;
     if (pos < 0 || i >= s.frames) { l = r = 0; return; }
@@ -521,7 +526,18 @@ static inline void src_read(const Src &s, double pos, float &l, float &r) {
     r = (a[c] + (b[c] - a[c]) * f) / 32768.0f;
 }
 
-struct PlayV { bool on = false; double pos = 0, rate = 1, start = 0, stop = 1e300, fade = 0.02; };
+/* Test 15: a hit's note envelope - attack, decay to sustain, held to the gate (one step), released exponentially to silence */
+struct HitEnv {
+    bool on = false; double a = 0, d = 0, s = 1, r = 0, gate = 0;
+    double at(double u) const {   /* u: seconds since the hit; -1 once it has ended */
+        const double k = 4.6;      /* to within 1 % of the target in the segment's time */
+        auto held = [&](double v) { return v < a ? v / a : s + (1 - s) * std::exp(-k * (v - a) / d); };
+        if (u < gate) return held(u);
+        const double x = (u - gate) / r; if (x >= 1) return -1;
+        return held(gate) * (std::exp(-k * x) - std::exp(-k)) / (1 - std::exp(-k));
+    }
+};
+struct PlayV { bool on = false; double pos = 0, rate = 1, start = 0, stop = 1e300, fade = 0.02; HitEnv env; };
 struct GrainSrc { bool on = false; double pos = 0, rate = 1, start = 0, stop = 0, fade_in = 0, fade_out = 0; };
 struct HitSlot {
     Src src;
@@ -533,6 +549,7 @@ struct HitSlot {
     Ctl stretch_gain, blend;
     /* hit fx */
     Ctl crush_fade, bits, drive_fade, pre, post, delay_fade;
+    HitEnv genv; double gstart = 0;   /* Test 15: the last hit's envelope, on its stretch (the GrainPlayer) too */
     FeedbackDelay dl;
     Shaper shp;
 };
@@ -561,6 +578,8 @@ struct Rhythm {
     double lvl = 0;                   /* 8a: its own output, ~0.1 s mean square, for the point's meter */
     struct GMark { double at, pos, len; } gm[96]; int gmi = 0, gmn = 0;   /* 8a: its recent grains, for the waveform (a dense cloud's 1.4 s) */
     ChordRes cr;                      /* 8c */
+    Eq5 eq;                           /* Test 15: the point's EQ, after its ringing, before its level */
+    int pk_done = 0;                  /* Test 15: the grains recording's peak track, frames analysed so far */
 };
 
 /* ------------------------------------------------------------------ the device */
@@ -796,15 +815,17 @@ struct Piece : Device {
         rfx.send.p.linearRampTo(c.delayWet, 0.2, now);
         rfx.rv.wet.p.linearRampTo(c.revWet, 0.2, now);
     }
-    /* applyHitFx */
+        /* applyHitFx */
     void apply_hit_fx(Rhythm &R, double now) {
         for (int s = 0; s < 4; s++) {
             const HitCfg &c = R.cfg.v[s]; HitSlot &h = R.hit[s];
             h.crush_fade.p.linearRampTo(c.crush, 0.2, now);
-            h.bits.p.linearRampTo(std::max(2.0, std::round(16 - c.crush * 14)), 0.2, now);
+            /* Test 15: bits at the hit's own scale (see render), heard across the knob - 16 - 14 x crush changed nothing
+               audible below 0.75; the drive's make-up keeps a driven hit as loud as it was rather than 17 dB down */
+            h.bits.p.linearRampTo(std::round(2 + 10 * std::pow(1 - std::max(0.0, std::min(1.0, c.crush)), 1.5)), 0.2, now);
             h.drive_fade.p.linearRampTo(c.drive, 0.2, now);
             h.pre.p.linearRampTo(1 + c.drive * 12, 0.2, now);
-            h.post.p.linearRampTo(0.6 / (1 + c.drive * 3.4), 0.2, now);
+            h.post.p.linearRampTo(1 / (1 + c.drive * 2), 0.2, now);
             h.dl.time.p.linearRampTo(std::min(MAX_DELAY_S - 0.01, div_seconds(c.delayDiv, patch.tempo)), 0.2, now);
             h.dl.fb.p.linearRampTo(c.delayFb, 0.2, now);
             h.delay_fade.p.linearRampTo(c.delayWet, 0.2, now);
@@ -1152,6 +1173,54 @@ struct Piece : Device {
         for (int i = 0; i < n; i++) hz[i] = note_hz(H.tones[i]);
         return harmony::follow_rate(rate, f0, hz, n, follow);
     }
+    /* Test 15: one frame of a recording's peak track - the strongest spectral peak in 70 Hz - 5 kHz that stands at least 3x
+       over its surroundings (+-1/6 octave), interpolated between bins. One frame per block (a 60 s recording takes ~7 s). */
+    float pk_re[PK_N], pk_im[PK_N], pk_win[PK_N], pk_mag[PK_N / 2 + 1]; double pk_cum[PK_N / 2 + 2]; bool pk_ready = false;
+    void peak_frame(Src &b, int fi) {
+        if (!pk_ready) { for (int i = 0; i < PK_N; i++) pk_win[i] = (float)(0.5 - 0.5 * std::cos(2 * PI * i / PK_N)); pk_ready = true; }
+        const long long c0 = (long long)fi * PK_HOP - PK_N / 2; const int cr = b.ch > 1 ? 1 : 0;
+        for (int i = 0; i < PK_N; i++) {
+            const long long k = c0 + i; float x = 0;
+            if (k >= 0 && k < b.frames) x = 0.5f * (b.data[k * b.ch] + b.data[k * b.ch + cr]) / 32768.0f;
+            pk_re[i] = x * pk_win[i]; pk_im[i] = 0;
+        }
+        fft_inplace(pk_re, pk_im, PK_N);
+        const int M = PK_N / 2 + 1;
+        pk_cum[0] = 0;
+        for (int j = 0; j < M; j++) { pk_mag[j] = std::sqrt(pk_re[j] * pk_re[j] + pk_im[j] * pk_im[j]); pk_cum[j + 1] = pk_cum[j] + pk_mag[j]; }
+        const double binhz = sr / PK_N; int best = -1; double bm = 0, bp = 0;
+        for (int j = std::max(2, (int)(70 / binhz)); j < std::min(M - 2, (int)(5000 / binhz)); j++) {
+            if (pk_mag[j] < pk_mag[j - 1] || pk_mag[j] < pk_mag[j + 1]) continue;
+            const int lo = std::max(0, (int)(j * 0.8909)), hi = std::min(M - 1, (int)(j * 1.1225) + 1);
+            const double env = (pk_cum[hi + 1] - pk_cum[lo] - pk_mag[j]) / std::max(1, hi - lo);
+            if (env <= 1e-9 || pk_mag[j] < 3 * env || pk_mag[j] <= bm) continue;
+            best = j; bm = pk_mag[j]; bp = pk_mag[j] / env;
+        }
+        float hz = 0;
+        if (best > 0 && bm > 1e-4) {
+            const double a = pk_mag[best - 1], c = pk_mag[best + 1], den = a - 2 * bm + c;
+            hz = (float)((best + (std::fabs(den) > 1e-12 ? 0.5 * (a - c) / den : 0)) * binhz);
+        }
+        b.pk[2 * fi] = hz; b.pk[2 * fi + 1] = (float)bp;
+    }
+    static void fft_inplace(float *re, float *im, int n) {   /* radix-2, n a power of two */
+        for (int i = 1, j = 0; i < n; i++) {
+            int bit = n >> 1; for (; j & bit; bit >>= 1) j ^= bit; j ^= bit;
+            if (i < j) { std::swap(re[i], re[j]); std::swap(im[i], im[j]); }
+        }
+        for (int len = 2; len <= n; len <<= 1) {
+            const double ang = -2 * PI / len; const float wr = (float)std::cos(ang), wi = (float)std::sin(ang);
+            for (int i = 0; i < n; i += len) {
+                float cr = 1, ci = 0;
+                for (int k = 0; k < len / 2; k++) {
+                    const int u = i + k, v = u + len / 2;
+                    const float tr = re[v] * cr - im[v] * ci, ti = re[v] * ci + im[v] * cr;
+                    re[v] = re[u] - tr; im[v] = im[u] - ti; re[u] += tr; im[u] += ti;
+                    const float nr = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = nr;
+                }
+            }
+        }
+    }
     void fire_grains(Rhythm &R, double time, double step_secs) {
         Src &b = R.gsrc;
         if (!b.data || !b.frames) return;
@@ -1201,6 +1270,9 @@ struct Piece : Device {
             if (R.cfg.follow > 0 && R.trk[0].n > 0) {   /* 5: the grain's pitch where it reads, toward the chord */
                 const Trk &k = R.trk[0]; const int fi = (int)(off / k.hop);
                 if (fi >= 0 && fi < k.n && k.tc[fi] >= 0.8f && k.tf[fi] > 0) rate = follow_chord(rate, k.tf[fi], R.cfg.follow);
+            } else if (R.cfg.follow > 0 && b.pk) {      /* Test 15: unpitched - the grain's own dominant peak, at its middle */
+                const int fi = (int)std::lround((off + grainSec / 2) * sr / PK_HOP);
+                if (fi >= 0 && fi < R.pk_done && b.pk[2 * fi] > 0) rate = follow_chord(rate, b.pk[2 * fi], R.cfg.follow);
             }
             GrainV *gv = nullptr;
             for (auto &x : R.gv) if (!x.on) { gv = &x; break; }
@@ -1254,7 +1326,11 @@ struct Piece : Device {
                 for (auto &pv : h.pv) if (pv.on) { pv.rate = rate; if (pv.stop > time) pv.stop = time; }
                 PlayV *nv = &h.pv[0];
                 for (auto &pv : h.pv) if (!pv.on) { nv = &pv; break; }
-                *nv = PlayV{ true, 0, rate, time, 1e300, 0.02 };
+                *nv = PlayV{ true, 0, rate, time, 1e300, 0.02, {} };
+                if (r.env_on) {   /* Test 15: the gate is one step of the pattern */
+                    nv->env = HitEnv{ true, r.env[0], r.env[1], r.env[2], r.env[3], div_seconds(r.div, patch.tempo) * stride };
+                    h.genv = nv->env; h.gstart = time;
+                } else h.genv = HitEnv{};
                 if (cfg.stretch > 0) {
                     double a = std::max(0.0, std::min(1.0, cfg.stretch));
                     double pr = stretch_rate(a), gs = 0.06 + a * 0.24, period = gs / pr;
@@ -1366,6 +1442,7 @@ struct Piece : Device {
             if (op.op == 1) {
                 R.used = true; R.dying = false; R.cfg = op.cfg; R.grains = op.grains; for (auto &k : R.trk) k = Trk{};
                 R.lvl = 0; R.gmi = R.gmn = 0; R.cr = ChordRes();
+                R.eq.init(sr); for (int k = 0; k < 5; k++) R.eq.set(k, R.cfg.eq[k][0], R.cfg.eq[k][1], R.cfg.eq[k][2]);
                 R.tick = 0; R.step = 0; R.live = false; R.bars = 0; R.sentence_idx = 0; R.fx_ready = false;
                 R.gain.init(0);
                 for (auto &g : R.gv) g.on = false;
@@ -1373,6 +1450,7 @@ struct Piece : Device {
                 for (auto &hs : R.hit) { for (auto &pv : hs.pv) pv.on = false; hs.gp_on = false; for (auto &g : hs.gs) g.on = false; }
             } else if (op.op == 3 && R.used && !R.dying) {
                 R.cfg = op.cfg; R.fx_ready = false;
+                for (int k = 0; k < 5; k++) R.eq.set(k, R.cfg.eq[k][0], R.cfg.eq[k][1], R.cfg.eq[k][2]);
                 R.gain.p.linearRampTo(rhythm_level(R, h), 0.35, now);
             } else if (op.op == 2 && R.used && !R.dying) {
                 R.dying = true; R.free_at = now + 0.4;
@@ -1384,7 +1462,9 @@ struct Piece : Device {
                 op.src_set[s] = false; R.trk[s] = Trk{};      /* a new recording: the last one's track goes (final review 5 I1) */
                 Src &dst = R.grains ? R.gsrc : R.hit[s].src;
                 if (dst.data) my_trash.push_back(dst.data);
+                if (dst.pk) my_trash.push_back((short *)dst.pk);
                 dst = op.src[s];
+                if (R.grains) R.pk_done = 0;
                 if (!R.grains) {       /* ensureRhythm: the stretch blend at the slot's amount */
                     double amt = R.cfg.v[s].stretch;
                     R.hit[s].blend.p.linearRampTo(amt, 0.2, now);
@@ -1396,8 +1476,8 @@ struct Piece : Device {
             Rhythm &R = rh[h];
             if (R.used && R.dying && now >= R.free_at) {
                 R.used = false; R.dying = false;
-                for (auto &hs : R.hit) if (hs.src.data) { my_trash.push_back(hs.src.data); hs.src = Src(); }
-                if (R.gsrc.data) { my_trash.push_back(R.gsrc.data); R.gsrc = Src(); }
+                for (auto &hs : R.hit) if (hs.src.data) { my_trash.push_back(hs.src.data); if (hs.src.pk) my_trash.push_back((short *)hs.src.pk); hs.src = Src(); }
+                if (R.gsrc.data) { my_trash.push_back(R.gsrc.data); if (R.gsrc.pk) my_trash.push_back((short *)R.gsrc.pk); R.gsrc = Src(); }
                 in.freed[h] = true;
             }
         }
@@ -1514,6 +1594,7 @@ struct Piece : Device {
                         if (t < pv.start) continue;
                         double g = 1;
                         if (t >= pv.stop) { g = 1 - (t - pv.stop) / pv.fade; if (g <= 0) { pv.on = false; break; } }
+                        if (pv.env.on) { const double e = pv.env.at(t - pv.start); if (e < 0) { pv.on = false; break; } g *= e; }
                         if (pv.pos >= h.src.frames) { pv.on = false; break; }
                         float l, r; src_read(h.src, pv.pos, l, r);
                         pv.pos += pv.rate;
@@ -1539,6 +1620,7 @@ struct Piece : Device {
                             double e = 1;
                             if (g.fade_in > 0 && t - g.start < g.fade_in) e = (t - g.start) / g.fade_in;
                             if (t >= g.stop) { e = g.fade_out > 0 ? 1 - (t - g.stop) / g.fade_out : 0; if (e <= 0) { g.on = false; continue; } }
+                            if (h.genv.on) { const double he = h.genv.at(t - h.gstart); e *= he < 0 ? 0 : he; }
                             float l, r; src_read(h.src, g.pos, l, r);
                             g.pos += g.rate;
                             sl[i] += l * (float)e * h.gp_vol; sr_[i] += r * (float)e * h.gp_vol;
@@ -1549,10 +1631,13 @@ struct Piece : Device {
                 for (int i = 0; i < n; i++) {
                     float b = h.blend.at(i, n), sg = h.stretch_gain.at(i, n);
                     float l = xl[i] * (1 - b) + sl[i] * sg * b, r = xr[i] * (1 - b) + sr_[i] * sg * b;
+                    /* crush and drive at the hit's own scale (its recording's peak at this hit's level), so a quiet field
+                       recording is crushed and driven as a loud one is, not rounded to silence (Test 15: it vanished) */
+                    const float ref = std::max(1e-4f, h.src.peak * h.vol), inv = 1 / ref;
                     float cf = h.crush_fade.at(i, n), bits = h.bits.at(i, n);
-                    l = l * (1 - cf) + crush(l, bits) * cf; r = r * (1 - cf) + crush(r, bits) * cf;
+                    l = l * (1 - cf) + ref * crush(l * inv, bits) * cf; r = r * (1 - cf) + ref * crush(r * inv, bits) * cf;
                     float df = h.drive_fade.at(i, n), pr = h.pre.at(i, n), po = h.post.at(i, n);
-                    l = l * (1 - df) + po * h.shp.run(pr * l) * df; r = r * (1 - df) + po * h.shp.run(pr * r) * df;
+                    l = l * (1 - df) + ref * po * h.shp.run(pr * l * inv) * df; r = r * (1 - df) + ref * po * h.shp.run(pr * r * inv) * df;
                     yl[i] = l; yr[i] = r;
                 }
                 float dl_[SUB], dr_[SUB];
@@ -1566,6 +1651,8 @@ struct Piece : Device {
         }
         /* 8c; and hits too (Kerem 2026-10-13: unpitched hits ring the chord as grains do) */
         if ((R.cfg.resonate > 0 || R.cr.res > 1e-4) && (H.ntones > 0 || R.cr.sig != -1)) chord_res(R, bl, br, n);
+        R.eq.process(bl, br, n);   /* Test 15: flat, the input untouched */
+        if (R.grains && R.gsrc.pk && R.pk_done < R.gsrc.pkn) peak_frame(R.gsrc, R.pk_done++);
         /* 8a: the point's meter - its own sound at its own gain, not where the walker stands (as a stretch point's is) */
         double e = 0; const double own = R.cfg.on ? R.cfg.gain : 0;
         for (int i = 0; i < n; i++) { float g = R.gain.at(i, n); L[i] += bl[i] * g; Rr[i] += br[i] * g; e += 0.5 * ((double)bl[i] * bl[i] + (double)br[i] * br[i]); }
@@ -1942,8 +2029,17 @@ void fs_piece_rhythm_source(fs_device *d, int h, int slot, int channels, long lo
     if (!p || h < 0 || h >= FS_MAX_VOICES || slot < 0 || slot > 3) { std::free(interleaved); return; }
     std::lock_guard<std::mutex> g(p->mu); sweep(p);
     auto &op = p->in.r[h];
-    if (op.src_set[slot] && op.src[slot].data) std::free(op.src[slot].data);
-    op.src[slot] = Src{ interleaved, channels < 1 ? 1 : channels, frames };
+    if (op.src_set[slot]) { std::free(op.src[slot].data); std::free(op.src[slot].pk); }
+    {   /* Test 15: the peak track, filled later by the audio thread (a grains recording reads it) */
+        const int c = channels < 1 ? 1 : channels, pkn = (int)(frames / PK_HOP) + 1;
+        float *pk = (float *)std::calloc(2 * (size_t)pkn, sizeof(float));
+        op.src[slot] = Src{ interleaved, c, frames, 1, pk, pk ? pkn : 0 };
+    }
+    {   /* Test 15: the crush and drive work at the recording's own scale - a quiet hit under 2 bits rounded to silence */
+        int pk = 0; const long long n = frames * op.src[slot].ch;
+        for (long long i = 0; i < n; i++) { int v = interleaved[i] < 0 ? -interleaved[i] : interleaved[i]; if (v > pk) pk = v; }
+        op.src[slot].peak = pk / 32768.0f;
+    }
     op.src_set[slot] = true;
 }
 void fs_piece_rhythm_track(fs_device *d, int h, int slot, const char *json) {
@@ -2008,7 +2104,7 @@ void fs_piece_rhythm_remove(fs_device *d, int h) {
     Piece *p = P(d); if (!p || h < 0 || h >= FS_MAX_VOICES) return;
     std::lock_guard<std::mutex> g(p->mu); sweep(p);
     auto &op = p->in.r[h];
-    for (int s = 0; s < 4; s++) if (op.src_set[s]) { std::free(op.src[s].data); op.src_set[s] = false; }
+    for (int s = 0; s < 4; s++) if (op.src_set[s]) { std::free(op.src[s].data); std::free(op.src[s].pk); op.src_set[s] = false; }
     op.op = 2;
 }
 
