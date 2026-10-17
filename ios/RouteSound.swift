@@ -9,6 +9,7 @@ final class RouteSound {
         let icon: String, lon: Double, lat: Double, radius: Double, zoneR: Double
         let centroid: Double, onsets: Double, audio: Bool, plain: Bool, id: String
         var zone = fs_zone_state()
+        var compIn = false
     }
     private struct Beat { let id: String, name: String, lon: Double, lat: Double, radius: Double, gain: Double, grains: Bool, json: String, paths: [String?], tracks: [String?] }
     /* 6b: each route's sampler voices - a voice's sample and its analysis (patch.<voice>.sample), nil none */
@@ -185,11 +186,12 @@ final class RouteSound {
         for i in spots.indices {
             let d = fs_geo_distance(lon, lat, spots[i].lon, spots[i].lat)
             if spots[i].audio { dist.append(d); radius.append(spots[i].radius); centroid.append(spots[i].centroid); onsets.append(spots[i].onsets) }
+            let wasIn = spots[i].compIn   /* composition: geometry only, no chime cooldown */
+            spots[i].compIn = d <= spots[i].zoneR || (wasIn && d <= spots[i].zoneR * Double(FS_ZONE_MARGIN))
+            if spots[i].compIn { inside.append(spots[i].id); if !wasIn { entered = spots[i].id } }
             if d > spots[i].radius * Double(FS_ZONE_MARGIN) { spots[i].zone = fs_zone_state(); continue }
             let ev = fs_zone_step(&spots[i].zone, d, spots[i].zoneR, now, Double(FS_ZONE_MARGIN), Double(FS_ZONE_COOLDOWN_MS))
             if ev == 1 && spots[i].plain { fs_piece_zone(piece, spots[i].icon) }
-            if ev == 1 { entered = spots[i].id }
-            if spots[i].zone.inside != 0 { inside.append(spots[i].id) }   /* composition: the zones the walker is in */
         }
         let ins = inside.joined(separator: ",")
         if ins != zonesSent || !entered.isEmpty { fs_piece_zones(piece, ins, entered); zonesSent = ins }
