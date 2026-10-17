@@ -25,7 +25,8 @@
 /* v13: the apps' branch merged: core.wasm with the stretch shaping and the route's chord. */
 /* v14: 6a - the public engine plays the samplers; lab-roles.js reads the route's patch. */
 /* v15: Test 15 - point EQ and envelopes, sing, grains on their own peaks, crush and drive at a hit's own scale. */
-var SHELL = "fieldarc-shell-v15";
+/* v16: composition step 1 - the voices' styles, per chord, section and zone. */
+var SHELL = "fieldarc-shell-v16";
 var TILES = "fieldarc-tiles-v1";
 
 var SHELL_FILES = [
