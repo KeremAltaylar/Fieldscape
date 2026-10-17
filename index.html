@@ -2319,7 +2319,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (selected && !visible().some(function (f) { return f.properties.id === selected; })) {
       setSelected(null);
     }
-    map.getSource("features").setData({ type: "FeatureCollection", features: visible() });
+    map.getSource("features").setData({ type: "FeatureCollection", features: visible() }); drawProgSegments();
     renderList();
     renderStats();
     renderLabels();
@@ -2528,7 +2528,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         archiveReached = true;
         cachePublished(placeId, r.data);
         mergeRemote(r.data);
-        map.getSource("features").setData({ type: "FeatureCollection", features: visible() });
+        map.getSource("features").setData({ type: "FeatureCollection", features: visible() }); drawProgSegments();
         renderList();
         maybeReconcile();
       })
@@ -2551,7 +2551,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     return cachedPublished(placeId).then(function (hit) {
       if (hit && hit.rows && hit.rows.length) {
         mergeRemote(hit.rows);
-        map.getSource("features").setData({ type: "FeatureCollection", features: visible() });
+        map.getSource("features").setData({ type: "FeatureCollection", features: visible() }); drawProgSegments();
       }
       renderList();
     });
@@ -2578,7 +2578,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       .then(function (r) {
         if (r.error || !r.data) { return; }
         mergeRemote(r.data);
-        map.getSource("features").setData({ type: "FeatureCollection", features: visible() });
+        map.getSource("features").setData({ type: "FeatureCollection", features: visible() }); drawProgSegments();
         renderList();
         worldRoutes = computeWorldRoutes();
         if (pacer && pacer.world) { worldMove(pacer.pos); }
@@ -3564,9 +3564,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   sources.features = { type: "geojson", data: { type: "FeatureCollection", features: [] } };
   sources.draft = { type: "geojson", data: { type: "FeatureCollection", features: [] } };
   sources.here = { type: "geojson", data: { type: "FeatureCollection", features: [] } };
-  sources.zones = { type: "geojson", data: { type: "FeatureCollection", features: [] } };
-  sources.progseg = { type: "geojson", data: { type: "FeatureCollection", features: [] } };
-  sources.sectors = { type: "geojson", data: { type: "FeatureCollection", features: [] } };
+  /* generateId: the hover state (feature-state) needs an id on each shape */
+  sources.zones = { type: "geojson", generateId: true, data: { type: "FeatureCollection", features: [] } };
+  sources.progseg = { type: "geojson", generateId: true, data: { type: "FeatureCollection", features: [] } };
+  sources.sectors = { type: "geojson", generateId: true, data: { type: "FeatureCollection", features: [] } };
 
   /* MapLibre's colour parser has no notion of oklch() — it rejects the string and the whole
      style fails validation. So the tokens stay the single source of truth (C-1) and get
@@ -3636,9 +3637,37 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         /* Map data is not brand data (C-15). The basemap is green; a sage line on green is
            unreadable at any width. Dark casing + near-white line reads on Map, Topo and
            Satellite alike. */
+        /* Three things share the ground and must never be confused (Kerem, 2026-10-17: "differentiatively visible on top of
+           each other ... for standing or hovering differently"). Each has its own visual language, bottom to top:
+           sections - areas: a faint wash in their root's colour with a dashed edge;
+           zones    - circles: a pale neutral ring, almost no fill;
+           routes   - lines: solid, over a dark casing, each chord's stretch in its root's colour.
+           Standing in one lights it fully; the pointer over one lifts it halfway. */
+        { id: "sector-fill", type: "fill", source: "sectors",
+          paint: { "fill-color": ["get", "colour"],
+                   "fill-opacity": ["case", ["==", ["get", "active"], 1], 0.2,
+                                    ["boolean", ["feature-state", "hover"], false], 0.12, 0.05] } },
+        { id: "sector-line", type: "line", source: "sectors",
+          paint: { "line-color": ["get", "colour"], "line-dasharray": [4, 3],
+                   "line-width": ["case", ["boolean", ["feature-state", "hover"], false], 1.8, 1.1],
+                   "line-opacity": ["case", ["boolean", ["feature-state", "hover"], false], 0.9, 0.45] } },
+        { id: "sector-line-active", type: "line", source: "sectors", filter: ["==", ["get", "active"], 1],
+          paint: { "line-color": ["get", "colour"], "line-width": 2, "line-opacity": 0.85, "line-dasharray": [6, 2] } },
+
+        { id: "zone-fill", type: "fill", source: "zones",
+          paint: { "fill-color": ["case", ["==", ["get", "inside"], 1], lamp, ink],
+                   "fill-opacity": ["case", ["==", ["get", "inside"], 1], 0.22,
+                                    ["boolean", ["feature-state", "hover"], false], 0.12, 0.04] } },
+        { id: "zone-line", type: "line", source: "zones",
+          paint: { "line-color": ["case", ["==", ["get", "inside"], 1], lamp, ink],
+                   "line-width": ["case", ["==", ["get", "inside"], 1], 2.6,
+                                  ["boolean", ["feature-state", "hover"], false], 2, 1.2],
+                   "line-opacity": ["case", ["==", ["get", "inside"], 1], 1,
+                                    ["boolean", ["feature-state", "hover"], false], 0.95, 0.7] } },
+
         { id: "route-casing", type: "line", source: "features",
           filter: ["==", ["geometry-type"], "LineString"],
-          paint: { "line-color": dark, "line-opacity": 0.8, "line-width": 8 },
+          paint: { "line-color": dark, "line-opacity": 0.9, "line-width": 11 },
           layout: { "line-cap": "round", "line-join": "round" } },
         { id: "route-line", type: "line", source: "features",
           filter: ["==", ["geometry-type"], "LineString"],
@@ -3648,6 +3677,18 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           filter: ["all", ["==", ["geometry-type"], "LineString"], ["==", ["get", "id"], "~none~"]],
           paint: { "line-color": lamp, "line-width": 4.5 },
           layout: { "line-cap": "round", "line-join": "round" } },
+
+        /* The progression on the route itself, on every route (it was drawn beside the line, and only on the route being
+           walked - Kerem: "I can't see the route's chord colors"). Hue follows the chord root, so the same root always looks
+           the same; the chord playing now is wider, ringed in white; the pointer over a chord lifts it. */
+        { id: "prog-active-ring", type: "line", source: "progseg", filter: ["==", ["get", "active"], 1],
+          paint: { "line-color": ink, "line-width": 15, "line-opacity": 0.95 },
+          layout: { "line-cap": "butt", "line-join": "round" } },
+        { id: "prog-seg", type: "line", source: "progseg",
+          paint: { "line-color": ["get", "colour"],
+                   "line-width": ["case", ["==", ["get", "active"], 1], 10, ["boolean", ["feature-state", "hover"], false], 8.5, 6.5],
+                   "line-opacity": ["case", ["==", ["get", "active"], 1], 1, ["boolean", ["feature-state", "hover"], false], 1, 0.92] },
+          layout: { "line-cap": "butt", "line-join": "round" } },
 
         { id: "point-halo", type: "circle", source: "features",
           filter: ["==", ["geometry-type"], "Point"],
@@ -3676,36 +3717,6 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           filter: ["==", ["geometry-type"], "LineString"],
           paint: { "line-color": lamp, "line-width": 2, "line-dasharray": [2, 1.5] },
           layout: { "line-cap": "round", "line-join": "round" } },
-        /* The seven sectors, faint under everything. The one you are in lifts. */
-        { id: "sector-fill", type: "fill", source: "sectors",
-          paint: { "fill-color": ["get", "colour"],
-                   "fill-opacity": ["case", ["==", ["get", "active"], 1], 0.22, 0.10] } },
-        { id: "sector-line", type: "line", source: "sectors",
-          paint: { "line-color": ["get", "colour"],
-                   "line-width": ["case", ["==", ["get", "active"], 1], 2, 1],
-                   "line-opacity": 0.7 } },
-
-        /* The progression drawn alongside the route rather than over it: the line stays the
-           line, and the colour is an annotation you can read at a glance. Hue follows the
-           chord root, so the same root always looks the same. */
-        { id: "prog-seg", type: "line", source: "progseg",
-          paint: { "line-color": ["get", "colour"], "line-width": 5, "line-opacity": 0.85,
-                   "line-offset": 8 },
-          layout: { "line-cap": "butt", "line-join": "round" } },
-        { id: "prog-active", type: "line", source: "progseg",
-          filter: ["==", ["get", "active"], 1],
-          paint: { "line-color": ["get", "colour"], "line-width": 11, "line-opacity": 1,
-                   "line-offset": 8 },
-          layout: { "line-cap": "butt", "line-join": "round" } },
-
-        { id: "zone-fill", type: "fill", source: "zones",
-          paint: { "fill-color": ["case", ["==", ["get", "inside"], 1], lamp, accent],
-                   "fill-opacity": ["case", ["==", ["get", "inside"], 1], 0.34, 0.16] } },
-        { id: "zone-line", type: "line", source: "zones",
-          paint: { "line-color": ["case", ["==", ["get", "inside"], 1], lamp, accent],
-                   "line-width": ["case", ["==", ["get", "inside"], 1], 2.4, 1.4],
-                   "line-opacity": 0.9 } },
-
         /* Your position, drawn with its uncertainty rather than as a confident dot —
            under canopy a fix can be 30m out, and the map should say so. */
         { id: "here-accuracy", type: "fill", source: "here",
@@ -3786,7 +3797,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         getPlaceSnapshot(p.properties.id).then(function (snap) {
           if (snap && snap.features) {
             mergeRemote(snap.features);
-            map.getSource("features").setData({ type: "FeatureCollection", features: visible() });
+            map.getSource("features").setData({ type: "FeatureCollection", features: visible() }); drawProgSegments();
             renderList();
           }
           selectLinkedRoute();
@@ -4015,7 +4026,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     worldApplied = true;
     document.body.classList.toggle("world", on);
     if (on) { fetchWorld(); }
-    map.getSource("features").setData({ type: "FeatureCollection", features: visible() });
+    map.getSource("features").setData({ type: "FeatureCollection", features: visible() }); drawProgSegments();
     if (on) {
       worldStart();
     } else {
@@ -4208,7 +4219,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   }
 
   function commit() {
-    map.getSource("features").setData({ type: "FeatureCollection", features: visible() });
+    map.getSource("features").setData({ type: "FeatureCollection", features: visible() }); drawProgSegments();
     save();                 /* which refreshes the pending count — see save() */
     renderList();
     renderStats();
@@ -4255,6 +4266,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (mode === "route" && draft.length > 1) { e.preventDefault(); finishRoute(); }
   });
 
+  map.once("load", function () { hoverLayers(); drawProgSegments(); });
   map.on("mousemove", function (e) {
     var r = $("#readout");
     r.children[0].innerHTML = "<b>lat</b> " + e.lngLat.lat.toFixed(5);
@@ -7046,20 +7058,40 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   }
 
   function drawProgSegments() {
-    if (!map.getSource("progseg")) { return; }
+    if (!map || !map.getSource("progseg")) { return; }
     var feats = [];
-    /* pacer.m is null in open world until a route is in reach (Task 8) — nothing to draw a
-       route's chord segments onto until then. */
-    if (pacer && pacer.patch && pacer.patch.prog && pacer.m) {
-      var n = pacer.patch.prog.length;
+    /* every route in view, each its own progression; the route being walked (open world: the one in reach; a place: the
+       walk's) lights its chord now */
+    var playing = pacer ? (pacer.world ? pacer.routeId : (pacer.f && pacer.f.properties.id)) : null;
+    visible().forEach(function (f) {
+      if (f.geometry.type !== "LineString" || f.properties.kind !== "route" || f.geometry.coordinates.length < 2) { return; }
+      var patch = patchOf(f);
+      if (!patch || !patch.prog || !patch.prog.length) { return; }
+      var m = routeMetrics(f), n = patch.prog.length, here = f.properties.id === playing;
+      if (!(m.total > 0)) { return; }
       for (var i = 0; i < n; i++) {
         feats.push({ type: "Feature",
-          properties: { step: i, colour: rootColour(chordRoot(pacer.patch, i)),
-                        active: harmony.chord === i ? 1 : 0 },
-          geometry: { type: "LineString", coordinates: segmentCoords(pacer.m, i / n, (i + 1) / n) } });
+          properties: { route: f.properties.id, step: i, colour: rootColour(chordRoot(patch, i)),
+                        active: here && harmony.chord === i ? 1 : 0 },
+          geometry: { type: "LineString", coordinates: segmentCoords(m, i / n, (i + 1) / n) } });
       }
-    }
+    });
     map.getSource("progseg").setData({ type: "FeatureCollection", features: feats });
+  }
+  /* the pointer over a section, a zone or a chord lifts it (feature-state "hover"); one of each at a time */
+  function hoverLayers() {
+    var on = {};
+    [["sector-fill", "sectors"], ["zone-fill", "zones"], ["prog-seg", "progseg"]].forEach(function (lp) {
+      map.on("mousemove", lp[0], function (e) {
+        var f = e.features && e.features[0]; if (!f || f.id == null) { return; }
+        if (on[lp[1]] === f.id) { return; }
+        if (on[lp[1]] != null) { map.setFeatureState({ source: lp[1], id: on[lp[1]] }, { hover: false }); }
+        on[lp[1]] = f.id; map.setFeatureState({ source: lp[1], id: f.id }, { hover: true });
+      });
+      map.on("mouseleave", lp[0], function () {
+        if (on[lp[1]] != null) { map.setFeatureState({ source: lp[1], id: on[lp[1]] }, { hover: false }); on[lp[1]] = null; }
+      });
+    });
   }
 
   /* ---------- Sectors ----------
@@ -14574,7 +14606,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   }
 
   function render() {
-    map.getSource("features").setData({ type: "FeatureCollection", features: visible() });
+    map.getSource("features").setData({ type: "FeatureCollection", features: visible() }); drawProgSegments();
     renderList();
     renderLabels();
   }
@@ -14829,7 +14861,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       setBase: function (name) { var b = document.querySelector("[data-base='" + name + "']"); if (b) { b.click(); } changed(); },
       setBoundary: function (v) { setForest(v ? "frame" : "off"); changed(); },
       setLayer: function (which, v) {
-        (which === "zones" ? ["zone-fill", "zone-line"] : ["sector-fill", "sector-line"]).forEach(function (id) {
+        (which === "zones" ? ["zone-fill", "zone-line"] : ["sector-fill", "sector-line", "sector-line-active"]).forEach(function (id) {
           if (map.getLayer(id)) { map.setLayoutProperty(id, "visibility", v ? "visible" : "none"); }
         });
         changed();
