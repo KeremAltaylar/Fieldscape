@@ -48,7 +48,7 @@
   var TEMPLATES = [
     { id: "today", label: "Today's sound", comp: tmpl(function () {}) },
     { id: "arp-strum-pedal", label: "Arpeggio · Strum · Pedal", comp: tmpl(function (c) {
-        c.voice = Object.assign(c.voice, { style: "arpeggio", rate: "16n", lo: 55, hi: 84, grid: FIELDS.arpeggio[0].def });
+        c.voice = Object.assign(c.voice, { style: "arpeggio", rate: "16n", lo: 55, hi: 84, grid: FIELDS.arpeggio[0].def.slice() });
         c.sect = Object.assign(c.sect, { style: "strum", rate: "2n", tones: [0, 1, 2, 3], spread: 50, lo: 50, hi: 74 });
         c.v3 = Object.assign(c.v3, { style: "pedal", rate: "1n", pedal: "fifth", lo: 43, hi: 62 }); }) },
     { id: "pulse", label: "Euclidean pulse", comp: tmpl(function (c) {
@@ -62,12 +62,14 @@
   function key(scope) { return scope.kind === "zone" ? scope.id : String(scope.i); }
   function scopeObj(comp, scope, create) {
     if (scope.kind === "route") { return comp; }
+    if (scope.kind !== "zone" && scope.i === undefined) { return null; }
     var m = comp.over[scope.kind], k = key(scope);
     if (!m[k] && create) { m[k] = scope.kind === "zone" ? { when: "inside", blend: 1 } : {}; }
     return m[k] || null;
   }
   function setValue(comp, scope, voice, k, v) {
     var o = scopeObj(comp, scope, true);
+    if (!o) { return; }
     o[voice] = o[voice] || {};
     o[voice][k] = v;
   }
@@ -80,9 +82,11 @@
     if (emptyOver(o)) { delete comp.over[scope.kind][key(scope)]; }
   }
   function clearScope(comp, scope) { if (scope.kind !== "route") { delete comp.over[scope.kind][key(scope)]; } }
-  function fieldDef(k) {
-    var all = COMMON.concat(BASS); Object.keys(FIELDS).forEach(function (s) { all = all.concat(FIELDS[s]); });
-    for (var i = 0; i < all.length; i++) { if (all[i].k === k) { return all[i].def; } }
+  function fieldDef(k, style) {
+    var searchList = COMMON.concat(BASS);
+    if (style && FIELDS[style]) { searchList = searchList.concat(FIELDS[style]); }
+    Object.keys(FIELDS).forEach(function (s) { if (!style || s !== style) { searchList = searchList.concat(FIELDS[s]); } });
+    for (var i = 0; i < searchList.length; i++) { if (searchList[i].k === k) { return searchList[i].def; } }
     return undefined;
   }
   /* what a scope shows for a voice: its own values ("here") over the route's ("route"); every field of the voice's style */
@@ -92,21 +96,25 @@
     var style = own.style || base.style || "free";
     var keys = voice === "bass" ? BASS.map(function (f) { return f.k; }) : COMMON.concat(FIELDS[style] || []).map(function (f) { return f.k; });
     keys.forEach(function (k) {
-      if (own[k] !== undefined) { values[k] = own[k]; source[k] = "here"; }
-      else { values[k] = base[k] !== undefined ? base[k] : fieldDef(k); source[k] = "route"; }
+      var v;
+      if (own[k] !== undefined) { v = own[k]; source[k] = "here"; }
+      else { v = base[k] !== undefined ? base[k] : fieldDef(k, style); source[k] = "route"; }
+      if (Array.isArray(v)) { v = v.slice(); }
+      values[k] = v;
     });
     return { values: values, source: source, style: style };
   }
   /* a lane cell: chord i, with the bands over it; zone > chord > section > route */
   function cell(comp, i, bandsAt) {
     return VOICES.map(function (v) {
-      var out = { style: comp[v].style, source: "route" };
+      var style = comp[v].style, styleSource = "route", role = comp[v].role, roleSource = "route";
       (bandsAt || []).filter(function (b) { return b.kind === "section"; }).forEach(function (b) {
-        var o = comp.over.section[String(b.id)]; if (o && o[v] && o[v].style) { out = { style: o[v].style, source: "section" }; } });
-      var ch = comp.over.chord[String(i)]; if (ch && ch[v] && ch[v].style) { out = { style: ch[v].style, source: "chord" }; }
+        var o = comp.over.section[String(b.id)]; if (o && o[v]) { if (o[v].style) { style = o[v].style; styleSource = "section"; } if (o[v].role) { role = o[v].role; roleSource = "section"; } } });
+      var ch = comp.over.chord[String(i)]; if (ch && ch[v]) { if (ch[v].style) { style = ch[v].style; styleSource = "chord"; } if (ch[v].role) { role = ch[v].role; roleSource = "chord"; } }
       (bandsAt || []).filter(function (b) { return b.kind === "zone"; }).forEach(function (b) {
-        var o = comp.over.zone[b.id]; if (o && o[v] && (o[v].style || o[v].role)) { out = { style: o[v].role === "off" ? "off" : (o[v].style || comp[v].style), source: "zone" }; } });
-      if (out.source === "route" && comp[v].role === "off") { out.style = "off"; }
+        var o = comp.over.zone[b.id]; if (o && o[v]) { if (o[v].style) { style = o[v].style; styleSource = "zone"; } if (o[v].role) { role = o[v].role; roleSource = "zone"; } } });
+      var out = { style: role === "off" ? "off" : style, source: styleSource };
+      if (role === "off" && styleSource !== "route") { out.source = roleSource; }
       return out;
     });
   }
@@ -118,6 +126,7 @@
     return c; }
   /* where each section and zone crosses the route, as [t0, t1] shares of its length (sampled every ~2 m) */
   function bands(coords, sections, zones) {
+    if (!coords || coords.length < 2) { return []; }
     var cum = [0]; for (var i = 1; i < coords.length; i++) { cum.push(cum[i - 1] + dist(coords[i - 1], coords[i])); }
     var total = cum[cum.length - 1] || 1, n = Math.max(20, Math.min(2000, Math.round(total / 2))), pts = [];
     for (var s = 0; s <= n; s++) { var d = s / n * total, k = 1; while (k < cum.length - 1 && cum[k] < d) { k++; }

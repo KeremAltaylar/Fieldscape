@@ -53,3 +53,63 @@ test("templates and the summary", () => {
   assert.equal(M.summary(t), "Arpeggio · Strum · Pedal");
   assert.equal(M.summary(M.defaults()), "Free · Free · Free");
 });
+
+// Fix round 1 regression tests
+
+test("Fix 1: template arrays are cloned, not referenced", () => {
+  const t1 = M.TEMPLATES.find((x) => x.id === "arp-strum-pedal").comp();
+  t1.voice.grid[0] = 9;
+  const t2 = M.TEMPLATES.find((x) => x.id === "arp-strum-pedal").comp();
+  assert.equal(t2.voice.grid[0], 0, "editing one template instance corrupted another");
+  assert.equal(M.FIELDS.arpeggio[0].def[0], 0, "editing a template corrupted FIELDS");
+});
+
+test("Fix 2: zone role-only override preserves style from chord/section", () => {
+  const c = M.defaults();
+  M.setValue(c, { kind: "chord", i: 5 }, "voice", "style", "strum");
+  M.setValue(c, { kind: "zone", id: "z" }, "voice", "role", "accomp");
+  const cell = M.cell(c, 5, [{ kind: "zone", id: "z" }])[0];
+  assert.equal(cell.style, "strum", "zone role-only override lost chord style");
+});
+
+test("Fix 3a: chord-level role off is honoured in cell", () => {
+  const c = M.defaults();
+  M.setValue(c, { kind: "chord", i: 3 }, "voice", "role", "off");
+  const cell = M.cell(c, 3, [])[0];
+  assert.equal(cell.style, "off", "chord role off not resolved");
+});
+
+test("Fix 3b: route role off is honoured even with chord style set", () => {
+  const c = M.defaults();
+  M.setValue(c, { kind: "route" }, "voice", "role", "off");
+  M.setValue(c, { kind: "chord", i: 2 }, "voice", "style", "pedal");
+  const cell = M.cell(c, 2, [])[0];
+  assert.equal(cell.style, "off", "route role off was overridden by chord style");
+});
+
+test("Fix 4: fieldDef resolves by style first", () => {
+  const eulcidGrid = M.FIELDS.euclid.find((x) => x.k === "grid").def;
+  const arpeggioGrid = M.FIELDS.arpeggio.find((x) => x.k === "grid").def;
+  assert.notDeepEqual(eulcidGrid, arpeggioGrid, "euclid and arpeggio have different grid defaults");
+  assert.equal(eulcidGrid[1], 2, "euclid grid's second element should be 2");
+  assert.equal(arpeggioGrid[1], 1, "arpeggio grid's second element should be 1");
+  const swellsTones = M.FIELDS.swells.find((x) => x.k === "tones").def;
+  const strumTones = M.FIELDS.strum.find((x) => x.k === "tones").def;
+  assert.notDeepEqual(swellsTones, strumTones, "swells and strum have different tones defaults");
+  assert.equal(swellsTones[3], 3, "swells tones should have 3 as fourth element");
+  assert.equal(strumTones.length, 3, "strum tones should have 3 elements");
+});
+
+test("Fix 5a: bands returns [] with fewer than 2 coordinates", () => {
+  assert.deepEqual(M.bands([], [], []), []);
+  assert.deepEqual(M.bands([[0, 0]], [], []), []);
+  assert.deepEqual(M.bands(null, [], []), []);
+});
+
+test("Fix 5b: setValue guards against undefined scope.i", () => {
+  const c = M.defaults();
+  M.setValue(c, { kind: "chord" }, "voice", "style", "pedal");
+  assert.equal(c.over.chord.undefined, undefined, "setValue should not create entry with undefined key");
+  M.setValue(c, { kind: "section" }, "voice", "style", "strum");
+  assert.equal(c.over.section.undefined, undefined, "setValue should not create entry with undefined key");
+});
