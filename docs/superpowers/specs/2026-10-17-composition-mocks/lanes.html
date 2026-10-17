@@ -1,0 +1,68 @@
+<style>
+  .dock { background:#222b27; border:1px solid #36403b; border-radius:6px; padding:8px 10px; font:11px/1.3 ui-monospace,monospace; color:#b3b9b4; position:relative; }
+  .row { display:flex; align-items:center; gap:6px; margin:3px 0; }
+  .nm { width:92px; color:#9ca49d; font-size:10px; flex:none; }
+  .strip { flex:1; display:flex; gap:2px; position:relative; }
+  .c { flex:1; height:20px; border-radius:3px; background:#2e3833; position:relative; font-size:9px; color:#e3e7e4; display:flex; align-items:center; justify-content:center; }
+  .ch i { flex:1; height:12px; border-radius:2px; display:block; }
+  .tag { position:absolute; top:-3px; right:-2px; width:8px; height:8px; border-radius:50%; }
+  .t-ch { background:#e3e7e4; }
+  .t-z { border:2px solid #bae6b1; background:#222b27; }
+  .t-s { background:#d8a24a; border-radius:1px; transform:rotate(45deg); }
+  .band { position:absolute; top:0; bottom:0; border-radius:3px; }
+  .eff { background:#3a4a40; }
+  .lg { color:#9ca49d; font-size:10px; margin-top:6px; }
+  .lg b { color:#e3e7e4; font-weight:normal; }
+</style>
+<h2>How does a voice lane show where its settings come from?</h2>
+<p class="subtitle">The timeline runs along the route: 16 chords, left to right. Zones and sections cross the route somewhere along it, so they can show as bands on the same timeline. Precedence: zone &gt; chord &gt; section &gt; route.</p>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>One lane per voice, the result in each cell, a tag for what overrides it</h3>
+      <div class="dock">
+        <div class="row"><span class="nm">chords</span><span class="strip ch"><i style="background:#c88"></i><i style="background:#c88"></i><i style="background:#8bc"></i><i style="background:#8bc"></i><i style="background:#bc8"></i><i style="background:#bc8"></i><i style="background:#a8c"></i><i style="background:#a8c"></i></span></div>
+        <div class="row"><span class="nm">voice 1</span><span class="strip"><span class="c">arp</span><span class="c">arp</span><span class="c">strum<b class="tag t-ch"></b></span><span class="c">arp</span><span class="c">point.<b class="tag t-z"></b></span><span class="c">point.<b class="tag t-z"></b></span><span class="c">arp</span><span class="c">arp</span></span></div>
+        <div class="row"><span class="nm">voice 2</span><span class="strip"><span class="c">motif</span><span class="c">A↑2</span><span class="c">A inv</span><span class="c">frag</span><span class="c">motif</span><span class="c">swell<b class="tag t-s"></b></span><span class="c">swell<b class="tag t-s"></b></span><span class="c">cad.<b class="tag t-ch"></b></span></span></div>
+        <div class="row"><span class="nm">voice 3</span><span class="strip"><span class="c">pedal</span><span class="c">pedal</span><span class="c">pedal</span><span class="c">pedal</span><span class="c">—<b class="tag t-z"></b></span><span class="c">—<b class="tag t-z"></b></span><span class="c">pedal</span><span class="c">pedal</span></span></div>
+        <div class="lg">tags: <b>●</b> chord · <b>○</b> zone · <b>◆</b> section · none = route default. Compact; the source is a small mark.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Each voice opens into its layers, like automation lanes</h3>
+      <div class="dock">
+        <div class="row"><span class="nm">chords</span><span class="strip ch"><i style="background:#c88"></i><i style="background:#c88"></i><i style="background:#8bc"></i><i style="background:#8bc"></i><i style="background:#bc8"></i><i style="background:#bc8"></i><i style="background:#a8c"></i><i style="background:#a8c"></i></span></div>
+        <div class="row"><span class="nm" style="color:#e3e7e4">▾ voice 1 = </span><span class="strip"><span class="c eff">arp</span><span class="c eff">arp</span><span class="c eff">strum</span><span class="c eff">arp</span><span class="c eff">point.</span><span class="c eff">point.</span><span class="c eff">arp</span><span class="c eff">arp</span></span></div>
+        <div class="row"><span class="nm">  zone</span><span class="strip"><span class="c" style="opacity:.25"></span><span class="c" style="opacity:.25"></span><span class="c" style="opacity:.25"></span><span class="c" style="opacity:.25"></span><span class="c" style="outline:1.5px solid #bae6b1">point.</span><span class="c" style="outline:1.5px solid #bae6b1">point.</span><span class="c" style="opacity:.25"></span><span class="c" style="opacity:.25"></span></span></div>
+        <div class="row"><span class="nm">  chord</span><span class="strip"><span class="c" style="opacity:.25"></span><span class="c" style="opacity:.25"></span><span class="c" style="outline:1.5px solid #e3e7e4">strum</span><span class="c" style="opacity:.25"></span><span class="c" style="opacity:.25"></span><span class="c" style="opacity:.25"></span><span class="c" style="opacity:.25"></span><span class="c" style="opacity:.25"></span></span></div>
+        <div class="row"><span class="nm">  section</span><span class="strip"><span class="c" style="opacity:.25"></span><span class="c" style="opacity:.25"></span><span class="c" style="opacity:.25"></span><span class="c" style="opacity:.25"></span><span class="c" style="opacity:.25"></span><span class="c" style="opacity:.25"></span><span class="c" style="opacity:.25"></span><span class="c" style="opacity:.25"></span></span></div>
+        <div class="row"><span class="nm">  route</span><span class="strip"><span class="c">arp</span><span class="c">arp</span><span class="c">arp</span><span class="c">arp</span><span class="c">arp</span><span class="c">arp</span><span class="c">arp</span><span class="c">arp</span></span></div>
+        <div class="row"><span class="nm">▸ voice 2 = </span><span class="strip"><span class="c eff">motif</span><span class="c eff">A↑2</span><span class="c eff">A inv</span><span class="c eff">frag</span><span class="c eff">motif</span><span class="c eff">swell</span><span class="c eff">swell</span><span class="c eff">cad.</span></span></div>
+        <div class="lg">Explicit: every layer visible, you click into the layer you mean to edit. Takes height; one voice open at a time.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Lanes per voice, zones and sections as bands over the timeline</h3>
+      <div class="dock">
+        <div class="row"><span class="nm">chords</span><span class="strip ch"><i style="background:#c88"></i><i style="background:#c88"></i><i style="background:#8bc"></i><i style="background:#8bc"></i><i style="background:#bc8"></i><i style="background:#bc8"></i><i style="background:#a8c"></i><i style="background:#a8c"></i></span></div>
+        <div class="row"><span class="nm">sections</span><span class="strip" style="height:14px"><span class="band" style="left:0;width:37%;background:rgba(216,162,74,.18);border:1px dashed rgba(216,162,74,.6)"></span><span class="band" style="left:37%;width:63%;background:rgba(138,160,200,.16);border:1px dashed rgba(138,160,200,.6)"></span></span></div>
+        <div class="row"><span class="nm">zones</span><span class="strip" style="height:14px"><span class="band" style="left:50%;width:24%;background:rgba(186,230,177,.2);border:1.5px solid #bae6b1">pond zone</span></span></div>
+        <div class="row"><span class="nm">voice 1</span><span class="strip"><span class="c">arp</span><span class="c">arp</span><span class="c" style="outline:1.5px solid #e3e7e4">strum</span><span class="c">arp</span><span class="c" style="background:#35503a">point.</span><span class="c" style="background:#35503a">point.</span><span class="c">arp</span><span class="c">arp</span></span></div>
+        <div class="row"><span class="nm">voice 2</span><span class="strip"><span class="c">motif</span><span class="c">A↑2</span><span class="c">A inv</span><span class="c">frag</span><span class="c">motif</span><span class="c" style="background:#4a4430">swell</span><span class="c" style="background:#4a4430">swell</span><span class="c" style="outline:1.5px solid #e3e7e4">cad.</span></span></div>
+        <div class="row"><span class="nm">voice 3</span><span class="strip"><span class="c">pedal</span><span class="c">pedal</span><span class="c">pedal</span><span class="c">pedal</span><span class="c" style="background:#35503a">—</span><span class="c" style="background:#35503a">—</span><span class="c">pedal</span><span class="c">pedal</span></span></div>
+        <div class="lg">You see <b>where</b> along the walk each zone and section acts; a cell tinted by the band that changed it, outlined when a chord did. Click a band to edit that zone/section; click a cell to edit that chord.</div>
+      </div>
+    </div>
+  </div>
+</div>
+<p class="subtitle" style="margin-top:12px">My recommendation is <b>C</b>, with B's layered view available on demand (a "show layers" toggle per voice) for when you need to see exactly what is hiding under a zone.</p>

@@ -1,0 +1,62 @@
+<style>
+  .ed { background:#222b27; border:1px solid #36403b; border-radius:6px; padding:10px; font:10px/1.35 ui-monospace,monospace; color:#9ca49d; }
+  .h { color:#e3e7e4; font:600 13px Georgia,serif; margin-bottom:6px; }
+  .grid { display:grid; grid-template-columns:40px repeat(16,1fr); gap:1px; }
+  .grid .k { text-align:right; padding-right:4px; font-size:9px; align-self:center; }
+  .grid .s { height:13px; background:#1a221e; }
+  .grid .s.b { background:#1f2924; }
+  .on { background:#bbceb5 !important; border-radius:2px; }
+  .acc { background:#e3e7e4 !important; border-radius:2px; }
+  .vel { display:grid; grid-template-columns:40px repeat(16,1fr); gap:1px; margin-top:3px; align-items:end; height:22px; }
+  .vel i { background:#3a4a40; display:block; }
+  .lane { display:flex; align-items:center; gap:6px; margin:4px 0; }
+  .lane .nm { width:62px; }
+  .lane .bar { flex:1; height:16px; border-radius:3px; background:#2e3833; position:relative; }
+  .link { position:absolute; border:1.5px solid #bae6b1; border-left:none; border-radius:0 8px 8px 0; }
+  .pill { display:inline-block; border:1px solid #36403b; border-radius:10px; padding:1px 7px; margin:2px; color:#e3e7e4; }
+  .r { display:grid; grid-template-columns:90px 1fr 60px; gap:6px; margin:4px 0; align-items:center; }
+  .r span:first-child { text-transform:uppercase; letter-spacing:.04em; }
+  .src { text-align:right; font-size:9px; }
+  .mine .src { color:#bae6b1; }
+  .inh { opacity:.45; }
+</style>
+<h2>The remaining editors (one proposal, to check)</h2>
+<p class="subtitle">All three open in the inspector; the pattern grid and relations can grow into the full-height dock.</p>
+
+<div class="split">
+  <div class="ed">
+    <div class="h">Style pattern · voice 1 · arpeggio</div>
+    <div class="grid">
+      <span class="k">9</span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s on"></span><span class="s"></span><span class="s"></span><span class="s"></span>
+      <span class="k">7</span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s on"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s on"></span><span class="s"></span>
+      <span class="k">5</span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s on"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s on"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span>
+      <span class="k">3</span><span class="s"></span><span class="s"></span><span class="s on"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s on"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span>
+      <span class="k">root</span><span class="s acc"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s acc"></span>
+    </div>
+    <div class="vel"><span></span><i style="height:100%"></i><i style="height:0"></i><i style="height:55%"></i><i style="height:0"></i><i style="height:70%"></i><i style="height:0"></i><i style="height:55%"></i><i style="height:0"></i><i style="height:60%"></i><i style="height:0"></i><i style="height:55%"></i><i style="height:0"></i><i style="height:60%"></i><i style="height:0"></i><i style="height:50%"></i><i style="height:90%"></i></div>
+    <div style="margin-top:6px">rows = chord degrees (as the motif); columns = steps of the rate; the bars under it = each step's accent. Presets fill it: <span class="pill">up</span><span class="pill">down</span><span class="pill">up-down</span><span class="pill">1-5-8-10</span><span class="pill">Alberti</span>, then you edit any cell. Ostinato uses the same grid; strum/chorale show a voicing picker instead.</div>
+  </div>
+
+  <div class="ed">
+    <div class="h">Relations · drawn on the voice lanes</div>
+    <div class="lane"><span class="nm">voice 1</span><span class="bar"><span class="link" style="left:20%;top:8px;width:18%;height:22px"></span></span></div>
+    <div class="lane"><span class="nm">voice 2</span><span class="bar" style="outline:1px dashed #bae6b1"></span></div>
+    <div class="lane"><span class="nm">voice 3</span><span class="bar"></span></div>
+    <div style="margin:4px 0 8px">a canon: voice 2 follows voice 1, 2 beats later, ↑ a 3rd. Drawn as a link between the lanes over the chords where it applies.</div>
+    <div class="r"><span>relation</span><span style="color:#e3e7e4">canon</span><span></span></div>
+    <div class="r"><span>leader → follower</span><span style="color:#e3e7e4">voice 1 → voice 2</span><span></span></div>
+    <div class="r"><span>delay</span><span style="color:#e3e7e4">2 beats</span><span></span></div>
+    <div class="r"><span>transform</span><span style="color:#e3e7e4">↑ 3rd · none</span><span></span></div>
+    <div style="margin-top:4px">others: <span class="pill">call &amp; response</span><span class="pill">hocket</span><span class="pill">heterophony</span><span class="pill">motion rule</span><span class="pill">unison</span><span class="pill">shared density</span> — added from a "+ relation" menu, each with its span on the chords.</div>
+  </div>
+</div>
+
+<div class="ed" style="margin-top:12px;max-width:560px">
+  <div class="h">Zone "Pond" · Voices here</div>
+  <div style="margin-bottom:6px">when: <span class="pill" style="border-color:#bae6b1">while inside</span><span class="pill">on entering (one phrase)</span> &nbsp; blend: <span class="pill">at the next bar</span></div>
+  <div class="r mine"><span>voice 1 style</span><span>pointillist</span><span class="src">here ×</span></div>
+  <div class="r mine"><span>voice 3</span><span>off</span><span class="src">here ×</span></div>
+  <div class="r inh"><span>voice 2 style</span><span>motif</span><span class="src">route</span></div>
+  <div class="r mine"><span>relation</span><span>voice 2 answers voice 1</span><span class="src">here ×</span></div>
+  <div style="margin-top:6px">the same inspector as a chord (B), opened from the zone on the map or its band in the dock; only the "when" and "blend" lines are its own.</div>
+</div>

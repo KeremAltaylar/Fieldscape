@@ -1,0 +1,57 @@
+<style>
+  .ins { background:#222b27; border:1px solid #36403b; border-radius:6px; padding:10px 12px; width:300px; font:11px/1.35 ui-monospace,monospace; color:#b3b9b4; }
+  .h { color:#e3e7e4; font:600 13px Georgia,serif; }
+  .sub { color:#9ca49d; font-size:10px; margin-bottom:8px; }
+  .r { display:grid; grid-template-columns:96px 1fr 70px; align-items:center; gap:6px; margin:5px 0; }
+  .r span:first-child { color:#9ca49d; text-transform:uppercase; letter-spacing:.04em; font-size:10px; }
+  .bar { height:4px; border-radius:2px; background:#36403b; position:relative; }
+  .bar b { position:absolute; left:0; top:0; bottom:0; border-radius:2px; background:#bbceb5; }
+  .inh { opacity:.45; }
+  .src { font-size:9px; color:#9ca49d; text-align:right; }
+  .mine .src { color:#bae6b1; }
+  .x { color:#e3e7e4; cursor:pointer; }
+  .add { margin-top:8px; border:1px dashed #36403b; border-radius:5px; padding:6px; color:#9ca49d; }
+  .pill { display:inline-block; border:1px solid #36403b; border-radius:10px; padding:1px 7px; margin:2px; color:#e3e7e4; font-size:10px; }
+  .colh { color:#9ca49d; font-size:9px; text-transform:uppercase; }
+</style>
+<h2>The inspector: chord 5 selected, voice 1</h2>
+<p class="subtitle">Here the route says "arpeggio, up, rate 1/8". Chord 5 changes only the pattern and the rate. How should that read?</p>
+
+<div class="cards">
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:10px"><div class="ins">
+      <div class="h">Voice 1 · chord 5</div><div class="sub">changes 2 settings here</div>
+      <div class="r mine"><span>pattern</span><span>up-down</span><span class="src">here <b class="x">×</b></span></div>
+      <div class="r mine"><span>rate</span><div class="bar"><b style="width:60%"></b></div><span class="src">1/16 <b class="x">×</b></span></div>
+      <div class="add">+ change another setting here<br><span class="pill">style</span><span class="pill">span</span><span class="pill">tones</span><span class="pill">register</span><span class="pill">variation</span>…</div>
+    </div></div>
+    <div class="card-body"><h3>A · Only what changes here</h3><p>Short and clean: the inspector lists just the overrides, and a "+" adds another. You don't see the inherited values without leaving.</p></div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:10px"><div class="ins">
+      <div class="h">Voice 1 · chord 5</div><div class="sub">style arpeggio · from route</div>
+      <div class="r inh"><span>style</span><span>arpeggio</span><span class="src">route</span></div>
+      <div class="r mine"><span>pattern</span><span>up-down</span><span class="src">here <b class="x">×</b></span></div>
+      <div class="r inh"><span>span</span><div class="bar"><b style="width:40%"></b></div><span class="src">route</span></div>
+      <div class="r inh"><span>tones</span><span>1 3 5 7</span><span class="src">route</span></div>
+      <div class="r mine"><span>rate</span><div class="bar"><b style="width:60%"></b></div><span class="src">here <b class="x">×</b></span></div>
+      <div class="r inh"><span>register</span><div class="bar"><b style="width:55%"></b></div><span class="src">section ◆</span></div>
+      <div class="r inh"><span>variation</span><div class="bar"><b style="width:10%"></b></div><span class="src">route</span></div>
+    </div></div>
+    <div class="card-body"><h3>B · Everything, inherited ones dimmed</h3><p>Every setting shows, with where its value comes from (route / section / here). Moving a dimmed one makes it an override at once (it lights, gets ×). One place to read the whole state. My recommendation.</p></div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:10px"><div class="ins" style="width:320px">
+      <div class="h">Voice 1 · chord 5</div>
+      <div class="r"><span></span><span class="colh">inherited</span><span class="colh">here</span></div>
+      <div class="r"><span>style</span><span class="inh">arpeggio</span><span class="src">—</span></div>
+      <div class="r"><span>pattern</span><span class="inh">up</span><span class="src" style="color:#bae6b1">up-down ×</span></div>
+      <div class="r"><span>span</span><span class="inh">2 oct</span><span class="src">—</span></div>
+      <div class="r"><span>rate</span><span class="inh">1/8</span><span class="src" style="color:#bae6b1">1/16 ×</span></div>
+      <div class="r"><span>register</span><span class="inh">C3–C5 ◆</span><span class="src">—</span></div>
+    </div></div>
+    <div class="card-body"><h3>C · Two columns: inherited | here</h3><p>A table: what you'd get, and what this scope sets. Precise, reads like a diff, but the controls become values rather than knobs.</p></div>
+  </div>
+</div>

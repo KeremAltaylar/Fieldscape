@@ -1,0 +1,83 @@
+<style>
+  .scr { background:#0d1310; border:1px solid #36403b; border-radius:6px; height:300px; position:relative; overflow:hidden; font:11px/1.3 ui-monospace,monospace; color:#b3b9b4; }
+  .mapz { position:absolute; background:linear-gradient(135deg,#1f3a24,#2c4a2e 40%,#3a3a2c); }
+  .route { position:absolute; height:5px; border-radius:3px; }
+  .zone { position:absolute; border:1.5px solid rgba(227,231,228,.7); border-radius:50%; }
+  .pnl { position:absolute; background:#222b27; border:1px solid #36403b; border-radius:6px; padding:6px; box-sizing:border-box; }
+  .ttl { color:#e3e7e4; font:600 12px Georgia,serif; margin-bottom:4px; }
+  .lane { height:16px; border-radius:3px; margin:3px 0; display:flex; gap:2px; }
+  .cell { flex:1; border-radius:2px; background:#2e3833; }
+  .chords { display:flex; gap:2px; height:12px; margin-bottom:4px; }
+  .chords i { flex:1; border-radius:2px; }
+  .ovr { background:#bae6b1 !important; }
+  .knob { display:inline-block; width:18px; height:18px; border-radius:50%; border:2px solid #9ca49d; margin:3px; }
+  .lbl { color:#9ca49d; font-size:10px; }
+</style>
+<h2>Where does composing live?</h2>
+<p class="subtitle">Desk only. The chords run along the route on the map, and zones and sections are places on it, so the question is how much map you keep while editing the voices.</p>
+
+<div class="cards">
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image"><div class="scr">
+      <div class="mapz" style="left:0;top:0;right:330px;bottom:0"></div>
+      <div class="route" style="left:60px;top:150px;width:300px;background:linear-gradient(90deg,#c88 0 25%,#8bc 25% 50%,#bc8 50% 75%,#a8c 75%)"></div>
+      <div class="zone" style="left:170px;top:110px;width:70px;height:70px"></div>
+      <div class="pnl" style="right:6px;top:6px;bottom:6px;width:316px">
+        <div class="ttl">Composition · Gazhane route</div>
+        <div class="chords"><i style="background:#c88"></i><i style="background:#c88"></i><i style="background:#8bc"></i><i style="background:#8bc"></i><i style="background:#bc8"></i><i style="background:#bc8"></i><i style="background:#a8c"></i><i style="background:#a8c"></i></div>
+        <div class="lbl">voice 1 · arpeggio</div><div class="lane"><span class="cell"></span><span class="cell ovr"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span></div>
+        <div class="lbl">voice 2 · motif</div><div class="lane"><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell ovr"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span></div>
+        <div class="lbl">voice 3 · pedal</div><div class="lane"><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span></div>
+        <div class="ttl" style="margin-top:8px">Voice 1 · Arpeggio</div>
+        <span class="knob"></span><span class="knob"></span><span class="knob"></span><span class="knob"></span><span class="knob"></span>
+        <div class="lbl" style="margin-top:6px">pattern grid / motif roll would open here, small</div>
+      </div>
+    </div></div>
+    <div class="card-body"><h3>A · Map + side panel</h3>
+      <p>The map stays large; a tall panel on the right holds the timeline, the lanes and the editors. Like today's patch panel, grown. Editors are cramped (a piano roll in 320 px).</p></div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image"><div class="scr">
+      <div class="mapz" style="left:6px;top:6px;width:150px;height:110px;border-radius:4px"></div>
+      <div class="route" style="left:20px;top:60px;width:120px;background:linear-gradient(90deg,#c88 0 25%,#8bc 25% 50%,#bc8 50% 75%,#a8c 75%)"></div>
+      <div class="pnl" style="left:162px;top:6px;right:186px;bottom:6px">
+        <div class="ttl">Composition · Gazhane route</div>
+        <div class="chords"><i style="background:#c88"></i><i style="background:#c88"></i><i style="background:#8bc"></i><i style="background:#8bc"></i><i style="background:#bc8"></i><i style="background:#bc8"></i><i style="background:#a8c"></i><i style="background:#a8c"></i></div>
+        <div class="lbl">voice 1</div><div class="lane" style="height:34px"><span class="cell"></span><span class="cell ovr"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span></div>
+        <div class="lbl">voice 2</div><div class="lane" style="height:34px"><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell ovr"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span></div>
+        <div class="lbl">voice 3</div><div class="lane" style="height:34px"><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span></div>
+        <div class="lbl">zones · sections rows</div><div class="lane"><span class="cell"></span><span class="cell ovr"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell ovr"></span><span class="cell"></span></div>
+      </div>
+      <div class="pnl" style="right:6px;top:6px;bottom:6px;width:174px">
+        <div class="ttl">Inspector</div><div class="lbl">what's selected</div>
+        <span class="knob"></span><span class="knob"></span><span class="knob"></span><span class="knob"></span><span class="knob"></span><span class="knob"></span>
+        <div class="lbl" style="margin-top:6px">editors full size</div>
+      </div>
+    </div></div>
+    <div class="card-body"><h3>B · Composition workspace</h3>
+      <p>A full screen of its own, like a DAW arrangement: a big timeline with tall lanes, an inspector on the right, the map shrunk to a corner. The most room for editors; the map's places become rows rather than shapes.</p></div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image"><div class="scr">
+      <div class="mapz" style="left:0;top:0;right:0;height:150px"></div>
+      <div class="route" style="left:120px;top:80px;width:460px;background:linear-gradient(90deg,#c88 0 25%,#8bc 25% 50%,#bc8 50% 75%,#a8c 75%)"></div>
+      <div class="zone" style="left:300px;top:45px;width:70px;height:70px"></div>
+      <div class="pnl" style="left:6px;right:196px;top:156px;bottom:6px">
+        <div class="chords"><i style="background:#c88"></i><i style="background:#c88"></i><i style="background:#8bc"></i><i style="background:#8bc"></i><i style="background:#bc8"></i><i style="background:#bc8"></i><i style="background:#a8c"></i><i style="background:#a8c"></i></div>
+        <div class="lbl">voice 1 · arpeggio</div><div class="lane"><span class="cell"></span><span class="cell ovr"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span></div>
+        <div class="lbl">voice 2 · motif</div><div class="lane"><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell ovr"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span></div>
+        <div class="lbl">voice 3 · pedal</div><div class="lane"><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span><span class="cell"></span></div>
+      </div>
+      <div class="pnl" style="right:6px;top:156px;bottom:6px;width:184px">
+        <div class="ttl">Inspector</div>
+        <span class="knob"></span><span class="knob"></span><span class="knob"></span><span class="knob"></span><span class="knob"></span>
+        <div class="lbl">▲ dock grows to full height for the piano roll</div>
+      </div>
+    </div></div>
+    <div class="card-body"><h3>C · Map above, timeline docked below</h3>
+      <p>The map keeps the top half with the route, zones and sections; the chord timeline and voice lanes dock underneath, with an inspector at the right. Selecting a chord cell lights its stretch of the route; selecting a zone on the map lights where it acts in the lanes. The dock can grow to full height for the bigger editors.</p></div>
+  </div>
+</div>
+<p class="subtitle" style="margin-top:14px">My recommendation is <b>C</b>: you edit in time (chords) and in space (zones, sections) at once, and both stay visible and linked.</p>

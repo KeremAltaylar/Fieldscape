@@ -1,0 +1,71 @@
+<style>
+  .ed { background:#222b27; border:1px solid #36403b; border-radius:6px; padding:10px; font:10px/1.3 ui-monospace,monospace; color:#9ca49d; }
+  .roll { display:grid; grid-template-columns:40px repeat(16,1fr); gap:1px; }
+  .roll .k { color:#9ca49d; text-align:right; padding-right:4px; font-size:9px; align-self:center; }
+  .roll .s { height:14px; background:#1a221e; }
+  .roll .s.beat { background:#1e2723; }
+  .roll .s.tone { background:#26332b; }
+  .n { background:#bae6b1 !important; border-radius:2px; }
+  .chain { display:flex; gap:6px; align-items:center; margin-top:10px; flex-wrap:wrap; }
+  .chip { border:1px solid #36403b; border-radius:12px; padding:3px 9px; color:#e3e7e4; background:#2e3833; }
+  .chip small { color:#9ca49d; }
+  .arw { color:#9ca49d; }
+  .tok { display:inline-flex; flex-direction:column; align-items:center; border:1px solid #36403b; border-radius:5px; padding:4px 6px; margin:2px; color:#e3e7e4; min-width:28px; }
+  .tok small { color:#9ca49d; }
+</style>
+<h2>The motif editor, and how it develops</h2>
+<p class="subtitle">A 4-note idea over one bar. The rows are what you write in; that choice decides whether the motif bends to every chord or keeps its own notes.</p>
+
+<div class="cards">
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:10px"><div class="ed">
+      <div class="roll">
+        <span class="k">9</span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s n"></span><span class="s n"></span><span class="s"></span><span class="s"></span>
+        <span class="k">7</span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span>
+        <span class="k">5</span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s n"></span><span class="s n"></span><span class="s n"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span>
+        <span class="k">3</span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s n"></span><span class="s n"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span>
+        <span class="k">root</span><span class="s n"></span><span class="s n"></span><span class="s n"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span>
+      </div>
+      <div style="margin-top:6px">over C maj7: C — G — E — D &nbsp;·&nbsp; over A m9: A — E — C — B</div>
+    </div></div>
+    <div class="card-body"><h3>A · Chord degrees</h3><p>Rows are the chord's own tones (root, 3, 5, 7, 9). The motif always fits: it re-voices itself on every chord. Its melody changes with the harmony, so it is recognisable by rhythm and shape more than by its exact notes.</p></div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:10px"><div class="ed">
+      <div class="roll">
+        <span class="k">6</span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span>
+        <span class="k">5 ◆</span><span class="s tone"></span><span class="s tone"></span><span class="s tone"></span><span class="s tone"></span><span class="s tone n"></span><span class="s tone n"></span><span class="s tone n"></span><span class="s tone"></span><span class="s tone"></span><span class="s tone"></span><span class="s tone"></span><span class="s tone"></span><span class="s tone"></span><span class="s tone"></span><span class="s tone"></span><span class="s tone"></span>
+        <span class="k">4</span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span>
+        <span class="k">3 ◆</span><span class="s tone"></span><span class="s tone"></span><span class="s tone"></span><span class="s tone"></span><span class="s tone"></span><span class="s tone"></span><span class="s tone"></span><span class="s tone"></span><span class="s tone n"></span><span class="s tone n"></span><span class="s tone"></span><span class="s tone"></span><span class="s tone"></span><span class="s tone"></span><span class="s tone"></span><span class="s tone"></span>
+        <span class="k">2</span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s"></span><span class="s n"></span><span class="s n"></span><span class="s"></span><span class="s"></span>
+        <span class="k">1 ◆</span><span class="s tone n"></span><span class="s tone n"></span><span class="s tone n"></span><span class="s tone"></span><span class="s tone"></span><span class="s tone"></span><span class="s tone"></span><span class="s tone"></span><span class="s tone"></span><span class="s tone"></span><span class="s tone"></span><span class="s tone"></span><span class="s tone"></span><span class="s tone"></span><span class="s tone"></span><span class="s tone"></span>
+      </div>
+      <div style="margin-top:6px">C — G — E — D everywhere; ◆ rows lit = tones of the chord playing (C maj7 shown)</div>
+    </div></div>
+    <div class="card-body"><h3>B · Scale degrees of the route's key</h3><p>Rows are the key's scale; the current chord's tones are lit as a guide. The motif keeps its exact melody on every chord (a real tune you'd hum); the chords colour it, and some notes rub against some chords.</p></div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:10px"><div class="ed">
+      <div style="margin-bottom:4px">notes</div>
+      <span class="tok">1<small>¼</small></span><span class="tok">5<small>¼</small></span><span class="tok">3<small>⅛</small></span><span class="tok">9<small>⅛·</small></span><span class="tok" style="border-style:dashed;color:#9ca49d">+</span>
+      <div style="margin-top:6px">each token: degree, length; the header switch chooses <b style="color:#e3e7e4">chord</b> / scale degrees</div>
+    </div></div>
+    <div class="card-body"><h3>C · Note tokens</h3><p>A row of small tokens instead of a grid: degree and length per note, typed or nudged with arrows. Very compact and precise; you don't see the rhythm as a picture.</p></div>
+  </div>
+</div>
+
+<h3 style="margin-top:18px">Underneath any of them: the development chain</h3>
+<div class="ed">
+  <div class="chain">
+    <span class="chip">A <small>chords 1–2</small></span><span class="arw">→</span>
+    <span class="chip">A ↑2 <small>3–4</small></span><span class="arw">→</span>
+    <span class="chip">A inverted <small>5–6</small></span><span class="arw">→</span>
+    <span class="chip">fragment ½ ×2 <small>7–8</small></span><span class="arw">→</span>
+    <span class="chip">cadence → tonic <small>16</small></span>
+    <span class="chip" style="border-style:dashed;color:#9ca49d">+ step</span>
+  </div>
+  <div style="margin-top:8px">each chip is one operation (repeat · sequence ↑↓N · invert · retrograde · augment · diminish · fragment · cadence), dragged to reorder, its span shown on the chord timeline above.</div>
+</div>
+<p class="subtitle" style="margin-top:12px">My recommendation: <b>A</b> (chord degrees) as the default, with a switch on the motif to <b>B</b> when you want a fixed tune. The chain works the same for both.</p>
