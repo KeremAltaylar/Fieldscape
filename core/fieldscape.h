@@ -160,6 +160,8 @@ int fs_piece_sector_now(fs_device *d);                                  /* ... a
    audio.onset_rate (0 / -1 when unknown) */
 void fs_piece_character(fs_device *d, int n, const double *dist, const double *radius, const double *centroid_hz, const double *onset_rate);
 void fs_piece_zone(fs_device *d, const char *icon);                     /* a plain point's zone entered (zoneFire) */
+/* Composition: the zones the walker is inside now (point ids, comma-separated, "" none) and the one just entered ("" none) */
+void fs_piece_zones(fs_device *d, const char *inside_csv, const char *entered);
 /* Rhythm points (hits, grains): add -> a handle (-1: all four in use), then its gain each fix
    (fs_point_gain), its recordings as they arrive (hits: slots 0-3 low/mid/high/rand; grains: slot 0),
    interleaved 16-bit at the engine's rate in memory from fs_alloc_i16, which the piece then owns.

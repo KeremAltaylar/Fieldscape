@@ -64,9 +64,52 @@ static void test_resolve() {
     std::printf("C resolve: zone > chord > section > route, field by field; an enter-zone acts only after entering\n");
 }
 
+struct Log { std::vector<double> f, t, d; std::vector<int> role; };
+static void lg(void *p, int role, double f, double dur, double t, double) { Log *l = (Log *)p; l->f.push_back(f); l->t.push_back(t); l->d.push_back(dur); l->role.push_back(role); }
+static double draw(void *p) { unsigned *s = (unsigned *)p; *s = *s * 1664525u + 1013904223u; return (*s >> 8) / 16777216.0; }
+static const char *ROUTE = R"({"version":17,"tempo":96,"key":50,"prog":[{"r":0,"q":"m7"},{"r":5,"q":"maj7"},{"r":7,"q":"7"},{"r":0,"q":"m9"}],
+    "voice":{"on":true,"synth":"fm"},"sect":{"on":true,"synth":"fm"},"v3":{"on":true,"synth":"am"},"zones":{"on":false},"bed":{"on":false}%s})";
+/* the notes a route plays in `secs`, walked from 0 to 1 along it */
+static Log render(const std::string &comp, double secs, const char *zones_in = nullptr, const char *zone_entered = nullptr) {
+    char buf[8192]; std::snprintf(buf, sizeof buf, ROUTE, comp.c_str());
+    unsigned seed = 11; Log l;
+    fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128); fs_piece_test_hooks(pc, draw, &seed, lg, &l);
+    const int r = fs_piece_add_route(pc, buf);
+    const int blocks = (int)(secs * 48000 / 128);
+    for (int b = 0; b < blocks; b++) {
+        fs_piece_walk(pc, r, (double)b / blocks, 0);
+        if (zones_in && b == blocks / 2) fs_piece_zones(pc, zones_in, zone_entered ? zone_entered : "");
+        fs_process(pc, 128);
+    }
+    fs_destroy(pc); return l;
+}
+static bool same(const Log &a, const Log &b) { return a.f == b.f && a.t == b.t && a.d == b.d && a.role == b.role; }
+static const char *DEFAULTS = R"(,"comp":{"seed":1,"voice":{"style":"free","role":"accomp"},"sect":{"style":"free","role":"accomp"},"v3":{"style":"free","role":"accomp"},"bass":{"mode":"hold"},"over":{"chord":{},"section":{},"zone":{}}})";
+static void test_kept() {
+    const Log none = render("", 40), defaults = render(DEFAULTS, 40);
+    std::printf("C kept: %zu notes without comp, %zu with today's defaults written out; identical %d\n", none.f.size(), defaults.f.size(), (int)same(none, defaults));
+    assert(none.f.size() > 50 && same(none, defaults));
+}
+static void test_off() {
+    const Log off = render(R"(,"comp":{"sect":{"role":"off"}})", 40);
+    int sect = 0, others = 0; for (int r : off.role) { if (r == 2) sect++; else others++; }
+    std::printf("C off: Second voice off - %d notes from it, %d from the others\n", sect, others);
+    assert(sect == 0 && others > 20);
+    /* two routes, the second composed: walking the first, its notes are the plain route's (Review Focus 1) */
+    char a[8192], b[8192]; std::snprintf(a, sizeof a, ROUTE, ""); std::snprintf(b, sizeof b, ROUTE, R"(,"comp":{"voice":{"role":"off"}})");
+    unsigned s1 = 11, s2 = 11; Log l1, l2;
+    fs_device *p1 = fs_create("piece"); fs_prepare(p1, 48000, 128); fs_piece_test_hooks(p1, draw, &s1, lg, &l1); int r1 = fs_piece_add_route(p1, a);
+    fs_device *p2 = fs_create("piece"); fs_prepare(p2, 48000, 128); fs_piece_test_hooks(p2, draw, &s2, lg, &l2); int r2 = fs_piece_add_route(p2, a); fs_piece_add_route(p2, b);
+    for (int k = 0; k < (int)(30 * 48000 / 128); k++) { fs_piece_walk(p1, r1, k / 11250.0, 0); fs_piece_walk(p2, r2, k / 11250.0, 0); fs_process(p1, 128); fs_process(p2, 128); }
+    fs_destroy(p1); fs_destroy(p2);
+    assert(same(l1, l2));
+}
+
 int main() {
     test_parse();
     test_resolve();
+    test_kept();
+    test_off();
     std::printf("composer ok\n");
     return 0;
 }

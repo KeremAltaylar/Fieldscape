@@ -19,6 +19,7 @@
 #include "harmony.hpp"
 #include "samplers.hpp"
 #include "eq.hpp"
+#include "composer.hpp"
 
 #include <cstdio>
 #include <cstring>
@@ -173,6 +174,7 @@ struct Patch {
     SamplerCfg smp[3];  /* voice, sect, v3: their "sampler" object (3a) */
     double eq[3][5][3] = {};   /* 6 (lab): each role's EQ, [band][Hz, dB, Q]; an absent "eq" is flat */
     EnvSpec env[3] = {}; bool env_on[3] = {};   /* 8b: each voice's note envelope; absent or null: the instrument's own */
+    comp::Cfg comp;    /* composition step 1: the voices' styles and overrides ("comp"; absent: off, today's voices) */
 };
 static SamplerCfg smp_of(const Json *role) {
     SamplerCfg c; const Json *j = role ? role->get("sampler") : nullptr;
@@ -290,6 +292,7 @@ static void patch_of(const Json *p, Patch &P) {
         P.sectors[P.nsectors++] = Sector{ find_mode(e->s("mode", "")), (int)e->n("r", 0) };
     }
     if (!P.nsectors) for (auto &e : SECT) P.sectors[P.nsectors++] = Sector{ find_mode(e.mode), e.r };
+    comp::comp_of(p ? p->get("comp") : nullptr, P.comp);
 }
 
 /* ------------------------------------------------------------------ rhythm (rhythmOf) */
@@ -588,6 +591,7 @@ struct RoleRec { float *pcm = nullptr; long long n = 0; float *tf = nullptr, *tc
 struct Inbox {
     bool walk = false; int route = -1; double t = 0, dist = 1e300;
     bool sector = false; int sector_v = -1;
+    bool zones_set = false; uint64_t zin[16] = {}; int nzin = 0; uint64_t zent = 0;   /* composition: zones inside, one just entered */
     bool character = false; double centroid = 2000, onsets = 1;
     int zones[8]; int nzones = 0;
     bool solo_set = false; int solo_v = -1;    /* Listen on a rhythm point: that handle alone (-1: everything) */
@@ -634,6 +638,11 @@ struct Piece : Device {
     std::vector<Patch> routes;        /* copied from the inbox as they arrive */
     int route = -1, pending = -1, reported = -1; double pending_at = 0, t_along = 0, route_dist = 1e300;
     int sector = -1;
+    /* composition (step 1): the settings in force, gliding a bar at a time; zones; per-voice state */
+    comp::Voice ccur[comp::NVOICE]; comp::Bass cbass; bool comp_live = false;
+    uint64_t zin[16] = {}; int nzin = 0; struct Ent { uint64_t id; long long bar; } zent[8]; int nzent = 0;
+    int cpulse[comp::NVOICE] = {}, calt[comp::NVOICE] = {}, cped_root = -1; bool swell_shaped[comp::NVOICE] = {};
+    bool styled(int q) const { return patch.comp.on && comp_live && (ccur[q].style != comp::FREE || ccur[q].role == comp::OFF); }
     double centroid = 2000, onsets = 1;
     double bpm = 72, next_tick = 0; long long ticks = 0;
     double tick_base_t = 0; long long tick_base_k = 0; double tick_bpm = 72;   /* ticks from an index, as Tone's tick->seconds: no drift */
@@ -762,7 +771,7 @@ struct Piece : Device {
         sr = s;
         basic_wave(SINE); custom_wave(0); pink_noise(0);
         bass.rec = top.rec = 0; sectr.rec = 1; v3r.rec = 2;
-        Patch d; patch_of(nullptr, d);
+        std::unique_ptr<Patch> dp(new Patch); Patch &d = *dp; patch_of(nullptr, d);
         patch = d;
         need_all(d);
         for (auto &o : shots) { o.s.init(sr); o.ns.init(sr); o.ns.rnd = Rng::call; o.ns.rnd_ctx = &rnd; }
@@ -996,6 +1005,7 @@ struct Piece : Device {
         double cut = std::max(300.0, std::min(12000.0, centroid * 1.6));
         if (morph(M_VOICE_CUTOFF, T, m)) cut = std::max(180.0, std::min(14000.0, cut * 0.35 * std::pow(6.3, m)));
         pad.cutoff.p.exponentialRampTo(cut, 0.25, T);
+        if (styled(0)) return;
         if (rnd() > density) return;
         int pool[8], np = 0;
         for (int i = H.ntones > 3 ? 2 : 0; i < H.ntones; i++) pool[np++] = H.tones[i];
@@ -1038,6 +1048,7 @@ struct Piece : Device {
         sectL.warp.wet.p.linearRampTo(w2 * 0.85, 0.3, T); sectL.warp.depth = (float)(0.2 + w2 * 0.8);
         int stride = stride_of(p.sect.rhythm, 4);
         C.tick++;
+        if (styled(1)) return;
         if ((C.tick - 1) % stride != 0) return;
         int i = sector < 0 ? 0 : sector;
         const Sector &sc = p.sectors[i % p.nsectors];
@@ -1101,6 +1112,34 @@ struct Piece : Device {
     }
 
     /* ---- thirdStep ---- */
+    /* ---- composition (step 1) ---- */
+    void comp_bar(long long bar, double time) {
+        uint64_t ent[8]; int ne = 0;
+        for (int i = 0; i < nzent; i++) if (bar - zent[i].bar < comp::PHRASE_BARS) ent[ne++] = zent[i].id;
+        comp::Resolved r;
+        comp::resolve(patch.comp, chord_index(t_along), patch.nprog, sector, patch.sect.n, zin, nzin, ent, ne, r);
+        for (int q = 0; q < comp::NVOICE; q++) {
+            if (!comp_live) ccur[q] = r.v[q]; else comp::glide(ccur[q], r.v[q], r.blend);
+            if (swell_shaped[q] && ccur[q].style != comp::SWELLS) {      /* the voice's own envelope back (8b) */
+                Synth *sy = q == 0 ? top.sy() : q == 1 ? sectr.sy() : v3r.sy();
+                if (sy) sy->shape(patch.env_on[q] ? &patch.env[q] : nullptr);
+                swell_shaped[q] = false;
+            }
+        }
+        cbass = r.bass; comp_live = true;
+        bass_bar(time);
+    }
+    void bass_bar(double time) { (void)time; }        /* Task 4: pedal and off */
+    void compose_step(double time) {
+        if (!patch.comp.on || !comp_live || H.ntones <= 0) return;
+        const long long k = ticks - 1, bar = k / 16;
+        for (int q = 0; q < comp::NVOICE; q++) {
+            const comp::Voice &v = ccur[q];
+            if (v.style == comp::FREE || v.role == comp::OFF || v.rate == 0 || k % v.rate) continue;
+            play_style(q, v, k, bar, time);
+        }
+    }
+    void play_style(int, const comp::Voice &, long long, long long, double) {}   /* Task 4: the styles */
     void third_step(double time) {
         const Patch &p = patch;
         if (!p.v3.on) return;
@@ -1113,6 +1152,7 @@ struct Piece : Device {
         v3L.cutoff.p.exponentialRampTo(morph(M_V3_CUTOFF, T, m) ? 500 * std::pow(18, m) : 7000, 0.3, T);
         int stride = stride_of(p.v3.rhythm, 16);
         T3.tick++;
+        if (styled(2)) return;
         if ((T3.tick - 1) % stride != 0) return;
         if (H.ntones <= 0 || !sy) return;
         bool taken[12] = {};
@@ -1359,10 +1399,11 @@ struct Piece : Device {
     Due due[16]; int ndue = 0; long long seq = 0;
     static int interval(int id) { return id == 0 ? 2 : id == 1 ? 16 : 1; }
     void schedule(long long tick, int id) { due[ndue++] = Due{ tick, seq++, id }; }
-    void transport_start() { ndue = 0; for (int id = 0; id < 5; id++) { schedule(0, id); schedule(interval(id), id); } }
+    void transport_start() { ndue = 0; for (int id = 0; id < 6; id++) { schedule(0, id); schedule(interval(id), id); } }
     void tick(double time) {
         if (test_walk_s > 0) t_along = std::min(1.0, time / test_walk_s);
         long long k = ticks++;
+        if (k % 16 == 0 && patch.comp.on) comp_bar(k / 16, time);   /* the bar's settings before any voice plays on it */
         for (;;) {
             int best = -1;
             for (int i = 0; i < ndue; i++) if (due[i].tick == k && (best < 0 || due[i].seq < due[best].seq)) best = i;
@@ -1375,7 +1416,9 @@ struct Piece : Device {
             case 1: harmony_bar(time); break;
             case 2: sector_step(time); break;
             case 3: rhythm_step(time); break;
-            default: third_step(time); break;
+            case 5: compose_step(time); break;
+            case 4: third_step(time); break;
+            default: break;
             }
         }
     }
@@ -1391,7 +1434,7 @@ struct Piece : Device {
         patch = routes[near];
         apply_patch(now);
         H.idx = -1; H.chord = -1; H.ntones = -1;
-        sector = -1;
+        sector = -1; comp_live = false; nzent = 0; cped_root = -1;
         synth_to(walk_level(route_dist), now);
     }
     void walk(int r, double t, double dist, double now) {
@@ -1429,6 +1472,10 @@ struct Piece : Device {
         }
         if (in.walk) { in.walk = false; walk(in.route, in.t, in.dist, now); }
         if (in.sector) { in.sector = false; sector = in.sector_v; }
+        if (in.zones_set) {
+            in.zones_set = false; nzin = in.nzin; std::memcpy(zin, in.zin, sizeof zin);
+            if (in.zent) { if (nzent == 8) { std::memmove(zent, zent + 1, sizeof(Ent) * 7); nzent = 7; } zent[nzent++] = Ent{ in.zent, ticks / 16 }; in.zent = 0; }
+        }
         if (in.character) { in.character = false; centroid = in.centroid; onsets = in.onsets; }
         for (int i = 0; i < in.nzones; i++) if (patch.zones_on) zone_fire(in.zones[i], now + 0.008);
         in.nzones = 0;
@@ -1738,7 +1785,7 @@ static void sweep(Piece *p) {    /* under the lock: free what the audio thread l
 int fs_piece_add_route(fs_device *d, const char *patch_json) {
     Piece *p = P(d); if (!p) return -1;
     Json j = Json::parse(patch_json);
-    Patch pt; patch_of(&j, pt);
+    std::unique_ptr<Patch> ptp(new Patch); Patch &pt = *ptp; patch_of(&j, pt);
     std::lock_guard<std::mutex> g(p->mu); sweep(p);
     p->need_all(pt);
     if (p->in.routes.capacity() < 64) p->in.routes.reserve(64);
@@ -1909,7 +1956,7 @@ int fs_piece_roles(fs_device *d, float *out, int max_notes) {
 void fs_piece_set_route(fs_device *d, int i, const char *patch_json) {
     Piece *p = P(d); if (!p) return;
     Json j = Json::parse(patch_json);
-    Patch pt; patch_of(&j, pt);                  /* as fs_piece_add_route reads it */
+    std::unique_ptr<Patch> ptp(new Patch); Patch &pt = *ptp; patch_of(&j, pt);                  /* as fs_piece_add_route reads it */
     std::lock_guard<std::mutex> g(p->mu); sweep(p);
     if (i < 0 || i >= (int)p->in.routes.size() || i >= 64) return;
     p->need_all(pt);
@@ -1992,6 +2039,16 @@ void fs_piece_character(fs_device *d, int n, const double *dist, const double *r
     std::lock_guard<std::mutex> g(p->mu); sweep(p);
     p->in.character = true;
     p->in.centroid = w > 0 ? sc / w : 2000; p->in.onsets = w > 0 ? so / w : 1;
+}
+
+void fs_piece_zones(fs_device *d, const char *inside_csv, const char *entered) {
+    Piece *p = P(d); if (!p) return;
+    uint64_t ids[16]; int n = 0;
+    std::string s = inside_csv ? inside_csv : "";
+    for (size_t a = 0; a < s.size() && n < 16;) { size_t b = s.find(',', a); if (b == std::string::npos) b = s.size(); if (b > a) ids[n++] = comp::id_hash(s.substr(a, b - a).c_str()); a = b + 1; }
+    std::lock_guard<std::mutex> g(p->mu); sweep(p);
+    p->in.zones_set = true; p->in.nzin = n; std::memcpy(p->in.zin, ids, sizeof(uint64_t) * n);
+    if (entered && *entered) p->in.zent = comp::id_hash(entered);
 }
 
 void fs_piece_zone(fs_device *d, const char *icon) {
@@ -2119,7 +2176,7 @@ void fs_piece_default_tuning(fs_device *d, int tuning) { Piece *p = P(d); if (p)
 
 int fs_harmony_progression(const char *patch_json, int tuning, int sector, char *out, int size) {
     Json j = Json::parse(patch_json);
-    Patch P; patch_of(&j, P);
+    std::unique_ptr<Patch> Pp(new Patch); Patch &P = *Pp; patch_of(&j, P);
     std::string s = "{\"tempo\":" + std::to_string((int)std::lround(P.tempo)) + ",\"key\":" + std::to_string(P.key) +
                     ",\"tuning\":\"" + (tuning == harmony::JUST ? "just" : "equal") + "\",\"scale\":[";
     const Sector *sc = P.nsectors > 0 ? &P.sectors[std::max(0, std::min(P.nsectors - 1, sector))] : nullptr;
