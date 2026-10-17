@@ -13,7 +13,7 @@ uint64_t id_hash(const char *s) {
     return h;
 }
 double rand01(uint32_t seed, long long bar, int voice, int n) {   /* splitmix64 of (seed, bar, voice, n) */
-    uint64_t z = (uint64_t)seed * 0x9E3779B97F4A7C15ull ^ (uint64_t)bar * 0xBF58476D1CE4E5B9ull ^ (uint64_t)(voice * 977 + n) * 0x94D049BB133111EBull;
+    uint64_t z = (uint64_t)seed * 0x9E3779B97F4A7C15ull + 0x9E3779B97F4A7C15ull ^ (uint64_t)bar * 0xBF58476D1CE4E5B9ull ^ (uint64_t)(voice * 977 + n) * 0x94D049BB133111EBull;
     z ^= z >> 30; z *= 0xBF58476D1CE4E5B9ull; z ^= z >> 27; z *= 0x94D049BB133111EBull; z ^= z >> 31;
     return (z >> 11) * (1.0 / 9007199254740992.0);
 }
@@ -55,26 +55,26 @@ static void voice_of(const Json *j, Voice &v, bool all) {
     if (const Json *t = j->get("tones")) if (t->kind == Json::ARR) {
         uint8_t b = 0; for (size_t i = 0; i < t->size(); i++) { const Json *x = t->at(i); if (x && x->kind == Json::NUM) { int d = (int)std::lround(x->num); if (d >= 0 && d <= 4) b |= (uint8_t)(1u << d); } }
         v.tones = b ? b : 0x01; v.mask |= F_TONES; }
-    if (has("pedal") || has("pedal_note") || has("follow")) {
-        static const char *const P[3] = { "root", "fifth", "fixed" };
-        v.pedal = (uint8_t)pick(j->s("pedal", "root"), P, 3, 0); v.pedal_note = clamp8(j->n("pedal_note", 50), 12, 115);
-        v.follow = j->flag("follow", true) ? 1 : 0; v.mask |= F_PEDAL; }
+    static const char *const P[3] = { "root", "fifth", "fixed" };
+    if (has("pedal")) { v.pedal = (uint8_t)pick(j->s("pedal", "root"), P, 3, 0); v.mask |= F_PEDAL; }
+    if (has("pedal_note")) { v.pedal_note = clamp8(j->n("pedal_note", 50), 12, 115); v.mask |= F_PNOTE; }
+    if (has("follow")) { v.follow = j->flag("follow", true) ? 1 : 0; v.mask |= F_FOLLOW; }
     if (has("dir")) { static const char *const D[3] = { "up", "down", "alt" }; v.dir = (uint8_t)pick(j->s("dir", "up"), D, 3, 0); v.mask |= F_DIR; }
     if (has("spread")) { v.spread_ms = clampf(j->n("spread", 40), 0, 400); v.mask |= F_SPREAD; }
-    if (has("pulses") || has("steps") || has("rot")) {
-        v.steps = clamp8(j->n("steps", 8), 1, 16); v.pulses = clamp8(j->n("pulses", 5), 0, v.steps); v.rot = clamp8(j->n("rot", 0), 0, 15);
-        v.mask |= F_EUCLID; }
-    if (has("attack") || has("release") || has("peak")) {
-        v.attack = clampf(j->n("attack", 0.3), 0.01, 0.95); v.release = clampf(j->n("release", 0.4), 0.01, 0.95); v.peak = clampf(j->n("peak", 0.8), 0, 1);
-        v.mask |= F_SWELL; }
+    if (has("pulses")) { v.pulses = clamp8(j->n("pulses", 5), 0, 16); v.mask |= F_PULSES; }   /* the player clamps pulses to steps */
+    if (has("steps")) { v.steps = clamp8(j->n("steps", 8), 1, 16); v.mask |= F_STEPS; }
+    if (has("rot")) { v.rot = clamp8(j->n("rot", 0), 0, 15); v.mask |= F_ROT; }
+    if (has("attack")) { v.attack = clampf(j->n("attack", 0.3), 0.01, 0.95); v.mask |= F_ATTACK; }
+    if (has("release")) { v.release = clampf(j->n("release", 0.4), 0.01, 0.95); v.mask |= F_RELEASE; }
+    if (has("peak")) { v.peak = clampf(j->n("peak", 0.8), 0, 1); v.mask |= F_PEAK; }
 }
 static void bass_of(const Json *j, Bass &b, bool all) {
-    if (all) b.mask = 1;
+    if (all) b.mask = B_ALL;
     if (!j || j->kind != Json::OBJ) return;
     static const char *const M[3] = { "hold", "pedal", "off" }, *const P[3] = { "root", "fifth", "fixed" };
-    if (j->get("mode")) { b.mode = (uint8_t)pick(j->s("mode", "hold"), M, 3, HOLD); b.mask = 1; }
-    if (j->get("pedal")) b.pedal = (uint8_t)pick(j->s("pedal", "root"), P, 3, 0);
-    if (j->get("note")) b.note = clamp8(j->n("note", 38), 12, 72);
+    if (j->get("mode")) { b.mode = (uint8_t)pick(j->s("mode", "hold"), M, 3, HOLD); b.mask |= B_MODE; }
+    if (j->get("pedal")) { b.pedal = (uint8_t)pick(j->s("pedal", "root"), P, 3, 0); b.mask |= B_PEDAL; }
+    if (j->get("note")) { b.note = clamp8(j->n("note", 38), 12, 72); b.mask |= B_NOTE; }
 }
 static const char *const VKEYS[NVOICE] = { "voice", "sect", "v3" };
 static void over_of(const Json *j, Over &o) {

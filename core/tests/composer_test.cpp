@@ -26,6 +26,11 @@ static void test_parse() {
     assert(c.section[2].used && c.section[2].v[2].role == comp::OFF);
     assert(c.nzone == 1 && c.zone[0].zone == comp::id_hash("p-1") && c.zone[0].when == comp::ENTER && c.zone[0].blend == 2);
     for (int i = 0; i < comp::NCHORD; i++) if (i != 3) assert(!c.chord[i].used);   /* "40": out of range, ignored */
+    assert(c.bass.mask == comp::B_ALL);
+    Json k = Json::parse(R"({"over":{"section":{"1":{"voice":{"rot":3},"bass":{"pedal":"fifth"}}}}})");
+    comp::Cfg d; comp::comp_of(&k, d);
+    assert(d.section[1].v[0].mask == comp::F_ROT && d.section[1].v[0].rot == 3 && d.section[1].bass.mask == comp::B_PEDAL && d.section[1].bass.pedal == 1);
+    assert(comp::rand01(0, 0, 0, 0) != 0 && comp::rand01(1, 2, 3, 4) == comp::rand01(1, 2, 3, 4));
     std::printf("C parse: route, chord, section and zone layers read; out-of-range chord 40 ignored\n");
 }
 
