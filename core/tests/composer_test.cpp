@@ -34,8 +34,39 @@ static void test_parse() {
     std::printf("C parse: route, chord, section and zone layers read; out-of-range chord 40 ignored\n");
 }
 
+static void test_resolve() {
+    Json j = Json::parse(R"({"voice":{"style":"arpeggio","rate":"8n"},
+        "over":{"section":{"1":{"voice":{"style":"pedal","lo":40}}},
+                "chord":{"5":{"voice":{"style":"strum"}}},
+                "zone":{"z":{"voice":{"style":"swells"}},"e":{"when":"enter","voice":{"rate":"4n"}}}}})");
+    comp::Cfg c; comp::comp_of(&j, c);
+    comp::Resolved r;
+    const uint64_t z = comp::id_hash("z"), e = comp::id_hash("e");
+    comp::resolve(c, 0, 16, -1, 7, nullptr, 0, nullptr, 0, r);  assert(r.v[0].style == comp::ARPEGGIO && r.v[0].lo == 48);
+    comp::resolve(c, 0, 16, 1, 7, nullptr, 0, nullptr, 0, r);   assert(r.v[0].style == comp::PEDAL && r.v[0].lo == 40);
+    comp::resolve(c, 5, 16, 1, 7, nullptr, 0, nullptr, 0, r);   assert(r.v[0].style == comp::STRUM && r.v[0].lo == 40);   /* chord over section; section's lo kept */
+    comp::resolve(c, 5, 16, 1, 7, &z, 1, nullptr, 0, r);        assert(r.v[0].style == comp::SWELLS);                     /* zone over chord */
+    comp::resolve(c, 0, 16, -1, 7, &e, 1, nullptr, 0, r);       assert(r.v[0].rate == 2);                                 /* an "enter" zone does nothing while merely inside */
+    comp::resolve(c, 0, 16, -1, 7, nullptr, 0, &e, 1, r);       assert(r.v[0].rate == 4);                                 /* ... it acts for the phrase after entering */
+    { Json k = Json::parse(R"({"voice":{"style":"arpeggio"},"over":{"chord":{"15":{"voice":{"style":"pedal"}}}}})");
+      comp::Cfg d; comp::comp_of(&k, d);
+      comp::resolve(d, 15, 12, -1, 7, nullptr, 0, nullptr, 0, r); assert(r.v[0].style == comp::ARPEGGIO); }   /* 12 chords: no chord 16 */
+    { Json k = Json::parse(R"({"voice":{"style":"arpeggio","len":0.2},"over":{"section":{"9":{"voice":{"style":"pedal"}}},"chord":{"0":{"blend":4,"voice":{"len":1.0}}}}})");
+      comp::Cfg d; comp::comp_of(&k, d);
+      comp::resolve(d, 0, 16, 9, 7, nullptr, 0, nullptr, 0, r); assert(r.v[0].style == comp::ARPEGGIO && r.blend == 4);   /* 7 sections: no section 10 */
+      comp::Voice cur = d.v[0];
+      comp::glide(cur, r.v[0], r.blend); assert(std::fabs(cur.len - 0.4f) < 1e-4f);     /* a quarter of the way per bar */
+      for (int b = 0; b < 40; b++) comp::glide(cur, r.v[0], r.blend);
+      assert(cur.len == 1.0f); }
+    { Json k = Json::parse(R"({"voice":{"pulses":6,"steps":12},"over":{"chord":{"0":{"voice":{"rot":3}}}}})");
+      comp::Cfg d; comp::comp_of(&k, d);
+      comp::resolve(d, 0, 16, -1, 7, nullptr, 0, nullptr, 0, r); assert(r.v[0].pulses == 6 && r.v[0].steps == 12 && r.v[0].rot == 3); }   /* one bit per key */
+    std::printf("C resolve: zone > chord > section > route, field by field; an enter-zone acts only after entering\n");
+}
+
 int main() {
     test_parse();
+    test_resolve();
     std::printf("composer ok\n");
     return 0;
 }

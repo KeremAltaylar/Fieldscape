@@ -102,4 +102,59 @@ void comp_of(const Json *j, Cfg &c) {
     if (const Json *zo = ov->get("zone")) if (zo->kind == Json::OBJ)
         for (auto &kv : zo->obj) { if (c.nzone >= NZONE) break; Over &o = c.zone[c.nzone]; over_of(&kv.second, o); if (o.used) { o.zone = id_hash(kv.first.c_str()); c.nzone++; } }
 }
+
+static void merge(Voice &d, const Voice &s) {
+    const uint32_t m = s.mask;
+    if (m & F_STYLE) d.style = s.style;
+    if (m & F_ROLE) d.role = s.role;
+    if (m & F_RATE) d.rate = s.rate;
+    if (m & F_LO) d.lo = s.lo;
+    if (m & F_HI) d.hi = s.hi;
+    if (m & F_LEN) d.len = s.len;
+    if (m & F_VAR) d.variation = s.variation;
+    if (m & F_ACC) std::memcpy(d.acc, s.acc, sizeof d.acc);
+    if (m & F_GRID) std::memcpy(d.grid, s.grid, sizeof d.grid);
+    if (m & F_SPAN) d.span = s.span;
+    if (m & F_TONES) d.tones = s.tones;
+    if (m & F_PEDAL) d.pedal = s.pedal;
+    if (m & F_DIR) d.dir = s.dir;
+    if (m & F_SPREAD) d.spread_ms = s.spread_ms;
+    if (m & F_PNOTE) d.pedal_note = s.pedal_note;
+    if (m & F_FOLLOW) d.follow = s.follow;
+    if (m & F_PULSES) d.pulses = s.pulses;
+    if (m & F_STEPS) d.steps = s.steps;
+    if (m & F_ROT) d.rot = s.rot;
+    if (m & F_ATTACK) d.attack = s.attack;
+    if (m & F_RELEASE) d.release = s.release;
+    if (m & F_PEAK) d.peak = s.peak;
+}
+static void apply(Resolved &r, const Over &o) {
+    for (int q = 0; q < NVOICE; q++) merge(r.v[q], o.v[q]);
+    if (o.bass.mask & B_MODE) r.bass.mode = o.bass.mode;
+    if (o.bass.mask & B_PEDAL) r.bass.pedal = o.bass.pedal;
+    if (o.bass.mask & B_NOTE) r.bass.note = o.bass.note;
+    r.blend = std::max(r.blend, (int)o.blend);
+}
+void resolve(const Cfg &c, int chord, int nchord, int section, int nsection, const uint64_t *inside, int ninside,
+             const uint64_t *entered, int nentered, Resolved &out) {
+    out = Resolved();
+    for (int q = 0; q < NVOICE; q++) out.v[q] = c.v[q];
+    out.bass = c.bass;
+    if (section >= 0 && section < NSECTION && section < nsection && c.section[section].used) apply(out, c.section[section]);
+    if (chord >= 0 && chord < NCHORD && chord < nchord && c.chord[chord].used) apply(out, c.chord[chord]);
+    for (int k = 0; k < c.nzone; k++) {
+        const Over &o = c.zone[k];
+        const uint64_t *list = o.when == ENTER ? entered : inside; const int n = o.when == ENTER ? nentered : ninside;
+        for (int i = 0; i < n; i++) if (list[i] == o.zone) { apply(out, o); break; }
+    }
+}
+void glide(Voice &cur, const Voice &t, int blend) {
+    const float a = blend > 0 ? 1.0f / (float)blend : 1.0f;
+    auto toward = [&](float &x, float y) { x += (y - x) * a; if (std::fabs(y - x) < 1e-4f) x = y; };
+    const float len = cur.len, var = cur.variation, sp = cur.spread_ms, at = cur.attack, re = cur.release, pk = cur.peak;
+    cur = t;                                            /* the discrete settings: at once, on this bar line */
+    cur.len = len; cur.variation = var; cur.spread_ms = sp; cur.attack = at; cur.release = re; cur.peak = pk;
+    toward(cur.len, t.len); toward(cur.variation, t.variation); toward(cur.spread_ms, t.spread_ms);
+    toward(cur.attack, t.attack); toward(cur.release, t.release); toward(cur.peak, t.peak);
+}
 }

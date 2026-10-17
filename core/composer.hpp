@@ -40,4 +40,10 @@ struct Resolved { Voice v[NVOICE]; Bass bass; int blend = 0; };
 uint64_t id_hash(const char *s);                      /* FNV-1a 64: a zone's point id */
 void comp_of(const Json *j, Cfg &c);                  /* the route patch's "comp"; absent: c.on = false */
 double rand01(uint32_t seed, long long bar, int voice, int n);   /* the composition's own seeded draw, [0, 1) */
+/* the settings in force this bar: route <- section <- chord <- zones (inside, or entered within PHRASE_BARS: `entered`);
+   a chord past the progression's length or a section past the place's count is ignored */
+void resolve(const Cfg &c, int chord, int nchord, int section, int nsection, const uint64_t *inside, int ninside,
+             const uint64_t *entered, int nentered, Resolved &out);
+/* once a bar: the discrete settings taken at once, the continuous ones (len, variation, spread, swell) a 1/blend step closer */
+void glide(Voice &cur, const Voice &target, int blend);
 }
