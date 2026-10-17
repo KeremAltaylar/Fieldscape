@@ -3,6 +3,7 @@
 #include "../composer.hpp"
 #include "../fieldscape.h"
 #include <cassert>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -105,11 +106,95 @@ static void test_off() {
     assert(same(l1, l2));
 }
 
+static double midi(double f) { return 69 + 12 * std::log2(f / 440); }
+/* the notes of `role` within one bar starting at bar `b` (seconds per bar at 96 bpm = 2.5) */
+static std::vector<int> bar_notes(const Log &l, int role, int b) {
+    std::vector<int> o; for (size_t i = 0; i < l.f.size(); i++) if (l.role[i] == role && l.t[i] >= b * 2.5 - 1e-6 && l.t[i] < (b + 1) * 2.5 - 1e-6) o.push_back((int)std::lround(midi(l.f[i])));
+    return o;
+}
+static void test_arpeggio() {
+    /* D minor 7 (D F A C, key 50): up 1-3-5-7 in sixteenths, from D3 (50) */
+    const Log l = render(R"(,"comp":{"voice":{"style":"arpeggio","rate":"16n","lo":50,"hi":74,"grid":[0,1,2,3,0,1,2,3,0,1,2,3,0,1,2,3]}})", 6);
+    const std::vector<int> n = bar_notes(l, 1, 0);
+    std::printf("C arpeggio: bar 0 (chord 1) top notes"); for (int m : n) std::printf(" %d", m); std::printf("\
+");
+    assert(n.size() == 16 && n[0] == 50 && n[1] == 53 && n[2] == 57 && n[3] == 60 && n[4] == 50);
+}
+
+static void test_styles() {
+    /* Pedal: the fifth of the first chord, every quarter, held across chord changes when follow is off */
+    const Log p = render(R"(,"comp":{"sect":{"style":"pedal","rate":"4n","pedal":"fifth","follow":false,"lo":55,"hi":80}})", 24);
+    int bad = 0, n = 0; for (size_t i = 0; i < p.f.size(); i++) if (p.role[i] == 2) { n++; if ((int)std::lround(midi(p.f[i])) != 57) bad++; }
+    std::printf("C pedal: %d notes, %d not A3 (57)\
+", n, bad);
+    assert(n >= 30 && bad == 0);
+    /* Strum: root, 3rd, 5th rolled up 40 ms apart, every half note */
+    const Log s = render(R"(,"comp":{"v3":{"style":"strum","rate":"2n","tones":[0,1,2],"spread":40,"lo":50,"hi":74}})", 6);
+    std::vector<double> ts; std::vector<int> ms; for (size_t i = 0; i < s.f.size(); i++) if (s.role[i] == 3) { ts.push_back(s.t[i]); ms.push_back((int)std::lround(midi(s.f[i]))); }
+    assert(ts.size() >= 6 && ms[0] == 50 && ms[1] == 53 && ms[2] == 57 && std::fabs((ts[1] - ts[0]) - 0.04) < 1e-6 && std::fabs((ts[2] - ts[1]) - 0.04) < 1e-6);
+    std::printf("C strum: D F A rolled 40 ms apart\
+");
+    /* Euclidean: E(3, 8) in eighths, 3 notes a bar */
+    const Log e = render(R"(,"comp":{"voice":{"style":"euclid","rate":"8n","pulses":3,"steps":8,"grid":[0,2,1]}})", 6);
+    const std::vector<int> en = bar_notes(e, 1, 1);
+    std::printf("C euclid: %zu top notes in bar 2\
+", en.size());
+    assert(en.size() == 3);
+    /* Swells: one long chord a bar, each note as long as the bar x len */
+    const Log w = render(R"(,"comp":{"sect":{"style":"swells","rate":"1n","len":1,"tones":[0,1,2,3]}})", 6);
+    int sw = 0; double dmin = 1e9; for (size_t i = 0; i < w.f.size(); i++) if (w.role[i] == 2) { sw++; dmin = std::fmin(dmin, w.d[i]); }
+    std::printf("C swells: %d notes, shortest %.2f s\
+", sw, dmin);
+    assert(sw >= 8 && std::fabs(dmin - 2.5) < 1e-6);
+    const std::string vr = R"(,"comp":{"seed":5,"voice":{"style":"arpeggio","rate":"16n","variation":0.8}})", vr2 = R"(,"comp":{"seed":6,"voice":{"style":"arpeggio","rate":"16n","variation":0.8}})";
+    assert(same(render(vr, 6), render(vr, 6)));
+    assert(!same(render(vr, 6), render(vr2, 6)));
+    std::printf("C variation: the same seed repeats exactly; another seed differs\
+");
+    /* Swells on chord 1 only, then Arpeggio: the arpeggio's notes play with the voice's own envelope again. Checked through the
+       piece's own hook: a held swell envelope would make its note-ons start at a 0.5 s+ attack; we read the voice's level 30 ms in */
+    { char buf[8192]; std::snprintf(buf, sizeof buf, ROUTE, R"(,"comp":{"sect":{"style":"arpeggio","rate":"8n"},"over":{"chord":{"0":{"sect":{"style":"swells","rate":"1n","len":1}}}}})");
+      unsigned sd = 11; fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128); fs_piece_test_hooks(pc, draw, &sd, nullptr, nullptr);
+      const int r = fs_piece_add_route(pc, buf);
+      float rl[2 + 6 * 3]; double late = -1;
+      for (int b = 0; b < (int)(20 * 48000 / 128); b++) { fs_piece_walk(pc, r, b / 3750.0 > 1 ? 1 : b / 3750.0, 0); fs_process(pc, 128);
+          if (b == (int)(16 * 48000 / 128)) { fs_piece_roles(pc, rl, 6); late = rl[8]; } }   /* the Second voice's level at 16 s (chord 4) */
+      fs_destroy(pc);
+      std::printf("C swells release: the Second voice at chord 4 %.1f dB (its own envelope)\
+", late);
+      assert(late > -40); }
+}
+
+static void test_bass() {
+    const Log off = render(R"(,"comp":{"bass":{"mode":"off"}})", 20), ped = render(R"(,"comp":{"bass":{"mode":"pedal","pedal":"root"}})", 20);
+    int b0 = 0; for (int r : off.role) b0 += r == 0;
+    std::vector<int> pm; for (size_t i = 0; i < ped.f.size(); i++) if (ped.role[i] == 0) pm.push_back((int)std::lround(midi(ped.f[i])));
+    std::printf("C bass: off %d notes; pedal %zu notes, first %d\
+", b0, pm.size(), pm.empty() ? -1 : pm[0]);
+    assert(b0 == 0 && pm.size() == 1 && pm[0] % 12 == 50 % 12);   /* one held D, never re-struck across the 4 chords */
+}
+
+static void test_cost() {
+    char buf[8192]; std::snprintf(buf, sizeof buf, ROUTE, R"(,"comp":{"voice":{"style":"arpeggio","rate":"16n"},"sect":{"style":"strum","rate":"8n","tones":[0,1,2,3,4],"spread":20},"v3":{"style":"swells","rate":"2n","tones":[0,1,2,3,4]}})");
+    unsigned seed = 3; fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128); fs_piece_test_hooks(pc, draw, &seed, nullptr, nullptr);
+    const int r = fs_piece_add_route(pc, buf); double worst = 0;
+    for (int b = 0; b < (int)(30 * 48000 / 128); b++) { fs_piece_walk(pc, r, b / 11250.0, 0);
+        auto t0 = std::chrono::steady_clock::now(); fs_process(pc, 128); if (b > 375) worst = std::fmax(worst, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count()); }
+    fs_destroy(pc);
+    std::printf("C cost: worst block %.3f ms with every voice busy\
+", worst);
+    assert(worst < 1.33);
+}
+
 int main() {
     test_parse();
     test_resolve();
     test_kept();
     test_off();
+    test_arpeggio();
+    test_styles();
+    test_bass();
+    test_cost();
     std::printf("composer ok\n");
     return 0;
 }

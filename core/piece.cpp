@@ -982,7 +982,7 @@ struct Piece : Device {
         bool changed = H.chord != step;
         H.chord = step;
         int b = lead_to(H.have_bass, H.bass, tones, 1, patch.key - 24, patch.key - 5);
-        if (changed || !H.held || PERCUSSIVE[patch.voice.synth]) {
+        if ((!patch.comp.on || cbass.mode == comp::HOLD) && (changed || !H.held || PERCUSSIVE[patch.voice.synth])) {
             note(0, bass.sy(), note_hz(b), -1, time, 0.5);
             H.bass = b; H.have_bass = true; H.held = true;
         }
@@ -1129,7 +1129,12 @@ struct Piece : Device {
         cbass = r.bass; comp_live = true;
         bass_bar(time);
     }
-    void bass_bar(double time) { (void)time; }        /* Task 4: pedal and off */
+    void bass_bar(double time) {
+        if (cbass.mode == comp::BASS_OFF) { if (H.held && bass.sy()) bass.sy()->release(time); H.held = false; return; }
+        if (cbass.mode != comp::BASS_PEDAL) return;
+        int m = cbass.pedal == 2 ? cbass.note : patch.key - 24 + (cbass.pedal == 1 ? 7 : 0);
+        if (!(H.held && H.have_bass && H.bass == m)) { note(0, bass.sy(), note_hz(m), -1, time, 0.5); H.bass = m; H.have_bass = true; H.held = true; }
+    }
     void compose_step(double time) {
         if (!patch.comp.on || !comp_live || H.ntones <= 0) return;
         const long long k = ticks - 1, bar = k / 16;
@@ -1139,7 +1144,68 @@ struct Piece : Device {
             play_style(q, v, k, bar, time);
         }
     }
-    void play_style(int, const comp::Voice &, long long, long long, double) {}   /* Task 4: the styles */
+    /* a chord degree (0 root .. 4 ninth) as a MIDI note, folded into [lo, hi]; degrees past the chord's tones go up an octave */
+    int deg_midi(int d, int lo, int hi, int oct) const {
+        const int nt = std::max(1, H.ntones);
+        int m = H.tones[d % nt] + 12 * (d / nt) + 12 * oct;
+        while (m < lo) m += 12;
+        while (m > hi && m - 12 >= lo) m -= 12;
+        return m;
+    }
+    void play_style(int q, const comp::Voice &v, long long k, long long bar, double time) {
+        Synth *sy = q == 0 ? top.sy() : q == 1 ? sectr.sy() : v3r.sy();
+        const int role = q + 1, col = (int)((k % 16) / v.rate), ncols = std::max(1, (16 + v.rate - 1) / v.rate);
+        const double step_s = 60.0 / patch.tempo / 4 * v.rate, dur = step_s * v.len;
+        auto vel = [&](int c) { return 0.22 + 0.4 * v.acc[c % comp::MAX_COLS] / 100.0; };
+        /* variation: a seeded chance to take another chord tone, and a seeded wobble of the level (0 = exactly as set) */
+        auto vary = [&](int d, double &vl, int n) {
+            if (v.variation <= 0) return d;
+            const double h1 = comp::rand01(patch.comp.seed, bar, q, n * 3), h2 = comp::rand01(patch.comp.seed, bar, q, n * 3 + 1), h3 = comp::rand01(patch.comp.seed, bar, q, n * 3 + 2);
+            vl *= 1 + (h3 - 0.5) * 0.6 * v.variation;
+            return h1 < 0.35 * v.variation ? (d + 1 + (int)(h2 * 3)) % std::max(3, H.ntones) : d;
+        };
+        switch (v.style) {
+        case comp::ARPEGGIO: {
+            int d = v.grid[col % ncols]; if (d < 0) return;
+            double vl = vel(col); d = vary(d, vl, col);
+            note(role, sy, note_hz(deg_midi(d, v.lo, v.hi, v.span > 1 ? (int)(bar % v.span) : 0)), dur, time, vl);
+            break;
+        }
+        case comp::PEDAL: {
+            if (cped_root < 0 || v.follow) cped_root = H.tones[0];
+            int m = v.pedal == 2 ? v.pedal_note : cped_root + (v.pedal == 1 ? 7 : 0);
+            while (m < v.lo) m += 12; while (m > v.hi && m - 12 >= v.lo) m -= 12;
+            double vl = vel(col); vary(0, vl, col);
+            note(role, sy, note_hz(m), dur, time, vl);
+            break;
+        }
+        case comp::STRUM: {
+            int ds[5], nd = 0; for (int d = 0; d < 5; d++) if (v.tones & (1u << d)) ds[nd++] = d;
+            const bool down = v.dir == 1 || (v.dir == 2 && (calt[q]++ & 1));
+            for (int i = 0; i < nd; i++) {
+                const int d = ds[down ? nd - 1 - i : i]; const double off = i * v.spread_ms / 1000.0;
+                double vl = vel(col) + (i == 0 ? 0.12 : 0); vary(d, vl, col * 5 + i);
+                note(role, sy, note_hz(deg_midi(d, v.lo, v.hi, 0)), std::max(0.03, dur - off), time + off, vl);
+            }
+            break;
+        }
+        case comp::EUCLID: {
+            const int E = std::max(1, (int)v.steps), at = (int)((k / v.rate) % E);
+            if (!euclid_at(std::min((int)v.pulses, E), E, v.rot % E, at)) return;
+            int seq[comp::MAX_COLS], ns = 0; for (int i = 0; i < comp::MAX_COLS; i++) if (v.grid[i] >= 0) seq[ns++] = v.grid[i];
+            if (!ns) return;
+            int d = seq[cpulse[q]++ % ns]; double vl = vel(at); d = vary(d, vl, at);
+            note(role, sy, note_hz(deg_midi(d, v.lo, v.hi, 0)), dur, time, vl);
+            break;
+        }
+        case comp::SWELLS: {
+            if (sy) { EnvSpec e{ std::max(0.005, v.attack * dur), 0.005, 1.0, std::max(0.02, v.release * dur), false, true }; sy->shape(&e); swell_shaped[q] = true; }
+            for (int d = 0; d < 5; d++) if (v.tones & (1u << d)) { double vl = 0.15 + 0.45 * v.peak; vary(d, vl, d); note(role, sy, note_hz(deg_midi(d, v.lo, v.hi, 0)), dur, time, vl); }
+            break;
+        }
+        default: break;
+        }
+    }
     void third_step(double time) {
         const Patch &p = patch;
         if (!p.v3.on) return;
