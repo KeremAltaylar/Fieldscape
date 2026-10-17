@@ -41,10 +41,24 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
     data class Row(val id: String, val name: String, val level: Double, val dist: Double, val phase: Phase)
     sealed interface Mode { data object Waiting : Mode; data object Denied : Mode; data class Live(val accuracy: Double) : Mode; data class Holding(val accuracy: Double) : Mode
         /** The walker placed on the map by a tap (the web's draggable walker); fixes ignored until useLocation. */
-        data object ByHand : Mode }
+        data object ByHand : Mode
+        /** Test 16: the phone's location is switched off (not this app's permission) - asked to turn it on */
+        data object Off : Mode }
     data class Nearest(val name: String, val dist: Double, val direction: String)
 
     var mode by mutableStateOf<Mode>(Mode.Waiting)
+    /** Test 16: the sounds still on their way (downloads and decodes queued or running), and how many of this batch are done;
+     *  the panel shows them, and Sound waits for the first batch (the tester: the app lagged while they arrived) */
+    var pending by mutableStateOf(0)
+    var batchDone by mutableStateOf(0)
+    /** two workers, a step below the UI's priority: one thread per recording at once made the map stutter (the lowest
+     *  priority made a 6:40 decode 218 s on the emulator against 124 s) */
+    private val jobs = java.util.concurrent.Executors.newFixedThreadPool(2) { r ->
+        Thread { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DEFAULT + android.os.Process.THREAD_PRIORITY_LESS_FAVORABLE); r.run() }.apply { isDaemon = true } }
+    private fun job(what: String, work: () -> Unit) {
+        pending++
+        jobs.execute { try { work() } finally { main.post { pending--; batchDone++; if (pending == 0) batchDone = 0 } } }
+    }
     var rows by mutableStateOf(listOf<Row>())
     var place by mutableStateOf<String?>(null)
     var nearest by mutableStateOf<Nearest?>(null)
@@ -223,6 +237,8 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
     @SuppressLint("MissingPermission")
     fun listen() {
         val lm = context.getSystemService(LocationManager::class.java)
+        /* Test 16: switched off on the phone - say so, and keep listening: it starts by itself once turned on */
+        if (!lm.isLocationEnabled && mode != Mode.ByHand) mode = Mode.Off
         runCatching { lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 2f, this, Looper.getMainLooper()) }
             .onFailure { mode = Mode.Denied }
     }
@@ -235,7 +251,7 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
         step(lon, lat)
     }
     /** Back to the phone's own position. */
-    fun useLocation() { mode = Mode.Waiting }
+    fun useLocation() { mode = if (context.getSystemService(LocationManager::class.java).isLocationEnabled) Mode.Waiting else Mode.Off }
 
     override fun onLocationChanged(l: Location) {
         if (mode == Mode.ByHand) return
@@ -302,7 +318,7 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
         Core.shape(slot, p.shape)
         Core.pointSound(slot, p.sound)
         val path = p.path ?: return
-        Thread {
+        job("point ${p.name}") {
             try {
                 val file = recording(path, p.id)
                 main.post { phase[p.id] = Phase.Decoding; refreshRows() }
@@ -320,7 +336,7 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
             } catch (e: Throwable) {                               // OutOfMemoryError included: report, never crash
                 main.post { failure = "Could not load ${p.name}: ${e.message}"; phase.remove(p.id); refreshRows() }
             }
-        }.start()
+        }
     }
 
     /** What the piece asks for (pieceStep): a rhythm recording "R handle slot id path", fetched and decoded as the
@@ -328,7 +344,7 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
     private fun load(line: String) {
         val w = line.split(" ")
         if (w[0] != "R") android.util.Log.i("fieldscape", "6b asks: $line")
-        Thread {
+        job(line) {
             runCatching {
                 when (w[0]) {
                     "R" -> { val pcm = Decode.pcm(recording(w[4], "${w[3]}#${w[2]}"))
@@ -345,7 +361,7 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
                 /* a voice's sample: asked again in 10 s while its route still plays (final review I4) - signal comes and goes on a walk */
                 if (w[0] == "V") main.postDelayed({ Core.pieceVoice(w[1].toInt(), w[2].toInt()).takeIf { it.isNotEmpty() }?.let { load(it) } }, 10_000)
             }
-        }.start()
+        }
     }
 
     /** Downloaded once, kept in the cache (the web keeps them in IndexedDB); progress reported. */
@@ -355,6 +371,7 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
         if (file.exists() && file.length() > 0) return file
         /* phase 1b: from R2 through the media Worker - a published point's files need no sign-in */
         val c = URL("$MEDIA_URL/o/" + path.split("/").joinToString("/") { java.net.URLEncoder.encode(it, "UTF-8").replace("+", "%20") }).openConnection() as HttpURLConnection
+        c.connectTimeout = 15_000; c.readTimeout = 30_000   /* Test 16: a stalled download fails, so it cannot hold Sound for ever */
         if (c.responseCode != 200) throw IllegalStateException("HTTP ${c.responseCode}")
         val size = c.contentLengthLong
         val part = File(dir, file.name + ".part")
@@ -363,7 +380,9 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
             while (true) {
                 val k = input.read(buf); if (k < 0) break
                 out.write(buf, 0, k); got += k
-                if (got - last > 256 * 1024) { last = got; val f = if (size > 0) got.toDouble() / size else 0.0
+                /* four times a second at most (Test 16: every 256 KB redrew the panel ~100 times a recording) */
+                val now = System.currentTimeMillis()
+                if (now - last > 250) { last = now; val f = if (size > 0) got.toDouble() / size else 0.0
                     main.post { phase[id] = Phase.Downloading(f, size); refreshRows() } }
             } } }
         part.renameTo(file)
@@ -394,8 +413,8 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
         }
     }
 
-    override fun onProviderEnabled(provider: String) {}
-    override fun onProviderDisabled(provider: String) {}
+    override fun onProviderEnabled(provider: String) { if (mode == Mode.Off) mode = Mode.Waiting }
+    override fun onProviderDisabled(provider: String) { if (mode != Mode.ByHand && mode != Mode.Denied) mode = Mode.Off }
 
     companion object {
         fun direction(lon1: Double, lat1: Double, lon2: Double, lat2: Double): String {

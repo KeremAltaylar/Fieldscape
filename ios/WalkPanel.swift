@@ -24,7 +24,9 @@ struct WalkPanel: View {
                         .overlay(RoundedRectangle(cornerRadius: 10).stroke(T.hairline))
                 }
             }
+            loading
             switch walk.mode {
+            case .off: off
             case .denied: denied
             case .waiting: note(Text("Finding where you are… Or press and hold the map to put yourself there, then drag to walk."))
             case .live, .holding, .byHand: hearing
@@ -35,23 +37,45 @@ struct WalkPanel: View {
 
     private var header: some View {
         HStack(alignment: .firstTextBaseline, spacing: T.s3) {
-            Text(walk.mode == .denied ? "Location is off" : (walk.place ?? "Fieldscape"))
+            Text(walk.mode == .denied || walk.mode == .off ? "Location is off" : (walk.place ?? "Fieldscape"))
                 .font(T.display(T.md)).foregroundStyle(T.ink).lineLimit(1)
                 .onLongPressGesture(perform: onLongPress)
             Spacer(minLength: T.s2)
-            Button { core.setSound(!core.soundOn) } label: {
-                Text(core.soundOn ? "Stop" : "Sound").font(T.body(T.sm, .medium)).foregroundStyle(T.ink)
-                    .frame(minWidth: 64, minHeight: T.target)
-                    .background(T.raised, in: RoundedRectangle(cornerRadius: 10))
-                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(T.hairline))
-            }
-            .accessibilityLabel(core.soundOn ? "Stop the sound" : "Play the sound")
+            SoundButton(walk: walk, core: core)
             switch walk.mode {
             case .live(let a): chip(String(format: "±%.0f m", a))
             case .holding(let a): chip(String(format: "±%.0f m · HOLDING", a))
             case .byHand: chip("BY HAND")
             default: EmptyView()
             }
+        }
+    }
+
+    /* Test 16: the recordings on their way - how many of this batch are in, as a bar */
+    @ViewBuilder private var loading: some View {
+        if walk.pending > 0 {
+            let f = Double(walk.batchDone) / Double(max(1, walk.batchDone + walk.pending))
+            VStack(alignment: .leading, spacing: T.s1) {
+                note(Text(core.soundOn ? "Getting the sounds around you · \(walk.pending) to go" : "Getting the sounds ready · \(walk.pending) to go - Sound starts when they are in"))
+                GeometryReader { g in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(T.raised)
+                        Capsule().fill(T.accent).frame(width: g.size.width * max(0.04, f))
+                    }
+                }.frame(height: 4)
+            }
+        }
+    }
+    /* Test 16: Location Services off on the phone - say so, and take the listener to Settings */
+    private var off: some View {
+        VStack(alignment: .leading, spacing: T.s3) {
+            note(Text("This phone's Location Services are turned off, so Fieldscape cannot tell where you are."))
+            Button { if let u = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(u) } } label: {
+                Text("Turn on location").font(T.body(T.sm, .medium)).foregroundStyle(T.sunk)
+                    .frame(maxWidth: .infinity, minHeight: T.target)
+                    .background(T.accent, in: RoundedRectangle(cornerRadius: 10))
+            }
+            note(Text("Settings → Privacy & Security → Location Services. Or press and hold the map to put yourself there, then drag to walk."))
         }
     }
 
@@ -214,5 +238,24 @@ struct DeveloperPanel: View {
         } label: {
             Text("DEVELOPER").font(T.mono(T.xs)).tracking(T.xs * T.trackEyebrow).foregroundStyle(T.faint)
         }.tint(T.faint)
+    }
+}
+
+/* Sound / Stop. Test 16: while the first recordings are still arriving it waits, saying so - started then, the walk would
+   come in piece by piece (the Android tester's lag) */
+struct SoundButton: View {
+    @ObservedObject var walk: Walk
+    @ObservedObject var core: Core
+    var body: some View {
+        let waiting = !core.soundOn && walk.pending > 0
+        Button { core.setSound(!core.soundOn) } label: {
+            Text(waiting ? "Loading…" : core.soundOn ? "Stop" : "Sound").font(T.body(T.sm, .medium))
+                .foregroundStyle(waiting ? T.faint : core.soundOn ? T.ink : T.sunk)
+                .frame(minWidth: 64, minHeight: T.target).padding(.horizontal, waiting ? T.s2 : 0)
+                .background(core.soundOn || waiting ? T.raised : T.accent, in: RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(T.hairline))
+        }
+        .disabled(waiting)
+        .accessibilityLabel(waiting ? "Sound, waiting for the recordings" : core.soundOn ? "Stop the sound" : "Start the sound")
     }
 }

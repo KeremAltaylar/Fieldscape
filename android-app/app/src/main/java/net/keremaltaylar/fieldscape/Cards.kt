@@ -44,11 +44,13 @@ private fun metres(d: Double) = if (d < 1000) String.format("%.0f m", d) else St
 private fun clock(s: Double) = String.format("%d:%02d", s.toInt() / 60, s.toInt() % 60)
 
 @Composable
-fun CardButton(title: String, primary: Boolean, modifier: Modifier = Modifier, glyph: String? = null, onClick: () -> Unit) {
-    Box(modifier.heightIn(min = T.target).clip(RoundedCornerShape(10.dp)).background(if (primary) T.accent else T.raised)
+fun CardButton(title: String, primary: Boolean, modifier: Modifier = Modifier, icon: Icon? = null, onClick: () -> Unit) {
+    val ink = if (primary) T.sunk else T.ink
+    Row(modifier.heightIn(min = T.target).clip(RoundedCornerShape(10.dp)).background(if (primary) T.accent else T.raised)
         .border(1.dp, T.hairline, RoundedCornerShape(10.dp)).clickable(onClick = onClick).semantics { contentDescription = title },
-        contentAlignment = Alignment.Center) {
-        Text((glyph?.let { "$it  " } ?: "") + title, color = if (primary) T.sunk else T.ink, style = TextStyle(fontFamily = T.body, fontSize = 15.sp))
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
+        icon?.let { Glyph(it, ink, 16.dp); Spacer(Modifier.width(T.s2)) }
+        Text(title, color = ink, style = label(15.sp))
     }
 }
 
@@ -57,7 +59,7 @@ fun PointCard(walk: Walk, map: MapUi, id: String, close: () -> Unit, photos: () 
     val q = walk.pointInfo[id] ?: return
     Column(verticalArrangement = Arrangement.spacedBy(T.s3)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(T.s2)) {
-            Round("✕", "Close", close)
+            Round(Icon.Close, "Close", close)
             Box(Modifier.size(12.dp).clip(CircleShape).background(if (q.mode == "silent") T.sunk else T.lamp)
                 .then(if (q.mode == "silent") Modifier.border(1.5.dp, T.ink, CircleShape) else Modifier))
             Chip(q.mode.uppercase())
@@ -73,8 +75,10 @@ fun PointCard(walk: Walk, map: MapUi, id: String, close: () -> Unit, photos: () 
         }
         Title(q.name)
         if (q.note.isNotEmpty()) Note(q.note, 3)
+        /* Test 16 (the tester: "Listen" and "Play" were not told apart): two sounds, each under its own name - the field
+           recording untouched, and the point as Fieldscape plays it */
         if (q.path != null && q.duration > 0) {
-            Eyebrow("The recording")
+            Eyebrow("Original recording · as it was made")
             val mine = walk.rawId == id
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(T.s3)) {
                 Box(Modifier.size(T.target).clip(CircleShape).background(T.raised).border(1.dp, T.hairline, CircleShape)
@@ -82,14 +86,14 @@ fun PointCard(walk: Walk, map: MapUi, id: String, close: () -> Unit, photos: () 
                     .semantics { contentDescription = if (mine && walk.rawPlaying) "Pause the recording" else "Play the recording as it was made" },
                     contentAlignment = Alignment.Center) {
                     if (mine && walk.rawLoading) CircularProgressIndicator(Modifier.size(18.dp), color = T.ink, strokeWidth = 2.dp)
-                    else Text(if (mine && walk.rawPlaying) "❚❚" else "▶", color = T.ink, style = TextStyle(fontSize = 15.sp))
+                    else Glyph(if (mine && walk.rawPlaying) Icon.Pause else Icon.Play, T.ink, 20.dp)
                 }
                 Waveform(q.peaks, if (mine) walk.rawPosition / maxOf(q.duration, 1.0) else 0.0, Modifier.weight(1f).height(44.dp)) { if (mine) walk.seekRaw(it) }
                 Text(clock(if (mine) walk.rawPosition else 0.0) + " / " + clock(q.duration), color = T.dim, style = TextStyle(fontFamily = T.mono, fontSize = 11.5.sp))
             }
         }
         if (q.hits.isNotEmpty()) {
-            Eyebrow("The recordings")
+            Eyebrow("Original recordings · as they were made")
             q.hits.chunked(2).forEach { pair ->
                 Row(horizontalArrangement = Arrangement.spacedBy(T.s2)) {
                     pair.forEach { (slot, name, path) -> HitButton(walk, "$id#$slot", slot, name, path, Modifier.weight(1f)) }
@@ -101,10 +105,13 @@ fun PointCard(walk: Walk, map: MapUi, id: String, close: () -> Unit, photos: () 
         Note(where(q))
         if (q.mode != "silent") {
             val on = walk.solo == id
-            Note(if (on) "Listening to this point alone, from wherever you are. The rest waits."
-                 else if (q.sounds) "Listen: this point alone, stretched, from wherever you are." else "Listen: this point's ${q.mode} alone, from wherever you are.")
+            Eyebrow("Fieldscape's sound · this point alone")
+            Note(if (on) "Playing this point alone, as Fieldscape transforms it, from wherever you are. The rest waits."
+                 else if (q.sounds) "Its recording stretched into a slow, changing bed, on the route's chord - heard from wherever you are."
+                 else if (q.mode == "rhythm") "Its recordings played as a rhythm in the route's tempo - heard from wherever you are."
+                 else "Its recording cut into grains in the route's tempo - heard from wherever you are.")
             Row(horizontalArrangement = Arrangement.spacedBy(T.s2)) {
-                CardButton(if (on) "Stop listening" else "Listen", !on, Modifier.weight(1f), if (on) "■" else "▶") { walk.listen(if (on) null else id) }
+                CardButton(if (on) "Stop listening" else "Listen", !on, Modifier.weight(1f), if (on) Icon.Stop else Icon.Play) { walk.listen(if (on) null else id) }
                 CardButton("Zoom to", false, Modifier.width(110.dp)) { zoom(map, q) }
             }
         } else {
@@ -124,7 +131,7 @@ fun HitButton(walk: Walk, key: String, slot: String, name: String, path: String,
         .semantics { contentDescription = (if (on) "Pause " else "Play ") + slot + ", " + tidy }.padding(horizontal = T.s3, vertical = T.s1),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(T.s2)) {
         if (mine && walk.rawLoading) CircularProgressIndicator(Modifier.size(14.dp), color = T.ink, strokeWidth = 2.dp)
-        else Text(if (on) "❚❚" else "▶", color = T.ink, style = TextStyle(fontSize = 12.sp))
+        else Glyph(if (on) Icon.Pause else Icon.Play, T.ink, 16.dp)
         Column {
             Text(if (slot == "rand") "RANDOM" else slot.uppercase(), color = T.faint, style = TextStyle(fontFamily = T.mono, fontSize = T.xs, letterSpacing = (T.xs.value * 0.18).sp))
             Text(tidy, color = T.ink, maxLines = 1, overflow = TextOverflow.Ellipsis, style = TextStyle(fontFamily = T.body, fontSize = T.sm))
@@ -152,7 +159,7 @@ fun PhotoViewer(walk: Walk, id: String, close: () -> Unit) {
         Row(Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(T.s4), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(T.s2)) {
             if (paths.size > 1) Text("${pager.currentPage + 1} / ${paths.size}", color = T.dim, style = TextStyle(fontFamily = T.mono, fontSize = T.sm))
-            Round("✕", "Close the photos", close)
+            Round(Icon.Close, "Close the photos", close)
         }
     }
 }
@@ -188,7 +195,7 @@ fun RouteCard(walk: Walk, map: MapUi, index: Int, close: () -> Unit) {
     val here = if (walk.playingRoute == index) walk.chordStep else -1
     Column(verticalArrangement = Arrangement.spacedBy(T.s3)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(T.s2)) {
-            Round("✕", "Close", close)
+            Round(Icon.Close, "Close", close)
             Chip("ROUTE")
             Spacer(Modifier.weight(1f))
             Chip(r.length)

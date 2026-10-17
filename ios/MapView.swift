@@ -44,10 +44,13 @@ struct MapView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> MLNMapView {
         let v = MLNMapView(frame: .zero, styleURL: styleURL())
-        v.logoView.isHidden = true                 /* the attribution stays: a condition of the tiles */
-        v.attributionButtonPosition = .topLeft      /* above the walk panel, never under it */
+        v.logoView.isHidden = true
+        /* Test 16: the credits (a condition of the tiles) are words under the top bar - the "i" read as an unexplained icon */
+        v.attributionButton.isHidden = true
+        /* Test 16: the compass in front, under the top bar's buttons, always shown; a tap turns the map to north */
         v.compassViewPosition = .topRight
-        v.attributionButton.tintColor = UIColor(T.faint)
+        v.compassViewMargins = CGPoint(x: 20, y: 76)
+        v.compassView.compassVisibility = .visible
         v.delegate = context.coordinator
         v.showsUserLocation = true
         /* A tap opens what is under it - a point's card, a route's card. The walker moves by being
@@ -217,6 +220,7 @@ struct MapView: UIViewRepresentable {
         }
         func mapView(_ v: MLNMapView, didFinishLoading style: MLNStyle) {
             self.style = style
+            for id in Markers.ids { style.setImage(Markers.image(id), forName: id) }   /* Test 16 */
             if let m = map, let w = walk { apply(m, w, on: v) }
             guard let b = bounds, !centred else { return }
             v.setVisibleCoordinateBounds(b, edgePadding: UIEdgeInsets(top: 80, left: 40, bottom: 140, right: 40), animated: false, completionHandler: nil)
@@ -297,13 +301,13 @@ struct MapView: UIViewRepresentable {
                  "paint": ["circle-radius": ["interpolate", ["linear"], ["zoom"],
                                               10, ["case", ["has", "icon"], 8, 6], 13, ["case", ["has", "icon"], 17, 12]],
                            "circle-color": Ink.sunk, "circle-opacity": 0.22, "circle-blur": 0.7]],
-                ["id": "point-dot", "type": "circle", "source": "features",
+                /* Test 16: a badge per kind of point, so the plain dot means only you */
+                ["id": "point-dot", "type": "symbol", "source": "features",
                  "filter": ["==", ["geometry-type"], "Point"],
-                 "paint": ["circle-radius": ["interpolate", ["linear"], ["zoom"],
-                                              10, ["case", ["has", "icon"], 5.5, 3.5], 13, ["case", ["has", "icon"], 11.5, 6.5]],
-                           "circle-color": ["case", ["==", ["get", "has_audio"], true], Ink.lamp, Ink.sunk],
-                           "circle-stroke-width": ["interpolate", ["linear"], ["zoom"], 10, 1.2, 13, 2.2],
-                           "circle-stroke-color": ["case", ["==", ["get", "has_audio"], true], Ink.sunk, Ink.ink]]]
+                 "layout": ["icon-image": ["case", ["==", ["get", "audio_mode"], "hits"], "mk-rhythm", ["==", ["get", "audio_mode"], "grains"], "mk-grains",
+                                           ["==", ["get", "has_audio"], true], "mk-stretch", "mk-silent"],
+                            "icon-size": ["interpolate", ["linear"], ["zoom"], 10, 0.55, 14, 1.0],
+                            "icon-allow-overlap": true, "icon-ignore-placement": true]]
             ]
         ]
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("fieldscape-style.json")
@@ -366,5 +370,36 @@ struct MapView: UIViewRepresentable {
         for f in (features["features"] as? [[String: Any]]) ?? [] { add((f["geometry"] as? [String: Any])?["coordinates"]) }
         guard let x0 = lons.min(), let x1 = lons.max(), let y0 = lats.min(), let y1 = lats.max() else { return nil }
         return MLNCoordinateBounds(sw: CLLocationCoordinate2D(latitude: y0, longitude: x0), ne: CLLocationCoordinate2D(latitude: y1, longitude: x1))
+    }
+}
+
+/* Test 16: the map's point markers - stretch (a wave), rhythm (beats), grains (a scatter), a quiet point (a ring) - in the walk's
+   lamp colour, a quiet one dark; as android-app's Markers */
+enum Markers {
+    static let ids = ["mk-stretch", "mk-rhythm", "mk-grains", "mk-silent"]
+    static func image(_ id: String) -> UIImage {
+        let s: CGFloat = 26
+        return UIGraphicsImageRenderer(size: CGSize(width: s, height: s)).image { r in
+            let c = r.cgContext, quiet = id == "mk-silent"
+            let lamp = UIColor(red: 0xBA / 255, green: 0xE6 / 255, blue: 0xB1 / 255, alpha: 1), sunk = UIColor(red: 0x0D / 255, green: 0x13 / 255, blue: 0x10 / 255, alpha: 1)
+            let ink = UIColor(red: 0xE3 / 255, green: 0xE7 / 255, blue: 0xE4 / 255, alpha: 1)
+            let disc = CGRect(x: 1.2, y: 1.2, width: s - 2.4, height: s - 2.4)
+            c.setFillColor((quiet ? sunk : lamp).cgColor); c.fillEllipse(in: disc)
+            c.setStrokeColor((quiet ? ink : sunk).cgColor); c.setLineWidth(1.6); c.strokeEllipse(in: disc)
+            let mark = (quiet ? ink : sunk).cgColor
+            c.setStrokeColor(mark); c.setFillColor(mark); c.setLineWidth(1.7); c.setLineCap(.round)
+            switch id {
+            case "mk-stretch":
+                c.move(to: CGPoint(x: 6, y: 13)); c.addCurve(to: CGPoint(x: 13, y: 13), control1: CGPoint(x: 8.5, y: 7), control2: CGPoint(x: 10.5, y: 7))
+                c.addCurve(to: CGPoint(x: 20, y: 13), control1: CGPoint(x: 15.5, y: 19), control2: CGPoint(x: 17.5, y: 19)); c.strokePath()
+            case "mk-rhythm":
+                for (k, h) in [4.0, 8.0, 5.5].enumerated() { let x = CGFloat(9 + 4 * k); c.move(to: CGPoint(x: x, y: 13 + h / 2)); c.addLine(to: CGPoint(x: x, y: 13 - h / 2)) }
+                c.strokePath()
+            case "mk-grains":
+                for (x, y) in [(9.0, 10.0), (14.0, 8.5), (17.0, 13.0), (11.0, 15.5), (15.5, 17.5)] { c.fillEllipse(in: CGRect(x: x - 1.5, y: y - 1.5, width: 3, height: 3)) }
+            default:
+                c.strokeEllipse(in: CGRect(x: 13 - 3.4, y: 13 - 3.4, width: 6.8, height: 6.8))
+            }
+        }
     }
 }

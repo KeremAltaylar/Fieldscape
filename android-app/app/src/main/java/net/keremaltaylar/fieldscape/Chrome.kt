@@ -61,16 +61,16 @@ fun TopBar(walk: Walk, onSheet: (Sheet) -> Unit) {
             Text("▾", color = T.faint)
         }
         Spacer(Modifier.weight(1f))
-        Round("≋", "Map layers") { onSheet(Sheet.Layers) }
-        Round("◯", "Account") { onSheet(Sheet.Account) }
+        Round(Icon.Layers, "Map layers") { onSheet(Sheet.Layers) }
+        Round(Icon.Account, "Account") { onSheet(Sheet.Account) }
     }
 }
 
 @Composable
-fun Round(glyph: String, label: String, onClick: () -> Unit) {
+fun Round(icon: Icon, label: String, onClick: () -> Unit) {
     Box(Modifier.size(T.target).clip(CircleShape).background(T.panel).border(1.dp, T.hairline, CircleShape)
         .clickable(onClick = onClick).semantics { contentDescription = label }, contentAlignment = Alignment.Center) {
-        Text(glyph, color = T.ink, style = TextStyle(fontSize = 18.sp))
+        Glyph(icon, T.ink, 20.dp)     /* drawn, so it sits in the middle (Test 16: the typed "✕" sat low) */
     }
 }
 
@@ -82,7 +82,7 @@ fun <V> Segmented(items: List<Pair<V, String>>, value: V, onPick: (V) -> Unit, m
             val on = v == value
             Box(Modifier.weight(1f).heightIn(min = 40.dp).clip(RoundedCornerShape(8.dp)).background(if (on) T.raised else T.sunk)
                 .clickable { onPick(v) }.semantics { selected = on }, contentAlignment = Alignment.Center) {
-                Text(name, color = if (on) T.ink else T.dim, style = TextStyle(fontFamily = T.body, fontSize = 14.sp))
+                Text(name, color = if (on) T.ink else T.dim, style = label(14.sp))
             }
         }
     }
@@ -93,7 +93,7 @@ fun Toggle(name: String, on: Boolean, onClick: () -> Unit) {
     Box(Modifier.heightIn(min = 40.dp).clip(RoundedCornerShape(10.dp)).background(if (on) T.raised else T.sunk)
         .border(1.dp, T.hairline, RoundedCornerShape(10.dp)).clickable(onClick = onClick).semantics { selected = on }
         .padding(horizontal = T.s3), contentAlignment = Alignment.Center) {
-        Text(name, color = if (on) T.ink else T.dim, style = TextStyle(fontFamily = T.body, fontSize = 14.sp))
+        Text(name, color = if (on) T.ink else T.dim, style = label(14.sp))
     }
 }
 
@@ -104,7 +104,7 @@ fun Eyebrow(s: String) = Text(s.uppercase(), color = T.faint, style = TextStyle(
 fun SheetTitle(title: String, onClose: () -> Unit) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(title, Modifier.weight(1f), color = T.ink, style = TextStyle(fontFamily = T.display, fontSize = 24.sp))
-        Round("✕", "Close", onClose)
+        Round(Icon.Close, "Close", onClose)
     }
 }
 
@@ -163,7 +163,7 @@ fun LayersSheet(walk: Walk, map: MapUi, onSheet: (Sheet) -> Unit) {
             Box(Modifier.width(96.dp).heightIn(min = T.target).clip(RoundedCornerShape(10.dp)).background(T.raised)
                 .border(1.dp, T.hairline, RoundedCornerShape(10.dp)).clickable { walk.allBounds?.let { map.show(it) } },
                 contentAlignment = Alignment.Center) {
-                Text("Fit all", color = T.ink, style = TextStyle(fontFamily = T.body, fontSize = 15.sp))
+                Text("Fit all", color = T.ink, style = label(15.sp))
             }
         }
         Eyebrow("Show")
@@ -190,5 +190,5 @@ fun AccountSheet(onSheet: (Sheet) -> Unit, engineLine: String) {
 }
 
 /** The test number of this build (docs/TESTS.md), shown in Account. */
-const val TEST_BUILD = 14
+const val TEST_BUILD = 16
 

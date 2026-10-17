@@ -74,7 +74,9 @@ final class RouteSound {
     private func loadVoice(_ q: Int, _ g: Int, _ spec: (path: String, ana: String?)) {
         let sr = core.sampleRate, piece = self.piece
         let retry = { [weak self] in DispatchQueue.main.asyncAfter(deadline: .now() + 10) { if let self, self.gen == g { self.loadVoice(q, g, spec) } } }
+            walk?.loadStarted()
             Task { @MainActor [weak self] in
+                defer { self?.walk?.loadEnded() }     /* Test 16 */
                 guard let walk = self?.walk, let data = try? await walk.recording(spec.path, for: "route#\(q)") else { retry(); return }
                 var anaData: Data? = nil
                 if let a = spec.ana { anaData = try? await walk.recording(a, for: "route#\(q)#analysis"); if anaData == nil { retry(); return } }
@@ -220,7 +222,9 @@ final class RouteSound {
         let sr = core.sampleRate
         for (slot, path) in b.paths.enumerated() {
             guard let path else { continue }
+            walk?.loadStarted()
             Task { @MainActor [weak self] in
+                defer { self?.walk?.loadEnded() }     /* Test 16 */
                 guard let walk = self?.walk, let data = try? await walk.recording(path, for: b.id + "#\(slot)") else { return }
                 /* interleaved 16-bit off the main thread; copied into the piece's own memory here */
                 guard let pcm = try? await Decode.pcm16(data, sampleRate: sr) else { return }

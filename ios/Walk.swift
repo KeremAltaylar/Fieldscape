@@ -41,9 +41,16 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
     }
     /* byHand: the walker placed on the map by a tap or a drag (the web's draggable walker), for
        listening to a place from anywhere; GPS fixes are ignored until "Use my location". */
-    enum Mode: Equatable { case waiting, denied, live(accuracy: Double), holding(accuracy: Double), byHand }
+    enum Mode: Equatable { case waiting, denied, live(accuracy: Double), holding(accuracy: Double), byHand,
+                           off   /* Test 16: Location Services switched off on the phone (not this app's permission) */ }
 
     @Published var mode = Mode.waiting
+    /* Test 16: the recordings still on their way (downloads and decodes), and how many of this batch are in; the panel shows
+       them, and Sound waits for the first batch (the Android tester: the app lagged while they arrived) */
+    @Published var pending = 0
+    @Published var batchDone = 0
+    func loadStarted() { pending += 1 }
+    func loadEnded() { pending = max(0, pending - 1); batchDone += 1; if pending == 0 { batchDone = 0 } }
     @Published var rows: [Row] = []
     @Published var place: String? = nil
     @Published var nearest: (name: String, dist: Double, direction: String)? = nil
@@ -229,8 +236,17 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
     }
 
     func locationManager(_ m: CLLocationManager, didChangeAuthorization s: CLAuthorizationStatus) {
-        if s == .denied || s == .restricted { mode = .denied }
-        else if mode == .denied { mode = .waiting; loc.startUpdatingLocation() }
+        /* Test 16: switched off on the phone reads as denied here - asked apart (off the main thread, as Apple asks), so the
+           panel says which, and it starts by itself once Location Services is back on */
+        DispatchQueue.global().async { [weak self] in
+            let on = CLLocationManager.locationServicesEnabled()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if !on { if self.mode != .byHand { self.mode = .off }; return }
+                if s == .denied || s == .restricted { self.mode = .denied }
+                else if self.mode == .denied || self.mode == .off { self.mode = .waiting; self.loc.startUpdatingLocation() }
+            }
+        }
     }
 
     func locationManager(_ m: CLLocationManager, didUpdateLocations locs: [CLLocation]) {
@@ -376,7 +392,9 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
         core.pointSound(slot: slot, p.sound)
         guard let path = p.path else { return }
         let sr = core.sampleRate
+        loadStarted()
         Task { @MainActor [weak self] in
+            defer { self?.loadEnded() }
             do {
                 guard let data = try await self?.recording(path, for: p.id) else { return }
                 self?.phase[p.id] = .decoding

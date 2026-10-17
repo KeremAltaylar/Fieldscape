@@ -37,7 +37,9 @@ final class Core: ObservableObject {
     @Published var paused: String? = nil
     /* The Sound / Stop button: the whole output fades (the web's SOUND_FADE_IN / OUT), then the
        engine pauses, so a stopped walk costs no battery. */
-    @Published var soundOn = true
+    /* Test 16: off at first - the recordings around you load, then Sound starts it (Kerem: "when its done, then user can
+       start to click sound") */
+    @Published var soundOn = false
     private var fadeTimer: Timer?
     func setSound(_ on: Bool) {
         soundOn = on
@@ -171,6 +173,7 @@ final class Core: ObservableObject {
         }
         engine.attach(node)
         engine.connect(node, to: engine.mainMixerNode, format: format)
+        engine.mainMixerNode.outputVolume = 0          /* Test 16: silent until Sound */
         try? engine.start()
         observeSession()
         Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.refresh() }
@@ -408,7 +411,14 @@ struct ContentView: View {
             }
             .animation(.easeOut(duration: 0.18), value: walk.cells)
         }
-        .overlay(alignment: .top) { if features != nil { TopBar(walk: walk, sheet: $sheet).padding(.top, T.s2) } }
+        .overlay(alignment: .top) { if features != nil {
+            VStack(alignment: .leading, spacing: T.s2) {
+                TopBar(walk: walk, sheet: $sheet)
+                /* Test 16: the map's credits in words - its "i" button read as an unexplained info icon */
+                Text(map.base == .satellite ? "Imagery © Esri · © OpenStreetMap contributors" : map.base == .topo ? "© OpenStreetMap contributors · © OpenTopoMap" : "© OpenStreetMap contributors")
+                    .font(T.body(T.xs)).foregroundStyle(T.dim).padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(T.sunk.opacity(0.72), in: RoundedRectangle(cornerRadius: 5)).padding(.leading, T.s4)
+            }.padding(.top, T.s2) } }
         .overlay { if let id = photos { PhotoViewer(walk: walk, id: id) { photos = nil }.transition(.opacity) } }
         .onChange(of: sheet) { _ in if sheet != .walk { collapsed = false } }
         .preferredColorScheme(.dark)
@@ -444,13 +454,7 @@ struct CollapsedBar: View {
                 .frame(maxWidth: .infinity, minHeight: T.target, alignment: .leading)
             }
             .accessibilityLabel("Show the panel")
-            Button { core.setSound(!core.soundOn) } label: {
-                Text(core.soundOn ? "Stop" : "Sound").font(T.body(T.sm, .medium)).foregroundStyle(T.ink)
-                    .frame(minWidth: 64, minHeight: T.target)
-                    .background(T.raised, in: RoundedRectangle(cornerRadius: 10))
-                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(T.hairline))
-            }
-            .accessibilityLabel(core.soundOn ? "Stop the sound" : "Play the sound")
+            SoundButton(walk: walk, core: core)
         }
     }
 }

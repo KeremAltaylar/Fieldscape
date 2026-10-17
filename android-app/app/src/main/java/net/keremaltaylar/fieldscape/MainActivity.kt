@@ -65,8 +65,9 @@ class MainActivity : ComponentActivity() {
     private var failed by mutableStateOf<String?>(null)
     /** Why the sound is paused, when it is; the panel offers Resume (rulebook M-6). */
     private var paused by mutableStateOf<String?>(null)
-    /** The Sound / Stop button: fades the output (2 s in, 1.5 s out, as the web), then pauses the stream. */
-    private var soundOn by mutableStateOf(true)
+    /** The Sound / Stop button: fades the output (2 s in, 1.5 s out, as the web), then pauses the stream. Test 16: off at
+     *  first - the recordings around you load, then Sound starts it (Kerem: "when its done, then user can start to click sound") */
+    private var soundOn by mutableStateOf(false)
     private val main = android.os.Handler(android.os.Looper.getMainLooper())
     private fun setSound(on: Boolean) {
         soundOn = on
@@ -94,7 +95,7 @@ class MainActivity : ComponentActivity() {
 
     private val ask = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { r ->
         if (Manifest.permission.ACCESS_FINE_LOCATION !in r) return@registerForActivityResult     // only the notification was asked
-        if (r[Manifest.permission.ACCESS_FINE_LOCATION] == true || r[Manifest.permission.ACCESS_COARSE_LOCATION] == true) { walk.listen(); WalkService.start(this) }
+        if (r[Manifest.permission.ACCESS_FINE_LOCATION] == true || r[Manifest.permission.ACCESS_COARSE_LOCATION] == true) { walk.listen(); WalkService.start(this); WalkService.update(this, soundOn) }
         else walk.denied()
     }
 
@@ -102,6 +103,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(saved)
         MapLibre.getInstance(this)
         walk = Walk(this, Core.start())
+        Core.master(0f, 0.01f)                                               // Test 16: silent until Sound
         focus = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
             .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
             .setOnAudioFocusChangeListener(onFocus).build()
@@ -121,7 +123,7 @@ class MainActivity : ComponentActivity() {
 
     private fun locate() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
-            walk.listen(); WalkService.start(this)                            // 5.8: on with the screen locked
+            walk.listen(); WalkService.start(this); WalkService.update(this, soundOn)   // 5.8: on with the screen locked
             if (android.os.Build.VERSION.SDK_INT >= 33) ask.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS))
         } else ask.launch(buildList {
             add(Manifest.permission.ACCESS_FINE_LOCATION); add(Manifest.permission.ACCESS_COARSE_LOCATION)
@@ -154,7 +156,7 @@ class MainActivity : ComponentActivity() {
                         .border(1.dp_, T.hairline, RoundedCornerShape(10.dp_))
                         .clickable { paused = null; getSystemService(AudioManager::class.java).requestAudioFocus(focus); Core.resume() },
                         contentAlignment = Alignment.Center) {
-                        Text("Resume", color = T.ink, style = TextStyle(fontFamily = T.body, fontSize = T.sm))
+                        Text("Resume", color = T.ink, style = label(T.sm))
                     }
                 }
                 when (val s = sheet) {
@@ -171,7 +173,15 @@ class MainActivity : ComponentActivity() {
                 }
             }
             }
-            if (features != null) TopBar(walk) { open(it) }
+            if (features != null) {
+                TopBar(walk) { open(it) }
+                /* Test 16: the map's credits as words under the bar - its "i" button read as an unexplained info icon */
+                Text(when (mapUi.base) { MapUi.Base.Satellite -> "Imagery © Esri · © OpenStreetMap contributors"
+                                         MapUi.Base.Topo -> "© OpenStreetMap contributors · © OpenTopoMap"; else -> "© OpenStreetMap contributors" },
+                     Modifier.align(Alignment.TopStart).statusBarsPadding().padding(start = T.s4, top = T.target + T.s3)
+                         .clip(RoundedCornerShape(5.dp_)).background(T.sunk.copy(alpha = 0.72f)).padding(horizontal = 6.dp_, vertical = 2.dp_),
+                     color = T.dim, style = TextStyle(fontFamily = T.body, fontSize = T.xs))   /* readable over the imagery */
+            }
             photos?.let { PhotoViewer(walk, it) { photos = null } }
         }
         /* leaving a point's card stops its player (Listen stays until let go: it is the walk's state) */
@@ -188,10 +198,33 @@ class MainActivity : ComponentActivity() {
                      color = T.ink, maxLines = 1, style = TextStyle(fontFamily = T.display, fontSize = T.md))
                 walk.chord?.let { Text(it, color = T.dim, maxLines = 1, style = TextStyle(fontFamily = T.body, fontSize = T.sm)) }
             }
-            Box(Modifier.heightIn(min = T.target).widthIn(min = 64.dp_).clip(RoundedCornerShape(10.dp_)).background(T.raised)
-                .border(1.dp_, T.hairline, RoundedCornerShape(10.dp_)).clickable { setSound(!soundOn) }.padding(horizontal = T.s3),
-                contentAlignment = Alignment.Center) {
-                Text(if (soundOn) "Stop" else "Sound", color = T.ink, style = TextStyle(fontFamily = T.body, fontSize = T.sm))
+            SoundButton()
+        }
+    }
+
+    /** Sound / Stop. Test 16: while the first recordings are still arriving it waits, saying so - started then, the walk
+     *  would come in piece by piece over a stuttering screen (the tester's lag) */
+    @Composable
+    private fun SoundButton() {
+        val waiting = !soundOn && walk.pending > 0
+        Box(Modifier.heightIn(min = T.target).widthIn(min = 64.dp_).clip(RoundedCornerShape(10.dp_)).background(if (soundOn || waiting) T.raised else T.accent)
+            .border(1.dp_, T.hairline, RoundedCornerShape(10.dp_)).clickable(enabled = !waiting) { setSound(!soundOn) }
+            .semantics { contentDescription = if (waiting) "Sound, waiting for the recordings" else if (soundOn) "Stop the sound" else "Start the sound" }
+            .padding(horizontal = T.s3), contentAlignment = Alignment.Center) {
+            Text(if (waiting) "Loading…" else if (soundOn) "Stop" else "Sound", color = if (waiting) T.faint else if (soundOn) T.ink else T.sunk, style = label(T.sm))
+        }
+    }
+
+    /** Test 16: the recordings on their way - how many of this batch are in, as a bar */
+    @Composable
+    private fun Loading() {
+        val left = walk.pending; if (left == 0) return
+        val done = walk.batchDone; val f = done.toFloat() / maxOf(1, done + left)
+        Column(verticalArrangement = Arrangement.spacedBy(T.s1)) {
+            Text(if (soundOn) "Getting the sounds around you · $left to go" else "Getting the sounds ready · $left to go - Sound starts when they are in",
+                 color = T.dim, style = TextStyle(fontFamily = T.body, fontSize = T.sm))
+            Box(Modifier.fillMaxWidth().height(4.dp_).clip(CircleShape).background(T.raised)) {
+                Box(Modifier.fillMaxWidth(maxOf(0.04f, f)).fillMaxHeight().clip(CircleShape).background(T.accent))
             }
         }
     }
@@ -204,14 +237,10 @@ class MainActivity : ComponentActivity() {
         val mode = walk.mode
         /* the developer long-press lives on the place name alone, clear of the buttons */
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(T.s2)) {
-            Text(if (mode == Walk.Mode.Denied) "Location is off" else walk.place ?: "Fieldscape",
+            Text(if (mode == Walk.Mode.Denied || mode == Walk.Mode.Off) "Location is off" else walk.place ?: "Fieldscape",
                  Modifier.weight(1f).pointerInput(Unit) { detectTapGestures(onLongPress = { onLongPress() }) },
                  color = T.ink, style = TextStyle(fontFamily = T.display, fontSize = T.md), maxLines = 1)
-            Box(Modifier.heightIn(min = T.target).widthIn(min = 64.dp_).clip(RoundedCornerShape(10.dp_)).background(T.raised)
-                .border(1.dp_, T.hairline, RoundedCornerShape(10.dp_)).clickable { setSound(!soundOn) }.padding(horizontal = T.s3),
-                contentAlignment = Alignment.Center) {
-                Text(if (soundOn) "Stop" else "Sound", color = T.ink, style = TextStyle(fontFamily = T.body, fontSize = T.sm))
-            }
+            SoundButton()
             when (mode) {
                 is Walk.Mode.Live -> Chip(String.format("±%.0f m", mode.accuracy))
                 is Walk.Mode.Holding -> Chip(String.format("±%.0f m · HOLDING", mode.accuracy))
@@ -219,14 +248,25 @@ class MainActivity : ComponentActivity() {
                 else -> {}
             }
         }
+        Loading()
         when (mode) {
+            Walk.Mode.Off -> {   /* Test 16: the phone's location switched off - the app asks, and picks it up once it is on */
+                Note("This phone's location is turned off, so Fieldscape cannot tell where you are.")
+                Box(Modifier.fillMaxWidth().heightIn(min = T.target).clip(RoundedCornerShape(10.dp_)).background(T.accent)
+                    .border(1.dp_, T.hairline, RoundedCornerShape(10.dp_))
+                    .clickable { startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)) },
+                    contentAlignment = Alignment.Center) {
+                    Text("Turn on location", color = T.sunk, style = label(T.sm))
+                }
+                Note("Or press and hold the map to put yourself there, then drag to walk.")
+            }
             Walk.Mode.Denied -> {
                 Note("Fieldscape plays the recordings placed around you, so it needs to know where you are while the app is open.")
                 Box(Modifier.fillMaxWidth().heightIn(min = T.target).clip(RoundedCornerShape(10.dp_)).background(T.raised)
                     .border(1.dp_, T.hairline, RoundedCornerShape(10.dp_))
                     .clickable { startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null))) },
                     contentAlignment = Alignment.Center) {
-                    Text("Open Settings", color = T.ink, style = TextStyle(fontFamily = T.body, fontSize = T.sm))
+                    Text("Open Settings", color = T.ink, style = label(T.sm))
                 }
                 Note("Settings → Apps → Fieldscape → Permissions → Location → Allow only while using the app")
             }
@@ -254,7 +294,7 @@ class MainActivity : ComponentActivity() {
                 .background(if (walk.cells) T.raised else Color.Transparent).border(1.dp_, T.hairline, RoundedCornerShape(10.dp_))
                 .semantics { contentDescription = "Morph cells" }.toggleable(walk.cells) { walk.cells = it }
                 .padding(horizontal = T.s3), contentAlignment = Alignment.Center) {
-                Text("Cells", color = if (walk.cells) T.ink else T.dim, style = TextStyle(fontFamily = T.body, fontSize = T.sm))
+                Text("Cells", color = if (walk.cells) T.ink else T.dim, style = label(T.sm))
             }
         }
         walk.solo?.let { walk.pointInfo[it] }?.let { q ->
@@ -292,7 +332,7 @@ class MainActivity : ComponentActivity() {
             Box(Modifier.fillMaxWidth().heightIn(min = T.target).clip(RoundedCornerShape(10.dp_)).background(T.raised)
                 .border(1.dp_, T.hairline, RoundedCornerShape(10.dp_)).clickable { walk.useLocation() },
                 contentAlignment = Alignment.Center) {
-                Text("Use my location", color = T.ink, style = TextStyle(fontFamily = T.body, fontSize = T.sm))
+                Text("Use my location", color = T.ink, style = label(T.sm))
             }
         }
         if (walk.mode is Walk.Mode.Holding) Note("GPS is too rough here, so the sound holds where you last were until the fix is better than 40 m.")
@@ -345,8 +385,14 @@ class MainActivity : ComponentActivity() {
                             state.heldUntil = System.currentTimeMillis() + FOLLOW_HOLD_MS
                     }
                     map.uiSettings.isLogoEnabled = false
-                    map.uiSettings.attributionGravity = android.view.Gravity.TOP or android.view.Gravity.START
-                    map.uiSettings.setAttributionTintColor(android.graphics.Color.rgb(0x9c, 0xa4, 0x9d))   // T.faint
+                    map.uiSettings.isAttributionEnabled = false              // Test 16: credited in words under the top bar
+                    /* Test 16: the compass in front, under the top bar's buttons, always shown; a tap turns the map to north */
+                    val d = resources.displayMetrics.density
+                    val bar = resources.getIdentifier("status_bar_height", "dimen", "android").takeIf { it > 0 }?.let { resources.getDimensionPixelSize(it) } ?: (24 * d).toInt()
+                    map.uiSettings.isCompassEnabled = true
+                    map.uiSettings.setCompassFadeFacingNorth(false)
+                    map.uiSettings.compassGravity = android.view.Gravity.TOP or android.view.Gravity.END
+                    map.uiSettings.setCompassMargins(0, bar + (72 * d).toInt(), (20 * d).toInt(), 0)
                     /* A tap opens what is under it: a point's card, a route's card; on nothing it closes a card.
                        The walker moves by being dragged (Kerem, 2026-09-26: "move the listener by clicking and
                        dragging it, this will allow us to click points and routes"). */
@@ -396,7 +442,8 @@ class MainActivity : ComponentActivity() {
                         if (e.actionMasked == android.view.MotionEvent.ACTION_UP || e.actionMasked == android.view.MotionEvent.ACTION_CANCEL) state.dragging = false
                         was
                     }
-                    map.setStyle(Style.Builder().fromJson(styleJson(fc))) { style ->
+                    val marks = Markers.ids.fold(Style.Builder().fromJson(styleJson(fc))) { b, id -> b.withImage(id, Markers.bitmap(id, resources.displayMetrics.density)) }
+                    map.setStyle(marks) { style ->
                         state.style = style
                         bounds(fc)?.let { map.moveCamera(CameraUpdateFactory.newLatLngBounds(it, 80)) }
                     }
@@ -531,12 +578,12 @@ class MainActivity : ComponentActivity() {
       {"id":"point-halo","type":"circle","source":"features","filter":["==",["geometry-type"],"Point"],
        "paint":{"circle-radius":["interpolate",["linear"],["zoom"],10,["case",["has","icon"],8,6],13,["case",["has","icon"],17,12]],
                 "circle-color":"#0d1310","circle-opacity":0.22,"circle-blur":0.7}},
-      {"id":"point-dot","type":"circle","source":"features","filter":["==",["geometry-type"],"Point"],
-       "paint":{"circle-radius":["interpolate",["linear"],["zoom"],10,["case",["has","icon"],5.5,3.5],13,["case",["has","icon"],11.5,6.5]],
-                "circle-color":["case",["==",["get","has_audio"],true],"#bae6b1","#0d1310"],
-                "circle-stroke-width":["interpolate",["linear"],["zoom"],10,1.2,13,2.2],
-                "circle-stroke-color":["case",["==",["get","has_audio"],true],"#0d1310","#e3e7e4"]}},
-      {"id":"me","type":"circle","source":"me","paint":{"circle-radius":10,"circle-color":"#e3e7e4","circle-stroke-width":4,"circle-stroke-color":"#0d1310"}}
+      {"id":"point-dot","type":"symbol","source":"features","filter":["==",["geometry-type"],"Point"],
+       "layout":{"icon-image":["case",["==",["get","audio_mode"],"hits"],"mk-rhythm",["==",["get","audio_mode"],"grains"],"mk-grains",
+                                      ["==",["get","has_audio"],true],"mk-stretch","mk-silent"],
+                 "icon-size":["interpolate",["linear"],["zoom"],10,0.55,14,1.0],"icon-allow-overlap":true,"icon-ignore-placement":true}},
+      {"id":"me-halo","type":"circle","source":"me","paint":{"circle-radius":19,"circle-color":"#e3e7e4","circle-opacity":0.18}},
+      {"id":"me","type":"circle","source":"me","paint":{"circle-radius":9,"circle-color":"#e3e7e4","circle-stroke-width":3,"circle-stroke-color":"#0d1310"}}
      ]}"""
 
     /** a circle of r metres as a ring of 48 corners */

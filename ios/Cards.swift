@@ -80,7 +80,9 @@ struct PointCard: View {
                 Text(q.name).font(T.display(T.lg)).foregroundStyle(T.ink).lineLimit(2)
                 if !q.note.isEmpty { note(q.note).lineLimit(3) }
                 if q.path != nil && q.duration > 0 {
-                    eyebrow("The recording")
+                    /* Test 16 (the tester: "Listen" and "Play" were not told apart): the field recording untouched, and the
+                       point as Fieldscape plays it, each under its own name */
+                    eyebrow("Original recording · as it was made")
                     HStack(spacing: T.s3) {
                         let mine = walk.rawId == id
                         Button { walk.playRaw(id, path: q.path!) } label: {
@@ -101,7 +103,7 @@ struct PointCard: View {
                     }
                 }
                 if !q.hits.isEmpty {
-                    eyebrow("The recordings")
+                    eyebrow("Original recordings · as they were made")
                     LazyVGrid(columns: [GridItem(.flexible(), spacing: T.s2), GridItem(.flexible(), spacing: T.s2)], spacing: T.s2) {
                         ForEach(q.hits, id: \.slot) { h in HitButton(walk: walk, key: id + "#" + h.slot, slot: h.slot, name: h.name, path: h.path) }
                     }
@@ -110,8 +112,11 @@ struct PointCard: View {
                 note(where_(q))
                 if q.mode != "silent" {
                     let on = walk.solo == id
-                    note(on ? "Listening to this point alone, from wherever you are. The rest waits."
-                            : q.sounds ? "Listen: this point alone, stretched, from wherever you are." : "Listen: this point's \(q.mode) alone, from wherever you are.")
+                    eyebrow("Fieldscape's sound · this point alone")
+                    note(on ? "Playing this point alone, as Fieldscape transforms it, from wherever you are. The rest waits."
+                            : q.sounds ? "Its recording stretched into a slow, changing bed, on the route's chord - heard from wherever you are."
+                            : q.mode == "rhythm" ? "Its recordings played as a rhythm in the route's tempo - heard from wherever you are."
+                            : "Its recording cut into grains in the route's tempo - heard from wherever you are.")
                     HStack(spacing: T.s2) {
                         CardButton(title: on ? "Stop listening" : "Listen", primary: !on, action: { walk.listen(on ? nil : id) }, system: on ? "stop.fill" : "play.fill")
                         CardButton(title: "Zoom to", primary: false, action: { zoom(q) }).frame(width: 110)
