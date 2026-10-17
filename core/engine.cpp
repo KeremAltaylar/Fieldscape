@@ -77,6 +77,7 @@ struct fs_engine {
     std::string loads, state;
     std::vector<std::string> rhythm_names;
     std::string route_name;
+    std::string zones_sent;           /* the inside-set last given to the piece */
     std::string solo;                 /* Listen: that point alone ("" none) */
     std::string watch; double watch_ms = 0;   /* 8a: the point whose panel is open - its level for the meter */
     double now() const { return (double)frames / sr; }
@@ -364,12 +365,17 @@ const char *fs_engine_step(fs_engine *e, double lon, double lat) {
     }
     /* zones and the recordings' character */
     std::vector<double> cd, cr, cc, co;
+    std::string inside, entered;
     for (auto &sp : e->spots) {
         double dist = fs_geo_distance(lon, lat, sp.lon, sp.lat);
         if (sp.audio) { cd.push_back(dist); cr.push_back(sp.radius); cc.push_back(sp.centroid); co.push_back(sp.onsets); }
         if (dist > sp.radius * FS_ZONE_MARGIN) { sp.zone = fs_zone_state{}; continue; }
-        if (fs_zone_step(&sp.zone, dist, sp.zoneR, now * 1000, FS_ZONE_MARGIN, FS_ZONE_COOLDOWN_MS) == 1 && sp.plain) fs_piece_zone(e->piece, sp.icon.c_str());
+        const int ev = fs_zone_step(&sp.zone, dist, sp.zoneR, now * 1000, FS_ZONE_MARGIN, FS_ZONE_COOLDOWN_MS);
+        if (ev == 1 && sp.plain) fs_piece_zone(e->piece, sp.icon.c_str());
+        if (ev == 1) entered = sp.id;
+        if (sp.zone.inside) inside += (inside.empty() ? "" : ",") + sp.id;   /* composition: the zones the walker is in */
     }
+    if (inside != e->zones_sent || !entered.empty()) { fs_piece_zones(e->piece, inside.c_str(), entered.c_str()); e->zones_sent = inside; }
     fs_piece_character(e->piece, (int)cd.size(), cd.data(), cr.data(), cc.data(), co.data());
     /* rhythm points (updateRhythms) */
     size_t nb = e->beats.size();

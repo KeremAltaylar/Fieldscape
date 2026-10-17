@@ -177,6 +177,24 @@ static void test_cost() {
     assert(worst < 1.33);
 }
 
+static void test_engine_zone() {
+    /* a route with a zone override on point "z1": inside it, voice 1 is off */
+    char route[8192]; std::snprintf(route, sizeof route, R"({"type":"Feature","geometry":{"type":"LineString","coordinates":[[29.0,41.0],[29.004,41.0]]},
+        "properties":{"id":"r1","kind":"route","name":"R","patch":%s}})",
+        R"({"version":17,"tempo":96,"key":50,"prog":[{"r":0,"q":"m7"}],"bed":{"on":false},"zones":{"on":false},"voice":{"on":true,"synth":"fm"},"sect":{"on":false},"v3":{"on":false},"comp":{"voice":{"style":"arpeggio","rate":"16n"},"bass":{"mode":"off"},"over":{"zone":{"z1":{"voice":{"role":"off"}}}}}})");
+    const char *pt = R"({"type":"Feature","geometry":{"type":"Point","coordinates":[29.003,41.0]},"properties":{"id":"z1","kind":"point","name":"Z","sound":{"zoneR":40}}})";
+    /* the zone cooldown (8 s from time 0) means the first entry lands after 8 s: measure 12-18 s */
+    auto level = [&](double lon) {
+        fs_engine *e = fs_engine_create(48000, 128); fs_engine_upsert(e, route); fs_engine_upsert(e, pt);
+        double ms = 0; long long n = 0;
+        for (int b = 0; b < (int)(18 * 48000 / 128); b++) { if (b % 40 == 0) fs_engine_step(e, lon, 41.0); fs_engine_process(e, 128);
+            if (b > 12 * 48000 / 128) { const float *l = fs_engine_out(e, 0); for (int i = 0; i < 128; i++) { ms += l[i] * l[i]; n++; } } }
+        fs_engine_destroy(e); return 10 * std::log10(ms / n + 1e-30); };
+    const double out = level(29.001), in = level(29.003);
+    std::printf("C zone: outside the zone %.1f dB, inside (voice 1 off) %.1f dB\n", out, in);
+    assert(out > -60 && in < out - 20);
+}
+
 int main() {
     test_parse();
     test_resolve();
@@ -186,6 +204,7 @@ int main() {
     test_styles();
     test_bass();
     test_cost();
+    test_engine_zone();
     std::printf("composer ok\n");
     return 0;
 }
