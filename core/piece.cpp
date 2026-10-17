@@ -641,7 +641,7 @@ struct Piece : Device {
     /* composition (step 1): the settings in force, gliding a bar at a time; zones; per-voice state */
     comp::Voice ccur[comp::NVOICE]; comp::Bass cbass; bool comp_live = false;
     uint64_t zin[16] = {}; int nzin = 0; struct Ent { uint64_t id; long long bar; } zent[8]; int nzent = 0;
-    int cpulse[comp::NVOICE] = {}, calt[comp::NVOICE] = {}, cped_root = -1; bool swell_shaped[comp::NVOICE] = {};
+    int cpulse[comp::NVOICE] = {}, calt[comp::NVOICE] = {}, cped_root[comp::NVOICE] = {-1, -1, -1}; bool swell_shaped[comp::NVOICE] = {};
     bool styled(int q) const { return patch.comp.on && comp_live && (ccur[q].style != comp::FREE || ccur[q].role == comp::OFF); }
     double centroid = 2000, onsets = 1;
     double bpm = 72, next_tick = 0; long long ticks = 0;
@@ -1172,8 +1172,8 @@ struct Piece : Device {
             break;
         }
         case comp::PEDAL: {
-            if (cped_root < 0 || v.follow) cped_root = H.tones[0];
-            int m = v.pedal == 2 ? v.pedal_note : cped_root + (v.pedal == 1 ? 7 : 0);
+            if (cped_root[q] < 0 || v.follow) cped_root[q] = H.tones[0];
+            int m = v.pedal == 2 ? v.pedal_note : cped_root[q] + (v.pedal == 1 ? 7 : 0);
             while (m < v.lo) m += 12; while (m > v.hi && m - 12 >= v.lo) m -= 12;
             double vl = vel(col); vary(0, vl, col);
             note(role, sy, note_hz(m), dur, time, vl);
@@ -1500,7 +1500,7 @@ struct Piece : Device {
         patch = routes[near];
         apply_patch(now);
         H.idx = -1; H.chord = -1; H.ntones = -1;
-        sector = -1; comp_live = false; nzent = 0; cped_root = -1;
+        sector = -1; comp_live = false; nzent = 0; for (int q = 0; q < comp::NVOICE; q++) { cped_root[q] = -1; cpulse[q] = 0; calt[q] = 0; }
         synth_to(walk_level(route_dist), now);
     }
     void walk(int r, double t, double dist, double now) {
