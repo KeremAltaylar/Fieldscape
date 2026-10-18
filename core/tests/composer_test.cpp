@@ -71,7 +71,7 @@ static double draw(void *p) { unsigned *s = (unsigned *)p; *s = *s * 1664525u + 
 static const char *ROUTE = R"({"version":17,"tempo":96,"key":50,"prog":[{"r":0,"q":"m7"},{"r":5,"q":"maj7"},{"r":7,"q":"7"},{"r":0,"q":"m9"}],
     "voice":{"on":true,"synth":"fm"},"sect":{"on":true,"synth":"fm"},"v3":{"on":true,"synth":"am"},"zones":{"on":false},"bed":{"on":false}%s})";
 /* the notes a route plays in `secs`, walked from 0 to 1 along it */
-static Log render(const std::string &comp, double secs, const char *zones_in = nullptr, const char *zone_entered = nullptr) {
+static Log render(const std::string &comp, double secs, const char *zones_in = nullptr, const char *zone_entered = nullptr, double zone_at = 0.5) {
     char buf[8192]; std::snprintf(buf, sizeof buf, ROUTE, comp.c_str());
     unsigned seed = 11; Log l;
     fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128); fs_piece_test_hooks(pc, draw, &seed, lg, &l);
@@ -79,7 +79,7 @@ static Log render(const std::string &comp, double secs, const char *zones_in = n
     const int blocks = (int)(secs * 48000 / 128);
     for (int b = 0; b < blocks; b++) {
         fs_piece_walk(pc, r, (double)b / blocks, 0);
-        if (zones_in && b == blocks / 2) fs_piece_zones(pc, zones_in, zone_entered ? zone_entered : "");
+        if (zones_in && b == (int)(blocks * zone_at)) fs_piece_zones(pc, zones_in, zone_entered ? zone_entered : "");
         fs_process(pc, 128);
     }
     fs_destroy(pc); return l;
@@ -166,6 +166,26 @@ static void test_bass() {
     assert(b0 == 0 && pm.size() == 1 && pm[0] % 12 == 50 % 12);   /* one held D, never re-struck across the 4 chords */
 }
 
+/* a chord's pedal, then hold: from chord 2 on the bass is chord 2's root, struck at the bar line, not the pedal hanging on */
+static void test_bass_switch() {
+    const Log l = render(R"(,"comp":{"bass":{"mode":"hold"},"over":{"chord":{"0":{"bass":{"mode":"pedal","pedal":"fifth"}}}}})", 20);
+    std::vector<int> c1, c2; std::vector<double> t2;
+    for (size_t i = 0; i < l.f.size(); i++) if (l.role[i] == 0) {
+        const int m = (int)std::lround(midi(l.f[i]));
+        if (l.t[i] < 5 - 1e-6) c1.push_back(m); else if (l.t[i] < 10 - 1e-6) { c2.push_back(m); t2.push_back(l.t[i]); } }
+    std::printf("C bass switch: chord 1 bass"); for (int m : c1) std::printf(" %d", m); std::printf("; chord 2 bass"); for (int m : c2) std::printf(" %d", m);
+    std::printf(" from %.2f s\n", t2.empty() ? -1.0 : t2[0]);
+    assert(!c1.empty() && c1[0] % 12 == (50 + 7) % 12);                       /* the pedal: A, the key's fifth */
+    assert(!c2.empty() && t2[0] < 5 + 2.5 + 1e-6);                             /* struck by chord 2's first or second bar line */
+    for (int m : c2) assert(m % 12 == (50 + 5) % 12);                          /* and only G, chord 2's root */
+    /* mid-chord: the route's pedal (D), a zone that holds the root entered at 12 s, inside chord 3 (A, 10-15 s): at the next
+       bar line (12.5 s) the pedal is let go and A struck, not left hanging to chord 4 */
+    const Log z = render(R"(,"comp":{"bass":{"mode":"pedal","pedal":"root"},"over":{"zone":{"z":{"when":"inside","blend":0,"bass":{"mode":"hold"}}}}})", 21, "z", nullptr, 0.66);
+    std::vector<int> mid; for (size_t i = 0; i < z.f.size(); i++) if (z.role[i] == 0 && z.t[i] > 13.8 && z.t[i] < 15.75 - 1e-6) mid.push_back((int)std::lround(midi(z.f[i])));
+    std::printf("C bass switch: a zone's hold mid-chord 3 strikes"); for (int m : mid) std::printf(" %d", m); std::printf("\n");
+    assert(mid.size() == 1 && mid[0] % 12 == (50 + 7) % 12);
+}
+
 static void test_cost() {
     char buf[8192]; std::snprintf(buf, sizeof buf, ROUTE, R"(,"comp":{"voice":{"style":"arpeggio","rate":"16n"},"sect":{"style":"strum","rate":"8n","tones":[0,1,2,3,4],"spread":20},"v3":{"style":"swells","rate":"2n","tones":[0,1,2,3,4]}})");
     unsigned seed = 3; fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128); fs_piece_test_hooks(pc, draw, &seed, nullptr, nullptr);
@@ -202,6 +222,7 @@ int main() {
     test_arpeggio();
     test_styles();
     test_bass();
+    test_bass_switch();
     test_cost();
     test_engine_zone();
     std::printf("composer ok\n");

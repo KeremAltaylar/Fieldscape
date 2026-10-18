@@ -1126,6 +1126,9 @@ struct Piece : Device {
                 swell_shaped[q] = false;
             }
         }
+        /* pedal to hold mid-chord: harmony_bar, next on this bar line, strikes the root - the same legato handover a chord change
+           makes, so the pedal is let go there rather than hanging on to the next chord */
+        if (cbass.mode == comp::BASS_PEDAL && r.bass.mode == comp::HOLD) H.held = false;
         cbass = r.bass; comp_live = true;
         bass_bar(time);
     }
