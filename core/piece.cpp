@@ -1828,7 +1828,10 @@ struct Piece : Device {
         auto run_role = [&](Role &r, float *L, float *R) {
             for (int k = 0; k < NSYNTH; k++) if ((k == r.cur || r.until[k] > t0) && r.inst[k]) {
                 r.inst[k]->render(L, R, n, t0);
-                for (int j = 0; j < Role::NPOOL; j++) if (r.busy[k][j] > t0) r.pool[k][j]->render(L, R, n, t0);   /* C1: idle, not run */
+                for (int j = 0; j < Role::NPOOL; j++) if (r.busy[k][j] > t0) {   /* C1: idle, or under -80 dB, not run */
+                    const Envelope *e = r.pool[k][j]->amp();
+                    if (!e || !e->quiet(t0, te)) r.pool[k][j]->render(L, R, n, t0);
+                }
             }
         };
         run_role(bass, bL, bR); run_role(top, tL, tR);

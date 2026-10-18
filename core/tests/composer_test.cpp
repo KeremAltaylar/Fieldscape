@@ -2,6 +2,8 @@
      python core/tests/run.py      (row C) */
 #include "../composer.hpp"
 #include "../fieldscape.h"
+#include "../tone.hpp"
+#include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <cmath>
@@ -277,15 +279,43 @@ static void test_model_defaults() {
 #endif
 }
 
-static void test_cost() {
-    char buf[8192]; std::snprintf(buf, sizeof buf, ROUTE, R"(,"comp":{"voice":{"style":"arpeggio","rate":"16n"},"sect":{"style":"strum","rate":"8n","tones":[0,1,2,3,4],"spread":20},"v3":{"style":"swells","rate":"2n","tones":[0,1,2,3,4]}})");
+/* worst block and p99.9 over 30 s, 128 frames, of a route with this comp and these synths (voice, sect, v3) */
+static void cost_of(const char *comp, const char *syn[3], double &worst, double &p999) {
+    char buf[8192]; std::snprintf(buf, sizeof buf, ROUTE, comp);
+    std::string b(buf); const char *was[3] = { R"("voice":{"on":true,"synth":"fm"})", R"("sect":{"on":true,"synth":"fm"})", R"("v3":{"on":true,"synth":"am"})" };
+    const char *key[3] = { "voice", "sect", "v3" };
+    for (int i = 0; i < 3; i++) { const std::string w = was[i]; b.replace(b.find(w), w.size(), std::string("\"") + key[i] + R"(":{"on":true,"synth":")" + syn[i] + "\"}"); }
     unsigned seed = 3; fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128); fs_piece_test_hooks(pc, draw, &seed, nullptr, nullptr);
-    const int r = fs_piece_add_route(pc, buf); double worst = 0;
-    for (int b = 0; b < (int)(30 * 48000 / 128); b++) { fs_piece_walk(pc, r, b / 11250.0, 0);
-        auto t0 = std::chrono::steady_clock::now(); fs_process(pc, 128); if (b > 375) worst = std::fmax(worst, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count()); }
+    const int r = fs_piece_add_route(pc, b.c_str()); std::vector<double> ms;
+    for (int k = 0; k < (int)(30 * 48000 / 128); k++) { fs_piece_walk(pc, r, k / 11250.0, 0);
+        auto t0 = std::chrono::steady_clock::now(); fs_process(pc, 128); if (k > 375) ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count()); }
     fs_destroy(pc);
-    std::printf("C cost: worst block %.3f ms with every voice busy\n", worst);
-    assert(worst < 1.33);
+    std::sort(ms.begin(), ms.end()); worst = ms.back(); p999 = ms[(size_t)(ms.size() * 0.999)];
+}
+static void test_cost() {
+    const char *fm[3] = { "fm", "fm", "am" }, *metal[3] = { "metal", "metal", "metal" };
+    double w1, p1, w2, p2;
+    cost_of(R"(,"comp":{"voice":{"style":"arpeggio","rate":"16n"},"sect":{"style":"strum","rate":"8n","tones":[0,1,2,3,4],"spread":20},"v3":{"style":"swells","rate":"2n","tones":[0,1,2,3,4]}})", fm, w1, p1);
+    /* final re-review: the heaviest synth (12 oscillators, a sustain-0 decay) on every role, every chord voice busy */
+    cost_of(R"(,"comp":{"voice":{"style":"strum","rate":"8n","tones":[0,1,2,3,4],"spread":20},"sect":{"style":"strum","rate":"8n","tones":[0,1,2,3,4],"spread":20},"v3":{"style":"swells","rate":"2n","tones":[0,1,2,3,4]}})", metal, w2, p2);
+    std::printf("C cost: fm/fm/am arpeggio-strum-swells p99.9 %.3f ms worst %.3f ms; metal x3 strum-strum-swells p99.9 %.3f ms worst %.3f ms (every voice busy)\n", p1, w1, p2, w2);
+    assert(w1 < 1.33);
+}
+/* a pool voice stops rendering only once its envelope is under -80 dB for good (Envelope::quiet): never while audible */
+static void test_quiet() {
+    struct C { double a, d, s, r, rel_at; } cs[4] = { { 0.004, 1.8, 0, 2.6, 0.3 }, { 0.004, 1.8, 0, 2.6, 5 }, { 0.5, 1.2, 0.6, 3.2, 1.0 }, { 0.012, 0.35, 0.18, 1.1, 0.1 } };
+    double last = -300;
+    for (const C &c : cs) {
+        tone::Envelope e; e.init(48000); e.set(c.a, c.d, c.s, c.r, false, true);
+        e.triggerAttack(0, 0.8); e.triggerRelease(c.rel_at);
+        double from = -1;
+        for (int k = 0; k < 12 * 375 && from < 0; k++) { const double t0 = k * 128 / 48000.0; if (e.quiet(t0, t0 + 128 / 48000.0)) from = t0; }
+        assert(from > 0);
+        double top = 0; for (double t = from; t < 12; t += 1 / 48000.0) top = std::fmax(top, std::fabs(e.sig.value(t)));
+        assert(top <= 1e-4);
+        last = std::fmax(last, 20 * std::log10(top + 1e-30));
+    }
+    std::printf("C quiet: a pool voice stops only under -80 dB (loudest after it stops %.0f dB)\n", last);
 }
 
 static void test_engine_zone() {
@@ -318,6 +348,7 @@ int main() {
     test_chord_out();
     test_enter_phrase();
     test_bass_off_heard();
+    test_quiet();
     test_cost();
     test_engine_zone();
     std::printf("composer ok\n");

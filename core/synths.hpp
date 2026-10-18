@@ -330,12 +330,14 @@ struct MetalSynth : Synth {
         if (env.idle(t0)) { env.sig.render(te); freq.render(te); return; }
         double e0 = env.sig.value(t0);
         hp[0].design(resonance + (resonance * std::pow(2.0, octaves) - resonance) * e0, 0, sr);
+        double lf = -1; const float *mt[6] = {};       /* the modulators' tables, found again only when the note's frequency moves */
         for (int i = 0; i < n; i++) {
             double t = t0 + i / sr, f = freq.render(t);
             float e = (float)env.sig.render(t), sum = 0;
+            if (f != lf) { lf = f; for (int k = 0; k < 6; k++) mt[k] = mod[k].w->table(f * R_[k] * harmonicity, sr); }
             for (int k = 0; k < 6; k++) {
                 double fk = f * R_[k];
-                float m = mod[k].tick(fk * harmonicity, sr);
+                float m = mod[k].tick(mt[k], fk * harmonicity, sr);
                 sum += car[k].tick(fk + fk * modulationIndex * m, sr);
             }
             float y = hp[0].run(0, sum) * e * vol;

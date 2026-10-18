@@ -152,6 +152,15 @@ struct Envelope {
             else sig.targetRampTo(0, release, t);
         }
     }
+    /* composition C1: under -80 dB at both ends of [t0, te] and nothing scheduled after t0 above it - inaudible for the block
+       (a decay or release falls monotonically; a new note's attack is an event above the floor). A sustain-0 decay is a
+       TARGET that idle() never sees end; a composed chord's pool voice skips its block on this instead */
+    bool quiet(double t0, double te) const {
+        const double F = 1e-4;
+        if (std::fabs(sig.value(t0)) > F || std::fabs(sig.value(te)) > F) return false;
+        for (int i = 0; i < sig.n; i++) if (sig.ev[i].t > t0 && std::fabs(sig.ev[i].v) > F) return false;
+        return true;
+    }
     /* silent at t and nothing scheduled after: the owner may skip its work */
     bool idle(double t) const {
         if (sig.n == 0) return std::fabs(sig.base) < 1e-9;
@@ -199,9 +208,14 @@ struct Wave {
     }
     const float *table(double f, double sr) const {
         double af = std::fabs(f), allowed = af > 0 ? (sr * 0.5) / af : MAXP;
-        int r = 0;
-        while (r < RANGES - 1 && partials[r] > allowed) r++;
-        return t[r];
+        return t[range(allowed)];
+    }
+    int range(double allowed) const {
+        /* the first range whose partials fit (partials[] falls with r): a binary search, the same r as a scan from 0 -
+           FM carriers ask every sample, and the scan was most of a 12-oscillator synth's cost (composition C1's chord voices) */
+        int lo = 0, hi = RANGES - 1;
+        while (lo < hi) { const int m = (lo + hi) / 2; if (partials[m] > allowed) lo = m + 1; else hi = m; }
+        return lo;
     }
     static float read(const float *tb, double ph) {
         double x = ph * N; int i = (int)x; float fr = (float)(x - i);
@@ -216,8 +230,14 @@ const Wave &custom_wave(int index);            /* the wavetable voice's eight fr
 struct Osc {
     const Wave *w = nullptr;
     double ph = 0;
+    int r = -1;                       /* the range last read: kept while f stays inside it (the same table as a search) */
     float tick(double f, double sr) {
-        float y = Wave::read(w->table(f, sr), ph);
+        const double af = std::fabs(f), allowed = af > 0 ? (sr * 0.5) / af : Wave::MAXP;
+        if (r < 0 || w->partials[r] > allowed || (r > 0 && w->partials[r - 1] <= allowed)) r = w->range(allowed);
+        return tick(w->t[r], f, sr);
+    }
+    float tick(const float *tb, double f, double sr) {     /* the table already found for f */
+        float y = Wave::read(tb, ph);
         ph += f / sr;
         ph -= std::floor(ph);
         return y;
