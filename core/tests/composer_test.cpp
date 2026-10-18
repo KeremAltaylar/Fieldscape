@@ -200,7 +200,7 @@ static double tone_db(const std::vector<float> &x, double f) {
     for (float v : x) { double s0 = v + c * s1 - s2; s2 = s1; s1 = s0; }
     return 10 * std::log10((s1 * s1 + s2 * s2 - c * s1 * s2) / ((double)x.size() * x.size()) + 1e-30);
 }
-static void chord_db(const char *syn, bool swells, const char *tones, double d[3]) {
+static void chord_db(const char *syn, bool swells, const char *tones, double d[4]) {
     char comp[512], buf[8192];
     std::snprintf(comp, sizeof comp, R"(,"comp":{"voice":{"role":"off"},"sect":{"role":"off"},"bass":{"mode":"off"},"v3":{"style":"%s","rate":"1n","tones":%s,"lo":50,"hi":74}})", swells ? "swells" : "strum", tones);
     std::snprintf(buf, sizeof buf, ROUTE, comp);
@@ -213,18 +213,28 @@ static void chord_db(const char *syn, bool swells, const char *tones, double d[3
     fs_destroy(pc);
     const int m[3] = { 50, 53, 57 };
     for (int i = 0; i < 3; i++) d[i] = tone_db(x, 440 * std::pow(2, (m[i] - 69) / 12.0));
+    double e = 0; for (float v : x) e += (double)v * v; d[3] = 10 * std::log10(e / x.size() + 1e-30);   /* the whole output */
 }
 static void test_chord_out() {
     std::printf("C chord tones (in the chord / alone):");
-    double worst = 0;
+    double worst = 0, mworst = 0;
     for (const char *syn : { "fm", "am" }) for (int sw = 0; sw < 2; sw++) {
-        double c[3], one[3], t[3]; static const char *const SOLO[3] = { "[0]", "[1]", "[2]" };
+        double c[4], one[3], t[4]; static const char *const SOLO[3] = { "[0]", "[1]", "[2]" };
         chord_db(syn, sw, "[0,1,2]", c);
         for (int i = 0; i < 3; i++) { chord_db(syn, sw, SOLO[i], t); one[i] = t[i]; worst = std::fmax(worst, std::fabs(c[i] - one[i])); }
         std::printf(" %s %s D %.0f/%.0f F %.0f/%.0f A %.0f/%.0f dB;", syn, sw ? "swells" : "strum", c[0], one[0], c[1], one[1], c[2], one[2]);
     }
-    std::printf(" furthest from alone %.1f dB\n", worst);
-    assert(worst < 3);
+    /* metal: 1 + 2 voices, so a 3-tone chord is still whole. Its inharmonic partials leave nothing at the notes themselves, so
+       the check is the whole output: the chord's energy is the sum of its tones' alone (one voice would be ~5 dB under) */
+    for (int sw = 0; sw < 2; sw++) {
+        double c[4], t[4], sum = 0; static const char *const SOLO[3] = { "[0]", "[1]", "[2]" };
+        chord_db("metal", sw, "[0,1,2]", c);
+        for (int i = 0; i < 3; i++) { chord_db("metal", sw, SOLO[i], t); sum += std::pow(10, t[3] / 10); }
+        const double alone = 10 * std::log10(sum); mworst = std::fmax(mworst, alone - c[3]);   /* under the sum: tones lost (it can sit over: metal's partials beat) */
+        std::printf(" metal %s whole %.1f / tones' sum %.1f dB;", sw ? "swells" : "strum", c[3], alone);
+    }
+    std::printf(" furthest from alone %.1f dB (metal %.1f dB)\n", worst, mworst);
+    assert(worst < 3 && mworst < 2);
 }
 
 /* final review M4: a zone "on entering", entered mid-bar (11 s, inside bar 4), plays a phrase - bars 5 and 6, from the next
@@ -299,7 +309,7 @@ static void test_cost() {
     /* final re-review: the heaviest synth (12 oscillators, a sustain-0 decay) on every role, every chord voice busy */
     cost_of(R"(,"comp":{"voice":{"style":"strum","rate":"8n","tones":[0,1,2,3,4],"spread":20},"sect":{"style":"strum","rate":"8n","tones":[0,1,2,3,4],"spread":20},"v3":{"style":"swells","rate":"2n","tones":[0,1,2,3,4]}})", metal, w2, p2);
     std::printf("C cost: fm/fm/am arpeggio-strum-swells p99.9 %.3f ms worst %.3f ms; metal x3 strum-strum-swells p99.9 %.3f ms worst %.3f ms (every voice busy)\n", p1, w1, p2, w2);
-    assert(w1 < 1.33);
+    assert(p1 < 1.0 && p2 < 1.0 && w1 < 1.33);   /* the worst block alone for fm/fm/am: OS spikes reach any block (the old build too) */
 }
 /* a pool voice stops rendering only once its envelope is under -80 dB for good (Envelope::quiet): never while audible */
 static void test_quiet() {

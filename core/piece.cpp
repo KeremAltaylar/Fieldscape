@@ -514,6 +514,10 @@ struct Role {
        gets NPOOL more of itself (made with it, on the calling thread), dealt the chord's notes round-robin with inst; one is
        rendered only while its note sounds (busy), so an idle one costs nothing. Samplers have their own six voices */
     static const int NPOOL = 4;
+    /* Kerem 2026-10-18 (option 1): a heavy instrument gets fewer - metal (12 oscillators) 2; measured, every other type's
+       heavy case (strum 8n, strum 8n, swells 2n, 5 tones, one type on all three roles) is under 0.9 ms p99.9 with 4. A chord
+       past them takes the oldest ringing voice (the round-robin), with the envelope's ramped retrigger */
+    static int pool_n(int type) { return type == METAL ? 2 : NPOOL; }
     std::unique_ptr<Synth> pool[NSYNTH][NPOOL];
     double busy[NSYNTH][NPOOL] = {};
     bool synced[NSYNTH][NPOOL] = {};  /* set up as inst is (audio thread, at a chord's first use after a swap) */
@@ -745,7 +749,7 @@ struct Piece : Device {
             r.inst[type].reset(make(type));
             if (is_sampler(type) && r.rec >= 0) bind(r.inst[type].get(), known[r.rec]);
         }
-        if (chords && !is_sampler(type)) for (auto &q : r.pool[type]) if (!q) q.reset(make(type));   /* C1: a composed route's chords */
+        if (chords && !is_sampler(type)) for (int j = 0; j < Role::pool_n(type); j++) if (!r.pool[type][j]) r.pool[type][j].reset(make(type));   /* C1: a composed route's chords */
     }
     void need_all(const Patch &p) {
         const bool c = p.comp.on;
@@ -1183,7 +1187,7 @@ struct Piece : Device {
     /* C1: a chord's next note's voice - the role's instrument or one of its pool, in turn; busy until the note has rung out */
     Synth *chord_voice(Role &r, double end) {
         Synth *s = r.sy(); if (!s || is_sampler(r.cur)) return s;
-        const int j = (int)(r.deal++ % (Role::NPOOL + 1)) - 1;
+        const int j = (int)(r.deal++ % (Role::pool_n(r.cur) + 1)) - 1;
         if (j < 0 || !r.synced[r.cur][j]) return s;
         Synth *p = r.pool[r.cur][j].get(); const Envelope *e = p->amp();
         r.busy[r.cur][j] = std::max(r.busy[r.cur][j], end + (e ? e->release : 4) + 0.1);
