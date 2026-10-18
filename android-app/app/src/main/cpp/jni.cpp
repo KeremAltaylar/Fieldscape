@@ -378,7 +378,7 @@ JNIEXPORT void JNICALL FN(pieceStart)(JNIEnv *env, jclass, jstring features) {
             if (!r || fs_route_length(r) <= 0) { if (r) fs_route_destroy(r); continue; }
             W->routes.push_back(r); W->route_names.push_back(p->s("name", "Route"));
             Json nm, nt; nm.kind = nt.kind = Json::STR; nm.str = p->s("name", "Route"); nt.str = p->s("note", "");
-            W->route_extra.push_back("\"name\":" + dump(&nm) + ",\"note\":" + dump(&nt) + ",\"coords\":" + dump(c) + ",");
+            W->route_extra.push_back("\"name\":" + dump(&nm) + ",\"note\":" + dump(&nt) + ",\"coords\":" + dump(c) + (p->get("patch") && p->get("patch")->get("comp") ? ",\"comp\":" + dump(p->get("patch")->get("comp")) : std::string()) + ",");
             fs_piece_add_route(E->piece, dump(p->get("patch")).c_str());
             std::array<Walker::RoleSpec, 3> rs{};
             const Json *pt = p->get("patch"); int q = 0;

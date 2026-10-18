@@ -256,6 +256,7 @@ struct RouteCard: View {
                     chip(r.length)
                 }
                 Text(r.name).font(T.display(T.lg)).foregroundStyle(T.ink).lineLimit(2)
+                if !r.comp.isEmpty { note(r.comp).lineLimit(1) }
                 if !r.note.isEmpty { note(r.note).lineLimit(3) }
                 eyebrow(here >= 0 ? "The progression — you are at \(here + 1) of \(r.prog.count)" : "The progression — \(r.prog.count) chords along the route")
                 ChordStrip(route: r, active: here).frame(height: 28)

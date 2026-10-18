@@ -8,6 +8,16 @@ import Foundation
 
 let MEDIA_URL = "https://fieldscape-media.keremaltaylar.workers.dev"
 
+/* web/compose-model.js summary(): per voice "Off" or its style's label; no comp, no line */
+func compSummary(_ comp: [String: Any]?) -> String {
+    guard let comp else { return "" }
+    let labels = ["free": "Free", "arpeggio": "Arpeggio", "pedal": "Pedal", "strum": "Strum", "euclid": "Euclidean", "swells": "Swells"]
+    return ["voice", "sect", "v3"].map { k in
+        let v = comp[k] as? [String: Any]
+        return v?["role"] as? String == "off" ? "Off" : labels[v?["style"] as? String ?? ""] ?? "Free"
+    }.joined(separator: " · ")
+}
+
 final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
     struct Point {
         let id: String, name: String, lon: Double, lat: Double
@@ -35,6 +45,7 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
         let index: Int, name, note: String, metres: Double, coords: [[Double]]
         let tempo: Int, key: String, key2: String, sections: Int
         let prog: [(pc: Int, label: String)], sectors: [Int]
+        var comp = ""   /* composition step 1: the one-line summary, empty without a comp */
         var length: String { metres < 1000 ? String(format: "%.0f m", metres) : String(format: "%.1f km", metres / 1000) }
         var sw: CLLocationCoordinate2D { CLLocationCoordinate2D(latitude: coords.map { $0[1] }.min() ?? 0, longitude: coords.map { $0[0] }.min() ?? 0) }
         var ne: CLLocationCoordinate2D { CLLocationCoordinate2D(latitude: coords.map { $0[1] }.max() ?? 0, longitude: coords.map { $0[0] }.max() ?? 0) }
@@ -216,6 +227,10 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
             guard let p = f["properties"] as? [String: Any], p["kind"] as? String == "route" else { return nil }
             return (p["name"] as? String ?? "", p["note"] as? String ?? "")
         }, uniquingKeysWith: { a, _ in a })
+        let comps = Dictionary(fs.compactMap { f -> (String, String)? in
+            guard let p = f["properties"] as? [String: Any], p["kind"] as? String == "route" else { return nil }
+            return (p["name"] as? String ?? "", compSummary((p["patch"] as? [String: Any])?["comp"] as? [String: Any]))
+        }, uniquingKeysWith: { a, _ in a })
         routeList = sound.routeLines.enumerated().map { i, r in
             var buf = [CChar](repeating: 0, count: 4096)
             _ = fs_piece_route_info(core.piece, Int32(i), &buf, 4096)
@@ -223,7 +238,7 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
             let prog = ((j["prog"] as? [[Any]]) ?? []).map { (pc: ($0.first as? Int) ?? 0, label: ($0.last as? String) ?? "") }
             return RouteInfo(index: i, name: r.name, note: notes[r.name] ?? "", metres: r.metres, coords: r.coords,
                              tempo: j["tempo"] as? Int ?? 72, key: j["key"] as? String ?? "", key2: j["key2"] as? String ?? "",
-                             sections: j["sections"] as? Int ?? 0, prog: prog, sectors: (j["sectors"] as? [Int]) ?? [])
+                             sections: j["sections"] as? Int ?? 0, prog: prog, sectors: (j["sectors"] as? [Int]) ?? [], comp: comps[r.name] ?? "")
         }
         var all: [[Double]] = points.map { [$0.lon, $0.lat] }
         for r in sound.routeLines { all += r.coords }

@@ -82,7 +82,7 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
     /** What a route's card shows: its line, and its patch from the piece (boxes are w, s, e, n). */
     data class RouteInfo(val index: Int, val name: String, val note: String, val metres: Double, val coords: List<DoubleArray>,
                          val tempo: Int, val key: String, val key2: String, val sections: Int,
-                         val prog: List<Pair<Int, String>>, val sectors: List<Int>) {
+                         val prog: List<Pair<Int, String>>, val sectors: List<Int>, val comp: String = "") {
         val length get() = if (metres < 1000) String.format("%.0f m", metres) else String.format("%.1f km", metres / 1000)
         val box get() = doubleArrayOf(coords.minOf { it[0] }, coords.minOf { it[1] }, coords.maxOf { it[0] }, coords.maxOf { it[1] })
     }
@@ -220,7 +220,8 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
             RouteInfo(i, j.optString("name"), j.optString("note"), Core.pieceRoutes().lines()[i].split("\t")[1].toDouble(), coords,
                 j.optInt("tempo", 72), j.optString("key"), j.optString("key2"), j.optInt("sections"),
                 (0 until pr.length()).map { k -> pr.getJSONArray(k).let { it.getInt(0) to it.getString(1) } },
-                (0 until se.length()).map { se.getInt(it) })
+                (0 until se.length()).map { se.getInt(it) },
+                compSummary(j.optJSONObject("comp")?.let { c -> listOf("voice", "sect", "v3").associateWith { v -> c.optJSONObject(v).let { o -> mapOf("role" to (o?.optString("role") ?: ""), "style" to (o?.optString("style") ?: "")) } } }))
         }
         val all = points.map { doubleArrayOf(it.lon, it.lat) } + routeList.flatMap { it.coords }
         if (all.isNotEmpty()) allBounds = doubleArrayOf(all.minOf { it[0] }, all.minOf { it[1] }, all.maxOf { it[0] }, all.maxOf { it[1] })

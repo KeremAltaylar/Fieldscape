@@ -34,4 +34,5 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("org.maplibre.gl:android-sdk:11.5.2")
+    testImplementation("junit:junit:4.13.2")
 }
