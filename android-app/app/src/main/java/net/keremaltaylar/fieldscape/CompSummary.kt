@@ -4,7 +4,7 @@ private val STYLE_LABELS = mapOf("free" to "Free", "arpeggio" to "Arpeggio", "pe
 
 /** One line for a route's composition, as web/compose-model.js summary(): per voice (voice, sect, v3) "Off" or its style's label. No comp: "". */
 fun compSummary(comp: Map<String, Map<String, String>>?): String =
-    if (comp == null) "" else listOf("voice", "sect", "v3").joinToString(" · ") { v ->
+    if (comp == null) "" else listOf("voice", "sect", "v3").joinToString(" \u00B7 ") { v ->
         val c = comp[v]
         if (c?.get("role") == "off") "Off" else STYLE_LABELS[c?.get("style")] ?: "Free"
     }
