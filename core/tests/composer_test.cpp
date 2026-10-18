@@ -8,6 +8,9 @@
 #include <cstdio>
 #include <string>
 #include <vector>
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
 
 static void test_parse() {
     comp::Cfg c;
@@ -186,6 +189,94 @@ static void test_bass_switch() {
     assert(mid.size() == 1 && mid[0] % 12 == (50 + 7) % 12);
 }
 
+/* Strum and Swells are chords on a one-voice synth too (final review C1): each chord tone's level in the output - D F A of
+   D minor 7, the third voice alone - by Goertzel over a window past the attack, against the same tone struck alone. The
+   voice's own chain sits D ~15 dB under A (alone, too), so the check is each tone within 3 dB of itself alone (a strum's
+   first note is accented +0.12, ~2 dB); one voice gave D 30+ dB under itself */
+static double tone_db(const std::vector<float> &x, double f) {
+    double w = 2 * 3.141592653589793 * f / 48000, c = 2 * std::cos(w), s1 = 0, s2 = 0;
+    for (float v : x) { double s0 = v + c * s1 - s2; s2 = s1; s1 = s0; }
+    return 10 * std::log10((s1 * s1 + s2 * s2 - c * s1 * s2) / ((double)x.size() * x.size()) + 1e-30);
+}
+static void chord_db(const char *syn, bool swells, const char *tones, double d[3]) {
+    char comp[512], buf[8192];
+    std::snprintf(comp, sizeof comp, R"(,"comp":{"voice":{"role":"off"},"sect":{"role":"off"},"bass":{"mode":"off"},"v3":{"style":"%s","rate":"1n","tones":%s,"lo":50,"hi":74}})", swells ? "swells" : "strum", tones);
+    std::snprintf(buf, sizeof buf, ROUTE, comp);
+    std::string b(buf); const std::string was = R"("v3":{"on":true,"synth":"am"})"; b.replace(b.find(was), was.size(), std::string(R"("v3":{"on":true,"synth":")") + syn + "\"}");
+    unsigned seed = 11; fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128); fs_piece_test_hooks(pc, draw, &seed, nullptr, nullptr);
+    const int r = fs_piece_add_route(pc, b.c_str());
+    std::vector<float> x; const double from = swells ? 1.0 : 0.6, to = swells ? 2.2 : 1.8;
+    for (int k = 0; k < (int)(2.4 * 48000 / 128); k++) { fs_piece_walk(pc, r, 0, 0); fs_process(pc, 128);
+        if (k * 128 >= from * 48000 && k * 128 < to * 48000) { const float *o = fs_out(pc, 0); x.insert(x.end(), o, o + 128); } }
+    fs_destroy(pc);
+    const int m[3] = { 50, 53, 57 };
+    for (int i = 0; i < 3; i++) d[i] = tone_db(x, 440 * std::pow(2, (m[i] - 69) / 12.0));
+}
+static void test_chord_out() {
+    std::printf("C chord tones (in the chord / alone):");
+    double worst = 0;
+    for (const char *syn : { "fm", "am" }) for (int sw = 0; sw < 2; sw++) {
+        double c[3], one[3], t[3]; static const char *const SOLO[3] = { "[0]", "[1]", "[2]" };
+        chord_db(syn, sw, "[0,1,2]", c);
+        for (int i = 0; i < 3; i++) { chord_db(syn, sw, SOLO[i], t); one[i] = t[i]; worst = std::fmax(worst, std::fabs(c[i] - one[i])); }
+        std::printf(" %s %s D %.0f/%.0f F %.0f/%.0f A %.0f/%.0f dB;", syn, sw ? "swells" : "strum", c[0], one[0], c[1], one[1], c[2], one[2]);
+    }
+    std::printf(" furthest from alone %.1f dB\n", worst);
+    assert(worst < 3);
+}
+
+/* final review M4: a zone "on entering", entered mid-bar (11 s, inside bar 4), plays a phrase - bars 5 and 6, from the next
+   bar line - not one bar */
+static void test_enter_phrase() {
+    const Log l = render(R"(,"comp":{"voice":{"role":"off"},"over":{"zone":{"z":{"when":"enter","voice":{"role":"accomp","style":"arpeggio","rate":"4n"}}}}})", 20, "z", "z", 0.55);
+    int n[8] = {}; for (size_t i = 0; i < l.f.size(); i++) if (l.role[i] == 1) { const int b = (int)(l.t[i] / 2.5 + 1e-9); if (b < 8) n[b]++; }
+    std::printf("C enter: top notes by bar"); for (int c : n) std::printf(" %d", c); std::printf("\n");
+    assert(n[4] == 0 && n[5] == 4 && n[6] == 4 && n[7] == 0);
+}
+/* final review M8: voice 1's bass row "off" ends the held bass in the roles readout too (it named it until the next note) */
+static void test_bass_off_heard() {
+    char buf[8192]; std::snprintf(buf, sizeof buf, ROUTE, R"(,"comp":{"bass":{"mode":"hold"},"over":{"chord":{"1":{"bass":{"mode":"off"}}}}})");
+    unsigned seed = 11; fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128); fs_piece_test_hooks(pc, draw, &seed, nullptr, nullptr);
+    const int r = fs_piece_add_route(pc, buf);
+    float rl[2 + 6 * 3]; float before = 0, after = 0;
+    auto low = [&]() { float f = 0; for (int i = 0; i < (int)rl[1]; i++) if (rl[2 + i] < 100) f = rl[2 + i]; return f; };   /* the bass: under 100 Hz */
+    for (int b = 0; b < (int)(10 * 48000 / 128); b++) { fs_piece_walk(pc, r, b / 7500.0, 0); fs_process(pc, 128);   /* chord 2 from 5 s */
+        if (b == (int)(4 * 48000 / 128)) { fs_piece_roles(pc, rl, 6); before = low(); }
+        if (b == (int)(9 * 48000 / 128)) { fs_piece_roles(pc, rl, 6); after = low(); } }
+    fs_destroy(pc);
+    std::printf("C bass off: the roles readout's bass note %.1f Hz in chord 1, %.1f Hz after the row turns off\n", before, after);
+    assert(before > 20 && after == 0);
+}
+
+/* final review I2, core against the page: for each style chosen in the dock's model (web/compose-model.js, run here in node),
+   at the route and at a chord, the pattern or tones its inspector shows are what comp_of + resolve play from the JSON it writes */
+static void test_model_defaults() {
+#ifdef __EMSCRIPTEN__
+    const char *out = emscripten_run_script_string(R"JS((function () {
+        var q = require(process.cwd() + "/web/compose-model.js"), M = q && q.defaults ? q : globalThis.FsCompose, o = [];   /* the repo is "type": "module": it sets FsCompose */
+        ["arpeggio", "euclid", "strum", "swells"].forEach(function (st) { [{ kind: "route" }, { kind: "chord", i: 2 }].forEach(function (sc) {
+            var c = M.defaults(); M.setValue(c, sc, "sect", "style", st);
+            var e = M.effective(c, sc, "sect").values; o.push({ style: st, chord: sc.kind === "chord", comp: c, grid: e.grid || null, tones: e.tones || null }); }); });
+        return JSON.stringify(o); })())JS");
+    const Json all = Json::parse(out);
+    int n = 0;
+    for (size_t i = 0; i < all.size(); i++) {
+        const Json &x = *all.at(i);
+        comp::Cfg c; comp::comp_of(x.get("comp"), c); comp::Resolved r;
+        comp::resolve(c, x.flag("chord", false) ? 2 : 0, 16, -1, 7, nullptr, 0, nullptr, 0, r);
+        const comp::Voice &v = r.v[1];
+        assert(v.style == (x.s("style", "") == "arpeggio" ? comp::ARPEGGIO : x.s("style", "") == "euclid" ? comp::EUCLID : x.s("style", "") == "strum" ? comp::STRUM : comp::SWELLS));
+        if (const Json *g = x.get("grid")) if (g->kind == Json::ARR) for (int k = 0; k < comp::MAX_COLS; k++) { assert(v.grid[k] == (int)g->at(k)->num); }
+        if (const Json *t = x.get("tones")) if (t->kind == Json::ARR) { unsigned b = 0; for (size_t k = 0; k < t->size(); k++) b |= 1u << (int)t->at(k)->num; assert(v.tones == b); }
+        n++;
+    }
+    std::printf("C model: %d style choices (route and chord) - the pattern or tones the inspector shows are what plays\n", n);
+    assert(n == 8);
+#else
+    std::printf("C model: skipped (needs node: the em++ build)\n");
+#endif
+}
+
 static void test_cost() {
     char buf[8192]; std::snprintf(buf, sizeof buf, ROUTE, R"(,"comp":{"voice":{"style":"arpeggio","rate":"16n"},"sect":{"style":"strum","rate":"8n","tones":[0,1,2,3,4],"spread":20},"v3":{"style":"swells","rate":"2n","tones":[0,1,2,3,4]}})");
     unsigned seed = 3; fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128); fs_piece_test_hooks(pc, draw, &seed, nullptr, nullptr);
@@ -223,6 +314,10 @@ int main() {
     test_styles();
     test_bass();
     test_bass_switch();
+    test_model_defaults();
+    test_chord_out();
+    test_enter_phrase();
+    test_bass_off_heard();
     test_cost();
     test_engine_zone();
     std::printf("composer ok\n");

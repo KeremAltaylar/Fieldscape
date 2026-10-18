@@ -510,6 +510,18 @@ struct Role {
     Settings st;
     double extra_db = 0;
     Synth *sy() { return cur >= 0 ? inst[cur].get() : nullptr; }
+    /* final review C1: Strum and Swells are chords, and a digital synth is one voice - each instrument a composed role plays
+       gets NPOOL more of itself (made with it, on the calling thread), dealt the chord's notes round-robin with inst; one is
+       rendered only while its note sounds (busy), so an idle one costs nothing. Samplers have their own six voices */
+    static const int NPOOL = 4;
+    std::unique_ptr<Synth> pool[NSYNTH][NPOOL];
+    double busy[NSYNTH][NPOOL] = {};
+    bool synced[NSYNTH][NPOOL] = {};  /* set up as inst is (audio thread, at a chord's first use after a swap) */
+    unsigned deal = 0;
+    template <class F> void each(F f) {     /* what plays the role now: inst and its set-up pool */
+        if (cur < 0 || !inst[cur]) return;
+        f(inst[cur].get()); for (int j = 0; j < NPOOL; j++) if (synced[cur][j]) f(pool[cur][j].get());
+    }
 };
 
 /* ------------------------------------------------------------------ rhythm points at run time */
@@ -728,12 +740,17 @@ struct Piece : Device {
         s->init(sr);
         return s;
     }
-    void need(Role &r, int type) {
-        if (r.inst[type]) return;
-        r.inst[type].reset(make(type));
-        if (is_sampler(type) && r.rec >= 0) bind(r.inst[type].get(), known[r.rec]);
+    void need(Role &r, int type, bool chords = false) {
+        if (!r.inst[type]) {
+            r.inst[type].reset(make(type));
+            if (is_sampler(type) && r.rec >= 0) bind(r.inst[type].get(), known[r.rec]);
+        }
+        if (chords && !is_sampler(type)) for (auto &q : r.pool[type]) if (!q) q.reset(make(type));   /* C1: a composed route's chords */
     }
-    void need_all(const Patch &p) { need(bass, p.voice.synth); need(top, p.voice.synth); need(sectr, p.sect.synth); need(v3r, p.v3.synth); }
+    void need_all(const Patch &p) {
+        const bool c = p.comp.on;
+        need(bass, p.voice.synth); need(top, p.voice.synth, c); need(sectr, p.sect.synth, c); need(v3r, p.v3.synth, c);
+    }
 
     static Settings role_settings(double harm, double index, int osc, int mod, EnvSpec env, EnvSpec menv) { return Settings{ harm, index, osc, mod, env, menv }; }
     void settings_for(const Patch &p) {
@@ -744,8 +761,8 @@ struct Piece : Device {
     }
     /* 8b: the role's voice envelope onto what plays it (rec is the voice: 0 the Voice's bass and top, 1 sect, 2 v3) */
     void shape_role(Role &r) {
-        Synth *s = r.sy(); if (!s || r.rec < 0 || r.rec > 2) return;
-        s->shape(patch.env_on[r.rec] ? &patch.env[r.rec] : nullptr);
+        if (r.rec < 0 || r.rec > 2) return;
+        r.each([&](Synth *s) { s->shape(patch.env_on[r.rec] ? &patch.env[r.rec] : nullptr); });
     }
     /* swapSynth */
     void swap(Role &r, int type, double now) {
@@ -754,7 +771,9 @@ struct Piece : Device {
             if (is_sampler(r.cur)) static_cast<sampler::Resonator *>(r.inst[r.cur].get())->release_all(now);   /* every voice (3a I1) */
             else r.inst[r.cur]->release(now);
             r.until[r.cur] = now + 2.5;
+            for (int j = 0; j < Role::NPOOL; j++) if (r.busy[r.cur][j] > now) { r.pool[r.cur][j]->release(now); r.busy[r.cur][j] = now + 2.5; }
         }
+        for (bool &y : r.synced[type]) y = false;      /* C1: its pool set up afresh, as inst is here, at its next chord */
         Synth *s = r.inst[type].get();
         if (!s) return;
         s->set(r.st);              /* a SELF_VOICED synth reads only the two numbers */
@@ -926,8 +945,11 @@ struct Piece : Device {
     void timbre(Synth *sy, int type, double ph, int mh_dest, double pi, int mi_dest, double ramp, double t) {
         if (!sy) return;
         double m;
-        sy->timbre(0, morph(mh_dest, t, m) ? SYNTH_PARAMS[type][0].min + m * (SYNTH_PARAMS[type][0].max - SYNTH_PARAMS[type][0].min) : ph, ramp, t);
-        sy->timbre(1, morph(mi_dest, t, m) ? SYNTH_PARAMS[type][1].min + m * (SYNTH_PARAMS[type][1].max - SYNTH_PARAMS[type][1].min) : pi, ramp, t);
+        const double h = morph(mh_dest, t, m) ? SYNTH_PARAMS[type][0].min + m * (SYNTH_PARAMS[type][0].max - SYNTH_PARAMS[type][0].min) : ph;
+        const double x = morph(mi_dest, t, m) ? SYNTH_PARAMS[type][1].min + m * (SYNTH_PARAMS[type][1].max - SYNTH_PARAMS[type][1].min) : pi;
+        auto set = [&](Synth *v) { v->timbre(0, h, ramp, t); v->timbre(1, x, ramp, t); };
+        Role *r = sy == top.sy() ? &top : sy == sectr.sy() ? &sectr : sy == v3r.sy() ? &v3r : nullptr;
+        if (r) r->each(set); else set(sy);      /* C1: the role's chord voices sound as it does */
     }
     /* a sampler role's Focus and Colour now: its own settings, or a morph aimed at them (as timbre() does each step) */
     void sampler_timbre(sampler::Resonator *rs, int q, const SamplerCfg &c, double t) {
@@ -1121,8 +1143,7 @@ struct Piece : Device {
         for (int q = 0; q < comp::NVOICE; q++) {
             if (!comp_live) ccur[q] = r.v[q]; else comp::glide(ccur[q], r.v[q], r.blend);
             if (swell_shaped[q] && ccur[q].style != comp::SWELLS) {      /* the voice's own envelope back (8b) */
-                Synth *sy = q == 0 ? top.sy() : q == 1 ? sectr.sy() : v3r.sy();
-                if (sy) sy->shape(patch.env_on[q] ? &patch.env[q] : nullptr);
+                (q == 0 ? top : q == 1 ? sectr : v3r).each([&](Synth *sy) { sy->shape(patch.env_on[q] ? &patch.env[q] : nullptr); });
                 swell_shaped[q] = false;
             }
         }
@@ -1133,7 +1154,11 @@ struct Piece : Device {
         bass_bar(time);
     }
     void bass_bar(double time) {
-        if (cbass.mode == comp::BASS_OFF) { if (H.held && bass.sy()) bass.sy()->release(time); H.held = false; return; }
+        if (cbass.mode == comp::BASS_OFF) {
+            if (H.held && bass.sy()) bass.sy()->release(time);
+            for (auto &h : heard[0]) if (h.held && h.until > time) h.until = time;   /* final review M8: the readout lets it go too */
+            H.held = false; return;
+        }
         if (cbass.mode != comp::BASS_PEDAL) return;
         int m = cbass.pedal == 2 ? cbass.note : patch.key - 24 + (cbass.pedal == 1 ? 7 : 0);
         if (!(H.held && H.have_bass && H.bass == m)) { note(0, bass.sy(), note_hz(m), -1, time, 0.5); H.bass = m; H.have_bass = true; H.held = true; }
@@ -1155,8 +1180,24 @@ struct Piece : Device {
         while (m > hi && m - 12 >= lo) m -= 12;
         return m;
     }
+    /* C1: a chord's next note's voice - the role's instrument or one of its pool, in turn; busy until the note has rung out */
+    Synth *chord_voice(Role &r, double end) {
+        Synth *s = r.sy(); if (!s || is_sampler(r.cur)) return s;
+        const int j = (int)(r.deal++ % (Role::NPOOL + 1)) - 1;
+        if (j < 0 || !r.synced[r.cur][j]) return s;
+        Synth *p = r.pool[r.cur][j].get(); const Envelope *e = p->amp();
+        r.busy[r.cur][j] = std::max(r.busy[r.cur][j], end + (e ? e->release : 4) + 0.1);
+        return p;
+    }
     void play_style(int q, const comp::Voice &v, long long k, long long bar, double time) {
-        Synth *sy = q == 0 ? top.sy() : q == 1 ? sectr.sy() : v3r.sy();
+        Role &rl = q == 0 ? top : q == 1 ? sectr : v3r;
+        Synth *sy = rl.sy();
+        if (sy && (v.style == comp::STRUM || v.style == comp::SWELLS) && !is_sampler(rl.cur))
+            for (int j = 0; j < Role::NPOOL; j++) if (rl.pool[rl.cur][j] && !rl.synced[rl.cur][j]) {
+                Synth *p = rl.pool[rl.cur][j].get();
+                p->set(rl.st); p->vol = sy->vol; p->shape(patch.env_on[rl.rec] ? &patch.env[rl.rec] : nullptr);
+                rl.synced[rl.cur][j] = true;
+            }
         const int role = q + 1, col = (int)((k % 16) / v.rate), ncols = std::max(1, (16 + v.rate - 1) / v.rate);
         const double step_s = 60.0 / patch.tempo / 4 * v.rate, dur = step_s * v.len;
         auto vel = [&](int c) { return 0.22 + 0.4 * v.acc[c % comp::MAX_COLS] / 100.0; };
@@ -1188,7 +1229,8 @@ struct Piece : Device {
             for (int i = 0; i < nd; i++) {
                 const int d = ds[down ? nd - 1 - i : i]; const double off = i * v.spread_ms / 1000.0;
                 double vl = vel(col) + (i == 0 ? 0.12 : 0); vary(d, vl, col * 5 + i);
-                note(role, sy, note_hz(deg_midi(d, v.lo, v.hi, 0)), std::max(0.03, dur - off), time + off, vl);
+                const double nd_s = std::max(0.03, dur - off);
+                note(role, chord_voice(rl, time + off + nd_s), note_hz(deg_midi(d, v.lo, v.hi, 0)), nd_s, time + off, vl);
             }
             break;
         }
@@ -1202,8 +1244,9 @@ struct Piece : Device {
             break;
         }
         case comp::SWELLS: {
-            if (sy) { EnvSpec e{ std::max(0.005, v.attack * dur), 0.005, 1.0, std::max(0.02, v.release * dur), false, true }; sy->shape(&e); swell_shaped[q] = true; }
-            for (int d = 0; d < 5; d++) if (v.tones & (1u << d)) { double vl = 0.15 + 0.45 * v.peak; vary(d, vl, d); note(role, sy, note_hz(deg_midi(d, v.lo, v.hi, 0)), dur, time, vl); }
+            const EnvSpec e{ std::max(0.005, v.attack * dur), 0.005, 1.0, std::max(0.02, v.release * dur), false, true };
+            if (sy) { rl.each([&](Synth *s) { s->shape(&e); }); swell_shaped[q] = true; }
+            for (int d = 0; d < 5; d++) if (v.tones & (1u << d)) { double vl = 0.15 + 0.45 * v.peak; vary(d, vl, d); note(role, chord_voice(rl, time + dur), note_hz(deg_midi(d, v.lo, v.hi, 0)), dur, time, vl); }
             break;
         }
         default: break;
@@ -1543,7 +1586,8 @@ struct Piece : Device {
         if (in.sector) { in.sector = false; sector = in.sector_v; }
         if (in.zones_set) {
             in.zones_set = false; nzin = in.nzin; std::memcpy(zin, in.zin, sizeof zin);
-            if (in.zent) { if (nzent == 8) { std::memmove(zent, zent + 1, sizeof(Ent) * 7); nzent = 7; } zent[nzent++] = Ent{ in.zent, ticks / 16 }; in.zent = 0; }
+            if (in.zent) { if (nzent == 8) { std::memmove(zent, zent + 1, sizeof(Ent) * 7); nzent = 7; } zent[nzent++] = Ent{ in.zent, (ticks + 15) / 16 }; in.zent = 0; }
+            /* final review M4: the phrase from the next bar line still to play (mid-bar, this bar's comp_bar has run) */
         }
         if (in.character) { in.character = false; centroid = in.centroid; onsets = in.onsets; }
         for (int i = 0; i < in.nzones; i++) if (patch.zones_on) zone_fire(in.zones[i], now + 0.008);
@@ -1782,7 +1826,10 @@ struct Piece : Device {
         bass_g.block(te); top_g.block(te);
         float bL[SUB] = {}, bR[SUB] = {}, tL[SUB] = {}, tR[SUB] = {};
         auto run_role = [&](Role &r, float *L, float *R) {
-            for (int k = 0; k < NSYNTH; k++) if ((k == r.cur || r.until[k] > t0) && r.inst[k]) r.inst[k]->render(L, R, n, t0);
+            for (int k = 0; k < NSYNTH; k++) if ((k == r.cur || r.until[k] > t0) && r.inst[k]) {
+                r.inst[k]->render(L, R, n, t0);
+                for (int j = 0; j < Role::NPOOL; j++) if (r.busy[k][j] > t0) r.pool[k][j]->render(L, R, n, t0);   /* C1: idle, not run */
+            }
         };
         run_role(bass, bL, bR); run_role(top, tL, tR);
         for (int i = 0; i < n; i++) {
