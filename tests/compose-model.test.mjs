@@ -11,10 +11,10 @@ test("defaults are today's sound, written out", () => {
 test("a chord override holds only what it changes; clearing it removes the key and the empty scope", () => {
   const c = M.defaults();
   M.setValue(c, { kind: "chord", i: 4 }, "voice", "style", "strum");
-  assert.deepEqual(c.over.chord["4"], { voice: { style: "strum" } });
+  assert.deepEqual(c.over.chord["4"], { voice: { style: "strum", tones: [0, 1, 2] } });   /* a style brings its tones (I2) */
   const e = M.effective(c, { kind: "chord", i: 4 }, "voice");
   assert.equal(e.values.style, "strum"); assert.equal(e.source.style, "here"); assert.equal(e.source.rate, "route");
-  M.clearValue(c, { kind: "chord", i: 4 }, "voice", "style");
+  M.clearValue(c, { kind: "chord", i: 4 }, "voice", "style"); M.clearValue(c, { kind: "chord", i: 4 }, "voice", "tones");
   assert.equal(c.over.chord["4"], undefined);
 });
 test("a zone override carries when and blend", () => {
@@ -115,4 +115,45 @@ test("Fix 5b: setValue guards against undefined scope.i", () => {
   assert.equal(c.over.chord.undefined, undefined, "setValue should not create entry with undefined key");
   M.setValue(c, { kind: "section" }, "voice", "style", "strum");
   assert.equal(c.over.section.undefined, undefined, "setValue should not create entry with undefined key");
+});
+
+/* final review I2: what the inspector shows is what plays - choosing a style writes its pattern or tones where the scope has none */
+test("choosing a style writes its grid or tones, as the inspector shows them, and keeps any already set", () => {
+  for (const scope of [{ kind: "route" }, { kind: "chord", i: 2 }, { kind: "zone", id: "z" }]) {
+    for (const st of ["arpeggio", "euclid", "strum", "swells"]) {
+      const c = M.defaults();
+      M.setValue(c, scope, "sect", "style", st);
+      const k = st === "arpeggio" || st === "euclid" ? "grid" : "tones";
+      const written = M.scopeObj(c, scope, false).sect[k], shown = M.effective(c, scope, "sect").values[k];
+      assert.deepEqual(written, M.FIELDS[st].filter((f) => f.k === k)[0].def, st + " " + scope.kind);
+      assert.deepEqual(shown, written);
+    }
+  }
+  const c = M.defaults();
+  M.setValue(c, { kind: "route" }, "voice", "grid", [3, 2, 1, 0]);
+  M.setValue(c, { kind: "route" }, "voice", "style", "arpeggio");
+  assert.deepEqual(c.voice.grid, [3, 2, 1, 0]);
+  M.setValue(c, { kind: "route" }, "voice", "style", "free");
+  assert.equal(c.voice.tones, undefined);
+});
+test("the bass's fixed pedal has a note knob (12-72, D2)", () => {
+  const f = M.BASS.filter((x) => x.k === "note")[0];
+  assert.ok(f && f.kind === "knob" && f.min === 12 && f.max === 72 && f.def === 38);
+  const c = M.defaults(); M.setValue(c, { kind: "route" }, "bass", "note", 45);
+  assert.equal(M.effective(c, { kind: "route" }, "bass").values.note, 45);
+});
+/* final review M7: a chord inside a section inherits the section's settings in the inspector, as its lane cell shows them */
+test("a chord's inspector inherits route < section, source 'section'", () => {
+  const c = M.defaults();
+  M.setValue(c, { kind: "route" }, "voice", "rate", "8n");
+  M.setValue(c, { kind: "section", i: 1 }, "voice", "style", "pedal");
+  M.setValue(c, { kind: "section", i: 1 }, "voice", "rate", "4n");
+  const at = [{ kind: "section", id: 1, t0: 0, t1: 0.5 }];
+  const e = M.effective(c, { kind: "chord", i: 2 }, "voice", at);
+  assert.equal(e.style, "pedal"); assert.equal(e.values.rate, "4n"); assert.equal(e.source.rate, "section"); assert.equal(e.source.lo, "route");
+  assert.equal(M.cell(c, 2, at)[0].style, "pedal");
+  M.setValue(c, { kind: "chord", i: 2 }, "voice", "rate", "16n");
+  const e2 = M.effective(c, { kind: "chord", i: 2 }, "voice", at);
+  assert.equal(e2.values.rate, "16n"); assert.equal(e2.source.rate, "here");
+  assert.equal(M.effective(c, { kind: "chord", i: 3 }, "voice").source.rate, "route");   /* no bands: the route's */
 });

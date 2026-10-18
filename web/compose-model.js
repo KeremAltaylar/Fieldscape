@@ -38,7 +38,8 @@
              { k: "peak", label: "level", kind: "knob", min: 0, max: 1, step: 0.05, def: 0.8, fmt: "pct" }]
   };
   var BASS = [{ k: "mode", label: "bass", kind: "menu", options: [{ id: "hold", label: "holds the root" }, { id: "pedal", label: "pedal" }, { id: "off", label: "off" }], def: "hold" },
-              { k: "pedal", label: "pedal note", kind: "menu", options: [{ id: "root", label: "key root" }, { id: "fifth", label: "key fifth" }, { id: "fixed", label: "fixed" }], def: "root" }];
+              { k: "pedal", label: "pedal note", kind: "menu", options: [{ id: "root", label: "key root" }, { id: "fifth", label: "key fifth" }, { id: "fixed", label: "fixed" }], def: "root" },
+              { k: "note", label: "fixed note", kind: "knob", min: 12, max: 72, step: 1, def: 38, fmt: "note" }];
   function clone(x) { return JSON.parse(JSON.stringify(x)); }
   function voiceDefaults() { return { style: "free", role: "accomp", rate: "8n", lo: 48, hi: 84, len: 0.9, variation: 0 }; }
   function defaults() {
@@ -72,6 +73,11 @@
     if (!o) { return; }
     o[voice] = o[voice] || {};
     o[voice][k] = v;
+    /* a style chosen here plays its pattern or tones as the inspector shows them: the model's, written out where this scope
+       has none (the core's own defaults differ - a grid of 0 1 2, tones 1 3 5) */
+    if (k === "style" && FIELDS[v]) {
+      FIELDS[v].forEach(function (f) { if ((f.k === "grid" || f.k === "tones") && o[voice][f.k] === undefined) { o[voice][f.k] = f.def.slice(); } });
+    }
   }
   function emptyOver(o) { return Object.keys(o).every(function (k) { return k === "when" || k === "blend"; }); }
   function clearValue(comp, scope, voice, k) {
@@ -89,16 +95,22 @@
     for (var i = 0; i < searchList.length; i++) { if (searchList[i].k === k) { return searchList[i].def; } }
     return undefined;
   }
-  /* what a scope shows for a voice: its own values ("here") over the route's ("route"); every field of the voice's style */
-  function effective(comp, scope, voice) {
+  /* what a scope shows for a voice: its own values ("here") over the route's ("route"); every field of the voice's style. A
+     chord also inherits from the sections over it (bandsAt, as cell() takes it): route < section < chord, source "section" */
+  function effective(comp, scope, voice, bandsAt) {
     var base = comp[voice] || {}, own = scope.kind === "route" ? {} : ((scopeObj(comp, scope, false) || {})[voice] || {});
-    var values = {}, source = {};
+    var values = {}, source = {}, from = {};
+    if (scope.kind === "chord") {
+      base = Object.assign({}, base);
+      (bandsAt || []).filter(function (b) { return b.kind === "section"; }).forEach(function (b) {
+        var o = comp.over.section[String(b.id)]; if (o && o[voice]) { Object.keys(o[voice]).forEach(function (k) { base[k] = o[voice][k]; from[k] = "section"; }); } });
+    }
     var style = own.style || base.style || "free";
     var keys = voice === "bass" ? BASS.map(function (f) { return f.k; }) : COMMON.concat(FIELDS[style] || []).map(function (f) { return f.k; });
     keys.forEach(function (k) {
       var v;
       if (own[k] !== undefined) { v = own[k]; source[k] = "here"; }
-      else { v = base[k] !== undefined ? base[k] : fieldDef(k, style); source[k] = "route"; }
+      else { v = base[k] !== undefined ? base[k] : fieldDef(k, style); source[k] = from[k] || "route"; }
       if (Array.isArray(v)) { v = v.slice(); }
       values[k] = v;
     });
