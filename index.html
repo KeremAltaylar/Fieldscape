@@ -47,6 +47,9 @@ if (location.search.indexOf("rafshim") !== -1) {
   --accent:    oklch(83% 0.040 138);
   --lamp:      oklch(88% 0.085 140);
   --bdr:       color-mix(in oklch, var(--accent) 16%, transparent);
+  /* the two layers a composing cell can be tinted by (Tokens.md, composition step 1) */
+  --by-section: color-mix(in oklch, var(--lamp) 26%, var(--raised));
+  --by-zone:    color-mix(in oklch, var(--ink) 17%, var(--raised));
 
   --font-display: "Cormorant Garamond", Georgia, serif;
   --font-body:    "Newsreader", Georgia, serif;
@@ -1765,6 +1768,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 }
 </style>
 <link rel="stylesheet" href="web/listener.css">
+<link rel="stylesheet" href="web/compose.css">
 </head>
 <body>
 
@@ -1892,6 +1896,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       <div class="cgroup">
         <span class="eyebrow">Where and when</span>
         <p class="cardmeta" id="f-meta"></p>
+        <p class="rc-comp" id="f-comp" hidden></p>
       </div>
       <!-- Listening, not authoring: these are not gated, and nothing here is saved. -->
       <div class="chips mixrow">
@@ -2049,6 +2054,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 <script src="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.js"></script>
 <script src="https://unpkg.com/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <script src="web/lab-roles.js"></script>
+<script src="web/compose-model.js"></script>
+<script src="web/compose.js"></script>
 <!-- Module scripts are deferred: FA_PENDING does not exist at the main script's parse time.
      Nothing below may call it at parse time — only Publish (Task 4) calls it, on a click.
 
@@ -8594,6 +8601,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   window.__fa.redrawPointPanel = function () { renderRhythmPanel(); return 1; };   /* test hook: what an edit like Generate does */
   window.__fa.corePoint = function () { return core && core.point ? { db: core.point.db, grains: core.point.grains } : null; };   /* 8a */
   window.__fa.coreRoles = function () { return core && core.roles ? Array.prototype.slice.call(core.roles) : null; };
+  window.__fa.routePatch = function (id) { var f = feature(id); return f ? patchOf(f) : null; };
+  window.__fa.openPatchPanel = function () { $("#patchpanel").hidden = false; renderPatchPanel(); };
   window.__fa.patchEdit = function (id, fn) { var f = feature(id); if (!f) { return false; } var p = patchOf(f); fn(p); commitPatch(f, p); labChanged(); return true; };
   window.__fa.reloadSession = function () { if (labRoles) { labRoles.loadedFor = null; } if (!$("#patchpanel").hidden) { renderPatchPanel(); } labKey = {}; labSentFor = null; labChanged(); };
   function labSend(port, r, b, a) { FsRoles.sendRole(port, FsRoles.ROLE_INDEX[r], b, a); window.__fa.roleSends++; }
@@ -12477,11 +12486,68 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     ks.reduce(function (a, k) { return a[k]; }, o)[last] = v;
   }
 
+  /* Composition step 1: the dock under the map, editing this route's patch.comp (heard at once: the patch path) */
+  function openCompose(f) {
+    var patch = patchOf(f);
+    if (!patch.comp) { patch.comp = FsCompose.defaults(); commitPatch(f, patch); }
+    var m = routeMetrics(f);
+    var here = function () { return pacer && (pacer.f === f || pacer.routeId === f.properties.id); };
+    FsComposeDock.open({
+      route: f,
+      comp: function () { return patchOf(f).comp; },
+      save: function (c) { var p = patchOf(f); p.comp = c; commitPatch(f, p); labChanged(); if (selected === f.properties.id) { compLine(f); }
+        return !/Could not save locally/.test($("#saved").textContent); },   /* save()'s one failure */
+      chords: (patch.prog || []).map(function (c, i) { return { colour: rootColour(chordRoot(patch, i)), label: chordLabel(patch, i) }; }),
+      coords: f.geometry.coordinates,
+      sections: function () {     /* null: walk onto the route to see them */
+        if (!here() || !sect.seeds || !pacer.patch) { return null; }
+        return sect.seeds.map(function (s, i) { var ring = voronoiCell(i); if (ring.length) { ring.push(ring[0]); }
+          return { id: i, ring: ring, colour: rootColour(pacer.patch.key + pacer.patch.sectors[i % pacer.patch.sectors.length].r) }; })
+          .filter(function (x) { return x.ring.length > 3; });
+      },
+      zones: function () {
+        return visible().filter(function (g) { return g.geometry.type === "Point"; }).map(function (g) {
+          return { id: g.properties.id, name: label(g), lon: g.geometry.coordinates[0], lat: g.geometry.coordinates[1], r: soundOf(g).zoneR }; });
+      },
+      light: function (sel) { composeLight(f, m, sel); },
+      show: function (sel) {
+        var cs = sel && sel.chord != null ? segmentCoords(m, sel.chord / (patch.prog.length || 16), (sel.chord + 1) / (patch.prog.length || 16))
+          : sel && sel.zone && feature(sel.zone) ? circlePoly(feature(sel.zone).geometry.coordinates[0], feature(sel.zone).geometry.coordinates[1], soundOf(feature(sel.zone)).zoneR, 24).geometry.coordinates[0]
+          : f.geometry.coordinates;
+        var b = new maplibregl.LngLatBounds(); cs.forEach(function (c) { b.extend(c); }); map.fitBounds(b, { padding: 60, maxZoom: 17 });
+      },
+      listenAt: function (t) { worldMove(pointAlong(m, t)); },
+      now: function () { return here() ? pacer.t : null; }
+    });
+  }
+  /* the selected chord's stretch on the map (a lamp line under the chord colours), or the selected zone's ring */
+  function composeLight(f, m, sel) {
+    if (!map.getSource("compsel")) {
+      map.addSource("compsel", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+      map.addLayer({ id: "compsel-line", type: "line", source: "compsel", filter: ["==", ["geometry-type"], "LineString"],
+        paint: { "line-color": lamp, "line-width": 18, "line-opacity": 0.55 }, layout: { "line-cap": "round" } }, map.getLayer("prog-active-ring") ? "prog-active-ring" : undefined);
+      map.addLayer({ id: "compsel-zone", type: "line", source: "compsel", filter: ["==", ["geometry-type"], "Polygon"],
+        paint: { "line-color": lamp, "line-width": 3.5 } });
+    }
+    var feats = [], n = (patchOf(f).prog || []).length || 16;
+    if (sel && sel.chord != null) { feats.push({ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: segmentCoords(m, sel.chord / n, (sel.chord + 1) / n) } }); }
+    if (sel && sel.zone) { var g = feature(sel.zone); if (g) { feats.push(circlePoly(g.geometry.coordinates[0], g.geometry.coordinates[1], soundOf(g).zoneR, 48)); } }
+    map.getSource("compsel").setData({ type: "FeatureCollection", features: feats });
+  }
+
   function renderPatchPanel() {
     var f = feature(selected);
     if (!f || f.properties.kind !== "route") { return; }
     var patch = patchOf(f), body = $("#pp-body");
     $("#pp-title").textContent = "Patch · " + label(f);
+    /* composition step 1: the dock, desk only (a phone has no room for sixteen chords by four lanes) */
+    var oldCb = $("#pp-compose"); if (oldCb) { oldCb.remove(); }
+    if (innerWidth >= 1000) {
+      var cb = document.createElement("button"); cb.type = "button"; cb.id = "pp-compose"; cb.className = "ghost";
+      cb.textContent = "Compose"; cb.title = "How the three voices play, per chord, section and zone";
+      cb.addEventListener("click", function () { $("#pp-close").click(); openCompose(f); });
+      $("#pp-reset").parentNode.insertBefore(cb, $("#pp-reset"));
+    }
     if (samplersOn()) {
       var S = labSession();
       ["voice", "sect", "v3"].forEach(function (r) { var q = patch[r] || {}; S.defaults[r] = { gain: q.gain, harm: q.harm, index: q.index }; });
@@ -14513,6 +14579,17 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     renderStats();
   }
 
+  /* composition step 1: how the route's voices play, in a line on its card */
+  function compLine(f) {
+    var comp = f.properties.kind === "route" && f.properties.patch && f.properties.patch.comp, el = $("#f-comp");
+    el.hidden = !(comp && typeof FsCompose !== "undefined");
+    if (el.hidden) { return; }
+    var n = 0;
+    ["chord", "section", "zone"].forEach(function (k) { Object.keys(comp.over[k] || {}).forEach(function (id) { var o = comp.over[k][id];
+      ["voice", "sect", "v3", "bass"].forEach(function (v) { n += o[v] ? Object.keys(o[v]).length : 0; }); }); });
+    el.textContent = FsCompose.summary(comp);
+    if (n) { var i = document.createElement("i"); i.textContent = " · " + n + (n === 1 ? " override" : " overrides"); el.appendChild(i); }
+  }
   function renderDetail() {
     var f = selected ? feature(selected) : null;
     $("#card").hidden = !f;
@@ -14577,6 +14654,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           ? (a.centroid_hz / 1000).toFixed(1) + " kHz" : a.centroid_hz + " Hz") : "");
     }
     $("#f-meta").innerHTML = "<b>" + head + "</b>" + tail + extra;
+    compLine(f);
     sheetLabel();
 
     /* The kind/audio-state logic above (renderAudioMode/clearPlayer/loadPlayer and the

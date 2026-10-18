@@ -45,6 +45,9 @@ var SHELL_FILES = [
   "./web/listener.css",
   "./web/knobs.js",
   "./web/patch.js",
+  "./web/compose-model.js",       /* composition step 1: the dock, its model and its styles */
+  "./web/compose.js",
+  "./web/compose.css",
   "https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.js",
   "https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.css"
 ];
