@@ -11,14 +11,17 @@ body.composing #app { height: calc(100dvh - var(--cd-h)); }
 
 /* the head: title, saved, template, seed, the four icons */
 .cd-head { display: flex; align-items: center; gap: var(--s-2); height: 34px; flex: none; }
-.cd-title { flex: 1; margin: 0; min-width: 0; font: 400 1.45rem/1 var(--font-display); letter-spacing: 0; text-transform: none; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cd-title { flex: 1 1 8rem; margin: 0; min-width: 8rem; font: 400 1.45rem/1 var(--font-display); letter-spacing: 0; text-transform: none; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cd-title i { font: var(--t-xs) var(--font-mono); font-style: normal; color: var(--faint); letter-spacing: var(--track-meta); text-transform: uppercase; margin-right: var(--s-2); vertical-align: 0.2em; }
 .cd-head label { display: flex; align-items: center; gap: var(--s-1); font: var(--t-xs) var(--font-mono); letter-spacing: var(--track-meta); text-transform: uppercase; color: var(--faint); white-space: nowrap; }
-.cd select, .cd input[type=number] { font: var(--t-xs) var(--font-mono); color: var(--ink); background: var(--sunk); border: 1px solid var(--bdr); border-radius: 2px; padding: 5px var(--s-2); letter-spacing: 0; text-transform: none; }
+/* background-color, not the shorthand: the page's select draws its chevron as background-image */
+.cd select, .cd input[type=number] { font: var(--t-xs) var(--font-mono); color: var(--ink); background-color: var(--sunk); border: 1px solid var(--bdr); border-radius: 2px; padding: 5px var(--s-2); letter-spacing: 0; text-transform: none; }
+.cd select { padding-right: 1.4rem; }
 .cd input[type=number] { width: 4.2rem; font-variant-numeric: tabular-nums; }
 .cd select:focus-visible, .cd input:focus-visible { outline: 2px solid var(--lamp); outline-offset: 1px; }
 .cd-saved { font: var(--t-xs) var(--font-mono); color: var(--faint); letter-spacing: .04em; white-space: nowrap; margin-right: var(--s-3); }
-.cd-saved.warn { color: var(--lamp); }
+.cd-saved.warn { color: var(--lamp); display: flex; align-items: center; flex: none; }
+.cd-retry { padding: 2px var(--s-2); margin-left: var(--s-1); }
 .cd-icon { width: 34px; height: 34px; padding: 0; display: grid; place-items: center; letter-spacing: 0; flex: none; }
 .cd-icon svg { display: block; }
 
@@ -97,7 +100,7 @@ body.composing #app { height: calc(100dvh - var(--cd-h)); }
 .cd-src { text-align: right; text-transform: none; letter-spacing: 0; color: var(--faint); white-space: nowrap; display: flex; justify-content: flex-end; align-items: center; gap: 3px; }
 .cd-row2.mine > .cd-k { color: var(--ink); }
 .cd-row2.inh > .cd-k, .cd-row2.inh > .cd-ctl, .cd-row2.inh > .cd-v { opacity: .5; }
-.cd-row2 select { width: 100%; padding: 2px var(--s-1); }
+.cd-row2 select { width: 100%; padding: 2px 1.4rem 2px var(--s-1); }
 .cd-row2 .cd-seg { width: 100%; }
 .cd-row2 .cd-seg button { padding: 2px; }
 .cd-row2.wide { grid-template-columns: 3.4rem minmax(0, 1fr); height: 26px; }
@@ -136,9 +139,10 @@ body.composing #app { height: calc(100dvh - var(--cd-h)); }
 .cd-insp.tight .cd-row2.wide .cd-seg button, .cd-insp.tight .cd-vtabs button { padding: 3px 2px; }
 .cd-insp.tight .cd-gc { height: 8px; }
 .cd-insp.tighter { gap: 2px; padding-top: var(--s-2); padding-bottom: var(--s-2); }
-.cd-insp.tighter .cd-isub { display: none; }
 .cd-insp.tighter .cd-row2 { height: 18px; }
-.cd-insp.tighter .cd-row2 select { padding: 0 var(--s-1); }
+.cd-insp.tighter .cd-row2 select { padding-top: 0; padding-bottom: 0; }
+.cd-insp.tighter .cd-pgrid { gap: 1px 2px; }
+.cd-insp.tighter .cd-gc { height: 7px; }
 .cd-insp.tighter .cd-presets button, .cd-insp.tighter .cd-itools button { padding-top: 2px; padding-bottom: 2px; }
 .cd-insp.tighter .cd-ieb { margin-top: 2px; }
 .cd-insp.tighter .cd-accs { height: 14px; }
@@ -162,3 +166,7 @@ body.composing #app { height: calc(100dvh - var(--cd-h)); }
   .cd-cell span { display: none; }      /* a cell is ~35px: the picture says the style, the tooltip the word */
   .cd-cell { justify-content: center; }
 }
+
+/* a point's patch panel: Compose is a route's (disabled, saying why) */
+#rp-compose-hint { margin: 0; padding: var(--s-1) var(--s-5); font-size: var(--t-sm); color: var(--faint); }
+#rp-compose-hint[hidden], #rp-compose[hidden] { display: none; }

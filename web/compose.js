@@ -3,7 +3,7 @@
    bands, the three voice lanes and voice 1's bass row; the inspector (B) at its right shows every setting of the selection,
    inherited ones dimmed with their source. Edits go through ctx.save (the route's patch): heard at once. Desk only. */
 (function () {
-  var M = window.FsCompose, ctx = null, comp = null, hist = null, sel = { kind: "route" }, voice = "voice", grown = false, saved = true, nowTimer = null;
+  var M = window.FsCompose, ctx = null, comp = null, hist = null, sel = { kind: "route" }, voice = "voice", grown = false, saveErr = null, nowTimer = null;
   var VS = ["voice", "sect", "v3", "bass"];
   var NAME = { voice: "voice 1", sect: "voice 2", v3: "voice 3", bass: "voice 1 bass" };
   var TAB = { voice: "voice 1", sect: "voice 2", v3: "voice 3", bass: "bass" };
@@ -43,11 +43,13 @@
   function fmt(f, v) { return f.fmt === "note" ? noteName(v) : f.fmt === "pct" ? Math.round(v * 100) + " %" : f.fmt === "ms" ? Math.round(v) + " ms" : String(v); }
   function scopeName(s) { return s.kind === "route" ? "the route" : s.kind === "chord" ? "chord " + (s.i + 1) : s.kind === "section" ? "section " + (s.i + 1) : s.name; }
   function same(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
-  function commit() { saved = ctx.save(M.clone(comp)) !== false; hist.push(comp); render(); }
+  /* ctx.save says true, or why it could not store (shown with Retry until a save goes through) */
+  function store() { var r = ctx.save(M.clone(comp)); saveErr = r === true || r === undefined ? null : String(r || "not stored"); }
+  function commit() { store(); hist.push(comp); render(); }
   function resize() { if (window.__fa && __fa.map) { setTimeout(function () { __fa.map.resize(); }, 0); } }
 
   function open(c) {
-    ctx = c; comp = M.clone(ctx.comp()); hist = M.history(100); hist.push(comp); sel = { kind: "route" }; voice = "voice"; saved = true;
+    ctx = c; comp = M.clone(ctx.comp()); hist = M.history(100); hist.push(comp); sel = { kind: "route" }; voice = "voice"; saveErr = null;
     var d = document.getElementById("compose-dock");
     if (!d) { d = el("section", "cd"); d.id = "compose-dock"; d.setAttribute("aria-label", "Compose"); document.body.appendChild(d); }
     document.body.classList.add("composing"); d.hidden = false; resize();
@@ -61,14 +63,29 @@
     if (ctx) { ctx.light(null); } ctx = null; resize();
   }
 
+  /* a re-render keeps keyboard focus: the control at the same place (its [data-fk] holder, its tag, its index there) */
+  function focusAt(d) {
+    var a = document.activeElement, k = a && d.contains(a) ? a.closest("[data-fk]") : null;
+    return k ? { fk: k.dataset.fk, tag: a.tagName, i: k === a ? -1 : [].indexOf.call(k.querySelectorAll(a.tagName), a) } : null;
+  }
+  function refocus(d, f) {
+    if (!f) { return; }
+    var k = [].filter.call(d.querySelectorAll("[data-fk]"), function (x) { return x.dataset.fk === f.fk; })[0];
+    var t = k && (f.i < 0 ? k : k.querySelectorAll(f.tag)[f.i]);
+    if (t && t.tagName === f.tag) { t.focus({ preventScroll: true }); }
+  }
   function render() {
-    var d = document.getElementById("compose-dock"); d.textContent = "";
+    var d = document.getElementById("compose-dock"), was = focusAt(d); d.textContent = "";
+    draw(d); refocus(d, was);
+  }
+  function back() { var c = ctx; close(); if (c && c.back) { c.back(); } }
+  function draw(d) {
     var n = ctx.chords.length;
     if (!n) {   /* C-5 empty: a route with no progression */
-      var e = el("div", "cd-empty");
+      var e = el("div", "cd-empty"); e.dataset.fk = "empty";
       e.appendChild(el("p", "cd-empty-t", "This route has no chords yet."));
       e.appendChild(el("p", "hint", "The voices follow the route’s chords, so they come first. Add a progression in its patch, then compose."));
-      var b = el("button", "ghost", "Close"); b.type = "button"; b.addEventListener("click", close); e.appendChild(b); d.appendChild(e); return;
+      var b = el("button", "ghost", "Open the patch"); b.type = "button"; b.addEventListener("click", back); e.appendChild(b); d.appendChild(e); return;
     }
     var main = el("div", "cd-main"), insp = el("aside", "cd-insp"); insp.id = "cd-insp";
     var secs = ctx.sections(), zs = ctx.zones(), bs = M.bands(ctx.coords, secs || [], zs);
@@ -83,8 +100,12 @@
   }
   function header() {
     var h = el("div", "cd-head"), t = el("h2", "cd-title");   /* not a <header>: the listener hides those */
+    h.dataset.fk = "head";
     t.appendChild(el("i", null, "Compose")); t.appendChild(document.createTextNode(ctx.route.properties.name || "Unnamed route")); h.appendChild(t);
-    h.appendChild(el("span", "cd-saved" + (saved ? "" : " warn"), saved ? "saved" : "Not saved on this device"));
+    var sv = el("span", "cd-saved" + (saveErr ? " warn" : ""), saveErr ? "Not saved: " + saveErr : "saved");
+    if (saveErr) { var rt = el("button", "cd-retry", "Retry"); rt.type = "button"; rt.title = "Save these settings again";
+      rt.addEventListener("click", function () { store(); render(); }); sv.appendChild(rt); }
+    sv.setAttribute("role", "status"); h.appendChild(sv);
     var tl = el("label"); tl.appendChild(el("span", "cd-lbl", "start from"));
     var s = el("select"); s.id = "cd-template"; s.setAttribute("aria-label", "Start from a template");
     var cur = M.TEMPLATES.filter(function (x) { var y = x.comp(); return M.VOICES.concat(["bass"]).every(function (v) { return same(y[v], comp[v]); }); })[0];
@@ -109,7 +130,7 @@
     var r = el("div", "cd-row"); r.appendChild(el("span", "cd-name", "chords"));
     var s = el("div", "cd-strip"); s.id = "cd-strip"; s.style.gridTemplateColumns = "repeat(" + n + ", minmax(0, 1fr))";
     ctx.chords.forEach(function (c, i) {
-      var b = el("button", "cd-chord"); b.type = "button"; b.style.background = c.colour; b.title = (i + 1) + " · " + c.label;
+      var b = el("button", "cd-chord"); b.type = "button"; b.dataset.fk = "chord:" + i; b.style.background = c.colour; b.title = (i + 1) + " · " + c.label;
       b.appendChild(el("b", null, String(i + 1))); b.appendChild(el("span", null, c.label));
       b.setAttribute("aria-label", "chord " + (i + 1) + ", " + c.label); if (sel.kind === "chord" && sel.i === i) { b.classList.add("on"); }
       b.addEventListener("click", function () { pick({ kind: "chord", i: i }); }); s.appendChild(b); });
@@ -128,7 +149,7 @@
       else if (!mine.length) { t.appendChild(el("span", "cd-hint", k[0] === "zone" ? "no zone crosses this route" : "no sections cross this route")); }
       mine.forEach(function (b) {
         var name = bandName(b, zs);
-        var x = el("button", "cd-band " + k[0], name); x.type = "button"; x.style.left = (b.t0 * 100) + "%"; x.style.width = Math.max(1.5, (b.t1 - b.t0) * 100) + "%";
+        var x = el("button", "cd-band " + k[0], name); x.type = "button"; x.dataset.fk = "band:" + k[0] + ":" + b.id; x.style.left = (b.t0 * 100) + "%"; x.style.width = Math.max(1.5, (b.t1 - b.t0) * 100) + "%";
         x.title = name + (comp.over[k[0]][String(b.id)] ? " · changes the voices" : " · changes nothing yet");
         if (!comp.over[k[0]][String(b.id)]) { x.classList.add("plain"); }
         if (isSel(k[0], b.id)) { x.classList.add("on"); }
@@ -162,11 +183,12 @@
       for (var i = 0; i < n; i++) {
         var c = cells[i][vi], prev = i ? cells[i - 1][vi] : null, st = c.style === "off" && v === "bass" ? "boff" : c.style;
         var b = el("button", "cd-cell src-" + c.source + (c.style === "off" || st === "boff" ? " off" : ""));
-        if (prev && prev.style === c.style && prev.source === c.source && c.source !== "chord") { b.classList.add("cont"); }
-        if (sel.kind === "chord" && sel.i === i && voice === v) { b.classList.add("on"); }
+        var on = sel.kind === "chord" && sel.i === i && voice === v;
+        if (on) { b.classList.add("on"); }
+        else if (prev && prev.style === c.style && prev.source === c.source && c.source !== "chord") { b.classList.add("cont"); }   /* the selected cell keeps its word */
         if ((sel.kind === "zone" || sel.kind === "section") && c.source === sel.kind && cells[i].at.some(function (x) { return x.kind === sel.kind && isSel(x.kind, x.id); })) { b.classList.add("lit"); }
         b.innerHTML = "<span>" + (WORD[st] || st) + "</span>" + svg(v === "bass" ? "100 10" : "100 22", GLYPH[st] || GLYPH.free);
-        b.type = "button"; b.dataset.i = i;
+        b.type = "button"; b.dataset.i = i; b.dataset.fk = "cell:" + v + ":" + i;
         b.title = (i + 1) + " · " + ctx.chords[i].label + " · " + (LONG[st] || st) + " (" + c.source + ")";
         b.setAttribute("aria-label", NAME[v] + ", chord " + (i + 1) + ": " + (LONG[st] || st) + (c.source !== "route" ? ", set by the " + c.source : ""));
         (function (i, v) { b.addEventListener("click", function () { voice = v; pick({ kind: "chord", i: i }); });
@@ -209,7 +231,7 @@
     return s + (bass ? (s ? " and the bass" : "the bass") : ""); }
 
   function inspector(w, bs, n) {
-    var ih = el("div", "cd-ih"), title;
+    var ih = el("div", "cd-ih"), title; ih.dataset.fk = "ih";
     var cap = TAB[voice].charAt(0).toUpperCase() + TAB[voice].slice(1);
     if (sel.kind === "chord") { title = cap + " · chord " + (sel.i + 1); }
     else if (sel.kind === "route") { title = cap + " · the route"; }
@@ -225,7 +247,7 @@
     else { sub = (span(bs, sel.kind, sel.kind === "zone" ? sel.id : sel.i) || "off the route") + " · " + voicesList(changes(sel)); }
     w.appendChild(el("p", "cd-isub", sub));
     if (sel.kind === "zone") { zoneLines(w); }
-    var tabs = el("div", "cd-seg cd-vtabs"); tabs.style.setProperty("--n", 4); tabs.setAttribute("role", "group"); tabs.setAttribute("aria-label", "Voice");
+    var tabs = el("div", "cd-seg cd-vtabs"); tabs.dataset.fk = "vtabs"; tabs.style.setProperty("--n", 4); tabs.setAttribute("role", "group"); tabs.setAttribute("aria-label", "Voice");
     var ch = changes(sel);
     VS.forEach(function (v) { var b = el("button", ch.indexOf(v) >= 0 ? "has" : null, TAB[v]); b.type = "button"; b.setAttribute("aria-pressed", String(v === voice));
       b.addEventListener("click", function () { voice = v; render(); }); tabs.appendChild(b); });
@@ -236,7 +258,7 @@
     fields.filter(function (f) { return f.kind !== "grid" && f.kind !== "accents"; }).forEach(function (f) { w.appendChild(row(f, e.values[f.k], e.source[f.k])); });
     var grid = fields.filter(function (f) { return f.kind === "grid"; })[0];
     if (grid) { patternBlock(w, grid, fields.filter(function (f) { return f.kind === "accents"; })[0], e); }
-    var tools = el("div", "cd-itools");
+    var tools = el("div", "cd-itools"); tools.dataset.fk = "tools";
     var li = el("button", "cd-listen", "Listen here"); li.type = "button"; li.title = "Put the walker on this stretch of the route";
     li.addEventListener("click", function () {
       var b = sel.kind === "zone" || sel.kind === "section" ? bs.filter(function (x) { return x.kind === sel.kind && isSel(x.kind, x.id); })[0] : null;
@@ -256,7 +278,7 @@
   function zoneLines(w) {
     var o = M.scopeObj(comp, sel, false) || { when: "inside", blend: 1 };
     [["when", [["inside", "while inside"], ["enter", "on entering"]]], ["blend", [[0, "at once"], [1, "next bar"], [2, "2 bars"], [4, "4 bars"]]]].forEach(function (k) {
-      var r = el("div", "cd-row2 wide" + (M.scopeObj(comp, sel, false) ? " mine" : " inh")); r.dataset.k = k[0];
+      var r = el("div", "cd-row2 wide" + (M.scopeObj(comp, sel, false) ? " mine" : " inh")); r.dataset.k = k[0]; r.dataset.fk = "row:" + k[0];
       r.appendChild(el("span", "cd-k", k[0]));
       var c = el("span", "cd-ctl"); c.appendChild(seg(k[1], o[k[0]], function (v) { var z = M.scopeObj(comp, sel, true); z[k[0]] = v; commit(); }, k[0])); r.appendChild(c);
       w.appendChild(r); });
@@ -272,7 +294,7 @@
   }
   function row(f, v, src) {
     var mine = sel.kind === "route" || src === "here";
-    var r = el("div", "cd-row2 " + (mine ? "mine" : "inh")); r.dataset.k = f.k;
+    var r = el("div", "cd-row2 " + (mine ? "mine" : "inh")); r.dataset.k = f.k; r.dataset.fk = "row:" + f.k;
     r.appendChild(el("span", "cd-k", f.label));
     var set = function (val) { M.setValue(comp, sel, voice, f.k, val); commit(); };
     var ctl = el("span", "cd-ctl"), out = el("span", "cd-v", "");
@@ -303,19 +325,19 @@
      presets and the accents; a euclid's pitches past its steps are dimmed. */
   function patternBlock(w, grid, acc, e) {
     var src = e.source[grid.k] === "here" || (acc && e.source[acc.k] === "here") ? "here" : "route";
-    var eb = el("p", "cd-ieb" + (src === "here" || sel.kind === "route" ? " mine" : ""));
+    var eb = el("p", "cd-ieb" + (src === "here" || sel.kind === "route" ? " mine" : "")); eb.dataset.fk = "ieb";
     eb.appendChild(el("span", null, grid.label + " · ")); var sc = srcCell(src, grid, acc ? [grid.k, acc.k] : [grid.k]); eb.appendChild(sc);
     w.appendChild(eb);
     var cur = (e.values[grid.k] || []).slice(); while (cur.length < 16) { cur.push(-1); }
     var set = function (val) { M.setValue(comp, sel, voice, grid.k, val); commit(); };
     if (acc) {
-      var p = el("div", "cd-presets"); p.setAttribute("role", "group"); p.setAttribute("aria-label", "Patterns");
+      var p = el("div", "cd-presets"); p.dataset.fk = "presets"; p.setAttribute("role", "group"); p.setAttribute("aria-label", "Patterns");
       PRESETS.forEach(function (x) { var b = el("button", null, x[0]); b.type = "button"; b.setAttribute("aria-pressed", String(same(x[1], cur))); b.addEventListener("click", function () { set(x[1].slice()); }); p.appendChild(b); });
       w.appendChild(p);
     }
     var accv = acc ? (e.values[acc.k] || []).slice() : null; if (accv) { while (accv.length < 16) { accv.push(70); } }
     var steps = e.style === "euclid" ? e.values.steps : 16;
-    var g = el("div", "cd-pgrid" + (src === "here" || sel.kind === "route" ? "" : " inh"));
+    var g = el("div", "cd-pgrid" + (src === "here" || sel.kind === "route" ? "" : " inh")); g.dataset.fk = "pgrid";
     ["9", "7", "5", "3", "root"].forEach(function (lab, ri) { var d = 4 - ri; g.appendChild(el("span", "cd-gk", lab));
       for (var c = 0; c < 16; c++) { (function (c) {
         var b = el("button", "cd-gc" + (c % 4 === 0 ? " beat" : "") + (cur[c] === d ? " on" + (accv && accv[c] >= 85 ? " acc" : "") : "") + (c >= steps ? " past" : ""));
@@ -323,7 +345,7 @@
         b.addEventListener("click", function () { var a = cur.slice(); a[c] = a[c] === d ? -1 : d; set(a); }); g.appendChild(b); })(c); } });
     w.appendChild(g);
     if (acc) {
-      var a = el("div", "cd-accs" + (src === "here" || sel.kind === "route" ? "" : " inh")); a.appendChild(el("span", "cd-gk", "acc"));
+      var a = el("div", "cd-accs" + (src === "here" || sel.kind === "route" ? "" : " inh")); a.dataset.fk = "accs"; a.appendChild(el("span", "cd-gk", "acc"));
       accv.forEach(function (lv, c) { var b = el("button", "cd-ab"); b.type = "button"; b.style.setProperty("--h", lv + "%"); b.setAttribute("aria-label", "accent, step " + (c + 1) + ", " + lv);
         b.addEventListener("click", function (ev) { var r = b.getBoundingClientRect(), x = accv.slice();
           x[c] = Math.round(Math.max(0, Math.min(1, 1 - (ev.clientY - r.top) / r.height)) * 100); M.setValue(comp, sel, voice, acc.k, x); commit(); });
@@ -331,29 +353,46 @@
       w.appendChild(a);
     }
   }
-  function undo() { var c = hist.undo(); if (c) { comp = c; saved = ctx.save(M.clone(comp)) !== false; render(); } }
-  function redo() { var c = hist.redo(); if (c) { comp = c; saved = ctx.save(M.clone(comp)) !== false; render(); } }
-  /* the keyboard: arrows move between cells, Enter opens, Delete clears, Ctrl+Z / Ctrl+Shift+Z, Space the sound, Esc closes */
+  function undo() { var c = hist.undo(); if (c) { comp = c; store(); render(); } }
+  function redo() { var c = hist.redo(); if (c) { comp = c; store(); render(); } }
+  /* the keyboard (the dock's own keys only where they mean something; a focused button, select, range or field keeps its
+     native keys): arrows move between cells, Enter opens the inspector and Delete clears from a cell, chord or band, Space is
+     the sound from the page or a cell or chord, Ctrl+Z / Ctrl+Shift+Z outside a field, Esc back to the patch */
+  function on(t, sel) { return !!(t && t.closest && t.closest(sel)); }
   document.addEventListener("keydown", function (e) {
-    if (!ctx || !ctx.chords.length || /INPUT|SELECT|TEXTAREA/.test((e.target && e.target.tagName) || "")) { return; }
+    if (!ctx) { return; }
+    var t = e.target, field = /INPUT|SELECT|TEXTAREA/.test((t && t.tagName) || "") || (t && t.isContentEditable);
+    var grid = on(t, "#compose-dock .cd-cell, #compose-dock .cd-chord, #compose-dock .cd-band");
+    var page = !t || t === document || t === document.body || t === document.documentElement;
+    if (e.key === "Escape") { if (field && !on(t, "#compose-dock")) { return; } e.preventDefault(); e.stopPropagation(); back(); return; }
+    if (field) { return; }
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "z") { e.preventDefault(); if (e.shiftKey) { redo(); } else { undo(); } return; }
+    if (e.ctrlKey || e.metaKey || e.altKey || !ctx.chords.length) { return; }
     var n = ctx.chords.length;
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); if (e.shiftKey) { redo(); } else { undo(); } return; }
-    if (e.ctrlKey || e.metaKey || e.altKey) { return; }
-    if (e.key === " ") { var pb = document.getElementById("patch-play"); if (pb) { pb.click(); } e.preventDefault(); return; }
-    if (e.key === "Escape") { close(); return; }
-    if (sel.kind !== "chord" && /^Arrow/.test(e.key)) { pick({ kind: "chord", i: 0 }); e.preventDefault(); return; }
-    if (sel.kind === "chord") {
+    if (e.key === " ") {
+      if (!page && !on(t, "#compose-dock .cd-cell, #compose-dock .cd-chord")) { return; }
+      var pb = document.getElementById("patch-play"); if (pb) { pb.click(); } e.preventDefault(); return;
+    }
+    if (e.key === "Enter") { if (!grid) { return; } var f = document.querySelector("#cd-insp select, #cd-insp input, #cd-insp .cd-row2 button"); if (f) { f.focus(); } e.preventDefault(); return; }
+    if (e.key === "Delete" || e.key === "Backspace") { if (!grid || sel.kind === "route") { return; } M.clearScope(comp, sel); commit(); e.preventDefault(); return; }
+    if (!/^Arrow/.test(e.key) || !(page || on(t, "#compose-dock"))) { return; }
+    if (on(t, "#compose-dock") && !grid) { return; }      /* arrows on the dock's other buttons: nothing of ours */
+    e.preventDefault();
+    if (sel.kind !== "chord") { pick({ kind: "chord", i: 0 }); }
+    else {
       var vi = VS.indexOf(voice);
       if (e.key === "ArrowRight") { pick({ kind: "chord", i: Math.min(n - 1, sel.i + 1) }); }
       else if (e.key === "ArrowLeft") { pick({ kind: "chord", i: Math.max(0, sel.i - 1) }); }
       else if (e.key === "ArrowDown") { voice = VS[Math.min(VS.length - 1, vi + 1)]; render(); }
       else if (e.key === "ArrowUp") { voice = VS[Math.max(0, vi - 1)]; render(); }
-      else if (e.key === "Delete" || e.key === "Backspace") { M.clearScope(comp, sel); commit(); }
-      else if (e.key === "Enter") { var f = document.querySelector("#cd-insp select, #cd-insp input, #cd-insp .cd-row2 button"); if (f) { f.focus(); } }
-      else { return; }
-      e.preventDefault();
-      var on = document.querySelector("#cd-lanes .cd-cell.on"); if (on && e.key !== "Enter") { on.focus(); }
     }
+    var c = document.querySelector("#cd-lanes .cd-cell.on"); if (c) { c.focus({ preventScroll: true }); }
   }, true);
-  window.FsComposeDock = { open: open, close: close, isOpen: function () { return !!ctx; } };
+  /* a zone picked on the map while composing (the page's own selection path calls this) */
+  function pickZone(id, name) {
+    if (!ctx || !ctx.chords.length) { return false; }
+    var z = (ctx.zones() || []).filter(function (x) { return x.id === id; })[0];
+    pick({ kind: "zone", id: id, name: (z && z.name) || name || "zone" }); return true;
+  }
+  window.FsComposeDock = { open: open, close: close, pickZone: pickZone, isOpen: function () { return !!ctx; } };
 })();
