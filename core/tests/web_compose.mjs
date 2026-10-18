@@ -45,7 +45,20 @@ try {
   await ev(`__fa.patchEdit(${R}, function (p) { p.prog = window.__prog; }), 0`); await sleep(300);
   await ev("__fa.openPatchPanel && __fa.openPatchPanel(), 0"); await sleep(800);
   check("the patch panel has Compose", await ev("!!document.getElementById('pp-compose')"), null);
+  /* final review M6: opening and closing the dock without an edit writes nothing (the route would publish "Free · Free · Free") */
+  await ev(`__fa.patchEdit(${R}, function (p) { window.__comp0 = p.comp; delete p.comp; }), 0`); await sleep(300);
+  await ev("__fa.openPatchPanel(), document.getElementById('pp-compose').click(), 0"); await sleep(800);
+  await ev("FsComposeDock.close(), 0"); await sleep(300);
+  check("open and close without an edit: the route's patch has no comp", !(await ev(`!!__fa.routePatch(${R}).comp`)), null);
+  await ev("__fa.openPatchPanel(), 0"); await sleep(500);
   await ev("document.getElementById('pp-compose').click(), 0"); await sleep(800);
+  /* final review I3: the bass's fixed pedal has its note */
+  const pick = (k, v) => ev(`(function(){ var m = document.querySelector('#cd-insp .cd-row2[data-k="${k}"] select'); m.value = '${v}'; m.dispatchEvent(new Event('change', { bubbles: true })); })(), 0`);
+  await ev("[].filter.call(document.querySelectorAll('#cd-insp .cd-vtabs button'), function (b) { return b.textContent === 'bass'; })[0].click(), 0"); await sleep(300);
+  await pick("mode", "pedal"); await sleep(300); await pick("pedal", "fixed"); await sleep(300);
+  await ev(`(function(){ var k = document.querySelector('#cd-insp .cd-row2[data-k="note"] input'); k.value = 45; k.dispatchEvent(new Event('change', { bubbles: true })); })(), 0`); await sleep(400);
+  const bc = JSON.parse(await ev(`JSON.stringify(__fa.routePatch(${R}).comp.bass)`));
+  check("bass pedal fixed: its note is written (patch.comp.bass.note)", bc && bc.mode === "pedal" && bc.pedal === "fixed" && bc.note === 45, bc);
   check("the dock opens: 16 chord cells, 3 lanes + the bass row", await ev("document.querySelectorAll('#cd-strip .cd-chord').length === __fa.routePatch(" + JSON.stringify(rid) + ").prog.length && document.querySelectorAll('#cd-lanes .cd-lane').length === 4"), null);
   const spill = await spillOf();
   check("one screen: nothing scrolls or spills", spill.length === 0, spill.slice(0, 5));
@@ -108,6 +121,7 @@ try {
     await ev("[document.getElementById('cd-insp-title') && document.getElementById('cd-insp-title').textContent, [].map.call(document.querySelectorAll('.cd-band.zone'), function (b) { return b.textContent + (b.classList.contains('on') ? '*' : ''); })]"));
   check("the zone's ring is lit on the map", await ev("(function(){ var d = __fa.map.getSource('compsel').serialize().data; return d.features.length === 1 && d.features[0].geometry.type === 'Polygon'; })()"), null);
   check("a zone's inspector has when and blend", await ev("!!document.querySelector('#cd-insp .cd-row2[data-k=\"when\"]') && !!document.querySelector('#cd-insp .cd-row2[data-k=\"blend\"]')"), null);
+  check("blend offers next bar, over 2 bars, over 4 bars (no 'at once': 0 and 1 are the same)", (await ev("[].map.call(document.querySelectorAll('#cd-insp .cd-row2[data-k=\"blend\"] button'), function (b) { return b.textContent; }).join('|')")) === "next bar|over 2 bars|over 4 bars", null);
   await ev("(function(){ var m = document.querySelector('#cd-insp .cd-row2[data-k=\"style\"] select'); m.value = 'euclid'; m.dispatchEvent(new Event('change', { bubbles: true })); })(), 0"); await sleep(400);
   check("the zone's cells are tinted and outlined", await ev("document.querySelectorAll('#cd-lanes .cd-lane[data-voice=\"voice\"] .cd-cell.src-zone.lit').length > 0"), null);
   check("the zone's subline stays", await ev("(function(){ var p = document.querySelector('#cd-insp .cd-isub'); return !!p && p.offsetHeight > 0 && /voice 1/.test(p.textContent); })()"), await ev("(document.querySelector('#cd-insp .cd-isub') || {}).textContent"));

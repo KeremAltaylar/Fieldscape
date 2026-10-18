@@ -252,7 +252,7 @@
     VS.forEach(function (v) { var b = el("button", ch.indexOf(v) >= 0 ? "has" : null, TAB[v]); b.type = "button"; b.setAttribute("aria-pressed", String(v === voice));
       b.addEventListener("click", function () { voice = v; render(); }); tabs.appendChild(b); });
     w.appendChild(tabs);
-    var e = M.effective(comp, sel, voice);
+    var e = M.effective(comp, sel, voice, sel.kind === "chord" ? bs.filter(function (b) { return b.t0 < (sel.i + 1) / n && b.t1 > sel.i / n; }) : null);
     var style = voice === "bass" ? null : e.style;
     var fields = voice === "bass" ? M.BASS : M.FIELDS.common.concat(M.FIELDS[style] || []);
     fields.filter(function (f) { return f.kind !== "grid" && f.kind !== "accents"; }).forEach(function (f) { w.appendChild(row(f, e.values[f.k], e.source[f.k])); });
@@ -277,7 +277,7 @@
   }
   function zoneLines(w) {
     var o = M.scopeObj(comp, sel, false) || { when: "inside", blend: 1 };
-    [["when", [["inside", "while inside"], ["enter", "on entering"]]], ["blend", [[0, "at once"], [1, "next bar"], [2, "2 bars"], [4, "4 bars"]]]].forEach(function (k) {
+    [["when", [["inside", "while inside"], ["enter", "on entering"]]], ["blend", [[1, "next bar"], [2, "over 2 bars"], [4, "over 4 bars"]]]].forEach(function (k) {
       var r = el("div", "cd-row2 wide" + (M.scopeObj(comp, sel, false) ? " mine" : " inh")); r.dataset.k = k[0]; r.dataset.fk = "row:" + k[0];
       r.appendChild(el("span", "cd-k", k[0]));
       var c = el("span", "cd-ctl"); c.appendChild(seg(k[1], o[k[0]], function (v) { var z = M.scopeObj(comp, sel, true); z[k[0]] = v; commit(); }, k[0])); r.appendChild(c);
@@ -286,7 +286,7 @@
   function srcCell(src, f, keys) {
     var s = el("span", "cd-src");
     if (sel.kind === "route") { s.textContent = "route"; return s; }
-    if (src !== "here") { s.textContent = "route"; return s; }
+    if (src !== "here") { s.textContent = src === "section" ? "section" : "route"; return s; }
     s.appendChild(document.createTextNode("here"));
     var x = el("button", "cd-reset", "×"); x.type = "button"; x.title = "Back to the route’s"; x.setAttribute("aria-label", "Reset " + f.label + " to the route’s");
     x.addEventListener("click", function () { keys.forEach(function (k) { M.clearValue(comp, sel, voice, k); }); commit(); }); s.appendChild(x);
@@ -324,7 +324,7 @@
   /* the pattern grid: rows chord degrees (9 7 5 3 root), columns steps; one degree per column, click again to rest. Arpeggio adds
      presets and the accents; a euclid's pitches past its steps are dimmed. */
   function patternBlock(w, grid, acc, e) {
-    var src = e.source[grid.k] === "here" || (acc && e.source[acc.k] === "here") ? "here" : "route";
+    var src = e.source[grid.k] === "here" || (acc && e.source[acc.k] === "here") ? "here" : e.source[grid.k] || "route";
     var eb = el("p", "cd-ieb" + (src === "here" || sel.kind === "route" ? " mine" : "")); eb.dataset.fk = "ieb";
     eb.appendChild(el("span", null, grid.label + " · ")); var sc = srcCell(src, grid, acc ? [grid.k, acc.k] : [grid.k]); eb.appendChild(sc);
     w.appendChild(eb);

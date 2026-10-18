@@ -12507,7 +12507,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   /* Composition step 1: the dock under the map, editing this route's patch.comp (heard at once: the patch path) */
   function openCompose(f) {
     var patch = patchOf(f);
-    if (!patch.comp && (patch.prog || []).length) { patch.comp = FsCompose.defaults(); commitPatch(f, patch); }   /* no chords: nothing to write */
+    /* final review M6: looking writes nothing - the dock works on the defaults until its first real edit saves them */
     var m = routeMetrics(f);
     var here = function () { return pacer && (pacer.f === f || pacer.routeId === f.properties.id); };
     FsComposeDock.open({
