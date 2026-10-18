@@ -87,17 +87,20 @@ test("Fix 3b: route role off is honoured even with chord style set", () => {
   assert.equal(cell.style, "off", "route role off was overridden by chord style");
 });
 
-test("Fix 4: fieldDef resolves by style first", () => {
-  const eulcidGrid = M.FIELDS.euclid.find((x) => x.k === "grid").def;
-  const arpeggioGrid = M.FIELDS.arpeggio.find((x) => x.k === "grid").def;
-  assert.notDeepEqual(eulcidGrid, arpeggioGrid, "euclid and arpeggio have different grid defaults");
-  assert.equal(eulcidGrid[1], 2, "euclid grid's second element should be 2");
-  assert.equal(arpeggioGrid[1], 1, "arpeggio grid's second element should be 1");
-  const swellsTones = M.FIELDS.swells.find((x) => x.k === "tones").def;
-  const strumTones = M.FIELDS.strum.find((x) => x.k === "tones").def;
-  assert.notDeepEqual(swellsTones, strumTones, "swells and strum have different tones defaults");
-  assert.equal(swellsTones[3], 3, "swells tones should have 3 as fourth element");
-  assert.equal(strumTones.length, 3, "strum tones should have 3 elements");
+test("Fix 4: a field the route leaves unset takes its own style's default", () => {
+  const c = M.defaults();
+  c.voice.style = "euclid";
+  assert.deepEqual(M.effective(c, { kind: "route" }, "voice").values.grid, M.FIELDS.euclid.find((x) => x.k === "grid").def);
+  c.sect.style = "swells";
+  assert.deepEqual(M.effective(c, { kind: "route" }, "sect").values.tones, M.FIELDS.swells.find((x) => x.k === "tones").def);
+});
+
+test("a chord that turns a voice off is the source of the off cell", () => {
+  const c = M.defaults();
+  M.setValue(c, { kind: "chord", i: 3 }, "voice", "role", "off");
+  assert.deepEqual(M.cell(c, 3, [])[0], { style: "off", source: "chord" });
+  M.setValue(c, { kind: "zone", id: "z" }, "sect", "role", "off");
+  assert.deepEqual(M.cell(c, 0, [{ kind: "zone", id: "z" }])[1], { style: "off", source: "zone" });
 });
 
 test("Fix 5a: bands returns [] with fewer than 2 coordinates", () => {

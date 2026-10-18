@@ -113,9 +113,8 @@
       var ch = comp.over.chord[String(i)]; if (ch && ch[v]) { if (ch[v].style) { style = ch[v].style; styleSource = "chord"; } if (ch[v].role) { role = ch[v].role; roleSource = "chord"; } }
       (bandsAt || []).filter(function (b) { return b.kind === "zone"; }).forEach(function (b) {
         var o = comp.over.zone[b.id]; if (o && o[v]) { if (o[v].style) { style = o[v].style; styleSource = "zone"; } if (o[v].role) { role = o[v].role; roleSource = "zone"; } } });
-      var out = { style: role === "off" ? "off" : style, source: styleSource };
-      if (role === "off" && styleSource !== "route") { out.source = roleSource; }
-      return out;
+      /* an off cell is the doing of the layer that turned it off */
+      return role === "off" ? { style: "off", source: roleSource } : { style: style, source: styleSource };
     });
   }
   function dist(a, b) { var R = 6371008.8, la = (a[1] + b[1]) / 2 * Math.PI / 180;
