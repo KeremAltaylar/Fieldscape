@@ -60,6 +60,11 @@ try {
   const bc = JSON.parse(await ev(`JSON.stringify(__fa.routePatch(${R}).comp.bass)`));
   check("bass pedal fixed: its note is written (patch.comp.bass.note)", bc && bc.mode === "pedal" && bc.pedal === "fixed" && bc.note === 45, bc);
   check("the dock opens: 16 chord cells, 3 lanes + the bass row", await ev("document.querySelectorAll('#cd-strip .cd-chord').length === __fa.routePatch(" + JSON.stringify(rid) + ").prog.length && document.querySelectorAll('#cd-lanes .cd-lane').length === 4"), null);
+  /* 2026-10-19: the dock's foot says whether the audio has dropped out (the engine's slow blocks, polled once a second) */
+  await sleep(1500);
+  const au = await ev("(function(){ var a = document.getElementById('cd-audio'); return a ? { text: a.textContent, title: a.title, n: window.__fa.dropouts && __fa.dropouts.n, polls: window.__fa.dropouts && __fa.dropouts.polls } : null; })()");
+  check("the foot's audio readout: 'audio ok' or a count of dropouts", !!au && (au.text === "audio ok" ? au.n === 0 : /^\d+ dropouts? in the last minute$/.test(au.text) && au.n > 0) && /slowest block/.test(au.title), au);
+  check("the readout polls while the dock is open (__fa.dropouts)", !!au && au.polls >= 1, au);
   const spill = await spillOf();
   check("one screen: nothing scrolls or spills", spill.length === 0, spill.slice(0, 5));
   check("the selects read as menus (the chevron)", await ev("/gradient/.test(getComputedStyle(document.getElementById('cd-template')).backgroundImage)"), null);

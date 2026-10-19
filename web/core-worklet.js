@@ -128,6 +128,7 @@ class FieldscapeEngine extends AudioWorkletProcessor {
     this.morphs = x.malloc(7 * 24 * 8); this.nums = x.malloc(24); this.label = x.malloc(32);
     this.rolesP = x.fs_engine_roles ? x.malloc(4 * 24) : 0;     /* 3c.1: each role's level and notes (lab build only) */
     this.pointP = x.fs_engine_point ? x.malloc(4 * (2 + 3 * 96)) : 0; this.watching = false;   /* 8a: the open point's level, grains */
+    this.dropouts = 0; this.slowMs = 0;
     this.port.onmessage = (ev) => {
       const m = ev.data;
       try {
@@ -160,6 +161,8 @@ class FieldscapeEngine extends AudioWorkletProcessor {
           bufs.forEach((p) => x.free(p)); x.free(ptrs);
         } else if (m.type === "analysis") {
           const p = this.bytes(m.bytes); x.fs_engine_role_analysis(this.e, m.role, p); x.free(p);
+        } else if (m.type === "stats") {          /* the dropouts so far, and the slowest block since the last ask */
+          this.port.postMessage({ type: "stats", underruns: this.dropouts, maxMs: this.slowMs }); this.slowMs = 0;
         } else if (m.type === "watch" && x.fs_engine_watch) {
           const id = this.bytes(Uint8Array.from((m.id || "") + "", (ch) => ch.charCodeAt(0)));
           x.fs_engine_watch(this.e, id); x.free(id); this.watching = !!m.id;
@@ -209,7 +212,13 @@ class FieldscapeEngine extends AudioWorkletProcessor {
   }
   process(inputs, outputs) {
     const x = this.x, out = outputs[0], n = out[0].length;
+    /* dropouts (the composing dock's readout): a block that took longer than the audio it made. This scope has only
+       Date.now(), so a block reads 0, 1, 2 or 3+ ms - 3 is past a 128-frame block at 48 kHz (2.67 ms) */
+    const t0 = Date.now();
     x.fs_engine_process(this.e, n);
+    const ms = Date.now() - t0;
+    if (ms > this.slowMs) { this.slowMs = ms; }
+    if (ms > 1000 * n / sampleRate) { this.dropouts++; }
     for (let c = 0; c < out.length; c++) {
       out[c].set(new Float32Array(x.memory.buffer, x.fs_engine_out(this.e, Math.min(c, 1)), n));
     }

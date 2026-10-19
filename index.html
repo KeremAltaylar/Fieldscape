@@ -8806,9 +8806,16 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         if (!$("#rhythmpanel").hidden) { meterSet($("#rp-meter"), m.point[0]); }
       }
       fsListen._changed();
+    } else if (m.type === "stats") {     /* the composing dock's dropout readout asked (coreStats) */
+      var cb = core.onStats; core.onStats = null; if (cb) { cb(m); }
     } else if (m.type === "error") {
       console.error("core engine: " + m.message);
     }
+  }
+  /* the engine's dropouts so far and its slowest block since the last ask, to cb; false when no engine plays */
+  function coreStats(cb) {
+    if (!core || !core.node) { return false; }
+    core.onStats = cb; core.node.port.postMessage({ type: "stats" }); return true;
   }
 
   function bedStart() {
@@ -12541,7 +12548,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         var b = new maplibregl.LngLatBounds(); cs.forEach(function (c) { b.extend(c); }); map.fitBounds(b, { padding: 60, maxZoom: 17 });
       },
       listenAt: function (t) { worldMove(pointAlong(m, t)); },
-      now: function () { return here() ? pacer.t : null; }
+      now: function () { return here() ? pacer.t : null; },
+      stats: coreStats
     });
   }
   /* the selected chord's stretch on the map (a lamp line under the chord colours), or the selected zone's ring */

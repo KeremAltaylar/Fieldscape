@@ -3,7 +3,7 @@
    bands, the three voice lanes and voice 1's bass row; the inspector (B) at its right shows every setting of the selection,
    inherited ones dimmed with their source. Edits go through ctx.save (the route's patch): heard at once. Desk only. */
 (function () {
-  var M = window.FsCompose, ctx = null, comp = null, hist = null, sel = { kind: "route" }, voice = "voice", grown = false, saveErr = null, nowTimer = null;
+  var M = window.FsCompose, ctx = null, comp = null, hist = null, sel = { kind: "route" }, voice = "voice", grown = false, saveErr = null, nowTimer = null, statsTimer = null, audio = [], polls = 0;
   var VS = ["voice", "sect", "v3", "bass"];
   var NAME = { voice: "voice 1", sect: "voice 2", v3: "voice 3", bass: "voice 1 bass" };
   var TAB = { voice: "voice 1", sect: "voice 2", v3: "voice 3", bass: "bass" };
@@ -56,10 +56,11 @@
     render();
     if (ctx.show) { setTimeout(function () { if (ctx) { ctx.show(null); } }, 60); }   /* the route in view, in the map's new half */
     clearInterval(nowTimer); nowTimer = setInterval(markNow, 500);
+    audio = []; clearInterval(statsTimer); statsTimer = setInterval(pollAudio, 1000); pollAudio();
   }
   function close() {
     var d = document.getElementById("compose-dock"); if (d) { d.hidden = true; }
-    document.body.classList.remove("composing", "composing-grown"); grown = false; clearInterval(nowTimer);
+    document.body.classList.remove("composing", "composing-grown"); grown = false; clearInterval(nowTimer); clearInterval(statsTimer);
     if (ctx) { ctx.light(null); } ctx = null; resize();
   }
 
@@ -204,6 +205,27 @@
     var t = ctx.now ? ctx.now() : null, n = ctx.chords.length, k = t == null ? -1 : Math.min(n - 1, Math.floor(t * n));
     [].forEach.call(document.querySelectorAll('#cd-lanes .cd-lane[data-voice="voice"] .cd-cell'), function (c, i) { c.classList.toggle("now", i === k); });
   }
+  /* the foot's dropout readout: the engine's slow blocks (web/core-worklet.js), asked once a second while the dock is open;
+     "audio ok", or how many in the last minute (warn), the slowest block in its title. Tests read __fa.dropouts */
+  function pollAudio() {
+    polls++;
+    if (!ctx || !ctx.stats || !ctx.stats(function (m) {
+      var now = Date.now(), last = audio[audio.length - 1];
+      if (last && m.underruns < last.u) { audio = []; }          /* a new engine (lab mode turned): its count starts again */
+      audio.push({ at: now, u: m.underruns, ms: m.maxMs });
+      while (audio.length > 1 && now - audio[1].at >= 60000) { audio.shift(); }
+      showAudio();
+    })) { showAudio(); }
+  }
+  function showAudio() {
+    var n = audio.length > 1 ? audio[audio.length - 1].u - audio[0].u : 0, slow = 0;
+    audio.forEach(function (x) { slow = Math.max(slow, x.ms); });
+    window.__fa = window.__fa || {}; __fa.dropouts = { n: n, slowestMs: slow, polls: polls, answers: audio.length };
+    var e = document.getElementById("cd-audio"); if (!e) { return; }
+    e.classList.toggle("warn", n > 0);
+    e.lastChild.textContent = n ? n + (n === 1 ? " dropout" : " dropouts") + " in the last minute" : "audio ok";
+    e.title = audio.length ? "slowest block in the last minute: " + slow + " ms (a block lasts 2.7 ms)" : "slowest block: none yet - no sound is playing";
+  }
   function foot() {
     var f = el("div", "cd-foot"), lg = el("div", "cd-legend");
     [["route", ""], ["a section changed it", " by-section"], ["a zone changed it", " by-zone"], ["a chord changed it", " by-chord"]].forEach(function (x) {
@@ -211,7 +233,9 @@
     f.appendChild(lg);
     var k = el("span", "cd-keys");
     k.innerHTML = "<kbd>←</kbd><kbd>→</kbd> cells · <kbd>Enter</kbd> open · <kbd>Del</kbd> clear · <kbd>Space</kbd> sound";
-    f.appendChild(k); return f;
+    f.appendChild(k);
+    var au = el("span", "cd-audio"); au.id = "cd-audio"; au.setAttribute("role", "status"); au.appendChild(el("i")); au.appendChild(el("span"));
+    f.appendChild(au); setTimeout(showAudio, 0); return f;
   }
   function pick(s) { sel = s; ctx.light(s.kind === "chord" ? { chord: s.i } : s.kind === "zone" ? { zone: s.id } : null); render(); }
   function listen(t) { ctx.listenAt(t); render(); }
