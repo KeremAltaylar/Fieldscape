@@ -59,6 +59,13 @@ struct Synth {
     virtual void render(float *L, float *R, int n, double t0) = 0;
     /* 8b: a voice's own note envelope (its "env"), or - null - the instrument's own back, as it was when first shaped */
     virtual Envelope *amp() { return nullptr; }
+    /* composition's level match: a steady note's power at f against another's (1: the same at every pitch) */
+    virtual double note_power(double) const { return 1; }
+    /* composition: a voice taken for another pitch while it still rings - its frequency would jump under a sounding note
+       (the waveform's slope breaks: a click). It fades for `dur` first, and the note starts after (the piece's note()) */
+    double last_f = 0;
+    virtual bool sounding(double t) { Envelope *v = amp(); return v && v->sig.value(t) > 1e-3; }
+    virtual void fade(double t, double dur) { if (Envelope *v = amp()) v->sig.linearRampTo(0, dur, t); }
     EnvSpec own{}; bool own_kept = false, user_env = false;
     virtual void shape(const EnvSpec *e) {
         user_env = e != nullptr;
@@ -179,7 +186,10 @@ struct DuoSynth : Synth {
         harm.init(1.5); amount.init(0.5);
     }
     void set(const Settings &st) override { harm.p.set(st.harm, 0); harm.a = harm.b = (float)st.harm; }
-    void shape(const EnvSpec *e) override { v0.shape(e); v1.shape(e); }   /* 8b: both voices */
+    /* 8b: both voices (the duo keeps its own envelope as any synth does: its amp() is v0's) */
+    void shape(const EnvSpec *e) override { Synth::shape(e); v1.shape(e); }
+    void fade(double t, double dur) override { v0.env.sig.linearRampTo(0, dur, t); v1.env.sig.linearRampTo(0, dur, t); }
+    Envelope *amp() override { return &v0.env; }   /* both voices' envelope (they are struck and shaped together) */
     void attack(double f, double t, double vel) override {
         v0.env.triggerAttack(t, vel); v0.fenv.triggerAttack(t); v1.env.triggerAttack(t, vel); v1.fenv.triggerAttack(t);
         v0.freq.setValueAtTime(f, t); v1.freq.setValueAtTime(f, t);
@@ -276,9 +286,10 @@ struct PluckSynth : Synth {
     Noise noise;
     LowpassComb lfcf;
     double attack_noise = 1.2, resonance = 0.92, release_s = 1, dampening = 3200;
+    Param accent;                     /* a composed note's level on the burst (Tone's PluckSynth ignores velocity); 1 otherwise */
     double (*rnd)(void *) = nullptr; void *rnd_ctx = nullptr;
     void init(double s) override {
-        Synth::init(s); noise.init();
+        Synth::init(s); noise.init(); accent.reset(1);
         lfcf.init(s, 0.1, 0.92, 3200);
     }
     void attack(double f, double t, double) override {
@@ -289,6 +300,7 @@ struct PluckSynth : Synth {
         lfcf.resonance.p.setValueAtTime(resonance, t);
     }
     void release(double t) override { lfcf.resonance.p.linearRampTo(0, release_s, t); }
+    double note_power(double f) const override { return 440 / f; }   /* the burst is a period long, so is each round of the ring */
     /* 8b: a plucked string is its own attack and decay - the envelope's release is how long it rings on after */
     void shape(const EnvSpec *e) override { if (!own_kept) { own.r = release_s; own_kept = true; } release_s = e ? e->r : own.r; }
     void timbre(int which, double v, double, double) override {
@@ -298,6 +310,7 @@ struct PluckSynth : Synth {
         lfcf.block(t0 + n / sr);
         for (int i = 0; i < n; i++) {
             float l, r; noise.tick(t0 + i / sr, l, r);
+            const float a = (float)accent.render(t0 + i / sr); l *= a; r *= a;
             L[i] += lfcf.run(0, l, i, n) * vol; R[i] += lfcf.run(1, r, i, n) * vol;
         }
     }
@@ -323,6 +336,8 @@ struct MetalSynth : Synth {
     void set(const Settings &st) override { harmonicity = st.harm; modulationIndex = st.index; }
     void attack(double f, double t, double vel) override { env.triggerAttack(t, vel); freq.setValueAtTime(f, t); }
     void release(double t) override { env.triggerRelease(t); }
+    /* measured through each voice (2026-10-19): +2.7 dB an octave - its fixed highpass passes more of a higher note */
+    double note_power(double f) const override { return std::pow(f / 440, 0.9); }
     void timbre(int which, double v, double, double) override { if (which == 0) harmonicity = v; else octaves = v; }
     void render(float *L, float *R, int n, double t0) override {
         static const double R_[6] = { 1.0, 1.483, 1.932, 2.546, 2.63, 3.897 };
@@ -538,6 +553,24 @@ struct FormantVoice : Followed {
         env.triggerAttack(t, vel);
     }
     void release(double t) override { env.triggerRelease(t); }
+    /* follow()'s norm takes the source as a continuous density at each formant; a note's harmonics are lines f apart, which
+       land on a narrow formant or miss it - so its real power moves with the pitch. Here: the lines through the tilt and the
+       five formants (in parallel, summed as they are), times the norm follow() would give f */
+    double note_power(double f) const override {
+        double hz[5], q[5], gg[5], est = 0;
+        const double c = f * 6 < 500 ? 500 : (f * 6 > 4000 ? 4000 : f * 6);
+        auto tl = [&](double x) { return 1 / std::sqrt(1 + std::pow(x / c, 4)); };
+        for (int k = 0; k < 5; k++) { hz[k] = bp[k].freq.p.value(1e300); q[k] = bp[k].Q.p.value(1e300); gg[k] = g[k].p.value(1e300);
+            const double a = hz[k] < f ? 0 : f / hz[k] * tl(hz[k]); est += gg[k] * gg[k] * a * a * (hz[k] / (q[k] > 1 ? q[k] : 1)); }
+        if (est < 1e-12) return 1;
+        double p = 0;
+        for (int h = 1; h * f < 20000 && h <= 120; h++) {
+            const double x = h * f; double re = 0, im = 0;
+            for (int k = 0; k < 5; k++) { const double u = q[k] * (x / hz[k] - hz[k] / x), d = 1 + u * u; re += gg[k] / d; im -= gg[k] * u / d; }
+            const double a = tl(x) / h; p += a * a * (re * re + im * im);
+        }
+        return p / est;
+    }
     void render(float *L, float *R, int n, double t0) override {
         double te = t0 + n / sr;
         tick_follow(t0);

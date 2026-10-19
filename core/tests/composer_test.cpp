@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 #ifdef __EMSCRIPTEN__
@@ -216,22 +217,25 @@ static void chord_db(const char *syn, bool swells, const char *tones, double d[4
     double e = 0; for (float v : x) e += (double)v * v; d[3] = 10 * std::log10(e / x.size() + 1e-30);   /* the whole output */
 }
 static void test_chord_out() {
-    std::printf("C chord tones (in the chord / alone):");
+    /* 2026-10-19 (level match): a chord's tones share one note's power, and a style sits at Free's level whatever it plays - so
+       each of 3 tones is its own level alone less 10 log10 3 (4.8 dB), and the chord as loud as one tone alone */
+    const double share = 10 * std::log10(3.0);
+    std::printf("C chord tones (in the chord / alone, less a third's share):");
     double worst = 0, mworst = 0;
     for (const char *syn : { "fm", "am" }) for (int sw = 0; sw < 2; sw++) {
         double c[4], one[3], t[4]; static const char *const SOLO[3] = { "[0]", "[1]", "[2]" };
         chord_db(syn, sw, "[0,1,2]", c);
-        for (int i = 0; i < 3; i++) { chord_db(syn, sw, SOLO[i], t); one[i] = t[i]; worst = std::fmax(worst, std::fabs(c[i] - one[i])); }
-        std::printf(" %s %s D %.0f/%.0f F %.0f/%.0f A %.0f/%.0f dB;", syn, sw ? "swells" : "strum", c[0], one[0], c[1], one[1], c[2], one[2]);
+        for (int i = 0; i < 3; i++) { chord_db(syn, sw, SOLO[i], t); one[i] = t[i]; worst = std::fmax(worst, std::fabs(c[i] - (one[i] - share))); }
+        std::printf(" %s %s D %.0f/%.0f F %.0f/%.0f A %.0f/%.0f dB;", syn, sw ? "swells" : "strum", c[0], one[0] - share, c[1], one[1] - share, c[2], one[2] - share);
     }
     /* metal: 1 + 2 voices, so a 3-tone chord is still whole. Its inharmonic partials leave nothing at the notes themselves, so
-       the check is the whole output: the chord's energy is the sum of its tones' alone (one voice would be ~5 dB under) */
+       the check is the whole output: the chord's energy is its tones' alone, on average (one voice would be ~5 dB under) */
     for (int sw = 0; sw < 2; sw++) {
         double c[4], t[4], sum = 0; static const char *const SOLO[3] = { "[0]", "[1]", "[2]" };
         chord_db("metal", sw, "[0,1,2]", c);
         for (int i = 0; i < 3; i++) { chord_db("metal", sw, SOLO[i], t); sum += std::pow(10, t[3] / 10); }
-        const double alone = 10 * std::log10(sum); mworst = std::fmax(mworst, alone - c[3]);   /* under the sum: tones lost (it can sit over: metal's partials beat) */
-        std::printf(" metal %s whole %.1f / tones' sum %.1f dB;", sw ? "swells" : "strum", c[3], alone);
+        const double alone = 10 * std::log10(sum / 3); mworst = std::fmax(mworst, alone - c[3]);   /* under: tones lost (it sits over: metal's chords are brighter than its notes) */
+        std::printf(" metal %s whole %.1f / a tone alone %.1f dB;", sw ? "swells" : "strum", c[3], alone);
     }
     std::printf(" furthest from alone %.1f dB (metal %.1f dB)\n", worst, mworst);
     assert(worst < 3 && mworst < 2);
@@ -345,7 +349,135 @@ static void test_engine_zone() {
     assert(out > -60 && in < out - 20);
 }
 
-int main() {
+/* Kerem 2026-10-19 (clicks and crackle in Pedal and Strum: the limiter working): each style as loud as Free, through the
+   whole engine (route gain, mix, the -1 dBFS limiter), one voice sounding (voice 2), each synth at the page's defaults for
+   its two controls. Chord notes share a note's power (1/sqrt n) and every style's velocities are scaled to Free's power
+   (piece.cpp, "level match"). The route's echo and room are dry and its morphs off here: a held or repeated pitch rings
+   the room's and the echo's combs (a pedal sat -5 to +5 dB by its pitch alone) and a note struck on every bar line meets a
+   morph at one phase - colour the level match does not try to follow. Pluck's bursts are a few ms of pink noise, so each
+   note's energy is a draw: it is measured over longer */
+static double hd(const char *sy, int w) {     /* index.html SYNTH_PARAMS: picking a synth sets its two controls to these */
+    static const struct { const char *n; double h, i; } D[] = { { "fm", 1, 4 }, { "am", 1.5, 3 }, { "duo", 1.5, 0.2 }, { "mono", 2, 3 }, { "simple", 0, 1.6 },
+        { "pluck", 3200, 0.92 }, { "metal", 4.1, 1.2 }, { "membrane", 0.12, 3.2 }, { "wavetable", 0.35, 0.5 }, { "comb", 0.4, 0.5 }, { "formant", 0.5, 0.5 } };
+    for (auto &d : D) if (!std::strcmp(d.n, sy)) return w ? d.i : d.h;
+    return 0;
+}
+/* the engine's output rms (dBFS) from 1 s, walking the route in `secs` with voice 2 alone on synth `sy`, style `style` ("": Free) */
+static double level_db(const char *sy, const char *style, double secs) {
+    char patch[4096], route[8192];
+    std::snprintf(patch, sizeof patch, R"({"version":17,"tempo":96,"key":50,"prog":[{"r":0,"q":"m7"},{"r":5,"q":"maj7"},{"r":7,"q":"7"},{"r":0,"q":"m9"}],"bed":{"on":false},"zones":{"on":false},
+        "fx":{"delayWet":0,"revWet":0},"fx2":{"delayWet":0,"revWet":0},"fx3":{"delayWet":0,"revWet":0},"morph":{"on":false},
+        "voice":{"on":false},"sect":{"on":true,"synth":"%s","harm":%g,"index":%g},"v3":{"on":false},"comp":{"bass":{"mode":"off"}%s%s}})",
+        sy, hd(sy, 0), hd(sy, 1), *style ? R"(,"sect":)" : "", style);
+    std::snprintf(route, sizeof route, R"({"type":"Feature","geometry":{"type":"LineString","coordinates":[[29.0,41.0],[29.004,41.0]]},"properties":{"id":"r1","kind":"route","name":"R","patch":%s}})", patch);
+    fs_engine *e = fs_engine_create(48000, 128); fs_engine_upsert(e, route);
+    const int blocks = (int)(secs * 48000 / 128); double s = 0; long long n = 0;
+    for (int b = 0; b < blocks; b++) {
+        if (b % 40 == 0) fs_engine_step(e, 29.0 + 0.004 * b / blocks, 41.0);
+        fs_engine_process(e, 128);
+        if (b >= 375) { const float *l = fs_engine_out(e, 0); for (int i = 0; i < 128; i++) { s += (double)l[i] * l[i]; n++; } }
+    }
+    fs_engine_destroy(e); return 10 * std::log10(s / std::max(1LL, n) + 1e-30);
+}
+static void test_levels() {
+    /* the dock's default rate (1/8) for each style, then the templates' (web/compose-model.js), their registers too */
+    static const char *const ST[][2] = {
+        { "arp 8n", R"({"style":"arpeggio"})" }, { "pedal 8n", R"({"style":"pedal"})" }, { "strum 8n", R"({"style":"strum"})" },
+        { "euclid 8n", R"({"style":"euclid"})" }, { "swells 8n", R"({"style":"swells"})" },
+        { "arp 16n", R"({"style":"arpeggio","rate":"16n","lo":55,"hi":84})" },
+        { "strum 2n", R"({"style":"strum","rate":"2n","tones":[0,1,2,3],"spread":50,"lo":50,"hi":74})" },
+        { "pedal 1n", R"({"style":"pedal","rate":"1n","pedal":"fifth","lo":43,"hi":62})" },
+        { "euclid 16n", R"({"style":"euclid","rate":"16n","pulses":3,"steps":8,"rot":2,"grid":[2,4],"lo":62,"hi":86})" },
+        { "swells 1n", R"({"style":"swells","rate":"1n","len":1,"tones":[0,2,4]})" },
+        { "swells 2n.", R"({"style":"swells","rate":"2n.","len":1,"tones":[1,3],"lo":60,"hi":84,"attack":0.6,"release":0.5})" } };
+    static const char *const SY[] = { "fm", "am", "duo", "mono", "simple", "pluck", "metal", "membrane", "wavetable", "comb", "formant" };
+    /* the bound per synth: 2 dB where a note's power is its envelope's (and pluck's burst's). Three are more than that, their
+       residue measured 2026-10-19 and open: mono's filter envelope opens on each strike and its low-pass keeps less of a high
+       note (a high euclid -2.2, a slow swell +2.3); the formants' norm follows the pitch 120 ms late, so a line of changing
+       notes is not its notes alone (+2..3.4 over Free); metal's highpass rides its envelope, so a held or overlapping note is
+       brighter than its envelope says (chords and swells to +4, a lone strike a bar under) */
+    auto bound = [](const char *sy) { return !std::strcmp(sy, "metal") ? 5.0 : !std::strcmp(sy, "formant") ? 4.0 : !std::strcmp(sy, "mono") ? 3.0 : 2.0; };
+    double worst = 0, over = -1; const char *ws = "", *wy = "";
+    std::printf("C levels (style - Free, dB, voice 2):");
+    for (const char *sy : SY) {
+        const bool pl = !std::strcmp(sy, "pluck");
+        const double fr = level_db(sy, "", pl ? 61 : 41), secs = pl ? 31 : 9;   /* Free's sparse line over its whole walk */
+        std::printf("\n  %-9s free %5.1f dBFS", sy, fr);
+        for (auto &st : ST) {
+            const double d = level_db(sy, st[1], secs) - fr; std::printf(" %+.1f", d);
+            if (std::fabs(d) > std::fabs(worst)) { worst = d; ws = st[0]; wy = sy; }
+            over = std::max(over, std::fabs(d) - bound(sy));
+        }
+    }
+    std::printf("\nC levels: the furthest from Free %+.1f dB (%s %s); every synth inside its bound (2 dB; mono 3, formant 4, metal 5)\n", worst, wy, ws);
+    assert(over <= 0);
+}
+
+/* Kerem 2026-10-19 (clicks in Pedal and Strum): a retrigger must not click. Voice 2 alone, Pedal or Strum at 1/8 on fm, am
+   and pluck, silent through chord 1 (an override), so chord 2's first strike is a clean attack - in silence, the same synth,
+   pitch and velocity as what follows. For each strike after it in chord 2: the high band (x minus a 2-pole 2.5 kHz low-pass)
+   as it starts, over what it was just before, against the clean attack's, per unit of velocity. A pedal re-strikes its
+   ringing note on a one-voice synth; a strum's chord voices are taken again while they ring */
+struct Onsets { std::vector<float> hf; std::vector<double> t, vel, f; };
+static void onv(void *p, int role, double f, double, double t, double vel) { if (role == 2) { Onsets *o = (Onsets *)p; o->t.push_back(t); o->vel.push_back(vel); o->f.push_back(f); } }
+static Onsets onset_run(const char *sy, const char *st) {
+    char patch[4096];
+    std::snprintf(patch, sizeof patch, R"({"version":17,"tempo":96,"key":50,"prog":[{"r":0,"q":"m7"},{"r":5,"q":"maj7"},{"r":7,"q":"7"},{"r":0,"q":"m9"}],"bed":{"on":false},"zones":{"on":false},
+        "fx":{"delayWet":0,"revWet":0},"fx2":{"delayWet":0,"revWet":0},"fx3":{"delayWet":0,"revWet":0},"morph":{"on":false},
+        "voice":{"on":false},"sect":{"on":true,"synth":"%s","harm":%g,"index":%g},"v3":{"on":false},
+        "comp":{"bass":{"mode":"off"},"sect":%s,"over":{"chord":{"0":{"sect":{"role":"off"}}}}}})", sy, hd(sy, 0), hd(sy, 1), st);
+    unsigned seed = 11; Onsets o; fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128); fs_piece_test_hooks(pc, draw, &seed, onv, &o);
+    const int r = fs_piece_add_route(pc, patch); const int blocks = (int)(24 * 48000 / 128);
+    std::vector<float> x; x.reserve(blocks * 128);
+    for (int b = 0; b < blocks; b++) { fs_piece_walk(pc, r, (double)b / blocks, 0); fs_process(pc, 128); const float *out = fs_out(pc, 0); x.insert(x.end(), out, out + 128); }
+    fs_destroy(pc);
+    const double a = std::exp(-2 * 3.141592653589793 * 2500 / 48000.0); double y1 = 0, y2 = 0;
+    o.hf.resize(x.size());
+    for (size_t i = 0; i < x.size(); i++) { y1 = (1 - a) * x[i] + a * y1; y2 = (1 - a) * y1 + a * y2; o.hf[i] = (float)std::fabs(x[i] - y2); }
+    return o;
+}
+/* the high band over note k's first 6 ms (a stolen voice's 3 ms fade, then its attack; a pluck's comb speaks a period late,
+   so its period too): its peak, and its rise over the 3 ms before (a ringing note's own highs are not a click) */
+static double onset_peak(const Onsets &o, size_t k, bool pluck, bool rise) {
+    const long long i = (long long)std::llround(o.t[k] * 48000), W = 288 + (pluck ? (long long)(48000 / o.f[k]) : 0), n = (long long)o.hf.size();
+    auto peak = [&](long long i0, long long i1) { float m = 0; for (long long j = std::max(0LL, i0); j < std::min(n, i1); j++) m = std::max(m, o.hf[j]); return (double)m; };
+    return peak(i, i + W) - (rise ? peak(i - 144, i) : 0);
+}
+static void test_onsets() {
+    double worst = 0; const char *wsy = "", *wst = "";
+    for (const char *sy : { "fm", "am", "pluck" }) for (const char *st : { R"({"style":"pedal"})", R"({"style":"strum"})" }) {
+        const Onsets o = onset_run(sy, st);
+        assert(!o.t.empty() && o.t[0] > 3.9);                   /* chord 1 silent */
+        const bool pl = !std::strcmp(sy, "pluck");
+        const double end = o.t[0] + 5;
+        /* the clean attacks: chord 2's first strike, each of its tones on a voice silent until then - their highs per unit
+           of velocity, a pitch each (a higher note of a bright synth is brighter, struck clean or not) */
+        std::vector<double> cf, cl; size_t k = 0;
+        for (; k < o.t.size() && o.t[k] < o.t[0] + 0.25; k++) { cf.push_back(o.f[k]); cl.push_back(onset_peak(o, k, pl, false) / o.vel[k]); assert(cl.back() > 0); }
+        if (pl) {   /* a pluck's burst is a few ms of pink noise from a random point: one draw is no measure - its clean attack is
+                       the brightest of a run of short notes, each rung out (a pedal a beat) */
+            const Onsets a = onset_run(sy, R"({"style":"pedal","rate":"4n","len":0.05})"); double top = 0;
+            for (size_t j = 0; j < a.t.size(); j++) top = std::max(top, onset_peak(a, j, true, true) / a.vel[j]);
+            for (double &c : cl) c = std::max(c, top);
+        }
+        double most = 0; int n = 0;
+        for (; k < o.t.size() && o.t[k] < end; k++) {
+            size_t c = 0; while (c < cf.size() && cf[c] != o.f[k]) c++;
+            if (c == cf.size()) break;                           /* a pitch chord 2 has not: chord 3 */
+            most = std::max(most, onset_peak(o, k, pl, true) / o.vel[k] / cl[c]); n++;
+        }
+        std::printf("C onsets: %s %s - %d strikes after the clean ones, the largest rise in the highs x%.2f its pitch's clean attack\n", sy, st, n, most);
+        assert(n >= 8);
+        if (most > worst) { worst = most; wsy = sy; wst = st; }
+    }
+    std::printf("C onsets: no retrigger past a clean attack (largest x%.2f, %s %s)\n", worst, wsy, wst);
+    assert(worst <= 1.35);   /* a strike rings on what was there and its velocity is not quite its brightness: 1.35, where a
+                                retrigger that broke the waveform was x1.5-1.7 (an fm strum, before the fade) */
+}
+
+int main(int argc, char **argv) {
+    if (argc > 1 && !std::strcmp(argv[1], "levels")) { test_levels(); return 0; }
+    if (argc > 1 && !std::strcmp(argv[1], "onsets")) { test_onsets(); return 0; }
     test_parse();
     test_resolve();
     test_kept();
@@ -361,6 +493,8 @@ int main() {
     test_quiet();
     test_cost();
     test_engine_zone();
+    test_onsets();
+    test_levels();
     std::printf("composer ok\n");
     return 0;
 }

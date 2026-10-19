@@ -978,10 +978,13 @@ struct Piece : Device {
             }
         }
     }
-    void note(int role, Synth *sy, double f, double dur, double t, double vel) {
+    void note(int role, Synth *sy, double f, double dur, double t, double vel, bool composed = false) {
+        Role *rr = role == 0 ? &bass : role == 1 ? &top : role == 2 ? &sectr : role == 3 ? &v3r : nullptr;
+        if (composed && !(rr && rr->cur == PLUCK)) vel = std::min(vel, 1.0);   /* an envelope's level; pluck's is a gain on its burst */
         if (on_note) on_note(note_ctx, role, f, dur, t, vel);
         if (!sy) return;
-        Role *rr = role == 0 ? &bass : role == 1 ? &top : role == 2 ? &sectr : role == 3 ? &v3r : nullptr;
+        /* a composed route's pluck takes its notes' level (level match); everything else of Free's is untouched */
+        if (patch.comp.on && rr && rr->cur == PLUCK && sy) static_cast<PluckSynth *>(sy)->accent.setValueAtTime(composed ? vel : 1, t);
         if (rr && is_sampler(rr->cur) && sy == rr->sy()) {   /* a sampler role: its settings for this note (3a) */
             auto *rs = static_cast<sampler::Resonator *>(sy); const SamplerCfg &c = patch.smp[role <= 1 ? 0 : role - 1];
             rs->body = c.body; rs->excite = c.excite; rs->method = c.method; rs->mode = c.mode; rs->tune = c.tune; rs->octave = c.octave;
@@ -990,7 +993,10 @@ struct Piece : Device {
                every earlier bass sounding (final review 3a C1: six old bass notes piled up) */
             if (dur < 0) rs->release_all(t);
         }
+        /* a composed note on a voice still ringing another pitch: 3 ms of fade, then the note (Synth::fade). Free's as it was */
+        if (composed && !(rr && rr->cur == PLUCK) && sy->last_f > 0 && std::fabs(f / sy->last_f - 1) > 1e-3 && sy->sounding(t)) { sy->fade(t, 0.003); t += 0.003; }
         if (dur < 0) sy->attack(f, t, vel); else sy->attack_release(f, dur, t, vel);
+        sy->last_f = f;
         if (role >= 0 && role <= 3 && !(rr && is_sampler(rr->cur))) {
             Heard *h = heard[role], *slot = &h[0];
             for (int k = 0; k < 8; k++) {
@@ -1193,6 +1199,143 @@ struct Piece : Device {
         r.busy[r.cur][j] = std::max(r.busy[r.cur][j], end + (e ? e->release : 4) + 0.1);
         return p;
     }
+    /* ---- level match (Kerem 2026-10-19: Pedal and Strum crackle - the limiter pinned). Free plays a sparse line, one note at
+       a time; a style strikes every step, chords strike 3-5 notes at once, Swells hold at full sustain. Each style's notes
+       are scaled so its power sits at Free's on that voice: both note streams - Free's own logic replayed with a fixed draw
+       (voiceStep's density, sectorStep's rests, thirdStep's long notes), and the style's as play_style deals it - are run
+       through the voice's own amplitude envelope (Swells: its swell) for some bars, a note's energy its envelope squared. So
+       the rate, the length, a one-voice retrigger cutting a ring short, the chord voices' round-robin and the envelope's own
+       shape all count, and the style's velocities take sqrt(free power / style power). A note's power can also move with
+       its pitch (Synth::note_power: pluck's burst, metal's highpass, the formants' lines) - a style's register is not Free's.
+       Pluck has no envelope at all and ignores velocity (Tone's PluckSynth): its notes ring on in the comb, so they add, and
+       a composed note's level goes on its burst (PluckSynth::accent). Measured: core/tests/composer_test.cpp test_levels ---- */
+    struct CalHit { double t, dur, vel; int v, m; };
+    EnvSpec free_env(Role &rl) {
+        if (patch.env_on[rl.rec]) return patch.env[rl.rec];
+        Synth *s = rl.sy(); const Envelope *e = s ? s->amp() : nullptr;
+        if (s && s->user_env && s->own_kept) return s->own;
+        return e ? EnvSpec{ e->attack, e->decay, e->sustain, e->release, e->attack_exp, e->release_exp } : EnvSpec{ 0.01, 0.1, 0.5, 1, false, true };
+    }
+    /* the mean power over [from, to) (5 ms steps) of these notes' envelopes, dealt to nv voices by CalHit::v, each note
+       weighted by its pitch's note_power */
+    double env_power(const EnvSpec &es, CalHit *h, int n, int nv, double from, double to, Synth *sy) const {
+        std::sort(h, h + n, [](const CalHit &a, const CalHit &b) { return a.t < b.t; });
+        Envelope env[Role::NPOOL + 1]; double w[Role::NPOOL + 1];
+        for (int k = 0; k < nv; k++) { env[k].init(sr); env[k].set(es.a, es.d, es.s, es.r, es.aexp, es.rexp); w[k] = 1; }
+        double s = 0; long long c = 0; int j = 0;
+        for (double t = 0; t < to; t += 0.005) {
+            for (; j < n && h[j].t <= t; j++) { const int k = h[j].v % nv; env[k].triggerAttack(h[j].t, h[j].vel); env[k].triggerRelease(h[j].t + h[j].dur); w[k] = sy->note_power(mtof(h[j].m)); }
+            for (int k = 0; k < nv; k++) {
+                const double x = env[k].sig.render(t);
+                if (t >= from) s += x * x * w[k];
+            }
+            if (t >= from) c++;
+        }
+        return s / std::max(1LL, c);
+    }
+    /* pluck: each note's burst (a period long: note_power) rings in the comb, losing (1 - resonance) a period, while it is
+       held and through its release; a note struck before the last one's release has got under way holds that one's ring on
+       (the attack sets the resonance back), so the notes add, each held to the end of its run */
+    static double pluck_power(Synth *sy, CalHit *h, int n, double from, double to) {
+        const auto *p = static_cast<const PluckSynth *>(sy);
+        const double r = std::min(0.9999, std::max(0.0, p->resonance)), r2 = r * r, ring = 1 / (1 - r2);
+        std::sort(h, h + n, [](const CalHit &a, const CalHit &b) { return a.t < b.t; });
+        double s = 0;
+        for (int i = 0; i < n; i++) {
+            if (h[i].t < from || h[i].t >= to) continue;
+            double end = h[i].t + h[i].dur;
+            for (int j = i + 1; j < n && h[j].t < end + 0.1 * p->release_s; j++) if (h[j].v == h[i].v) end = std::max(end, h[j].t + h[j].dur);
+            const double f = mtof(h[i].m), held = std::pow(r2, f * (end - h[i].t));
+            s += h[i].vel * h[i].vel * sy->note_power(f) * ((1 - held) * ring + held * std::min(ring, f * p->release_s / 3));
+        }
+        return s / (to - from);
+    }
+    static const int CAL_BARS = 6, CAL_FREE_BARS = 16, CAL_HITS = 1024;
+    CalHit cal_h[CAL_HITS];
+    struct Cal { double key[64]; int nk = -1; double p = 0; } cal[comp::NVOICE], calf[comp::NVOICE];
+    static bool cached(Cal &c, const double *key, int nk) {
+        if (c.nk == nk && !std::memcmp(c.key, key, nk * sizeof(double))) return true;
+        std::memcpy(c.key, key, nk * sizeof(double)); c.nk = nk; return false;
+    }
+    /* what the synth adds to its envelope, as a cache key (0: nothing): pluck's ring, metal's pitch, the formants (to 0.1 dB:
+       their vowel moves) */
+    static double timbre_key(Role &rl) {
+        Synth *s = rl.sy();
+        if (rl.cur == PLUCK) { auto *p = static_cast<PluckSynth *>(s); return 1 + std::round(p->resonance * 200) + 1e3 * std::round(p->release_s * 10); }
+        if (rl.cur == FORMANT) return 1 + std::round(std::log10(s->note_power(220)) * 100) * 1e3 + std::round(std::log10(s->note_power(330)) * 100);
+        return rl.cur == METAL ? 1 : 0;
+    }
+    /* Free's power on voice q: its own logic, its own draw */
+    double free_power(int q, Role &rl, const EnvSpec &es, double tk) {
+        const Patch &p = patch; const bool pl = rl.cur == PLUCK;
+        const double density = std::max(0.05, std::min(0.95, p.voice.density * (0.35 + std::min(2.5, onsets) / 2.5)));
+        const int stride = q == 1 ? stride_of(p.sect.rhythm, 4) : stride_of(p.v3.rhythm, 16);
+        const double key[] = { (double)q, (double)rl.cur, es.a, es.d, es.s, es.r, (double)es.aexp, (double)es.rexp, p.tempo, density, (double)stride, (double)p.key, tk };
+        if (cached(calf[q], key, (int)(sizeof key / sizeof key[0]))) return calf[q].p;
+        uint64_t s = 0x9e3779b97f4a7c15ULL; auto r = [&]() { s ^= s << 13; s ^= s >> 7; s ^= s << 17; return (s >> 11) * (1.0 / 9007199254740992.0); };
+        const double six = 60.0 / p.tempo / 4; const int ticks_n = 16 * CAL_FREE_BARS; int n = 0;
+        auto hit = [&](double t, double d, double v, int m) { if (n < CAL_HITS) cal_h[n++] = CalHit{ t, d, pl ? 1 : v, 0, m }; };   /* pluck: velocity ignored */
+        if (q == 0) {
+            for (int k = 0; k < ticks_n; k += 2) if (r() <= density) { const int m = p.key + 17 + (int)(r() * 15);   /* voiceStep leads near the chord's upper tones: key + 24 on average (measured) */ const double d = 0.35 + r() * 0.55; hit(k * six, d, 0.22 + r() * 0.16, m); }
+        } else if (q == 1) {
+            int rest = 0, phrase = 0;
+            for (int k = 0; k < ticks_n; k += stride) {
+                if (rest > 0) { rest--; continue; }
+                if (r() < 0.18) { rest = 1 + (int)std::floor(r() * 2); continue; }
+                if (++phrase >= 5 + (int)std::floor(r() * 4)) { phrase = 0; rest = 1 + (int)std::floor(r() * 2); }
+                const int m = p.key + 2 + (int)(r() * 25); const double d = 0.28 + r() * 0.6; hit(k * six, d, 0.42 + r() * 0.2, m);
+            }
+        } else {
+            for (int k = 0; k < ticks_n; k += stride) { const int m = p.key - 7 + (int)(r() * 20); const double d = 60 / p.tempo * (1.5 + r() * 2.5); hit(k * six, d, 0.36 + r() * 0.16, m); }
+        }
+        const double from = 16 * six, to = ticks_n * six;
+        return calf[q].p = pl ? pluck_power(rl.sy(), cal_h, n, from, to) : env_power(es, cal_h, n, 1, from, to, rl.sy());
+    }
+    /* the gain on voice q's style velocities (cached: the inputs change only when the style, the envelope or Free's do) */
+    double level_of(int q, const comp::Voice &v, Role &rl) {
+        if (is_sampler(rl.cur) || !rl.sy()) return 1;
+        const bool pl = rl.cur == PLUCK;
+        const EnvSpec own = free_env(rl);
+        const int nv = v.style == comp::STRUM || v.style == comp::SWELLS ? Role::pool_n(rl.cur) + 1 : 1;
+        const double six = 60.0 / patch.tempo / 4, step_s = six * v.rate, dur = step_s * v.len;
+        EnvSpec es = own;
+        if (v.style == comp::SWELLS) es = EnvSpec{ std::max(0.005, v.attack * dur), 0.005, 1.0, std::max(0.02, v.release * dur), own.aexp, own.rexp };   /* play_style's swell */
+        const double tk = timbre_key(rl);
+        const double pfree = free_power(q, rl, own, tk);
+        double key[64]; int nk = 0;
+        for (double x : { (double)v.style, (double)v.rate, (double)v.len, (double)v.tones, (double)v.pulses, (double)v.steps, (double)v.rot, (double)v.spread_ms,
+                          (double)v.lo, (double)v.hi, (double)v.pedal, (double)v.pedal_note, es.a, es.d, es.s, es.r, (double)nv, pfree, tk, (double)v.peak,
+                          tk != 0 ? (double)H.tones[0] : 0 }) key[nk++] = x;
+        for (int i = 0; i < comp::MAX_COLS; i++) key[nk++] = v.acc[i] + (v.grid[i] + 1) * 1000;
+        Cal &c = cal[q];
+        if (cached(c, key, nk)) return c.p;
+        /* the style's own stream (variation's wobble left out: it averages to the level set) */
+        int n = 0; unsigned deal = 0, pulse = 0; const int ncols = std::max(1, (16 + v.rate - 1) / v.rate);
+        auto hit = [&](double t, double d, double vl, int m, int vv) { if (n < CAL_HITS) cal_h[n++] = CalHit{ t, d, vl, vv, m }; };
+        auto vel = [&](int cc) { return 0.22 + 0.4 * v.acc[cc % comp::MAX_COLS] / 100.0; };
+        const double share = chord_share(v);
+        int seq[comp::MAX_COLS], ns = 0; for (int i = 0; i < comp::MAX_COLS; i++) if (v.grid[i] >= 0) seq[ns++] = v.grid[i];
+        for (int k = 0; k < 16 * CAL_BARS; k += std::max(1, (int)v.rate)) {
+            const int col = (k % 16) / v.rate; const double t = k * six;
+            if (v.style == comp::ARPEGGIO) { const int d = v.grid[col % ncols]; if (d >= 0) hit(t, dur, vel(col), deg_midi(d, v.lo, v.hi, 0), 0); }
+            else if (v.style == comp::PEDAL) { int m = v.pedal == 2 ? v.pedal_note : H.tones[0] + (v.pedal == 1 ? 7 : 0);
+                while (m < v.lo) m += 12; while (m > v.hi && m - 12 >= v.lo) m -= 12; hit(t, dur, vel(col), m, 0); }
+            else if (v.style == comp::EUCLID) {
+                const int E = std::max(1, (int)v.steps), at = (k / v.rate) % E;
+                if (ns && euclid_at(std::min((int)v.pulses, E), E, v.rot % E, at)) hit(t, dur, vel(at), deg_midi(seq[pulse++ % ns], v.lo, v.hi, 0), 0);
+            } else if (v.style == comp::STRUM) {
+                int nd = 0; for (int d = 0; d < 5; d++) if (v.tones & (1u << d)) { const double off = nd * v.spread_ms / 1000.0;
+                    hit(t + off, std::max(0.03, dur - off), (vel(col) + (nd == 0 ? 0.12 : 0)) * share, deg_midi(d, v.lo, v.hi, 0), (int)(deal++ % nv)); nd++; }
+            } else if (v.style == comp::SWELLS) {
+                for (int d = 0; d < 5; d++) if (v.tones & (1u << d)) hit(t, dur, (0.15 + 0.45 * v.peak) * share, deg_midi(d, v.lo, v.hi, 0), (int)(deal++ % nv));
+            }
+        }
+        const double from = 16 * six, to = 16 * CAL_BARS * six;
+        const double ps = pl ? pluck_power(rl.sy(), cal_h, n, from, to) : env_power(es, cal_h, n, nv, from, to, rl.sy());
+        return c.p = ps > 1e-12 ? std::max(0.05, std::min(4.0, std::sqrt(pfree / ps))) : 1;
+    }
+    /* chord notes share one note's power: 1/sqrt(n) for n tones struck together */
+    static double chord_share(const comp::Voice &v) { int n = 0; for (int d = 0; d < 5; d++) n += (v.tones >> d) & 1; return 1 / std::sqrt((double)std::max(1, n)); }
     void play_style(int q, const comp::Voice &v, long long k, long long bar, double time) {
         Role &rl = q == 0 ? top : q == 1 ? sectr : v3r;
         Synth *sy = rl.sy();
@@ -1202,9 +1345,10 @@ struct Piece : Device {
                 p->set(rl.st); p->vol = sy->vol; p->shape(patch.env_on[rl.rec] ? &patch.env[rl.rec] : nullptr);
                 rl.synced[rl.cur][j] = true;
             }
+        const double g = level_of(q, v, rl), share = chord_share(v);   /* level match, above */
         const int role = q + 1, col = (int)((k % 16) / v.rate), ncols = std::max(1, (16 + v.rate - 1) / v.rate);
         const double step_s = 60.0 / patch.tempo / 4 * v.rate, dur = step_s * v.len;
-        auto vel = [&](int c) { return 0.22 + 0.4 * v.acc[c % comp::MAX_COLS] / 100.0; };
+        auto vel = [&](int c) { return (0.22 + 0.4 * v.acc[c % comp::MAX_COLS] / 100.0) * g; };
         /* variation: a seeded chance to take another chord tone, and a seeded wobble of the level (0 = exactly as set) */
         auto vary = [&](int d, double &vl, int n) {
             if (v.variation <= 0) return d;
@@ -1216,7 +1360,7 @@ struct Piece : Device {
         case comp::ARPEGGIO: {
             int d = v.grid[col % ncols]; if (d < 0) return;
             double vl = vel(col); d = vary(d, vl, col);
-            note(role, sy, note_hz(deg_midi(d, v.lo, v.hi, v.span > 1 ? (int)(bar % v.span) : 0)), dur, time, vl);
+            note(role, sy, note_hz(deg_midi(d, v.lo, v.hi, v.span > 1 ? (int)(bar % v.span) : 0)), dur, time, vl, true);
             break;
         }
         case comp::PEDAL: {
@@ -1224,7 +1368,7 @@ struct Piece : Device {
             int m = v.pedal == 2 ? v.pedal_note : cped_root[q] + (v.pedal == 1 ? 7 : 0);
             while (m < v.lo) m += 12; while (m > v.hi && m - 12 >= v.lo) m -= 12;
             double vl = vel(col); vary(0, vl, col);
-            note(role, sy, note_hz(m), dur, time, vl);
+            note(role, sy, note_hz(m), dur, time, vl, true);
             break;
         }
         case comp::STRUM: {
@@ -1232,9 +1376,9 @@ struct Piece : Device {
             const bool down = v.dir == 1 || (v.dir == 2 && (calt[q]++ & 1));
             for (int i = 0; i < nd; i++) {
                 const int d = ds[down ? nd - 1 - i : i]; const double off = i * v.spread_ms / 1000.0;
-                double vl = vel(col) + (i == 0 ? 0.12 : 0); vary(d, vl, col * 5 + i);
+                double vl = (vel(col) + (i == 0 ? 0.12 * g : 0)) * share; vary(d, vl, col * 5 + i);
                 const double nd_s = std::max(0.03, dur - off);
-                note(role, chord_voice(rl, time + off + nd_s), note_hz(deg_midi(d, v.lo, v.hi, 0)), nd_s, time + off, vl);
+                note(role, chord_voice(rl, time + off + nd_s), note_hz(deg_midi(d, v.lo, v.hi, 0)), nd_s, time + off, vl, true);
             }
             break;
         }
@@ -1244,13 +1388,13 @@ struct Piece : Device {
             int seq[comp::MAX_COLS], ns = 0; for (int i = 0; i < comp::MAX_COLS; i++) if (v.grid[i] >= 0) seq[ns++] = v.grid[i];
             if (!ns) return;
             int d = seq[cpulse[q]++ % ns]; double vl = vel(at); d = vary(d, vl, at);
-            note(role, sy, note_hz(deg_midi(d, v.lo, v.hi, 0)), dur, time, vl);
+            note(role, sy, note_hz(deg_midi(d, v.lo, v.hi, 0)), dur, time, vl, true);
             break;
         }
         case comp::SWELLS: {
             const EnvSpec e{ std::max(0.005, v.attack * dur), 0.005, 1.0, std::max(0.02, v.release * dur), false, true };
             if (sy) { rl.each([&](Synth *s) { s->shape(&e); }); swell_shaped[q] = true; }
-            for (int d = 0; d < 5; d++) if (v.tones & (1u << d)) { double vl = 0.15 + 0.45 * v.peak; vary(d, vl, d); note(role, chord_voice(rl, time + dur), note_hz(deg_midi(d, v.lo, v.hi, 0)), dur, time, vl); }
+            for (int d = 0; d < 5; d++) if (v.tones & (1u << d)) { double vl = (0.15 + 0.45 * v.peak) * g * share; vary(d, vl, d); note(role, chord_voice(rl, time + dur), note_hz(deg_midi(d, v.lo, v.hi, 0)), dur, time, vl, true); }
             break;
         }
         default: break;
