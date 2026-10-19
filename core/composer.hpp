@@ -15,7 +15,7 @@ enum Field : uint32_t { F_STYLE = 1u, F_ROLE = 2u, F_RATE = 4u, F_LO = 8u, F_HI 
     F_PNOTE = 1u << 14, F_FOLLOW = 1u << 15, F_PULSES = 1u << 16, F_STEPS = 1u << 17, F_ROT = 1u << 18,
     F_ATTACK = 1u << 19, F_RELEASE = 1u << 20, F_PEAK = 1u << 21, F_ALL = 0x3FFFFFu };   /* one bit per key: a layer holds only what it sets */
 enum BassField : uint32_t { B_MODE = 1u, B_PEDAL = 2u, B_NOTE = 4u, B_ALL = 7u };
-static const int MAX_COLS = 16, NCHORD = 16, NSECTION = 16, NZONE = 12, PHRASE_BARS = 2, NVOICE = 3;
+static const int MAX_COLS = 16, NCHORD = 64, NSECTION = 16, NZONE = 12, PHRASE_BARS = 2, NVOICE = 3;
 
 struct Voice {
     uint32_t mask = 0;                                /* which fields this layer sets (the route sets all) */

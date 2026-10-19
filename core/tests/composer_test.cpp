@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <set>
 #include <string>
 #include <vector>
 #ifdef __EMSCRIPTEN__
@@ -21,7 +22,7 @@ static void test_parse() {
     assert(!c.on);
     Json j = Json::parse(R"({"seed":7,"voice":{"style":"arpeggio","rate":"16n","lo":60,"hi":84,"grid":[0,1,2,-1]},
         "sect":{"style":"pedal","pedal":"fifth"},"bass":{"mode":"off"},
-        "over":{"chord":{"3":{"voice":{"style":"strum"}},"40":{"voice":{"style":"swells"}}},
+        "over":{"chord":{"3":{"voice":{"style":"strum"}},"70":{"voice":{"style":"swells"}}},
                 "section":{"2":{"v3":{"role":"off"}}},
                 "zone":{"p-1":{"when":"enter","blend":2,"sect":{"variation":0.5}}}}})");
     comp::comp_of(&j, c);
@@ -32,7 +33,7 @@ static void test_parse() {
     assert(c.chord[3].used && c.chord[3].v[0].mask == comp::F_STYLE && c.chord[3].v[0].style == comp::STRUM);
     assert(c.section[2].used && c.section[2].v[2].role == comp::OFF);
     assert(c.nzone == 1 && c.zone[0].zone == comp::id_hash("p-1") && c.zone[0].when == comp::ENTER && c.zone[0].blend == 2);
-    for (int i = 0; i < comp::NCHORD; i++) if (i != 3) assert(!c.chord[i].used);   /* "40": out of range, ignored */
+    for (int i = 0; i < comp::NCHORD; i++) if (i != 3) assert(!c.chord[i].used);   /* "70": out of range, ignored */
     assert(c.bass.mask == comp::B_ALL);
     Json k = Json::parse(R"({"over":{"section":{"1":{"voice":{"rot":3},"bass":{"pedal":"fifth"}}}}})");
     comp::Cfg d; comp::comp_of(&k, d);
@@ -526,10 +527,10 @@ static void test_motif_parse() {
     Json k = Json::parse(R"({"comp":{"motif":{"bars":1,"notes":[{"start":0},{"start":1},{"start":2},{"start":3},{"start":4},{"start":5},{"start":6},{"start":16},{"start":7},{"start":8}]}}})");
     comp::Cfg d; comp::comp_of(k.get("comp"), d);
     assert(d.motif.n == 8 && d.motif.note[7].start == 7);
-    /* from/to rounded before they are checked: 15.6 -> 16 is past the chords, dropped */
-    Json r = Json::parse(R"({"comp":{"chain":[{"op":"repeat","from":15.6,"to":15.7},{"op":"repeat","from":14.6,"to":14.7}]}})");
+    /* from/to rounded before they are checked: 63.6 -> 64 is past the chords, dropped */
+    Json r = Json::parse(R"({"comp":{"chain":[{"op":"repeat","from":63.6,"to":63.7},{"op":"repeat","from":62.6,"to":62.7}]}})");
     comp::Cfg e; comp::comp_of(r.get("comp"), e);
-    assert(e.nchain == 1 && e.chain[0].from == 15 && e.chain[0].to == 15);
+    assert(e.nchain == 1 && e.chain[0].from == 63 && e.chain[0].to == 63);
     std::printf("C motif parse: 4 notes (one clipped to the bar), 3 of 6 chain steps kept, melody role\n");
 }
 
@@ -653,6 +654,32 @@ static void test_swell_to_melody() {
       std::printf("C swells to melody: the Second voice 100 ms into a note %.1f dB, the melody all along %.1f dB\n", lv[1], lv[0]);
       assert(std::fabs(lv[1] - lv[0]) < 3); }
 }
+static void test_chord_past_16() {
+    std::string prog = "["; for (int i = 0; i < 20; i++) prog += std::string(i ? "," : "") + (i % 2 ? R"({"r":5,"q":"maj7"})" : R"({"r":0,"q":"m7"})"); prog += "]";
+    char route[4096]; std::snprintf(route, sizeof route, R"({"version":17,"tempo":96,"key":50,"prog":%s,"voice":{"on":true,"synth":"fm"},"sect":{"on":false},"v3":{"on":false},"zones":{"on":false},"bed":{"on":false},"comp":{"voice":{"style":"arpeggio","rate":"16n"},"bass":{"mode":"off"},"over":{"chord":{"18":{"voice":{"style":"pedal","rate":"4n","pedal":"root"}}}}}})", prog.c_str());
+    unsigned seed = 11; Log l; fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128); fs_piece_test_hooks(pc, draw, &seed, lg, &l);
+    const int r = fs_piece_add_route(pc, route); const double secs = 120; const int blocks = (int)(secs * 48000 / 128);
+    for (int b = 0; b < blocks; b++) { fs_piece_walk(pc, r, (double)b / blocks, 0); fs_process(pc, 128); }
+    fs_destroy(pc);
+    const double c0 = secs * 18 / 20 + 3, c1 = secs * 19 / 20 - 1;     /* well inside chord 18's stretch */
+    std::set<int> p; for (size_t i = 0; i < l.f.size(); i++) if (l.role[i] == 1 && l.t[i] > c0 && l.t[i] < c1) p.insert((int)std::lround(midi(l.f[i])));
+    assert(p.size() == 1);
+    std::printf("C chord 19 of 20 obeys its own override (NCHORD %d)\n", comp::NCHORD);
+}
+/* the patch read (comp_gains runs in it) of a 64-chord route with every chord overridden: reported, Task 4 bounds it */
+static void test_read_64() {
+    std::string prog = "[", over = "{";
+    for (int i = 0; i < 64; i++) { prog += std::string(i ? "," : "") + (i % 2 ? R"({"r":5,"q":"maj7"})" : R"({"r":0,"q":"m7"})");
+        over += std::string(i ? "," : "") + "\"" + std::to_string(i) + R"(":{"voice":{"style":")" + (i % 2 ? "strum" : "pedal") + R"(","rate":"8n"},"sect":{"style":"swells","rate":"1n"},"v3":{"style":"arpeggio","rate":"16n"}})"; }
+    prog += "]"; over += "}";
+    std::string route = R"({"version":17,"tempo":96,"key":50,"prog":)" + prog + R"(,"voice":{"on":true,"synth":"fm"},"sect":{"on":true,"synth":"fm"},"v3":{"on":true,"synth":"am"},"zones":{"on":false},"bed":{"on":false},"comp":{"over":{"chord":)" + over + "}}}";
+    fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128);
+    const int r = fs_piece_add_route(pc, route.c_str()); double best = 1e9;
+    for (int k = 0; k < 5; k++) { auto t0 = std::chrono::steady_clock::now(); fs_piece_set_route(pc, r, route.c_str());
+        best = std::min(best, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count()); }
+    fs_destroy(pc);
+    std::printf("C read: 64 chords, every chord overridden - fs_piece_set_route %.2f ms (best of 5)\n", best);
+}
 int main(int argc, char **argv) {
     if (argc > 1 && !std::strcmp(argv[1], "levels")) { test_levels(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "onsets")) { test_onsets(); return 0; }
@@ -675,6 +702,8 @@ int main(int argc, char **argv) {
     test_enter_phrase();
     test_bass_off_heard();
     test_quiet();
+    test_chord_past_16();
+    test_read_64();
     test_cost();
     test_engine_zone();
     test_onsets();

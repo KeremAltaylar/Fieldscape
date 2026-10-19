@@ -194,15 +194,15 @@ try {
   check("1024x700: the Generate panel and the form row fit one screen", sspill.length === 0 && !!(await ev("!!document.querySelector('#compose-dock .cd-form')")), sspill.slice(0, 5));
   await shot("7-generate-1024");
   await ev("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true })), FsComposeDock.close(), 0"); await sleep(300);
-  /* fix round 1 #1: 24 chords - the form over the 16 the engine reads, and the panel says so */
+  /* 24 chords: the form spans all 24 (the core reads 64); past 64 the panel says so */
   await ev(`__fa.patchEdit(${R}, function (p) { window.__prog24 = p.prog; p.prog = p.prog.concat(p.prog.slice(0, 8)); }), 0`); await sleep(300);
   await ev(`__fa.openPatchPanel(), document.getElementById('pp-compose').click(), 0`); await sleep(800);
   await ev("document.querySelector('#compose-dock .cd-gen').click(), 0"); await sleep(300);
-  check("24 chords: the panel says the form is over chords 1-16 of 24", await ev("[].some.call(document.querySelectorAll('#cd-insp .cd-isub'), function (p) { return p.textContent === 'form over chords 1\u201316 of 24'; })"),
+  check("24 chords: the panel has no 'form over chords 1-16' note", await ev("![].some.call(document.querySelectorAll('#cd-insp .cd-isub'), function (p) { return /form over chords/.test(p.textContent); })"),
     await ev("[].map.call(document.querySelectorAll('#cd-insp .cd-isub'), function (p) { return p.textContent; })"));
   await ev("document.getElementById('cd-generate').click(), 0"); await sleep(500);
   const g24 = JSON.parse(await ev(`JSON.stringify(__fa.routePatch(${R}).comp)`));
-  check("24 chords: overrides only on chords 1-16, the form row over them", Object.keys(g24.over.chord).every((i) => +i < 16) && await ev("(function(){ var b = document.querySelectorAll('#compose-dock .cd-form .cd-band'), c = document.querySelectorAll('#cd-strip .cd-chord')[15]; return b.length === 4 && b[3].getBoundingClientRect().right <= c.getBoundingClientRect().right + 2; })()"), Object.keys(g24.over.chord));
+  check("24 chords: overrides reach past chord 16, none past 24, the form row ends at chord 24", Object.keys(g24.over.chord).some((i) => +i >= 16) && Object.keys(g24.over.chord).every((i) => +i < 24) && await ev("(function(){ var b = document.querySelectorAll('#compose-dock .cd-form .cd-band'), c = document.querySelectorAll('#cd-strip .cd-chord')[23]; return b.length === 4 && b[3].getBoundingClientRect().right <= c.getBoundingClientRect().right + 2; })()"), Object.keys(g24.over.chord));
   const s24 = await spillOf();
   check("24 chords at 1024x700: one screen", s24.length === 0, s24.slice(0, 5));
   await shot("9-24-chords-1024");

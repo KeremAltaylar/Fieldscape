@@ -260,14 +260,16 @@ test("generate: the route's last chord, with one chord", () => {
 });
 
 /* Generate form, fix round 1 */
-test("fix 1: the form covers the chords the core reads (NCHORD 16); the settle lands on chord 16", () => {
-  assert.equal(M.NCHORD, 16);
-  for (const n of [20, 64]) for (const seed of [1, 2, 3]) {
+test("fix 1: the form covers the chords the core reads (NCHORD 64); the settle lands on the last of them", () => {
+  assert.equal(M.NCHORD, 64);
+  const k24 = Object.keys(gen({ nchords: 24 }).over.chord).map(Number);
+  assert.ok(k24.includes(23) && k24.every((i) => i < 24), String(k24));   /* the settle lands on chord 24, past the old 16 */
+  for (const n of [70, 100]) for (const seed of [1, 2, 3]) {
     const g = gen({ nchords: n, seed });
-    assert.ok(Object.keys(g.over.chord).every((i) => +i < 16), n + ": " + Object.keys(g.over.chord));
-    const last = voicesAt(g, 15);
+    assert.ok(Object.keys(g.over.chord).every((i) => +i < 64), n + ": " + Object.keys(g.over.chord));
+    const last = voicesAt(g, 63);
     assert.ok(last.slice(0, 3).every((o) => o.role !== "off" && ["pedal", "swells"].includes(o.style)) && last[3].mode === "hold", JSON.stringify(last));
-    for (let j = 0; j < 3; j++) assert.deepEqual(voicesAt(g, j), voicesAt(g, 4 + j), "the spans are over 16 chords");
+    for (let j = 0; j < 3; j++) assert.deepEqual(voicesAt(g, j), voicesAt(g, 16 + j), "the spans are over 64 chords");
   }
 });
 test("fix 2: a chord under a section that sets a voice's key writes the generated value, so the form plays", () => {

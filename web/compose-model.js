@@ -296,7 +296,7 @@
      differing keys - and, under a section that sets a voice's key (opt.at[i]: the bands over chord i, as cell() takes them),
      that key too, so the form plays over the section; old chord overrides go, sections' and zones' stay. A zone is above a
      chord (resolve: route < section < chord < zone), so nothing a chord writes can beat it: zones are left to win. */
-  var NCHORD = 16;
+  var NCHORD = 64;
   function generate(comp, opt) {
     var seed = Math.max(0, opt.seed | 0), c = Math.max(0, Math.min(1, +opt.contrast || 0)), type = formOf(opt.form).id;
     var n = Math.min(NCHORD, Math.max(0, opt.nchords | 0)), bpm = +opt.bpm > 0 ? +opt.bpm : 96;
