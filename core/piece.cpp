@@ -198,11 +198,30 @@ static FxCfg fx_of(const Json *j, const char *div, double wet, double fb, double
     return f;
 }
 
+/* Task 4: the gains (comp_gains) already worked out, across a Piece's reads - an edit works out only what it changed. Plain
+   arrays: on the web the read runs on the audio thread. FNV-1a keys over what decides a gain (the hits as bytes), 4-way
+   set-associative, the least recently used of a set goes. Calling thread only, as the read is.
+   ponytail: 1024 entries a piece (a route holds up to 93 layers x 3 voices); a piece with more re-solves what overflows */
+struct GainMemo {
+    static const int SETS = 256, WAYS = 4;
+    uint64_t key[SETS][WAYS] = {}; double val[SETS][WAYS] = {}; uint32_t used[SETS][WAYS] = {}, clock = 0;   /* used 0: empty */
+    static int set_of(uint64_t k) { return (int)((k ^ (k >> 32)) % SETS); }
+    bool get(uint64_t k, double &v) {
+        const int s = set_of(k);
+        for (int w = 0; w < WAYS; w++) if (used[s][w] && key[s][w] == k) { used[s][w] = ++clock; v = val[s][w]; return true; }
+        return false;
+    }
+    void put(uint64_t k, double v) {
+        const int s = set_of(k); int i = 0;
+        for (int w = 1; w < WAYS; w++) if (used[s][w] < used[s][i]) i = w;
+        key[s][i] = k; val[s][i] = v; used[s][i] = ++clock;
+    }
+};
 /* defaultPatch(), then whatever the feature's patch says over it (patchOf's migrations all end at
    version 17 with these defaults filled in; before version 4, or without a progression, it is the
    default patch). */
-static void comp_gains(Patch &P);
-static void patch_of(const Json *p, Patch &P) {
+static void comp_gains(Patch &P, GainMemo *memo);
+static void patch_of(const Json *p, Patch &P, GainMemo *memo = nullptr) {
     static const struct { int r; const char *q; } PROG[16] = {
         { 0, "m9" }, { 0, "m11" }, { 5, "maj7#11" }, { 5, "6/9" }, { 10, "maj9" }, { 10, "maj7" }, { 3, "maj7#11" }, { 3, "6/9" },
         { 8, "maj9" }, { 8, "13" }, { 1, "maj7" }, { 1, "maj9" }, { 2, "m7b5" }, { 7, "7alt" }, { 0, "m9" }, { 0, "m6" } };
@@ -298,7 +317,7 @@ static void patch_of(const Json *p, Patch &P) {
     }
     if (!P.nsectors) for (auto &e : SECT) P.sectors[P.nsectors++] = Sector{ find_mode(e.mode), e.r };
     comp::comp_of(p ? p->get("comp") : nullptr, P.comp);
-    comp_gains(P);
+    comp_gains(P, memo);
 }
 
 /* ------------------------------------------------------------------ rhythm (rhythmOf) */
@@ -685,15 +704,19 @@ static Synth *new_synth(int type) {     /* a digital synth, not yet init()ed (Pi
 }
 namespace levels {
 struct Hit { double t, dur, vel; int v, m; };
-static const int BARS = 6, FREE_BARS = 16, MAXH = 1024;
-/* the mean power over [from, to) (5 ms steps) of these notes' envelopes, dealt to nv voices by Hit::v, each weighted by its
+static_assert(sizeof(Hit) == 32, "Hit is hashed as bytes: no padding");
+/* Task 4: 10 ms steps (were 5): every gain within 0.17 dB of the 5 ms solve (11 synths x the levels styles x 3 voices at
+   60/96/140 bpm; 15 ms: 0.38, 20 ms: 0.67). The lengths stay: 8 bars of Free were 0.8 dB off, 4 of the style 0.5 */
+static int BARS = 6, FREE_BARS = 16; static double STEP = 0.010;   /* ponytail: not const so fs_piece_test_gains can solve the old way */
+static const int MAXH = 1024;
+/* the mean power over [from, to) (STEP apart) of these notes' envelopes, dealt to nv voices by Hit::v, each weighted by its
    pitch's note_power; vel x g, held to 1 as note() holds it when `clamp` */
 static double env_power(const EnvSpec &es, std::vector<Hit> &h, int nv, double from, double to, const Synth *sy, double g, bool clamp) {
     std::sort(h.begin(), h.end(), [](const Hit &a, const Hit &b) { return a.t < b.t; });
     Envelope env[Role::NPOOL + 1]; double w[Role::NPOOL + 1];
     for (int k = 0; k < nv; k++) { env[k].init(48000); env[k].set(es.a, es.d, es.s, es.r, es.aexp, es.rexp); w[k] = 1; }
     double s = 0, np[128]; long long c = 0; size_t j = 0; for (double &x : np) x = -1;   /* note_power, a MIDI note once */
-    for (double t = 0; t < to; t += 0.005) {
+    for (double t = 0; t < to; t += STEP) {
         for (; j < h.size() && h[j].t <= t; j++) {
             const int k = h[j].v % nv, m = std::max(0, std::min(127, h[j].m)); const double v = clamp ? std::min(1.0, h[j].vel * g) : h[j].vel * g;
             if (np[m] < 0) np[m] = sy->note_power(mtof(m));
@@ -795,7 +818,9 @@ static void melody_hits(const Patch &P, const comp::Voice &v, std::vector<Hit> &
 }  // namespace levels
 
 /* the gains (above) for every layer of the patch's comp, into P.cgain */
-static void comp_gains(Patch &P) {
+static uint64_t fnv(uint64_t h, const void *p, size_t n) { const unsigned char *b = (const unsigned char *)p; for (size_t i = 0; i < n; i++) h = (h ^ b[i]) * 0x100000001b3ULL; return h; }
+template <class T> static uint64_t fnv(uint64_t h, const T &x) { return fnv(h, &x, sizeof x); }   /* scalars only: no padding */
+static void comp_gains(Patch &P, GainMemo *memo) {
     using namespace levels;
     for (auto &l : P.cgain) for (float &x : l) x = 1;
     if (!P.comp.on) return;
@@ -813,8 +838,16 @@ static void comp_gains(Patch &P) {
         const EnvSpec own = a ? EnvSpec{ a->attack, a->decay, a->sustain, a->release, a->attack_exp, a->release_exp } : EnvSpec{ 0.01, 0.1, 0.5, 1, false, true };
         const PluckSynth *pk = types[q] == PLUCK ? static_cast<const PluckSynth *>(sy.get()) : nullptr;
         const double six = 60.0 / P.tempo / 4;
+        /* what decides this voice's synth (its role, type, two numbers, envelope), the solve's lengths and step, the tempo */
+        uint64_t ks = fnv(fnv(fnv(fnv(fnv(fnv(0xcbf29ce484222325ULL, q), types[q]), harm[q]), index[q]), P.env_on[q]), six);
+        ks = fnv(fnv(fnv(fnv(fnv(fnv(fnv(fnv(fnv(ks, P.env[q].a), P.env[q].d), P.env[q].s), P.env[q].r), P.env[q].aexp), P.env[q].rexp), BARS), FREE_BARS), STEP);
         std::vector<Hit> fh; fh.reserve(MAXH); free_hits(P, q, pk, fh);
-        const double pfree = pk ? pluck_power(pk, fh, 16 * six, 16 * FREE_BARS * six, 1) : env_power(own, fh, 1, 16 * six, 16 * FREE_BARS * six, sy.get(), 1, false);
+        const uint64_t kf = fnv(ks, fh.data(), fh.size() * sizeof(Hit));
+        double pfree;
+        if (!memo || !memo->get(kf, pfree)) {
+            pfree = pk ? pluck_power(pk, fh, 16 * six, 16 * FREE_BARS * six, 1) : env_power(own, fh, 1, 16 * six, 16 * FREE_BARS * six, sy.get(), 1, false);
+            if (memo) memo->put(kf, pfree);
+        }
         /* each layer: the route's voice with that layer's settings over it (comp::resolve, one layer at a time) */
         comp::Voice seen[1 + comp::NCHORD + comp::NSECTION + comp::NZONE]; float got[1 + comp::NCHORD + comp::NSECTION + comp::NZONE]; int nseen = 0;
         for (int L = 0; L < 1 + comp::NCHORD + comp::NSECTION + comp::NZONE; L++) {
@@ -834,6 +867,9 @@ static void comp_gains(Patch &P) {
             const double dur = six * v.rate * v.len;
             const EnvSpec es = !mel && v.style == comp::SWELLS ? EnvSpec{ std::max(0.005, v.attack * dur), 0.005, 1.0, std::max(0.02, v.release * dur), own.aexp, own.rexp } : own;
             std::vector<Hit> h; h.reserve(MAXH); if (mel) melody_hits(P, v, h); else style_hits(P, v, nv, h);
+            uint64_t kg = fnv(fnv(fnv(fnv(fnv(fnv(fnv(fnv(kf, nv), es.a), es.d), es.s), es.r), es.aexp), es.rexp), h.data(), h.size() * sizeof(Hit));
+            double mg;
+            if (memo && memo->get(kg, mg)) { P.cgain[L][q] = (float)mg; if (nseen < (int)(sizeof got / sizeof got[0])) { seen[nseen] = v; got[nseen++] = (float)mg; } continue; }
             const double from = 16 * six, to = 16 * BARS * six;
             auto power = [&](double g) { return pk ? pluck_power(pk, h, from, to, g) : env_power(es, h, nv, from, to, sy.get(), g, true); };
             /* note() holds an envelope's velocity to 1: a boosted style is solved for with that in (a few steps) */
@@ -843,7 +879,7 @@ static void comp_gains(Patch &P) {
                 if (std::fabs(ng / g - 1) < 0.01) { g = ng; break; }
                 g = ng; ps = power(g);
             }
-            P.cgain[L][q] = (float)g;
+            P.cgain[L][q] = (float)g; if (memo) memo->put(kg, g);
             if (nseen < (int)(sizeof got / sizeof got[0])) { seen[nseen] = v; got[nseen++] = (float)g; }
         }
     }
@@ -860,6 +896,7 @@ struct Piece : Device {
     Inbox in;
     /* calling-thread view */
     bool busy[FS_MAX_VOICES] = {};
+    GainMemo gmemo;                   /* Task 4: the gains its reads worked out */
 
     /* audio-thread state */
     Patch patch;                      /* pacer.patch */
@@ -2171,7 +2208,7 @@ static void sweep(Piece *p) {    /* under the lock: free what the audio thread l
 int fs_piece_add_route(fs_device *d, const char *patch_json) {
     Piece *p = P(d); if (!p) return -1;
     Json j = Json::parse(patch_json);
-    std::unique_ptr<Patch> ptp(new Patch); Patch &pt = *ptp; patch_of(&j, pt);
+    std::unique_ptr<Patch> ptp(new Patch); Patch &pt = *ptp; patch_of(&j, pt, &p->gmemo);
     std::lock_guard<std::mutex> g(p->mu); sweep(p);
     p->need_all(pt);
     if (p->in.routes.capacity() < 64) p->in.routes.reserve(64);
@@ -2342,7 +2379,7 @@ int fs_piece_roles(fs_device *d, float *out, int max_notes) {
 void fs_piece_set_route(fs_device *d, int i, const char *patch_json) {
     Piece *p = P(d); if (!p) return;
     Json j = Json::parse(patch_json);
-    std::unique_ptr<Patch> ptp(new Patch); Patch &pt = *ptp; patch_of(&j, pt);                  /* as fs_piece_add_route reads it */
+    std::unique_ptr<Patch> ptp(new Patch); Patch &pt = *ptp; patch_of(&j, pt, &p->gmemo);      /* as fs_piece_add_route reads it */
     std::lock_guard<std::mutex> g(p->mu); sweep(p);
     if (i < 0 || i >= (int)p->in.routes.size() || i >= 64) return;
     p->need_all(pt);
@@ -2551,6 +2588,13 @@ void fs_piece_rhythm_remove(fs_device *d, int h) {
     op.op = 2;
 }
 
+void fs_piece_test_gains(const char *patch_json, int free_bars, int bars, double step, float *out) {
+    const int fb = levels::FREE_BARS, b = levels::BARS; const double st = levels::STEP;
+    if (free_bars) levels::FREE_BARS = free_bars; if (bars) levels::BARS = bars; if (step > 0) levels::STEP = step;
+    Json j = Json::parse(patch_json); std::unique_ptr<Patch> P(new Patch); patch_of(&j, *P);
+    levels::FREE_BARS = fb; levels::BARS = b; levels::STEP = st;
+    for (int q = 0; q < comp::NVOICE; q++) out[q] = P->cgain[0][q];
+}
 int fs_piece_test_kept(fs_device *d) { Piece *p = P(d); if (!p) return -1; std::lock_guard<std::mutex> g(p->mu); sweep(p); return (int)p->keep.b.size(); }
 void fs_piece_test_hooks(fs_device *d, double (*rnd)(void *), void *rnd_ctx,
                          void (*on_note)(void *, int, double, double, double, double), void *note_ctx) {

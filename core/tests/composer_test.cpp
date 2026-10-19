@@ -410,9 +410,8 @@ static double level_db(const char *sy, const char *style, double secs) {
     }
     fs_engine_destroy(e); return 10 * std::log10(s / std::max(1LL, n) + 1e-30);
 }
-static void test_levels() {
-    /* the dock's default rate (1/8) for each style, then the templates' (web/compose-model.js), their registers too */
-    static const char *const ST[][2] = {
+/* the dock's default rate (1/8) for each style, then the templates' (web/compose-model.js), their registers too */
+static const char *const LEVEL_ST[][2] = {
         { "arp 8n", R"({"style":"arpeggio"})" }, { "pedal 8n", R"({"style":"pedal"})" }, { "strum 8n", R"({"style":"strum"})" },
         { "euclid 8n", R"({"style":"euclid"})" }, { "swells 8n", R"({"style":"swells"})" },
         { "arp 16n", R"({"style":"arpeggio","rate":"16n","lo":55,"hi":84})" },
@@ -421,7 +420,9 @@ static void test_levels() {
         { "euclid 16n", R"({"style":"euclid","rate":"16n","pulses":3,"steps":8,"rot":2,"grid":[2,4],"lo":62,"hi":86})" },
         { "swells 1n", R"({"style":"swells","rate":"1n","len":1,"tones":[0,2,4]})" },
         { "swells 2n.", R"({"style":"swells","rate":"2n.","len":1,"tones":[1,3],"lo":60,"hi":84,"attack":0.6,"release":0.5})" } };
-    static const char *const SY[] = { "fm", "am", "duo", "mono", "simple", "pluck", "metal", "membrane", "wavetable", "comb", "formant" };
+static const char *const LEVEL_SY[] = { "fm", "am", "duo", "mono", "simple", "pluck", "metal", "membrane", "wavetable", "comb", "formant" };
+static void test_levels() {
+    const auto &ST = LEVEL_ST; const auto &SY = LEVEL_SY;
     /* the bound per synth: 2 dB where a note's power is its envelope's (and pluck's burst's). Four are more than that, their
        residue measured 2026-10-19 and open - the gains are worked out from the envelope when the patch is read, where a
        render of the synth itself (50-350 ms a style) would stall the web's audio thread, which reads the patch between
@@ -666,24 +667,57 @@ static void test_chord_past_16() {
     assert(p.size() == 1);
     std::printf("C chord 19 of 20 obeys its own override (NCHORD %d)\n", comp::NCHORD);
 }
-/* the patch read (comp_gains runs in it) of a 64-chord route with every chord overridden: reported, Task 4 bounds it */
-static void test_read_64() {
-    std::string prog = "[", over = "{";
-    for (int i = 0; i < 64; i++) { prog += std::string(i ? "," : "") + (i % 2 ? R"({"r":5,"q":"maj7"})" : R"({"r":0,"q":"m7"})");
-        over += std::string(i ? "," : "") + "\"" + std::to_string(i) + R"(":{"voice":{"style":")" + (i % 2 ? "strum" : "pedal") + R"(","rate":"8n"},"sect":{"style":"swells","rate":"1n"},"v3":{"style":"arpeggio","rate":"16n"}})"; }
-    prog += "]"; over += "}";
-    std::string route = R"({"version":17,"tempo":96,"key":50,"prog":)" + prog + R"(,"voice":{"on":true,"synth":"fm"},"sect":{"on":true,"synth":"fm"},"v3":{"on":true,"synth":"am"},"zones":{"on":false},"bed":{"on":false},"comp":{"over":{"chord":)" + over + "}}}";
-    fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128);
-    const int r = fs_piece_add_route(pc, route.c_str()); double best = 1e9;
-    for (int k = 0; k < 5; k++) { auto t0 = std::chrono::steady_clock::now(); fs_piece_set_route(pc, r, route.c_str());
-        best = std::min(best, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count()); }
-    fs_destroy(pc);
-    std::printf("C read: 64 chords, every chord overridden - fs_piece_set_route %.2f ms (best of 5)\n", best);
+/* Task 4: the patch read (comp_gains runs in it; the web reads it on the audio thread, between blocks) of a 64-chord route
+   with every chord overridden, on fm / formant / metal: fs_piece_set_route's worst under 1 ms, and an edit of one chord's
+   style (what a setter sends) too. A cold read (a new piece: nothing worked out yet) is reported */
+static void test_patch_read_cost() {
+    double worst = 0, edit = 0, cold = 0;
+    auto ms = [](std::chrono::steady_clock::time_point t0) { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(); };
+    for (const char *sy : { "fm", "formant", "metal" }) {
+        std::string prog = "[", over = "{"; for (int i = 0; i < 64; i++) { prog += std::string(i ? "," : "") + R"({"r":0,"q":"m7"})";
+            over += std::string(i ? "," : "") + "\"" + std::to_string(i) + "\":{\"voice\":{\"style\":\"" + (i % 3 == 0 ? "strum" : i % 3 == 1 ? "swells" : "arpeggio") + "\"}}"; }
+        prog += "]"; over += "}";
+        std::string r = std::string(R"({"version":17,"tempo":96,"key":50,"prog":)") + prog + R"(,"voice":{"on":true,"synth":")" + sy + R"("},"sect":{"on":true,"synth":")" + sy + R"("},"v3":{"on":true,"synth":")" + sy + R"("},"zones":{"on":false},"bed":{"on":false},"comp":{"voice":{"style":"arpeggio"},"sect":{"style":"strum"},"v3":{"style":"swells"},"over":{"chord":)" + over + "}}}";
+        const double w0 = worst, e0 = edit, c0 = cold; worst = edit = cold = 0;
+        fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128);
+        auto t0 = std::chrono::steady_clock::now(); const int id = fs_piece_add_route(pc, r.c_str()); cold = std::max(cold, ms(t0));
+        for (int rep = 0; rep < 5; rep++) { t0 = std::chrono::steady_clock::now(); fs_piece_set_route(pc, id, r.c_str()); worst = std::max(worst, ms(t0)); }
+        for (const char *st : { "pedal", "euclid" }) {   /* chord 7 (was swells) to another style */
+            std::string e = r; const size_t at = e.find(R"("7":{"voice":{"style":"swells")"); assert(at != std::string::npos);
+            e.replace(at, 30, std::string(R"("7":{"voice":{"style":")") + st + "\"");
+            t0 = std::chrono::steady_clock::now(); fs_piece_set_route(pc, id, e.c_str()); edit = std::max(edit, ms(t0)); }
+        fs_destroy(pc);
+        std::printf("C patch read %-7s: %.2f ms, a chord edited %.2f, cold %.2f\n", sy, worst, edit, cold);
+        worst = std::max(worst, w0); edit = std::max(edit, e0); cold = std::max(cold, c0);
+    }
+    std::printf("C patch read: worst %.2f ms, a chord's style edited %.2f ms (64 chords overridden; fm, formant, metal); cold %.2f ms\n", worst, edit, cold);
+    assert(worst < 1.0 && edit < 1.0);
+}
+/* Task 4: the coarser solve (10 ms steps) keeps every gain within 0.3 dB of the old one's (5 ms), on all 11 synths x the
+   levels test's styles and a melody voice, on each voice, at three tempos */
+static void test_gain_lengths() {
+    double worst = 0; const char *ws = "", *wy = ""; int wq = 0;
+    std::vector<std::string> st; for (auto &e : LEVEL_ST) st.push_back(e[1]);
+    st.push_back(std::string(R"({"role":"melody","lo":50,"hi":81}, )") + MOT);
+    for (const char *sy : LEVEL_SY) for (size_t k = 0; k < st.size(); k++) {
+        const bool mel = k + 1 == st.size();
+      for (int tempo : { 60, 96, 140 }) {
+        char p[4096]; std::snprintf(p, sizeof p, R"({"version":17,"tempo":%d,"key":50,"prog":[{"r":0,"q":"m7"},{"r":5,"q":"maj7"},{"r":7,"q":"7"},{"r":0,"q":"m9"}],"bed":{"on":false},"zones":{"on":false},
+            "voice":{"on":true,"synth":"%s","harm":%g,"index":%g},"sect":{"on":true,"synth":"%s","harm":%g,"index":%g},"v3":{"on":true,"synth":"%s","harm":%g,"index":%g},
+            "comp":{"bass":{"mode":"off"},"voice":%s,"sect":%s,"v3":%s}})", tempo, sy, hd(sy, 0), hd(sy, 1), sy, hd(sy, 0), hd(sy, 1), sy, hd(sy, 0), hd(sy, 1),
+            st[k].c_str(), mel ? R"({"style":"strum"})" : st[k].c_str(), mel ? R"({"style":"swells"})" : st[k].c_str());
+        float ref[3], now[3]; fs_piece_test_gains(p, 16, 6, 0.005, ref); fs_piece_test_gains(p, 0, 0, 0, now);
+        for (int q = 0; q < 3; q++) { const double d = 20 * std::log10(now[q] / ref[q]); if (std::fabs(d) > std::fabs(worst)) { worst = d; ws = mel ? "melody" : LEVEL_ST[k][0]; wy = sy; wq = q; } }
+      }
+    }
+    std::printf("C gains at 10 ms steps: furthest %+.2f dB from the 5 ms solve's (%s %s, voice %d)\n", worst, wy, ws, wq + 1);
+    assert(std::fabs(worst) <= 0.3);
 }
 int main(int argc, char **argv) {
     if (argc > 1 && !std::strcmp(argv[1], "levels")) { test_levels(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "onsets")) { test_onsets(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "cost")) { test_cost(); return 0; }
+    if (argc > 1 && !std::strcmp(argv[1], "read")) { test_gain_lengths(); test_patch_read_cost(); return 0; }
     test_parse();
     test_resolve();
     test_motif_parse();
@@ -703,7 +737,8 @@ int main(int argc, char **argv) {
     test_bass_off_heard();
     test_quiet();
     test_chord_past_16();
-    test_read_64();
+    test_patch_read_cost();
+    test_gain_lengths();
     test_cost();
     test_engine_zone();
     test_onsets();
