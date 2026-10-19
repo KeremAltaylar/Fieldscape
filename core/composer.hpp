@@ -46,6 +46,8 @@ struct Cfg { bool on = false; uint32_t seed = 1; Voice v[NVOICE]; Bass bass;
              Over chord[NCHORD], section[NSECTION], zone[NZONE]; int nzone = 0;
              Motif motif; ChainStep chain[CHAIN_MAX]; int nchain = 0; };
 struct Resolved { Voice v[NVOICE]; Bass bass; int blend = 0; };
+/* the motif as developed for one chord step: its notes (times in sixteenths from the phrase's start), the phrase's length */
+struct Phrase { int n = 0; MNote note[MOTIF_MAX * 2]; uint8_t len16 = 16; bool cadence = false; uint8_t cad = CAD_FULL, others = OTH_THIN; float strength = 1; bool last = false; };
 
 uint64_t id_hash(const char *s);                      /* FNV-1a 64: a zone's point id */
 void comp_of(const Json *j, Cfg &c);                  /* the route patch's "comp"; absent: c.on = false */
@@ -56,4 +58,7 @@ void resolve(const Cfg &c, int chord, int nchord, int section, int nsection, con
              const uint64_t *entered, int nentered, Resolved &out);
 /* once a bar: the discrete settings taken at once, the continuous ones (len, variation, spread, swell) a 1/blend step closer */
 void glide(Voice &cur, const Voice &target, int blend);
+/* the motif as developed for chord step `chord` (the chain step covering it, a later step winning; else repeat);
+   `last`: chord is that step's last (a cadence's: its note is the phrase's last). Plain data, no heap: the audio thread calls it once a bar */
+void motif_step(const Cfg &c, int chord, Phrase &out);
 }

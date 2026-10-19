@@ -122,8 +122,9 @@ static const struct { const char *name; int n; int iv[7]; } MODES[] = {
     { "altered", 7, { 0, 1, 3, 4, 6, 8, 10 } }, { "harmonic minor", 7, { 0, 2, 3, 5, 7, 8, 11 } },
     { "whole tone", 6, { 0, 2, 4, 6, 8, 10 } }, { "pentatonic minor", 5, { 0, 3, 5, 7, 10 } },
     { "in sen", 5, { 0, 1, 5, 7, 10 } }, { "locrian", 7, { 0, 1, 3, 5, 6, 8, 10 } },
+    { "ionian", 7, { 0, 2, 4, 5, 7, 9, 11 } },
 };
-static const int NMODES = sizeof(MODES) / sizeof(MODES[0]), MODE_DORIAN = 1;
+static const int NMODES = sizeof(MODES) / sizeof(MODES[0]), MODE_DORIAN = 1, MODE_AEOLIAN = 4, MODE_IONIAN = 12;
 enum MorphDest { M_VOICE_CUTOFF, M_SECT_CUTOFF, M_SECT_INDEX, M_VOICE_GAIN, M_VOICE_INDEX, M_VOICE_HARM, M_VOICE_DRIVE,
                  M_VOICE_WARP, M_SECT_HARM, M_SECT_DRIVE, M_SECT_WARP, M_V3_CUTOFF, M_V3_HARM, M_V3_INDEX, M_V3_DRIVE,
                  M_V3_WARP, NDEST };
@@ -642,6 +643,15 @@ static int quality_of(const Patch &P, int step) {
     if (c.sd && !dom_q(c.q)) return Q_7B9;
     return c.q;
 }
+static int fold(int m, int lo, int hi) { while (m < lo) m += 12; while (m > hi && m - 12 >= lo) m -= 12; return m; }
+static int floor_div(int a, int n) { return a >= 0 ? a / n : -((n - 1 - a) / n); }
+/* composition 2: degree d of the key's scale - ionian on a major first chord, aeolian on a minor - folded into [lo, hi] */
+static int scale_midi(const Patch &P, int d, int oct, int lo, int hi) {
+    int q = quality_of(P, 0); if (q < 0) q = Q_M7;
+    const auto &md = MODES[CHORDS[q].iv[1] == 3 ? MODE_AEOLIAN : MODE_IONIAN];
+    const int o = floor_div(d, md.n);
+    return fold(P.key + md.iv[d - o * md.n] + 12 * (o + oct), lo, hi);
+}
 /* ------------------------------------------------------------------ composition: each style at Free's level
    Kerem 2026-10-19 (Pedal and Strum crackle: the limiter pinned). Free plays a sparse line, one note at a time; a style
    strikes every step, chords strike 3-5 notes at once, Swells hold at full sustain. Each style's velocities are scaled so
@@ -714,10 +724,9 @@ static int tones_of(const Patch &P, int step, int *out) {
     for (int i = 0; i < CHORDS[q].n; i++) out[i] = root + CHORDS[q].iv[i];
     return CHORDS[q].n;
 }
-static int deg_midi(const int *tones, int nt, int d, int lo, int hi) {   /* as Piece::deg_midi */
-    nt = std::max(1, nt); int m = tones[d % nt] + 12 * (d / nt);
-    while (m < lo) m += 12; while (m > hi && m - 12 >= lo) m -= 12;
-    return m;
+static int deg_midi(const int *tones, int nt, int d, int lo, int hi, int oct = 0) {   /* as Piece::deg_midi */
+    nt = std::max(1, nt); const int o = floor_div(d, nt);
+    return fold(tones[d - o * nt] + 12 * (o + oct), lo, hi);
 }
 /* Free's line on voice q, as voiceStep / sectorStep / thirdStep play it, with its own fixed draw (onsets at their resting 1) */
 static void free_hits(const Patch &P, int q, bool pl, std::vector<Hit> &h) {
@@ -769,6 +778,19 @@ static void style_hits(const Patch &P, const comp::Voice &v, int nv, std::vector
         }
     }
 }
+/* a melody voice's stream: chord 0's phrase over BARS bars, the progression's chords a bar each (the cadence's pitch aside) */
+static void melody_hits(const Patch &P, const comp::Voice &v, std::vector<Hit> &h) {
+    comp::Phrase ph; comp::motif_step(P.comp, 0, ph);
+    const double six = 60.0 / P.tempo / 4; const int nb = std::max(1, ph.len16 / 16);
+    for (int b = 0; b < BARS; b++) {
+        int tn[8]; const int nt = tones_of(P, b % std::max(1, P.nprog), tn), cb = b % nb;
+        for (int i = 0; i < ph.n; i++) {
+            const comp::MNote &x = ph.note[i]; if (x.start / 16 != cb) continue;
+            const int m = P.comp.motif.basis == comp::SCALE_DEG ? scale_midi(P, x.deg, x.oct, v.lo, v.hi) : deg_midi(tn, nt, x.deg, v.lo, v.hi, x.oct);
+            h.push_back(Hit{ (b * 16 + x.start - cb * 16) * six, std::min((int)x.len, cb * 16 + 16 - x.start) * six * v.len, 0.22 + 0.4 * x.acc / 100.0, 0, m });
+        }
+    }
+}
 }  // namespace levels
 
 /* the gains (above) for every layer of the patch's comp, into P.cgain */
@@ -803,13 +825,14 @@ static void comp_gains(Patch &P) {
                 const uint64_t id = o->zone; comp::resolve(P.comp, -1, 0, -1, 0, &id, 1, &id, 1, r); }
             if (o && (!o->used || !o->v[q].mask)) { P.cgain[L][q] = P.cgain[0][q]; continue; }
             const comp::Voice &v = r.v[q];
-            if (v.style == comp::FREE || v.role == comp::OFF) { P.cgain[L][q] = 1; continue; }
+            const bool mel = v.role == comp::MELODY && P.comp.motif.n > 0;   /* a melody voice: its phrase, its style aside */
+            if (!mel && (v.style == comp::FREE || v.role == comp::OFF)) { P.cgain[L][q] = 1; continue; }
             int same = -1; for (int i = 0; i < nseen && same < 0; i++) if (!std::memcmp(&seen[i], &v, sizeof v)) same = i;   /* the same settings once worked out (padding that differs only works it out again) */
             if (same >= 0) { P.cgain[L][q] = got[same]; continue; }
-            const int nv = v.style == comp::STRUM || v.style == comp::SWELLS ? Role::pool_n(types[q]) + 1 : 1;
+            const int nv = !mel && (v.style == comp::STRUM || v.style == comp::SWELLS) ? Role::pool_n(types[q]) + 1 : 1;
             const double dur = six * v.rate * v.len;
-            const EnvSpec es = v.style == comp::SWELLS ? EnvSpec{ std::max(0.005, v.attack * dur), 0.005, 1.0, std::max(0.02, v.release * dur), own.aexp, own.rexp } : own;
-            std::vector<Hit> h; h.reserve(MAXH); style_hits(P, v, nv, h);
+            const EnvSpec es = !mel && v.style == comp::SWELLS ? EnvSpec{ std::max(0.005, v.attack * dur), 0.005, 1.0, std::max(0.02, v.release * dur), own.aexp, own.rexp } : own;
+            std::vector<Hit> h; h.reserve(MAXH); if (mel) melody_hits(P, v, h); else style_hits(P, v, nv, h);
             const double from = 16 * six, to = 16 * BARS * six;
             auto power = [&](double g) { return pk ? pluck_power(pk, h, from, to, g) : env_power(es, h, nv, from, to, sy.get(), g, true); };
             /* note() holds an envelope's velocity to 1: a boosted style is solved for with that in (a few steps) */
@@ -847,7 +870,15 @@ struct Piece : Device {
     uint64_t zin[16] = {}; int nzin = 0; struct Ent { uint64_t id; long long bar; } zent[8]; int nzent = 0;
     int cpulse[comp::NVOICE] = {}, calt[comp::NVOICE] = {}, cped_root[comp::NVOICE] = {-1, -1, -1}; bool swell_shaped[comp::NVOICE] = {};
     double cg[comp::NVOICE] = { 1, 1, 1 };   /* each voice's style gain now (comp_bar glides it to its layer's) */
-    bool styled(int q) const { return patch.comp.on && comp_live && (ccur[q].style != comp::FREE || ccur[q].role == comp::OFF); }
+    bool styled(int q) const { return patch.comp.on && comp_live && (ccur[q].style != comp::FREE || ccur[q].role == comp::OFF || melodic(q)); }
+    /* composition 2: a melody voice plays the motif (its style aside); the phrase in force this bar; a cadence's last chord on
+       the other voices (OTH_HOLD: none), and each voice's notes so far this bar (`thin` keeps a fast voice's first) */
+    comp::Phrase mel; int cad_oth = comp::OTH_HOLD, nbar[comp::NVOICE] = {};
+    bool melodic(int q) const { return ccur[q].role == comp::MELODY && patch.comp.motif.n > 0; }
+    bool cad_rest(int q, bool fast) const {
+        if (cad_oth == comp::OTH_HOLD || melodic(q)) return false;
+        return cad_oth == comp::OTH_STOP || (fast && nbar[q] > 0);
+    }
     double centroid = 2000, onsets = 1;
     double bpm = 72, next_tick = 0; long long ticks = 0;
     double tick_base_t = 0; long long tick_base_k = 0; double tick_bpm = 72;   /* ticks from an index, as Tone's tick->seconds: no drift */
@@ -1159,6 +1190,7 @@ struct Piece : Device {
     }
     void note(int role, Synth *sy, double f, double dur, double t, double vel, bool composed = false) {
         Role *rr = role == 0 ? &bass : role == 1 ? &top : role == 2 ? &sectr : role == 3 ? &v3r : nullptr;
+        if (role >= 1 && role <= 3) nbar[role - 1]++;
         if (composed && !(rr && rr->cur == PLUCK)) vel = std::min(vel, 1.0);   /* an envelope's level; pluck's is a gain on its burst */
         if (on_note) on_note(note_ctx, role, f, dur, t, vel);
         if (!sy) return;
@@ -1218,7 +1250,7 @@ struct Piece : Device {
         double cut = std::max(300.0, std::min(12000.0, centroid * 1.6));
         if (morph(M_VOICE_CUTOFF, T, m)) cut = std::max(180.0, std::min(14000.0, cut * 0.35 * std::pow(6.3, m)));
         pad.cutoff.p.exponentialRampTo(cut, 0.25, T);
-        if (styled(0)) return;
+        if (styled(0) || cad_rest(0, true)) return;   /* Free's line: 8n */
         if (rnd() > density) return;
         int pool[8], np = 0;
         for (int i = H.ntones > 3 ? 2 : 0; i < H.ntones; i++) pool[np++] = H.tones[i];
@@ -1263,6 +1295,7 @@ struct Piece : Device {
         C.tick++;
         if (styled(1)) return;
         if ((C.tick - 1) % stride != 0) return;
+        if (cad_rest(1, stride < 4)) return;
         int i = sector < 0 ? 0 : sector;
         const Sector &sc = p.sectors[i % p.nsectors];
         int mode = sc.mode < 0 ? MODE_DORIAN : sc.mode;
@@ -1353,6 +1386,14 @@ struct Piece : Device {
         /* pedal to hold mid-chord: harmony_bar, next on this bar line, strikes the root - the same legato handover a chord change
            makes, so the pedal is let go there rather than hanging on to the next chord */
         if (cbass.mode == comp::BASS_PEDAL && r.bass.mode == comp::HOLD) H.held = false;
+        /* composition 2: the melody's phrase for this bar (it changes only here), and its cadence on the other voices */
+        for (int &x : nbar) x = 0;
+        cad_oth = comp::OTH_HOLD;
+        for (int q = 0; q < comp::NVOICE; q++) if (melodic(q)) {
+            comp::motif_step(patch.comp, chord, mel);
+            if (mel.cadence && mel.last && comp::rand01(patch.comp.seed, bar, comp::NVOICE, 0) < mel.strength) cad_oth = mel.others;
+            break;
+        }
         cbass = r.bass; comp_live = true;
         bass_bar(time);
     }
@@ -1371,17 +1412,32 @@ struct Piece : Device {
         const long long k = ticks - 1, bar = k / 16;
         for (int q = 0; q < comp::NVOICE; q++) {
             const comp::Voice &v = ccur[q];
-            if (v.style == comp::FREE || v.role == comp::OFF || v.rate == 0 || k % v.rate) continue;
+            if (melodic(q)) { play_melody(q, v, k, bar, time); continue; }
+            if (v.style == comp::FREE || v.role == comp::OFF || v.rate == 0 || k % v.rate || cad_rest(q, v.rate < 4)) continue;
             play_style(q, v, k, bar, time);
         }
     }
     /* a chord degree (0 root .. 4 ninth) as a MIDI note, folded into [lo, hi]; degrees past the chord's tones go up an octave */
     int deg_midi(int d, int lo, int hi, int oct) const {
-        const int nt = std::max(1, H.ntones);
-        int m = H.tones[d % nt] + 12 * (d / nt) + 12 * oct;
-        while (m < lo) m += 12;
-        while (m > hi && m - 12 >= lo) m -= 12;
-        return m;
+        const int nt = std::max(1, H.ntones), o = floor_div(d, nt);
+        return fold(H.tones[d - o * nt] + 12 * (o + oct), lo, hi);
+    }
+    /* the phrase's notes starting on this sixteenth (the phrase taken at the bar line, comp_bar): the cursor is bar % its bars;
+       a note is held to its bar's end at most, the cadence's last note is the key's tonic, 5th or 6th */
+    void play_melody(int q, const comp::Voice &v, long long k, long long bar, double time) {
+        const comp::Phrase &ph = mel;
+        const int cb = (int)(bar % std::max(1, ph.len16 / 16)), at = cb * 16 + (int)(k % 16);
+        Synth *sy = (q == 0 ? top : q == 1 ? sectr : v3r).sy();
+        const double s16 = 60.0 / patch.tempo / 4, g = cg[q];
+        for (int i = 0; i < ph.n; i++) {
+            const comp::MNote &x = ph.note[i];
+            if (x.start != at) continue;
+            const bool cad = ph.cadence && ph.last && i == ph.n - 1;
+            const int m = cad ? scale_midi(patch, ph.cad == comp::CAD_FULL ? 0 : ph.cad == comp::CAD_HALF ? 4 : 5, 0, v.lo, v.hi)
+                        : patch.comp.motif.basis == comp::SCALE_DEG ? scale_midi(patch, x.deg, x.oct, v.lo, v.hi) : deg_midi(x.deg, v.lo, v.hi, x.oct);
+            const double dur = std::min((int)x.len, cb * 16 + 16 - x.start) * s16 * v.len;
+            note(q + 1, sy, note_hz(m), dur, time, (0.22 + 0.4 * x.acc / 100.0) * g * (cad ? 0.5 + 0.5 * ph.strength : 1), true);
+        }
     }
     /* C1: a chord's next note's voice - the role's instrument or one of its pool, in turn; busy until the note has rung out */
     Synth *chord_voice(Role &r, double end) {
@@ -1470,6 +1526,7 @@ struct Piece : Device {
         T3.tick++;
         if (styled(2)) return;
         if ((T3.tick - 1) % stride != 0) return;
+        if (cad_rest(2, stride < 4)) return;
         if (H.ntones <= 0 || !sy) return;
         bool taken[12] = {};
         if (H.have_bass) taken[pc(H.bass)] = true;
@@ -1750,7 +1807,7 @@ struct Piece : Device {
         patch = routes[near];
         apply_patch(now);
         H.idx = -1; H.chord = -1; H.ntones = -1;
-        sector = -1; comp_live = false; nzent = 0; for (int q = 0; q < comp::NVOICE; q++) { cped_root[q] = -1; cpulse[q] = 0; calt[q] = 0; }
+        sector = -1; comp_live = false; nzent = 0; cad_oth = comp::OTH_HOLD; for (int q = 0; q < comp::NVOICE; q++) { cped_root[q] = -1; cpulse[q] = 0; calt[q] = 0; }
         synth_to(walk_level(route_dist), now);
     }
     void walk(int r, double t, double dist, double now) {

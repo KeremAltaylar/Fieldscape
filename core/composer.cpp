@@ -116,12 +116,13 @@ static void chain_of(const Json *a, ChainStep *o, int &n) {
         const Json *x = a->at(i);
         if (!x || x->kind != Json::OBJ) continue;
         const int op = pick(x->s("op", ""), OPS, NOP, NOP);
-        const double from = x->n("from", 0), to = x->n("to", 0);
-        if (op == NOP || from < 0 || to < from || to >= NCHORD) continue;
+        const double fd = x->n("from", 0), td = x->n("to", 0);
+        const long f = std::isfinite(fd) ? std::lround(fd) : -1, t = std::isfinite(td) ? std::lround(td) : -1;   /* round, then validate */
+        if (op == NOP || f < 0 || t < f || t >= NCHORD) continue;
         ChainStep &s = o[n++];
         s = ChainStep();
         s.op = (uint8_t)op;
-        s.from = (uint8_t)std::lround(from); s.to = (uint8_t)std::lround(to);
+        s.from = (uint8_t)f; s.to = (uint8_t)t;
         const int arg = (int)std::lround(x->n("arg", 0));
         s.arg = (int8_t)(op == OP_FRAGMENT ? std::max(1, std::min(8, arg)) : std::max(-7, std::min(7, arg)));
         s.cad = (uint8_t)pick(x->s("cad", "full"), CAD, 3, CAD_FULL);
@@ -202,5 +203,41 @@ void glide(Voice &cur, const Voice &t, int blend) {
     cur.len = len; cur.variation = var; cur.spread_ms = sp; cur.attack = at; cur.release = re; cur.peak = pk;
     toward(cur.len, t.len); toward(cur.variation, t.variation); toward(cur.spread_ms, t.spread_ms);
     toward(cur.attack, t.attack); toward(cur.release, t.release); toward(cur.peak, t.peak);
+}
+void motif_step(const Cfg &c, int chord, Phrase &o) {
+    o = Phrase();
+    const Motif &m = c.motif; const int L = m.bars * 16;
+    ChainStep st; bool found = false;
+    for (int i = c.nchain - 1; i >= 0 && !found; i--) if (chord >= c.chain[i].from && chord <= c.chain[i].to) { st = c.chain[i]; found = true; }
+    o.len16 = (uint8_t)L; o.n = m.n;
+    for (int i = 0; i < m.n; i++) o.note[i] = m.note[i];
+    switch (st.op) {
+    case OP_SEQ: for (int i = 0; i < o.n; i++) o.note[i].deg = (int8_t)(o.note[i].deg + st.arg); break;
+    case OP_INVERT: for (int i = 0; i < o.n; i++) o.note[i].deg = (int8_t)(2 * m.note[0].deg - o.note[i].deg); break;
+    case OP_RETRO:
+        for (int i = 0; i < o.n; i++) { o.note[i] = m.note[o.n - 1 - i]; o.note[i].start = (uint8_t)std::max(0, L - (o.note[i].start + o.note[i].len)); }
+        break;
+    case OP_AUGMENT:
+        o.len16 = (uint8_t)std::min(2 * L, 32);
+        for (int i = 0; i < o.n; i++) { o.note[i].start = (uint8_t)(o.note[i].start * 2); o.note[i].len = (uint8_t)(o.note[i].len * 2); }
+        break;
+    case OP_DIMINISH:
+        for (int i = 0; i < o.n; i++) { MNote &x = o.note[i]; x.start = (uint8_t)(x.start / 2); x.len = (uint8_t)std::max(1, x.len / 2);
+            o.note[o.n + i] = x; o.note[o.n + i].start = (uint8_t)(x.start + L / 2); }
+        o.n *= 2;
+        break;
+    case OP_FRAGMENT: o.n = std::min(o.n, (int)st.arg); break;
+    default: break;
+    }
+    o.last = found && chord == st.to;
+    o.cadence = st.op == OP_CADENCE; o.cad = st.cad; o.others = st.others; o.strength = st.strength;
+    int k = 0;   /* clip to the phrase: past its end dropped, a note held to its end at most */
+    for (int i = 0; i < o.n; i++) if (o.note[i].start < o.len16) { o.note[k] = o.note[i]; o.note[k].len = (uint8_t)std::min((int)o.note[k].len, o.len16 - o.note[k].start); k++; }
+    o.n = k;
+    if (o.cadence && o.last && o.n) {   /* the cadence note - the latest - held to the phrase's end and put last (its pitch: the player's) */
+        int j = 0; for (int i = 1; i < o.n; i++) if (o.note[i].start >= o.note[j].start) j = i;
+        std::swap(o.note[j], o.note[o.n - 1]);
+        o.note[o.n - 1].len = (uint8_t)(o.len16 - o.note[o.n - 1].start);
+    }
 }
 }

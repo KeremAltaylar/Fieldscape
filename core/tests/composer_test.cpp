@@ -526,7 +526,70 @@ static void test_motif_parse() {
     Json k = Json::parse(R"({"comp":{"motif":{"bars":1,"notes":[{"start":0},{"start":1},{"start":2},{"start":3},{"start":4},{"start":5},{"start":6},{"start":16},{"start":7},{"start":8}]}}})");
     comp::Cfg d; comp::comp_of(k.get("comp"), d);
     assert(d.motif.n == 8 && d.motif.note[7].start == 7);
+    /* from/to rounded before they are checked: 15.6 -> 16 is past the chords, dropped */
+    Json r = Json::parse(R"({"comp":{"chain":[{"op":"repeat","from":15.6,"to":15.7},{"op":"repeat","from":14.6,"to":14.7}]}})");
+    comp::Cfg e; comp::comp_of(r.get("comp"), e);
+    assert(e.nchain == 1 && e.chain[0].from == 15 && e.chain[0].to == 15);
     std::printf("C motif parse: 4 notes (one clipped to the bar), 3 of 6 chain steps kept, melody role\n");
+}
+
+/* D minor 7 (key 50), the walk's first chord for >= 2 bars: a 4-note chord-degree motif root-5th-3rd-9th, each a quarter */
+static const char *MOT = R"("motif":{"basis":"chord","notes":[{"deg":0,"start":0,"len":4},{"deg":2,"start":4,"len":4},{"deg":1,"start":8,"len":4},{"deg":4,"start":12,"len":4}]})";
+static std::string melody(const char *chain, const char *extra = "") {
+    char b[2048]; std::snprintf(b, sizeof b, R"(,"comp":{"voice":{"role":"melody","lo":50,"hi":81},"sect":{"role":"off"},"v3":{"role":"off"},"bass":{"mode":"off"},%s,"chain":%s%s})", MOT, chain, extra);
+    return b;
+}
+static void test_melody() {
+    /* repeat: D (50) A (57) F (53) and the 9th of a 4-tone chord = degree 4 -> root an octave up (62) on the quarters of bar 0 */
+    const Log l = render(melody("[]"), 6);
+    std::vector<int> n = bar_notes(l, 1, 0);
+    std::printf("C melody repeat bar 0:"); for (int m : n) std::printf(" %d", m); std::printf("\n");
+    assert(n.size() == 4 && n[0] == 50 && n[1] == 57 && n[2] == 53 && n[3] == 62);
+    /* sequence +1 degree on chord 0: 3rd 7th 5th, root+octave+1 -> F C A (53 60 57) and degree 5 -> 3rd up an octave (65) */
+    const Log s = render(melody(R"([{"op":"seq","arg":1,"from":0,"to":3}])"), 6);
+    n = bar_notes(s, 1, 0); assert(n.size() == 4 && n[0] == 53 && n[1] == 60 && n[2] == 57 && n[3] == 65);
+    /* retrograde: 9th, 3rd, 5th, root in time order */
+    const Log r = render(melody(R"([{"op":"retro","from":0,"to":3}])"), 6);
+    n = bar_notes(r, 1, 0); assert(n.size() == 4 && n[0] == 62 && n[1] == 53 && n[2] == 57 && n[3] == 50);
+    /* fragment 2: the first two notes only */
+    const Log f = render(melody(R"([{"op":"fragment","arg":2,"from":0,"to":3}])"), 6);
+    n = bar_notes(f, 1, 0); assert(n.size() == 2 && n[0] == 50 && n[1] == 57);
+    /* diminish: 8 notes in the bar (the halved motif twice) */
+    const Log d = render(melody(R"([{"op":"diminish","from":0,"to":3}])"), 6);
+    assert(bar_notes(d, 1, 0).size() == 8);
+    /* augment: 2 notes in bar 0, the next 2 in bar 1 */
+    const Log a = render(melody(R"([{"op":"augment","from":0,"to":3}])"), 12);
+    assert(bar_notes(a, 1, 0).size() == 2 && bar_notes(a, 1, 1).size() == 2);
+    /* a triad never silences the 9th (Review Focus 3): every motif note sounds on every bar of a 40 s walk */
+    const Log t = render(melody("[]"), 40);
+    int bars = 0, short_bars = 0; for (int b = 0; b < 15; b++) { bars++; if (bar_notes(t, 1, b).size() != 4) short_bars++; }
+    assert(short_bars == 0);
+    /* the scale basis: D minor (an m7 first chord: aeolian) degrees 0 1 2 6 -> D E F C */
+    const Log sc = render(R"(,"comp":{"voice":{"role":"melody","lo":50,"hi":81},"sect":{"role":"off"},"v3":{"role":"off"},"bass":{"mode":"off"},"motif":{"basis":"scale","notes":[{"deg":0,"start":0},{"deg":1,"start":4},{"deg":2,"start":8},{"deg":6,"start":12}]},"chain":[]})", 6);
+    n = bar_notes(sc, 1, 0); assert(n.size() == 4 && n[0] == 50 && n[1] == 52 && n[2] == 53 && n[3] == 60);
+    std::printf("C melody: repeat / seq +1 / retro / fragment 2 / diminish / augment on the chord's degrees; the scale's too\n");
+}
+static void test_cadence() {
+    /* a one-chord-step cadence on chord 0, full: the last note is the key's tonic D (50 or 62 in range), held to the bar's end */
+    const Log c = render(melody(R"([{"op":"cadence","cad":"full","from":0,"to":0}])"), 6);
+    std::vector<int> n = bar_notes(c, 1, 0); assert(!n.empty() && (n.back() % 12) == (50 % 12));
+    const Log h = render(melody(R"([{"op":"cadence","cad":"half","from":0,"to":0}])"), 6);
+    n = bar_notes(h, 1, 0); assert(!n.empty() && (n.back() % 12) == (57 % 12));          /* A, the key's 5th */
+    /* others "stop": with voice 2 strumming, voice 2 is silent on the cadence chord's bars */
+    char b[2048]; std::snprintf(b, sizeof b, R"(,"comp":{"voice":{"role":"melody","lo":50,"hi":81},"sect":{"style":"strum","rate":"4n"},"v3":{"role":"off"},"bass":{"mode":"off"},%s,"chain":[{"op":"cadence","cad":"full","others":"stop","from":0,"to":0}]})", MOT);
+    const Log s = render(b, 6);
+    assert(bar_notes(s, 2, 0).empty() && !bar_notes(s, 1, 0).empty());
+    /* others "thin": voice 2 arpeggiating in sixteenths keeps only its first note of the cadence chord's bar */
+    std::snprintf(b, sizeof b, R"(,"comp":{"voice":{"role":"melody","lo":50,"hi":81},"sect":{"style":"arpeggio","rate":"16n"},"v3":{"role":"off"},"bass":{"mode":"off"},%s,"chain":[{"op":"cadence","cad":"full","others":"thin","from":0,"to":0}]})", MOT);
+    const Log th = render(b, 6);
+    assert(bar_notes(th, 2, 0).size() == 1);
+    std::printf("C cadence: full ends on the tonic, half on the 5th, others stop / thin\n");
+}
+static void test_melody_change_at_bar() {
+    /* Review Focus 4: the motif replaced mid-bar via fs_piece_set_route takes effect at the next bar line, no note longer than its bar */
+    Log l = render(melody("[]"), 6);
+    for (size_t i = 0; i < l.f.size(); i++) if (l.role[i] == 1) assert(l.d[i] <= 2.5 + 1e-6);
+    std::printf("C melody: no note outlasts its bar\n");
 }
 
 int main(int argc, char **argv) {
@@ -539,6 +602,9 @@ int main(int argc, char **argv) {
     test_kept();
     test_off();
     test_arpeggio();
+    test_melody();
+    test_cadence();
+    test_melody_change_at_bar();
     test_styles();
     test_bass();
     test_bass_switch();
