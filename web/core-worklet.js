@@ -128,6 +128,7 @@ class FieldscapeEngine extends AudioWorkletProcessor {
     this.morphs = x.malloc(7 * 24 * 8); this.nums = x.malloc(24); this.label = x.malloc(32);
     this.rolesP = x.fs_engine_roles ? x.malloc(4 * 24) : 0;     /* 3c.1: each role's level and notes (lab build only) */
     this.pointP = x.fs_engine_point ? x.malloc(4 * (2 + 3 * 96)) : 0; this.watching = false;   /* 8a: the open point's level, grains */
+    this.statsP = x.fs_engine_stats ? x.malloc(32) : 0;
     this.port.onmessage = (ev) => {
       const m = ev.data;
       try {
@@ -160,6 +161,13 @@ class FieldscapeEngine extends AudioWorkletProcessor {
           bufs.forEach((p) => x.free(p)); x.free(ptrs);
         } else if (m.type === "analysis") {
           const p = this.bytes(m.bytes); x.fs_engine_role_analysis(this.e, m.role, p); x.free(p);
+        } else if (m.type === "stats" && this.statsP) {   /* the core's own timing (fs_engine_stats): blocks slower than their audio
+                                                             so far ("slow"; underruns too, as the dock reads it), the slowest since the
+                                                             last ask - Date.now()-coarse here: a block reads 0, 1, 2 or 3+ ms, and a
+                                                             128-frame block at 48 kHz lasts 2.67 */
+          x.fs_engine_stats(this.e, this.statsP);
+          const v = new DataView(x.memory.buffer, this.statsP, 32), slow = v.getInt32(4, true);
+          this.port.postMessage({ type: "stats", slow, underruns: slow, maxMs: v.getFloat32(8, true) });
         } else if (m.type === "watch" && x.fs_engine_watch) {
           const id = this.bytes(Uint8Array.from((m.id || "") + "", (ch) => ch.charCodeAt(0)));
           x.fs_engine_watch(this.e, id); x.free(id); this.watching = !!m.id;
@@ -209,7 +217,7 @@ class FieldscapeEngine extends AudioWorkletProcessor {
   }
   process(inputs, outputs) {
     const x = this.x, out = outputs[0], n = out[0].length;
-    x.fs_engine_process(this.e, n);
+    x.fs_engine_process(this.e, n);      /* the core times it (fs_engine_stats) */
     for (let c = 0; c < out.length; c++) {
       out[c].set(new Float32Array(x.memory.buffer, x.fs_engine_out(this.e, Math.min(c, 1)), n));
     }

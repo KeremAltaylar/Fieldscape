@@ -9,6 +9,7 @@
 #include "fieldscape.h"
 #include "json.hpp"
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -46,7 +47,7 @@ struct Point {                        /* a soundscape recording: a stretch voice
     std::string shape;                /* properties.sound.shape as JSON (fs_stretch_shape) */
     std::string sound = "{}";         /* Test 15: properties.sound as JSON, for its eq and env (fs_point_sound) */
 };
-struct Spot { std::string icon; double lon, lat, radius, zoneR, centroid, onsets; bool audio, plain; fs_zone_state zone{}; std::string id; };
+struct Spot { std::string icon; double lon, lat, radius, zoneR, centroid, onsets; bool audio, plain; fs_zone_state zone{}; std::string id; bool comp_in = false; };
 struct Beat { std::string id, name; double lon, lat, radius, gain; bool grains; std::string json; std::vector<std::string> paths; std::vector<char> have; };
 struct Park { std::string name; std::vector<std::vector<double>> rings; double area; };
 struct Slot {
@@ -63,6 +64,7 @@ struct Slot {
 
 struct fs_engine {
     float sr = 48000;
+    int slow = 0; float slow_ms = 0;   /* fs_engine_stats: blocks slower than their audio, the slowest since the last ask */
     fs_mix *mix = nullptr;
     fs_device *piece = nullptr;
     Slot slot[SLOTS];
@@ -77,6 +79,7 @@ struct fs_engine {
     std::string loads, state;
     std::vector<std::string> rhythm_names;
     std::string route_name;
+    std::string zones_sent;           /* the inside-set last given to the piece */
     std::string solo;                 /* Listen: that point alone ("" none) */
     std::string watch; double watch_ms = 0;   /* 8a: the point whose panel is open - its level for the meter */
     double now() const { return (double)frames / sr; }
@@ -364,12 +367,19 @@ const char *fs_engine_step(fs_engine *e, double lon, double lat) {
     }
     /* zones and the recordings' character */
     std::vector<double> cd, cr, cc, co;
+    std::string inside, entered;
     for (auto &sp : e->spots) {
         double dist = fs_geo_distance(lon, lat, sp.lon, sp.lat);
         if (sp.audio) { cd.push_back(dist); cr.push_back(sp.radius); cc.push_back(sp.centroid); co.push_back(sp.onsets); }
+        const bool was_in = sp.comp_in;   /* composition: geometry only, no chime cooldown */
+        sp.comp_in = dist <= sp.zoneR || (sp.comp_in && dist <= sp.zoneR * FS_ZONE_MARGIN);
+        if (sp.comp_in) inside += (inside.empty() ? "" : ",") + sp.id;
+        if (sp.comp_in && !was_in) entered = sp.id;
         if (dist > sp.radius * FS_ZONE_MARGIN) { sp.zone = fs_zone_state{}; continue; }
-        if (fs_zone_step(&sp.zone, dist, sp.zoneR, now * 1000, FS_ZONE_MARGIN, FS_ZONE_COOLDOWN_MS) == 1 && sp.plain) fs_piece_zone(e->piece, sp.icon.c_str());
+        const int ev = fs_zone_step(&sp.zone, dist, sp.zoneR, now * 1000, FS_ZONE_MARGIN, FS_ZONE_COOLDOWN_MS);
+        if (ev == 1 && sp.plain) fs_piece_zone(e->piece, sp.icon.c_str());
     }
+    if (inside != e->zones_sent || !entered.empty()) { fs_piece_zones(e->piece, inside.c_str(), entered.c_str()); e->zones_sent = inside; }
     fs_piece_character(e->piece, (int)cd.size(), cd.data(), cr.data(), cc.data(), co.data());
     /* rhythm points (updateRhythms) */
     size_t nb = e->beats.size();
@@ -462,7 +472,7 @@ void fs_engine_source_track(fs_engine *e, int kind, int index, int sub, const ch
         fs_piece_rhythm_track(e->piece, index, sub, json);
     }
 }
-void fs_engine_process(fs_engine *e, int frames) {
+static void engine_process(fs_engine *e, int frames) {
     fs_mix_process(e->mix, frames); e->frames += frames;
     if (!e->watch.empty()) {   /* 8a: a stretch point's own sound at its own gain, ~0.1 s mean square - not where the walker stands */
         double ms = 0, own = 1; bool found = false;
@@ -474,6 +484,17 @@ void fs_engine_process(fs_engine *e, int frames) {
         ms *= own * own;
         e->watch_ms += ((found ? ms / std::max(1, frames) : 0) - e->watch_ms) * (1 - std::exp(-frames / (0.1 * e->sr)));
     }
+}
+/* timed as fs_process times a device (core.cpp) */
+void fs_engine_process(fs_engine *e, int frames) {
+    const auto t0 = std::chrono::steady_clock::now();
+    engine_process(e, frames);
+    const float ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    if (ms > e->slow_ms) e->slow_ms = ms;
+    if (ms > 1000.0f * frames / e->sr) e->slow++;
+}
+void fs_engine_stats(fs_engine *e, fs_stats_t *out) {
+    *out = fs_stats_t{}; out->underruns = e->slow; out->max_process_ms = e->slow_ms; e->slow_ms = 0;
 }
 /* 8a: the point the screen shows; its level (and a rhythm point's recent grains) through fs_engine_point */
 void fs_engine_watch(fs_engine *e, const char *id) { e->watch = id ? id : ""; e->watch_ms = 0; }

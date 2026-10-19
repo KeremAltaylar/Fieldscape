@@ -321,7 +321,8 @@ JNIEXPORT jshortArray JNICALL FN(resample)(JNIEnv *env, jclass, jshortArray in, 
    for (pieceStep's list) and passes them back through pieceSource. */
 namespace {
 struct Walker {
-    struct Spot { std::string icon; double lon, lat, radius, zoneR, centroid, onsets; bool audio, plain; fs_zone_state zone{}; };
+    std::string zones_sent;           /* the inside-set last given to the piece */
+    struct Spot { std::string icon; double lon, lat, radius, zoneR, centroid, onsets; bool audio, plain; fs_zone_state zone{}; std::string id; bool comp_in = false; };
     struct Beat { std::string id, name; double lon, lat, radius, gain; bool grains; std::string json; std::vector<std::string> paths, tracks; };
     /* 6b: a route's sampler voices - each voice's sample and its analysis (patch.<voice>.sample), "" none */
     struct RoleSpec { std::string path, ana; };
@@ -377,7 +378,7 @@ JNIEXPORT void JNICALL FN(pieceStart)(JNIEnv *env, jclass, jstring features) {
             if (!r || fs_route_length(r) <= 0) { if (r) fs_route_destroy(r); continue; }
             W->routes.push_back(r); W->route_names.push_back(p->s("name", "Route"));
             Json nm, nt; nm.kind = nt.kind = Json::STR; nm.str = p->s("name", "Route"); nt.str = p->s("note", "");
-            W->route_extra.push_back("\"name\":" + dump(&nm) + ",\"note\":" + dump(&nt) + ",\"coords\":" + dump(c) + ",");
+            W->route_extra.push_back("\"name\":" + dump(&nm) + ",\"note\":" + dump(&nt) + ",\"coords\":" + dump(c) + (p->get("patch") && p->get("patch")->get("comp") ? ",\"comp\":" + dump(p->get("patch")->get("comp")) : std::string()) + ",");
             fs_piece_add_route(E->piece, dump(p->get("patch")).c_str());
             std::array<Walker::RoleSpec, 3> rs{};
             const Json *pt = p->get("patch"); int q = 0;
@@ -402,6 +403,7 @@ JNIEXPORT void JNICALL FN(pieceStart)(JNIEnv *env, jclass, jstring features) {
             W->spots.push_back({ p->s("icon", ""), lon, lat, radius, q ? q->n("zoneR", 25) : 25, a ? a->n("centroid_hz", 0) : 0,
                                  a ? a->n("onset_rate", -1) : -1, audio, !audio && !has_hits && mode != "hits" && mode != "grains" });
             std::string id = p->s("id", ""), name = p->s("name", "Unnamed point");
+            W->spots.back().id = id;
             if (mode == "hits" && has_hits) W->beats.push_back({ id, name, lon, lat, radius, gain, false, dump(p->get("rhythm")), slots, tracks });
             else if (mode == "grains" && audio) W->beats.push_back({ id, name, lon, lat, radius, gain, true, dump(p->get("rhythm")), { p->s("storage_path", "") },
                                                                      { q ? q->s("track_path", "") : "" } });
@@ -449,12 +451,19 @@ JNIEXPORT jstring JNICALL FN(pieceStep)(JNIEnv *env, jclass, jdouble lon, jdoubl
     }
     double now = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - W->t0).count();
     std::vector<double> d, rad, cen, ons;
+    std::string inside, entered;
     for (auto &s : W->spots) {
         double dist = fs_geo_distance(lon, lat, s.lon, s.lat);
         if (s.audio) { d.push_back(dist); rad.push_back(s.radius); cen.push_back(s.centroid); ons.push_back(s.onsets); }
+        const bool was_in = s.comp_in;   /* composition: geometry only, no chime cooldown */
+        s.comp_in = dist <= s.zoneR || (s.comp_in && dist <= s.zoneR * FS_ZONE_MARGIN);
+        if (s.comp_in) inside += (inside.empty() ? "" : ",") + s.id;
+        if (s.comp_in && !was_in) entered = s.id;
         if (dist > s.radius * FS_ZONE_MARGIN) { s.zone = fs_zone_state{}; continue; }
-        if (fs_zone_step(&s.zone, dist, s.zoneR, now, FS_ZONE_MARGIN, FS_ZONE_COOLDOWN_MS) == 1 && s.plain) fs_piece_zone(E->piece, s.icon.c_str());
+        const int ev = fs_zone_step(&s.zone, dist, s.zoneR, now, FS_ZONE_MARGIN, FS_ZONE_COOLDOWN_MS);
+        if (ev == 1 && s.plain) fs_piece_zone(E->piece, s.icon.c_str());
     }
+    if (inside != W->zones_sent || !entered.empty()) { fs_piece_zones(E->piece, inside.c_str(), entered.c_str()); W->zones_sent = inside; }
     fs_piece_character(E->piece, (int)d.size(), d.data(), rad.data(), cen.data(), ons.data());
     size_t nb = W->beats.size();
     std::vector<double> bd(nb), br(nb); std::vector<unsigned char> el(nb, 1); std::vector<int> picked(std::max<size_t>(nb, 1));

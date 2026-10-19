@@ -40,8 +40,9 @@ def build():
         flags, ext = ["-std=c++17", "-O1", "-DFS_TEST_O1", "-Wall", "-Wextra", "-sNODERAWFS=1", "-sALLOW_MEMORY_GROWTH=1", "-sSTACK_SIZE=1048576"], ".js"
     devices = [os.path.join("core", "devices", f) for f in os.listdir(os.path.join(ROOT, "core", "devices")) if f.endswith(".cpp")]
     targets = {
-        "core_test": ["core/core.cpp", "core/mix.cpp", "core/place.cpp", "core/webm.cpp", "core/sections.cpp", "core/resample.cpp", "core/analysis.cpp", "core/bench.cpp", "core/piece.cpp", "core/engine.cpp", *devices, "core/test.cpp"],
-        "stretch_test": ["core/core.cpp", "core/mix.cpp", "core/place.cpp", "core/webm.cpp", "core/sections.cpp", "core/resample.cpp", "core/bench.cpp", "core/piece.cpp", "core/devices/test_devices.cpp", "core/devices/play.cpp", "core/tests/stretch_test.cpp"],
+        "core_test": ["core/core.cpp", "core/mix.cpp", "core/place.cpp", "core/webm.cpp", "core/sections.cpp", "core/resample.cpp", "core/analysis.cpp", "core/bench.cpp", "core/composer.cpp", "core/piece.cpp", "core/engine.cpp", *devices, "core/test.cpp"],
+        "composer_test": ["core/core.cpp", "core/mix.cpp", "core/place.cpp", "core/webm.cpp", "core/sections.cpp", "core/resample.cpp", "core/analysis.cpp", "core/bench.cpp", "core/composer.cpp", "core/piece.cpp", "core/engine.cpp", *devices, "core/tests/composer_test.cpp"],
+        "stretch_test": ["core/core.cpp", "core/mix.cpp", "core/place.cpp", "core/webm.cpp", "core/sections.cpp", "core/resample.cpp", "core/bench.cpp", "core/composer.cpp", "core/piece.cpp", "core/devices/test_devices.cpp", "core/devices/play.cpp", "core/tests/stretch_test.cpp"],
     }
     exe = {}
     for name, srcs in targets.items():
@@ -213,6 +214,8 @@ def main():
     exe = build()
     out = run(exe["core_test"])
     row(0, "core self-check (core/test.cpp)", out.strip().splitlines()[-1], "exits 0", "core ok" in out)
+    out = run(exe["composer_test"])
+    row("C", "composition (core/tests/composer_test.cpp)", out.strip().splitlines()[-1], "exits 0", "composer ok" in out)
 
     e = float(results(run(exe["stretch_test"], "fft"))[0]["fft_rel_err"])
     row("F", "FFT vs direct DFT, 12 sizes 16..2400", f"rel err {e:.2g}", "< 1e-5", e < 1e-5)

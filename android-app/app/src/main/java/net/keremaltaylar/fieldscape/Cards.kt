@@ -201,6 +201,7 @@ fun RouteCard(walk: Walk, map: MapUi, index: Int, close: () -> Unit) {
             Chip(r.length)
         }
         Title(r.name)
+        if (r.comp.isNotEmpty()) Note(r.comp, 1)
         if (r.note.isNotEmpty()) Note(r.note, 3)
         Eyebrow(if (here >= 0) "The progression — you are at ${here + 1} of ${r.prog.size}" else "The progression — ${r.prog.size} chords along the route")
         ChordStrip(r, here, Modifier.fillMaxWidth().height(28.dp))

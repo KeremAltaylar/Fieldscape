@@ -7,8 +7,9 @@ import Foundation
 final class RouteSound {
     private struct Spot {
         let icon: String, lon: Double, lat: Double, radius: Double, zoneR: Double
-        let centroid: Double, onsets: Double, audio: Bool, plain: Bool
+        let centroid: Double, onsets: Double, audio: Bool, plain: Bool, id: String
         var zone = fs_zone_state()
+        var compIn = false
     }
     private struct Beat { let id: String, name: String, lon: Double, lat: Double, radius: Double, gain: Double, grains: Bool, json: String, paths: [String?], tracks: [String?] }
     /* 6b: each route's sampler voices - a voice's sample and its analysis (patch.<voice>.sample), nil none */
@@ -24,6 +25,7 @@ final class RouteSound {
     private var routes: [OpaquePointer?] = []
     private var routeNames: [String] = []
     private var spots: [Spot] = []
+    private var zonesSent = ""                          /* the inside-set last given to the piece */
     private var beats: [Beat] = []
     private var handle: [String: Int32] = [:]          /* rhythm point id -> the piece's handle */
     private var sections: OpaquePointer? = nil
@@ -135,7 +137,8 @@ final class RouteSound {
                 let radius = (q["radius"] as? Double) ?? 140, gain = (q["gain"] as? Double) ?? 0.9
                 spots.append(Spot(icon: p["icon"] as? String ?? "", lon: c[0], lat: c[1], radius: radius, zoneR: (q["zoneR"] as? Double) ?? 25,
                                   centroid: (a["centroid_hz"] as? Double) ?? 0, onsets: (a["onset_rate"] as? Double) ?? -1,
-                                  audio: hasAudio, plain: !hasAudio && !hasHits && mode != "hits" && mode != "grains"))
+                                  audio: hasAudio, plain: !hasAudio && !hasHits && mode != "hits" && mode != "grains",
+                                  id: p["id"] as? String ?? ""))
                 let id = p["id"] as? String ?? UUID().uuidString, name = p["name"] as? String ?? "Unnamed point"
                 if mode == "hits" && hasHits {
                     beats.append(Beat(id: id, name: name, lon: c[0], lat: c[1], radius: radius, gain: gain, grains: false, json: RouteSound.json(p["rhythm"]), paths: slots, tracks: hitTracks))
@@ -179,14 +182,19 @@ final class RouteSound {
         /* zones (zonesNear + pacerCheckZones): a plain point speaks as you enter it */
         let now = Date().timeIntervalSince(t0) * 1000
         var dist = [Double](), radius = [Double](), centroid = [Double](), onsets = [Double]()
+        var inside = [String](), entered = ""
         for i in spots.indices {
             let d = fs_geo_distance(lon, lat, spots[i].lon, spots[i].lat)
             if spots[i].audio { dist.append(d); radius.append(spots[i].radius); centroid.append(spots[i].centroid); onsets.append(spots[i].onsets) }
+            let wasIn = spots[i].compIn   /* composition: geometry only, no chime cooldown */
+            spots[i].compIn = d <= spots[i].zoneR || (wasIn && d <= spots[i].zoneR * Double(FS_ZONE_MARGIN))
+            if spots[i].compIn { inside.append(spots[i].id); if !wasIn { entered = spots[i].id } }
             if d > spots[i].radius * Double(FS_ZONE_MARGIN) { spots[i].zone = fs_zone_state(); continue }
-            if fs_zone_step(&spots[i].zone, d, spots[i].zoneR, now, Double(FS_ZONE_MARGIN), Double(FS_ZONE_COOLDOWN_MS)) == 1 && spots[i].plain {
-                fs_piece_zone(piece, spots[i].icon)
-            }
+            let ev = fs_zone_step(&spots[i].zone, d, spots[i].zoneR, now, Double(FS_ZONE_MARGIN), Double(FS_ZONE_COOLDOWN_MS))
+            if ev == 1 && spots[i].plain { fs_piece_zone(piece, spots[i].icon) }
         }
+        let ins = inside.joined(separator: ",")
+        if ins != zonesSent || !entered.isEmpty { fs_piece_zones(piece, ins, entered); zonesSent = ins }
         fs_piece_character(piece, Int32(dist.count), dist, radius, centroid, onsets)
 
         /* rhythm points (updateRhythms): within their radius, the nearest few */

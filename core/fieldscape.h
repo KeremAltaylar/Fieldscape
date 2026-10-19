@@ -160,6 +160,8 @@ int fs_piece_sector_now(fs_device *d);                                  /* ... a
    audio.onset_rate (0 / -1 when unknown) */
 void fs_piece_character(fs_device *d, int n, const double *dist, const double *radius, const double *centroid_hz, const double *onset_rate);
 void fs_piece_zone(fs_device *d, const char *icon);                     /* a plain point's zone entered (zoneFire) */
+/* Composition: the zones the walker is inside now (point ids, comma-separated, "" none) and the one just entered ("" none) */
+void fs_piece_zones(fs_device *d, const char *inside_csv, const char *entered);
 /* Rhythm points (hits, grains): add -> a handle (-1: all four in use), then its gain each fix
    (fs_point_gain), its recordings as they arrive (hits: slots 0-3 low/mid/high/rand; grains: slot 0),
    interleaved 16-bit at the engine's rate in memory from fs_alloc_i16, which the piece then owns.
@@ -254,6 +256,9 @@ void fs_engine_source(fs_engine *e, int kind, int index, int sub, const char *id
 /* 5: the analysis of a recording the engine asked for (as fs_engine_source's kind/index/sub/id) */
 void fs_engine_source_track(fs_engine *e, int kind, int index, int sub, const char *id, const char *analysis_json);
 void fs_engine_process(fs_engine *e, int frames);
+/* the engine's own timing: underruns = fs_engine_process calls slower than the audio they made (on the web the clock is
+   Date.now(), millisecond-coarse), max_process_ms = the slowest since the last call; the rest 0 */
+void fs_engine_stats(fs_engine *e, fs_stats_t *out);
 float *fs_engine_out(fs_engine *e, int channel);
 const char *fs_engine_state(fs_engine *e);
 /* live reads for the screen, ~30 times a second: the piece's morph cells (fs_piece_morphs), the chord
