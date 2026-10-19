@@ -238,6 +238,7 @@
   }
   /* the foot's dropout readout: the engine's slow blocks (web/core-worklet.js), asked once a second while the dock is open;
      "audio ok", or how many in the last minute (warn), the slowest block in its title. Tests read __fa.dropouts */
+  var gaps0 = null;
   function pollAudio() {
     polls++;
     if (!ctx || !ctx.stats || !ctx.stats(function (m) {
@@ -253,8 +254,13 @@
     audio.forEach(function (x) { slow = Math.max(slow, x.ms); });
     window.__fa = window.__fa || {}; __fa.dropouts = { n: n, slowestMs: slow, polls: polls, answers: audio.length };
     var e = document.getElementById("cd-audio"); if (!e) { return; }
-    e.classList.toggle("warn", n > 0);
-    e.lastChild.textContent = n ? n + (n === 1 ? " dropout" : " dropouts") + " in the last minute" : "audio ok";
+    /* slow blocks are the engine running late; the device's own gap count (Chrome's playbackStats) says whether it was heard */
+    var as = window.__fa.audioStats, gaps = as && typeof as.underruns === "number" ? as.underruns : null;
+    if (gaps != null && gaps0 == null) { gaps0 = gaps; }
+    var heard = gaps != null ? gaps - gaps0 : null;
+    e.classList.toggle("warn", n > 0 || heard > 0);
+    e.lastChild.textContent = heard > 0 ? heard + (heard === 1 ? " gap heard" : " gaps heard") + " · " + n + " slow" :
+      n ? n + (n === 1 ? " slow block" : " slow blocks") + " in the last minute" : "audio ok";
     e.title = audio.length ? "slowest block in the last minute: " + slow + " ms (a block lasts 2.7 ms)" : "slowest block: none yet - no sound is playing";
   }
   function foot() {
