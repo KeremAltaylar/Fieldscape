@@ -510,12 +510,32 @@ static void test_onsets() {
     assert(worst <= 1.0 && plw <= 1.6);
 }
 
+static void test_motif_parse() {
+    const char *J = R"({"comp":{"voice":{"role":"melody"},
+      "motif":{"basis":"chord","bars":1,"notes":[{"deg":0,"start":0,"len":4},{"deg":2,"start":4,"len":4},{"deg":1,"oct":1,"start":8,"len":2,"acc":100},{"deg":4,"start":12,"len":8}]},
+      "chain":[{"op":"repeat","from":0,"to":1},{"op":"seq","arg":2,"from":2,"to":3},{"op":"cadence","cad":"half","others":"stop","from":3,"to":3},
+               {"op":"bogus","from":4,"to":5},{"op":"repeat","from":9,"to":2},{"op":"invert","from":70,"to":80}]}})";
+    Json j = Json::parse(J); comp::Cfg c; comp::comp_of(j.get("comp"), c);
+    assert(c.on && c.v[0].role == comp::MELODY && (c.v[0].mask & comp::F_ROLE));
+    assert(c.motif.n == 4 && c.motif.basis == comp::CHORD_DEG && c.motif.bars == 1);
+    assert(c.motif.note[2].deg == 1 && c.motif.note[2].oct == 1 && c.motif.note[2].acc == 100 && c.motif.note[2].len == 2);
+    assert(c.motif.note[3].start == 12 && c.motif.note[3].len == 4);       /* clipped to the bar: 12 + 4 = 16 */
+    assert(c.nchain == 3);                                                   /* bogus op, from > to, out of range: dropped */
+    assert(c.chain[1].op == comp::OP_SEQ && c.chain[1].arg == 2 && c.chain[2].cad == comp::CAD_HALF && c.chain[2].others == comp::OTH_STOP);
+    /* more than 8 notes: the first 8; a note starting past the motif: dropped */
+    Json k = Json::parse(R"({"comp":{"motif":{"bars":1,"notes":[{"start":0},{"start":1},{"start":2},{"start":3},{"start":4},{"start":5},{"start":6},{"start":16},{"start":7},{"start":8}]}}})");
+    comp::Cfg d; comp::comp_of(k.get("comp"), d);
+    assert(d.motif.n == 8 && d.motif.note[7].start == 7);
+    std::printf("C motif parse: 4 notes (one clipped to the bar), 3 of 6 chain steps kept, melody role\n");
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && !std::strcmp(argv[1], "levels")) { test_levels(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "onsets")) { test_onsets(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "cost")) { test_cost(); return 0; }
     test_parse();
     test_resolve();
+    test_motif_parse();
     test_kept();
     test_off();
     test_arpeggio();

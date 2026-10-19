@@ -33,8 +33,18 @@ struct Voice {
 };
 struct Bass { uint32_t mask = 0; uint8_t mode = HOLD, pedal = 0, note = 38; };   /* pedal: 0 key root, 1 key fifth, 2 note */
 struct Over { bool used = false; Voice v[NVOICE]; Bass bass; uint8_t blend = 0, when = INSIDE; uint64_t zone = 0; };
+static const int MOTIF_MAX = 8, CHAIN_MAX = 16;
+enum Basis { CHORD_DEG, SCALE_DEG };
+enum Op { OP_REPEAT, OP_SEQ, OP_INVERT, OP_RETRO, OP_AUGMENT, OP_DIMINISH, OP_FRAGMENT, OP_CADENCE, NOP };
+enum Cadence { CAD_FULL, CAD_HALF, CAD_DECEPTIVE };
+enum Others { OTH_HOLD, OTH_THIN, OTH_STOP };            /* what the other voices do on a cadence's last chord */
+struct MNote { int8_t deg = 0, oct = 0; uint8_t start = 0, len = 4; uint8_t acc = 70; };   /* start/len in sixteenths */
+struct Motif { uint8_t basis = CHORD_DEG, bars = 1, n = 0; MNote note[MOTIF_MAX]; };
+struct ChainStep { uint8_t op = OP_REPEAT; int8_t arg = 0; uint8_t from = 0, to = 0;      /* chord steps, inclusive */
+                   uint8_t cad = CAD_FULL, others = OTH_THIN; float strength = 1; };
 struct Cfg { bool on = false; uint32_t seed = 1; Voice v[NVOICE]; Bass bass;
-             Over chord[NCHORD], section[NSECTION], zone[NZONE]; int nzone = 0; };
+             Over chord[NCHORD], section[NSECTION], zone[NZONE]; int nzone = 0;
+             Motif motif; ChainStep chain[CHAIN_MAX]; int nchain = 0; };
 struct Resolved { Voice v[NVOICE]; Bass bass; int blend = 0; };
 
 uint64_t id_hash(const char *s);                      /* FNV-1a 64: a zone's point id */

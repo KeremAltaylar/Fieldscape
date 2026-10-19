@@ -86,6 +86,50 @@ static void over_of(const Json *j, Over &o) {
     o.when = j->s("when", "inside") == std::string("enter") ? ENTER : INSIDE;
 }
 
+static void motif_of(const Json *m, Motif &o) {
+    o = Motif();
+    if (!m || m->kind != Json::OBJ) return;
+    o.basis = m->s("basis", "chord") == std::string("scale") ? SCALE_DEG : CHORD_DEG;
+    o.bars = clamp8(m->n("bars", 1), 1, 2);
+    const int span = o.bars * 16;
+    const Json *a = m->get("notes");
+    if (!a || a->kind != Json::ARR) return;
+    for (size_t i = 0; i < a->size() && o.n < MOTIF_MAX; i++) {
+        const Json *x = a->at(i);
+        if (!x || x->kind != Json::OBJ) continue;
+        const int start = (int)std::lround(x->n("start", 0));
+        if (start < 0 || start >= span) continue;
+        MNote &n = o.note[o.n++];
+        n.start = (uint8_t)start;
+        n.len = clamp8(std::min((double)(span - start), x->n("len", 4)), 1, 32);
+        n.deg = (int8_t)std::max(-7, std::min(13, (int)std::lround(x->n("deg", 0))));
+        n.oct = (int8_t)std::max(-2, std::min(2, (int)std::lround(x->n("oct", 0))));
+        n.acc = clamp8(x->n("acc", 70), 0, 100);
+    }
+}
+static void chain_of(const Json *a, ChainStep *o, int &n) {
+    static const char *const OPS[NOP] = { "repeat", "seq", "invert", "retro", "augment", "diminish", "fragment", "cadence" };
+    static const char *const CAD[3] = { "full", "half", "deceptive" }, *const OTH[3] = { "hold", "thin", "stop" };
+    n = 0;
+    if (!a || a->kind != Json::ARR) return;
+    for (size_t i = 0; i < a->size() && n < CHAIN_MAX; i++) {
+        const Json *x = a->at(i);
+        if (!x || x->kind != Json::OBJ) continue;
+        const int op = pick(x->s("op", ""), OPS, NOP, NOP);
+        const double from = x->n("from", 0), to = x->n("to", 0);
+        if (op == NOP || from < 0 || to < from || to >= NCHORD) continue;
+        ChainStep &s = o[n++];
+        s = ChainStep();
+        s.op = (uint8_t)op;
+        s.from = (uint8_t)std::lround(from); s.to = (uint8_t)std::lround(to);
+        const int arg = (int)std::lround(x->n("arg", 0));
+        s.arg = (int8_t)(op == OP_FRAGMENT ? std::max(1, std::min(8, arg)) : std::max(-7, std::min(7, arg)));
+        s.cad = (uint8_t)pick(x->s("cad", "full"), CAD, 3, CAD_FULL);
+        s.others = (uint8_t)pick(x->s("others", "thin"), OTH, 3, OTH_THIN);
+        s.strength = clampf(x->n("strength", 1), 0, 1);
+    }
+}
+
 void comp_of(const Json *j, Cfg &c) {
     c = Cfg();
     if (!j || j->kind != Json::OBJ) return;
@@ -93,6 +137,8 @@ void comp_of(const Json *j, Cfg &c) {
     c.seed = (uint32_t)std::max(0.0, j->n("seed", 1));
     for (int q = 0; q < NVOICE; q++) voice_of(j->get(VKEYS[q]), c.v[q], true);
     bass_of(j->get("bass"), c.bass, true);
+    motif_of(j->get("motif"), c.motif);
+    chain_of(j->get("chain"), c.chain, c.nchain);
     const Json *ov = j->get("over");
     if (!ov || ov->kind != Json::OBJ) return;
     if (const Json *ch = ov->get("chord")) if (ch->kind == Json::OBJ)
