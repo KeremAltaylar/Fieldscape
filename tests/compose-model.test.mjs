@@ -157,3 +157,100 @@ test("a chord's inspector inherits route < section, source 'section'", () => {
   assert.equal(e2.values.rate, "16n"); assert.equal(e2.source.rate, "here");
   assert.equal(M.effective(c, { kind: "chord", i: 3 }, "voice").source.rate, "route");   /* no bands: the route's */
 });
+
+/* Generate form (2026-10-19 brief, .superpowers/sdd/2026-10-17-composition-1-foundation/generate-brief.md) */
+import { readFileSync } from "node:fs";
+const CORE = readFileSync(new URL("../core/composer.cpp", import.meta.url), "utf8");
+/* what the core parses: every key it asks a voice/bass object for, and the strings its tables know */
+const CORE_KEYS = new Set([...CORE.matchAll(/(?:has|get)\("(\w+)"\)/g)].map((m) => m[1]));
+const strTable = (re) => [...CORE.match(re)[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+const CORE_STR = {
+  style: strTable(/STYLES\[NSTYLE\] = \{([^}]*)\}/), role: strTable(/ROLES\[5\] = \{([^}]*)\}/), rate: strTable(/T\[\] = \{(.*)\};/),
+  pedal: strTable(/P\[3\] = \{([^}]*)\}/), dir: strTable(/D\[3\] = \{([^}]*)\}/), mode: strTable(/M\[3\] = \{([^}]*)\}/)
+};
+const gen = (o, c = M.defaults()) => M.generate(c, Object.assign({ form: "AABA", contrast: 0.6, seed: 7, nchords: 16 }, o));
+const voicesAt = (c, i) => ["voice", "sect", "v3", "bass"].map((v) => Object.assign({}, c[v], (c.over.chord[String(i)] || {})[v] || {}));
+const fieldOf = (k) => M.FIELDS.common.concat(...Object.keys(M.FIELDS).filter((s) => s !== "common").map((s) => M.FIELDS[s]), M.BASS).find((f) => f.k === k);
+function checkParsable(c) {
+  const objs = [c.voice, c.sect, c.v3].map((o) => ["route", o]).concat(Object.entries(c.over.chord).flatMap(([i, o]) => Object.entries(o).map(([v, x]) => [i + ":" + v, x])));
+  for (const [where, o] of objs.concat([["bass", c.bass]])) {
+    for (const [k, v] of Object.entries(o)) {
+      assert.ok(CORE_KEYS.has(k), where + " writes " + k + ", which the core never reads");
+      if (CORE_STR[k] && typeof v === "string") assert.ok(CORE_STR[k].includes(v), where + " " + k + "=" + v);
+      const f = fieldOf(k);
+      if (f && f.kind === "knob") assert.ok(typeof v === "number" && v >= f.min && v <= f.max, where + " " + k + "=" + v);
+      if (k === "grid") assert.ok(v.length === 16 && v.every((x) => Number.isInteger(x) && x >= -1 && x <= 4), where + " grid " + v);
+      if (k === "tones") assert.ok(v.length && v.every((x) => Number.isInteger(x) && x >= 0 && x <= 4), where + " tones " + v);
+    }
+  }
+}
+test("generate: the forms and how a route's chords split among their letters", () => {
+  assert.deepEqual(M.FORMS.map((f) => f.id), ["AABA", "ABAB", "ABAC", "sentence", "rondo"]);
+  const sp = (f, n) => M.formSpans(f, n).map((s) => s.letter + (s.b - s.a));
+  assert.deepEqual(sp("AABA", 16), ["A4", "A4", "B4", "A4"]);
+  assert.deepEqual(sp("sentence", 16), ["a4", "a′4", "b8"]);
+  assert.deepEqual(sp("rondo", 16), ["A4", "B3", "A3", "C3", "A3"]);
+  assert.deepEqual(sp("AABA", 3), ["A1", "A1", "B1"]);       /* fewer chords than letters: its first n letters */
+  assert.deepEqual(sp("AABA", 1), ["A1"]);
+  assert.deepEqual(sp("ABAC", 13), ["A4", "B3", "A3", "C3"]);
+});
+test("generate: pure and deterministic; a new seed is a new piece", () => {
+  const c = M.defaults(), before = JSON.stringify(c);
+  assert.deepEqual(gen({}, c), gen({}, c));
+  assert.equal(JSON.stringify(c), before, "generate changed its input");
+  assert.notDeepEqual(gen({ seed: 8 }), gen({ seed: 7 }));
+  const g = gen({});
+  assert.equal(g.seed, 7); assert.deepEqual(g.form, { type: "AABA", contrast: 0.6, seed: 7 });
+});
+test("generate: a repeated A is identical; B differs from A at contrast 1 and equals it at 0", () => {
+  for (const seed of [1, 2, 3, 4, 5]) {
+    const g = gen({ seed });
+    for (let j = 0; j < 4; j++) assert.deepEqual(voicesAt(g, j), voicesAt(g, 4 + j), "seed " + seed + " chord " + j);
+    const g0 = gen({ seed, contrast: 0 });
+    for (let j = 0; j < 4; j++) assert.deepEqual(voicesAt(g0, 8 + j), voicesAt(g0, j), "contrast 0: B is A, seed " + seed);
+    const g1 = gen({ seed, contrast: 1 }), cls = (o) => o.role === "off" ? "off" : ({ arpeggio: "move", euclid: "move", pedal: "held", swells: "held" })[o.style] || "chord";
+    const A = voicesAt(g1, 1), B = voicesAt(g1, 9);
+    for (let v = 0; v < 3; v++) assert.notEqual(cls(B[v]), cls(A[v]), "contrast 1: voice " + v + " keeps its class, seed " + seed);
+  }
+});
+test("generate: textures - one voice moves above one that sustains", () => {
+  const ri = (r) => M.RATES.indexOf(r);
+  for (let seed = 0; seed < 20; seed++) {
+    const g = gen({ seed }), A = [g.voice, g.sect, g.v3];
+    const mover = A.find((o) => o.role !== "off" && ["arpeggio", "euclid", "strum"].includes(o.style) && ri(o.rate) <= ri("8n"));
+    const held = A.find((o) => o !== mover && o.role !== "off" && ["pedal", "swells", "strum"].includes(o.style) && ri(o.rate) >= ri("2n"));
+    assert.ok(mover && held, "seed " + seed + ": " + JSON.stringify(A.map((o) => [o.style, o.rate, o.role])));
+    assert.ok(mover.lo >= held.lo && mover.hi > held.hi, "seed " + seed + " registers");
+  }
+});
+test("generate: each section's last chord thins; the route's last chord settles", () => {
+  const busy = (o) => o.role !== "off" && !["pedal", "swells"].includes(o.style);
+  for (const seed of [1, 2, 3]) {
+    const g = gen({ seed }), cnt = (i) => voicesAt(g, i).slice(0, 3).filter(busy).length;
+    for (const end of [3, 7, 11]) assert.ok(cnt(end) < cnt(end - 1) || cnt(end - 1) === 0, "seed " + seed + " chord " + end + " thins");
+    const last = voicesAt(g, 15);
+    assert.ok(last.slice(0, 3).every((o) => o.role !== "off" && ["pedal", "swells"].includes(o.style)), JSON.stringify(last));
+    assert.equal(last[3].mode, "hold");
+  }
+});
+test("generate: zones and sections untouched, old chord overrides cleared, only differing keys written, all parsable", () => {
+  const c = M.defaults();
+  M.setValue(c, { kind: "section", i: 1 }, "voice", "style", "pedal");
+  M.setValue(c, { kind: "zone", id: "z" }, "sect", "role", "off");
+  M.setValue(c, { kind: "chord", i: 20 }, "voice", "rate", "4n");
+  for (const form of M.FORMS.map((f) => f.id)) for (const n of [1, 3, 12, 16]) for (const contrast of [0, 0.6, 1]) {
+    const g = gen({ form, nchords: n, contrast, seed: n * 31 + 1 }, c);
+    assert.deepEqual(g.over.section, c.over.section); assert.deepEqual(g.over.zone, c.over.zone);
+    assert.ok(Object.keys(g.over.chord).every((i) => +i < n), "a chord past the route, or an old override");
+    for (const [i, o] of Object.entries(g.over.chord)) for (const [v, x] of Object.entries(o)) {
+      assert.ok(Object.keys(x).length, "empty voice " + i + v);
+      for (const k of Object.keys(x)) assert.notDeepEqual(x[k], g[v][k], i + " " + v + "." + k + " equals the route's");
+    }
+    checkParsable(g);
+  }
+});
+test("generate: the route's last chord, with one chord", () => {
+  const g = gen({ nchords: 1 }), v = voicesAt(g, 0);
+  assert.ok(v.slice(0, 3).every((o) => o.role !== "off" && ["pedal", "swells"].includes(o.style)), JSON.stringify(v));
+  assert.equal(v[3].mode, "hold"); checkParsable(g);
+});
