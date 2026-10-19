@@ -645,7 +645,8 @@ static int quality_of(const Patch &P, int step) {
 }
 static int fold(int m, int lo, int hi) { while (m < lo) m += 12; while (m > hi && m - 12 >= lo) m -= 12; return m; }
 static int floor_div(int a, int n) { return a >= 0 ? a / n : -((n - 1 - a) / n); }
-/* composition 2: degree d of the key's scale - ionian on a major first chord, aeolian on a minor - folded into [lo, hi] */
+/* composition 2: degree d of the key's scale - aeolian on a first chord with a minor 3rd, else ionian (sus2, sus4 and quartal
+   count as major) - folded into [lo, hi] */
 static int scale_midi(const Patch &P, int d, int oct, int lo, int hi) {
     int q = quality_of(P, 0); if (q < 0) q = Q_M7;
     const auto &md = MODES[CHORDS[q].iv[1] == 3 ? MODE_AEOLIAN : MODE_IONIAN];
@@ -778,7 +779,7 @@ static void style_hits(const Patch &P, const comp::Voice &v, int nv, std::vector
         }
     }
 }
-/* a melody voice's stream: chord 0's phrase over BARS bars, the progression's chords a bar each (the cadence's pitch aside) */
+/* a melody voice's stream: chord 0's phrase over BARS bars from its start, the progression's chords a bar each (the cadence's pitch aside) */
 static void melody_hits(const Patch &P, const comp::Voice &v, std::vector<Hit> &h) {
     comp::Phrase ph; comp::motif_step(P.comp, 0, ph);
     const double six = 60.0 / P.tempo / 4; const int nb = std::max(1, ph.len16 / 16);
@@ -874,6 +875,7 @@ struct Piece : Device {
     /* composition 2: a melody voice plays the motif (its style aside); the phrase in force this bar; a cadence's last chord on
        the other voices (OTH_HOLD: none), and each voice's notes so far this bar (`thin` keeps a fast voice's first) */
     comp::Phrase mel; int cad_oth = comp::OTH_HOLD, nbar[comp::NVOICE] = {};
+    int mel_step = -2; long long mel_bar0 = 0;   /* the chain step in force, and the bar it began on: the phrase counts from there */
     bool melodic(int q) const { return ccur[q].role == comp::MELODY && patch.comp.motif.n > 0; }
     bool cad_rest(int q, bool fast) const {
         if (cad_oth == comp::OTH_HOLD || melodic(q)) return false;
@@ -1378,7 +1380,7 @@ struct Piece : Device {
             const double gt = patch.cgain[L][q];
             if (!comp_live || r.blend <= 1) cg[q] = gt; else cg[q] += (gt - cg[q]) / r.blend;
             if (!comp_live) ccur[q] = r.v[q]; else comp::glide(ccur[q], r.v[q], r.blend);
-            if (swell_shaped[q] && ccur[q].style != comp::SWELLS) {      /* the voice's own envelope back (8b) */
+            if (swell_shaped[q] && (ccur[q].style != comp::SWELLS || melodic(q))) {      /* the voice's own envelope back (8b) */
                 (q == 0 ? top : q == 1 ? sectr : v3r).each([&](Synth *sy) { sy->shape(patch.env_on[q] ? &patch.env[q] : nullptr); });
                 swell_shaped[q] = false;
             }
@@ -1389,10 +1391,13 @@ struct Piece : Device {
         /* composition 2: the melody's phrase for this bar (it changes only here), and its cadence on the other voices */
         for (int &x : nbar) x = 0;
         cad_oth = comp::OTH_HOLD;
-        for (int q = 0; q < comp::NVOICE; q++) if (melodic(q)) {
+        int mq = -1; for (int q = 0; q < comp::NVOICE && mq < 0; q++) if (melodic(q)) mq = q;
+        if (mq < 0) mel_step = -2;
+        else {
             comp::motif_step(patch.comp, chord, mel);
-            if (mel.cadence && mel.last && comp::rand01(patch.comp.seed, bar, comp::NVOICE, 0) < mel.strength) cad_oth = mel.others;
-            break;
+            if (mel.step != mel_step) { mel_step = mel.step; mel_bar0 = bar; }
+            /* drawn once a chord (salted apart from the styles' draws), so a long last chord holds one way */
+            if (mel.cadence && mel.last && comp::rand01(patch.comp.seed ^ 0xCAD0u, chord, comp::NVOICE, 0) < mel.strength) cad_oth = mel.others;
         }
         cbass = r.bass; comp_live = true;
         bass_bar(time);
@@ -1422,11 +1427,12 @@ struct Piece : Device {
         const int nt = std::max(1, H.ntones), o = floor_div(d, nt);
         return fold(H.tones[d - o * nt] + 12 * (o + oct), lo, hi);
     }
-    /* the phrase's notes starting on this sixteenth (the phrase taken at the bar line, comp_bar): the cursor is bar % its bars;
+    /* the phrase's notes starting on this sixteenth (the phrase taken at the bar line, comp_bar): the cursor is the bars since its
+       chain step began, modulo its bars;
        a note is held to its bar's end at most, the cadence's last note is the key's tonic, 5th or 6th */
     void play_melody(int q, const comp::Voice &v, long long k, long long bar, double time) {
         const comp::Phrase &ph = mel;
-        const int cb = (int)(bar % std::max(1, ph.len16 / 16)), at = cb * 16 + (int)(k % 16);
+        const int cb = (int)((bar - mel_bar0) % std::max(1, ph.len16 / 16)), at = cb * 16 + (int)(k % 16);
         Synth *sy = (q == 0 ? top : q == 1 ? sectr : v3r).sy();
         const double s16 = 60.0 / patch.tempo / 4, g = cg[q];
         for (int i = 0; i < ph.n; i++) {
@@ -1807,7 +1813,7 @@ struct Piece : Device {
         patch = routes[near];
         apply_patch(now);
         H.idx = -1; H.chord = -1; H.ntones = -1;
-        sector = -1; comp_live = false; nzent = 0; cad_oth = comp::OTH_HOLD; for (int q = 0; q < comp::NVOICE; q++) { cped_root[q] = -1; cpulse[q] = 0; calt[q] = 0; }
+        sector = -1; comp_live = false; nzent = 0; cad_oth = comp::OTH_HOLD; mel_step = -2; for (int q = 0; q < comp::NVOICE; q++) { cped_root[q] = -1; cpulse[q] = 0; calt[q] = 0; }
         synth_to(walk_level(route_dist), now);
     }
     void walk(int r, double t, double dist, double now) {

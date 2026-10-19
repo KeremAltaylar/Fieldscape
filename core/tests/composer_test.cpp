@@ -71,8 +71,8 @@ static void test_resolve() {
     std::printf("C resolve: zone > chord > section > route, field by field; an enter-zone acts only after entering\n");
 }
 
-struct Log { std::vector<double> f, t, d; std::vector<int> role; };
-static void lg(void *p, int role, double f, double dur, double t, double) { Log *l = (Log *)p; l->f.push_back(f); l->t.push_back(t); l->d.push_back(dur); l->role.push_back(role); }
+struct Log { std::vector<double> f, t, d, v; std::vector<int> role; };
+static void lg(void *p, int role, double f, double dur, double t, double vel) { Log *l = (Log *)p; l->f.push_back(f); l->t.push_back(t); l->d.push_back(dur); l->v.push_back(vel); l->role.push_back(role); }
 static double draw(void *p) { unsigned *s = (unsigned *)p; *s = *s * 1664525u + 1013904223u; return (*s >> 8) / 16777216.0; }
 static const char *ROUTE = R"({"version":17,"tempo":96,"key":50,"prog":[{"r":0,"q":"m7"},{"r":5,"q":"maj7"},{"r":7,"q":"7"},{"r":0,"q":"m9"}],
     "voice":{"on":true,"synth":"fm"},"sect":{"on":true,"synth":"fm"},"v3":{"on":true,"synth":"am"},"zones":{"on":false},"bed":{"on":false}%s})";
@@ -564,10 +564,23 @@ static void test_melody() {
     const Log t = render(melody("[]"), 40);
     int bars = 0, short_bars = 0; for (int b = 0; b < 15; b++) { bars++; if (bar_notes(t, 1, b).size() != 4) short_bars++; }
     assert(short_bars == 0);
+    /* invert around the root: degrees 0 -2 -1 -4 -> A and C below, folded up into the register: D A C D */
+    const Log iv = render(melody(R"([{"op":"invert","from":0,"to":3}])"), 6);
+    n = bar_notes(iv, 1, 0); assert(n.size() == 4 && n[0] == 50 && n[1] == 57 && n[2] == 60 && n[3] == 50);
+    /* one note per start (a mono voice's second would cut the first): diminishing starts 0 and 1 lands both on 0, the later kept */
+    { Json j = Json::parse(R"({"motif":{"notes":[{"deg":0,"start":0,"len":4},{"deg":2,"start":1,"len":4}]},"chain":[{"op":"diminish","from":0,"to":0}]})");
+      comp::Cfg c; comp::comp_of(&j, c); comp::Phrase ph; comp::motif_step(c, 0, ph);
+      assert(ph.n == 2 && ph.note[0].start == 0 && ph.note[0].deg == 2 && ph.note[1].start == 8 && ph.note[1].deg == 2); }
+    /* the phrase counts its bars from where its chain step starts (here chord 1, bar 3 of a 20 s walk), not the route's start:
+       augmented, its first bar plays the motif's first two notes - G and D of G maj7 (55 62), then B and the root up (59 67) */
+    const Log ao = render(melody(R"([{"op":"augment","from":1,"to":1}])"), 20);
+    n = bar_notes(ao, 1, 3); std::vector<int> n4 = bar_notes(ao, 1, 4);
+    std::printf("C melody augment from bar 3:"); for (int m : n) std::printf(" %d", m); std::printf(" |"); for (int m : n4) std::printf(" %d", m); std::printf("\n");
+    assert(n.size() == 2 && n[0] == 55 && n[1] == 62 && n4.size() == 2 && n4[0] == 59 && n4[1] == 67);
     /* the scale basis: D minor (an m7 first chord: aeolian) degrees 0 1 2 6 -> D E F C */
     const Log sc = render(R"(,"comp":{"voice":{"role":"melody","lo":50,"hi":81},"sect":{"role":"off"},"v3":{"role":"off"},"bass":{"mode":"off"},"motif":{"basis":"scale","notes":[{"deg":0,"start":0},{"deg":1,"start":4},{"deg":2,"start":8},{"deg":6,"start":12}]},"chain":[]})", 6);
     n = bar_notes(sc, 1, 0); assert(n.size() == 4 && n[0] == 50 && n[1] == 52 && n[2] == 53 && n[3] == 60);
-    std::printf("C melody: repeat / seq +1 / retro / fragment 2 / diminish / augment on the chord's degrees; the scale's too\n");
+    std::printf("C melody: repeat / seq +1 / invert / retro / fragment 2 / diminish (one note a start) / augment from its step's first bar; the scale's degrees too\n");
 }
 static void test_cadence() {
     /* a one-chord-step cadence on chord 0, full: the last note is the key's tonic D (50 or 62 in range), held to the bar's end */
@@ -575,6 +588,23 @@ static void test_cadence() {
     std::vector<int> n = bar_notes(c, 1, 0); assert(!n.empty() && (n.back() % 12) == (50 % 12));
     const Log h = render(melody(R"([{"op":"cadence","cad":"half","from":0,"to":0}])"), 6);
     n = bar_notes(h, 1, 0); assert(!n.empty() && (n.back() % 12) == (57 % 12));          /* A, the key's 5th */
+    const Log dc = render(melody(R"([{"op":"cadence","cad":"deceptive","from":0,"to":0}])"), 6);
+    n = bar_notes(dc, 1, 0); assert(!n.empty() && (n.back() % 12) == (58 % 12));           /* B flat, D minor's 6th */
+    /* strength scales the cadence note's velocity by 0.5 + 0.5 x strength; the other notes as they were */
+    { const Log s1 = render(melody(R"([{"op":"cadence","cad":"full","others":"hold","strength":1,"from":0,"to":0}])"), 6),
+                s5 = render(melody(R"([{"op":"cadence","cad":"full","others":"hold","strength":0.5,"from":0,"to":0}])"), 6);
+      std::vector<double> v1, v5; for (size_t i = 0; i < s1.f.size(); i++) if (s1.role[i] == 1 && s1.t[i] < 2.5 - 1e-6) v1.push_back(s1.v[i]);
+      for (size_t i = 0; i < s5.f.size(); i++) if (s5.role[i] == 1 && s5.t[i] < 2.5 - 1e-6) v5.push_back(s5.v[i]);
+      assert(v1.size() == 4 && v5.size() == 4 && v1[0] < 1 && std::fabs(v5[0] - v1[0]) < 1e-9 && std::fabs(v5[3] / v1[3] - 0.75) < 1e-9); }
+    /* strength 0.5: the chance is drawn once a chord - a 3-bar last chord (bars 0-2 of a 20 s walk) stops voice 2 on all its
+       bars or none, and some seed of eight goes each way */
+    { int stopped = 0, played = 0;
+      for (int sd = 1; sd <= 8; sd++) {
+          char b[2048]; std::snprintf(b, sizeof b, R"(,"comp":{"seed":%d,"voice":{"role":"melody","lo":50,"hi":81},"sect":{"style":"strum","rate":"4n"},"v3":{"role":"off"},"bass":{"mode":"off"},%s,"chain":[{"op":"cadence","cad":"full","others":"stop","strength":0.5,"from":0,"to":0}]})", sd, MOT);
+          const Log l = render(b, 20); const bool e0 = bar_notes(l, 2, 0).empty(), e1 = bar_notes(l, 2, 1).empty(), e2 = bar_notes(l, 2, 2).empty();
+          assert(e0 == e1 && e1 == e2); (e0 ? stopped : played)++;
+      }
+      assert(stopped > 0 && played > 0); }
     /* others "stop": with voice 2 strumming, voice 2 is silent on the cadence chord's bars */
     char b[2048]; std::snprintf(b, sizeof b, R"(,"comp":{"voice":{"role":"melody","lo":50,"hi":81},"sect":{"style":"strum","rate":"4n"},"v3":{"role":"off"},"bass":{"mode":"off"},%s,"chain":[{"op":"cadence","cad":"full","others":"stop","from":0,"to":0}]})", MOT);
     const Log s = render(b, 6);
@@ -583,15 +613,46 @@ static void test_cadence() {
     std::snprintf(b, sizeof b, R"(,"comp":{"voice":{"role":"melody","lo":50,"hi":81},"sect":{"style":"arpeggio","rate":"16n"},"v3":{"role":"off"},"bass":{"mode":"off"},%s,"chain":[{"op":"cadence","cad":"full","others":"thin","from":0,"to":0}]})", MOT);
     const Log th = render(b, 6);
     assert(bar_notes(th, 2, 0).size() == 1);
-    std::printf("C cadence: full ends on the tonic, half on the 5th, others stop / thin\n");
+    std::printf("C cadence: full ends on the tonic, half on the 5th, deceptive on the 6th; strength 0.5 -> x0.75 velocity, drawn once a chord; others stop / thin\n");
 }
 static void test_melody_change_at_bar() {
     /* Review Focus 4: the motif replaced mid-bar via fs_piece_set_route takes effect at the next bar line, no note longer than its bar */
     Log l = render(melody("[]"), 6);
     for (size_t i = 0; i < l.f.size(); i++) if (l.role[i] == 1) assert(l.d[i] <= 2.5 + 1e-6);
-    std::printf("C melody: no note outlasts its bar\n");
+    /* the chain changed 1 s into bar 0 (repeat -> seq +2): bar 0 keeps the old phrase, bar 1 (still chord 0) plays the new -
+       D minor 7's 5th, 9th (root up), 7th, and degree 6 (the 5th up): 57 62 60 69 */
+    char a[8192], b[8192]; std::snprintf(a, sizeof a, ROUTE, melody("[]").c_str()); std::snprintf(b, sizeof b, ROUTE, melody(R"([{"op":"seq","arg":2,"from":0,"to":3}])").c_str());
+    unsigned sd = 11; Log m;
+    fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128); fs_piece_test_hooks(pc, draw, &sd, lg, &m);
+    const int r = fs_piece_add_route(pc, a); const int blocks = (int)(20 * 48000 / 128);
+    for (int k = 0; k < blocks; k++) { fs_piece_walk(pc, r, (double)k / blocks, 0); if (k == 375) fs_piece_set_route(pc, r, b); fs_process(pc, 128); }
+    fs_destroy(pc);
+    std::vector<int> n0 = bar_notes(m, 1, 0), n1 = bar_notes(m, 1, 1);
+    assert(n0.size() == 4 && n0[0] == 50 && n0[1] == 57 && n0[2] == 53 && n0[3] == 62);
+    assert(n1.size() == 4 && n1[0] == 57 && n1[1] == 62 && n1[2] == 60 && n1[3] == 69);
+    std::printf("C melody: no note outlasts its bar; a chain changed mid-bar plays from the next bar line\n");
 }
 
+static void test_swell_to_melody() {
+    /* Swells at the route, the melody on chord 1 (bars 3-4 of a 20 s walk): the melody plays with the voice's own envelope - its
+       level 100 ms into bar 4's note is the level of a voice that was the melody all along */
+    /* one note a bar, its tail gone before the next: the meter (~0.1 s) reads the note's own rise */
+    static const char *ONE = R"("motif":{"notes":[{"deg":0,"start":0,"len":4}]})";
+    { double lv[2];
+      for (int run = 0; run < 2; run++) {
+          char cm[2048], buf[8192];
+          std::snprintf(cm, sizeof cm, run ? R"(,"comp":{"voice":{"role":"off"},"sect":{"style":"swells","rate":"1n","lo":50,"hi":81},"v3":{"role":"off"},"bass":{"mode":"off"},%s,"over":{"chord":{"1":{"sect":{"role":"melody"}}}}})"
+                                           : R"(,"comp":{"voice":{"role":"off"},"sect":{"role":"melody","lo":50,"hi":81},"v3":{"role":"off"},"bass":{"mode":"off"},%s})", ONE);
+          std::snprintf(buf, sizeof buf, ROUTE, cm);
+          unsigned sd = 11; fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128); fs_piece_test_hooks(pc, draw, &sd, nullptr, nullptr);
+          const int r = fs_piece_add_route(pc, buf); const int blocks = (int)(20 * 48000 / 128); float rl[3 * 8];
+          for (int k = 0; k < blocks; k++) { fs_piece_walk(pc, r, (double)k / blocks, 0); fs_process(pc, 128);
+              if (k == (int)(10.1 * 48000 / 128)) { fs_piece_roles(pc, rl, 6); lv[run] = rl[8]; } }
+          fs_destroy(pc);
+      }
+      std::printf("C swells to melody: the Second voice 100 ms into a note %.1f dB, the melody all along %.1f dB\n", lv[1], lv[0]);
+      assert(std::fabs(lv[1] - lv[0]) < 3); }
+}
 int main(int argc, char **argv) {
     if (argc > 1 && !std::strcmp(argv[1], "levels")) { test_levels(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "onsets")) { test_onsets(); return 0; }
@@ -605,6 +666,7 @@ int main(int argc, char **argv) {
     test_melody();
     test_cadence();
     test_melody_change_at_bar();
+    test_swell_to_melody();
     test_styles();
     test_bass();
     test_bass_switch();

@@ -47,7 +47,8 @@ struct Cfg { bool on = false; uint32_t seed = 1; Voice v[NVOICE]; Bass bass;
              Motif motif; ChainStep chain[CHAIN_MAX]; int nchain = 0; };
 struct Resolved { Voice v[NVOICE]; Bass bass; int blend = 0; };
 /* the motif as developed for one chord step: its notes (times in sixteenths from the phrase's start), the phrase's length */
-struct Phrase { int n = 0; MNote note[MOTIF_MAX * 2]; uint8_t len16 = 16; bool cadence = false; uint8_t cad = CAD_FULL, others = OTH_THIN; float strength = 1; bool last = false; };
+struct Phrase { int n = 0; MNote note[MOTIF_MAX * 2]; uint8_t len16 = 16; bool cadence = false; uint8_t cad = CAD_FULL, others = OTH_THIN; float strength = 1; bool last = false;
+                int step = -1; };   /* the chain step covering the chord (-1: none, repeat) */
 
 uint64_t id_hash(const char *s);                      /* FNV-1a 64: a zone's point id */
 void comp_of(const Json *j, Cfg &c);                  /* the route patch's "comp"; absent: c.on = false */

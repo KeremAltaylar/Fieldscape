@@ -208,7 +208,7 @@ void motif_step(const Cfg &c, int chord, Phrase &o) {
     o = Phrase();
     const Motif &m = c.motif; const int L = m.bars * 16;
     ChainStep st; bool found = false;
-    for (int i = c.nchain - 1; i >= 0 && !found; i--) if (chord >= c.chain[i].from && chord <= c.chain[i].to) { st = c.chain[i]; found = true; }
+    for (int i = c.nchain - 1; i >= 0 && !found; i--) if (chord >= c.chain[i].from && chord <= c.chain[i].to) { st = c.chain[i]; found = true; o.step = i; }
     o.len16 = (uint8_t)L; o.n = m.n;
     for (int i = 0; i < m.n; i++) o.note[i] = m.note[i];
     switch (st.op) {
@@ -233,6 +233,9 @@ void motif_step(const Cfg &c, int chord, Phrase &o) {
     o.cadence = st.op == OP_CADENCE; o.cad = st.cad; o.others = st.others; o.strength = st.strength;
     int k = 0;   /* clip to the phrase: past its end dropped, a note held to its end at most */
     for (int i = 0; i < o.n; i++) if (o.note[i].start < o.len16) { o.note[k] = o.note[i]; o.note[k].len = (uint8_t)std::min((int)o.note[k].len, o.len16 - o.note[k].start); k++; }
+    o.n = k;
+    k = 0;       /* one note per start - a mono voice's second note would cut the first (diminish lands two on one): the later kept */
+    for (int i = 0; i < o.n; i++) { bool dup = false; for (int j = i + 1; j < o.n && !dup; j++) dup = o.note[j].start == o.note[i].start; if (!dup) o.note[k++] = o.note[i]; }
     o.n = k;
     if (o.cadence && o.last && o.n) {   /* the cadence note - the latest - held to the phrase's end and put last (its pitch: the player's) */
         int j = 0; for (int i = 1; i < o.n; i++) if (o.note[i].start >= o.note[j].start) j = i;
