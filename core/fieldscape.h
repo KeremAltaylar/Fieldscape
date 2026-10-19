@@ -256,6 +256,9 @@ void fs_engine_source(fs_engine *e, int kind, int index, int sub, const char *id
 /* 5: the analysis of a recording the engine asked for (as fs_engine_source's kind/index/sub/id) */
 void fs_engine_source_track(fs_engine *e, int kind, int index, int sub, const char *id, const char *analysis_json);
 void fs_engine_process(fs_engine *e, int frames);
+/* the engine's own timing: underruns = fs_engine_process calls slower than the audio they made (on the web the clock is
+   Date.now(), millisecond-coarse), max_process_ms = the slowest since the last call; the rest 0 */
+void fs_engine_stats(fs_engine *e, fs_stats_t *out);
 float *fs_engine_out(fs_engine *e, int channel);
 const char *fs_engine_state(fs_engine *e);
 /* live reads for the screen, ~30 times a second: the piece's morph cells (fs_piece_morphs), the chord

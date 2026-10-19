@@ -8807,6 +8807,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       }
       fsListen._changed();
     } else if (m.type === "stats") {     /* the composing dock's dropout readout asked (coreStats) */
+      /* slow: the engine's blocks over their budget (it ran late - a dropout if the device's buffer had no slack); underruns:
+         the device's own count of gaps it played, where the browser says (AudioContext.playbackStats), else null */
+      var ps = core.ctx && core.ctx.playbackStats, un = ps && typeof ps.underrunEvents === "number" ? ps.underrunEvents : null;
+      window.__fa.audioStats = { slow: m.slow, maxMs: m.maxMs, underruns: un };
       var cb = core.onStats; core.onStats = null; if (cb) { cb(m); }
     } else if (m.type === "error") {
       console.error("core engine: " + m.message);

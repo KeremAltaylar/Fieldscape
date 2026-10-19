@@ -306,6 +306,29 @@ static void cost_of(const char *comp, const char *syn[3], double &worst, double 
     fs_destroy(pc);
     std::sort(ms.begin(), ms.end()); worst = ms.back(); p999 = ms[(size_t)(ms.size() * 0.999)];
 }
+/* fix round 1 (review C1): a style's level was worked out on the audio thread, again whenever the walk moved the onsets or
+   the chord changed - 4.5-9 ms blocks. Now comp_gains does it when the patch is read; the audio thread only reads a gain.
+   Every block of 30 s of a walk, morphs on and the onset mix moving every 40 blocks (as the walk between recordings does),
+   strum-strum-swells on all three voices, 5 tones */
+static void walk_cost(const char *syn, double &worst, int &over, double &read_ms) {
+    char buf[8192]; std::snprintf(buf, sizeof buf, ROUTE, R"(,"comp":{"voice":{"style":"strum","rate":"8n","tones":[0,1,2,3,4],"spread":20},"sect":{"style":"strum","rate":"8n","tones":[0,1,2,3,4],"spread":20},"v3":{"style":"swells","rate":"2n","tones":[0,1,2,3,4]}})");
+    std::string b(buf); const char *was[3] = { R"("voice":{"on":true,"synth":"fm"})", R"("sect":{"on":true,"synth":"fm"})", R"("v3":{"on":true,"synth":"am"})" };
+    const char *key[3] = { "voice", "sect", "v3" };
+    for (int i = 0; i < 3; i++) { const std::string w = was[i]; b.replace(b.find(w), w.size(), std::string("\"") + key[i] + R"(":{"on":true,"synth":")" + syn + "\"}"); }
+    unsigned seed = 3; fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128); fs_piece_test_hooks(pc, draw, &seed, nullptr, nullptr);
+    auto r0 = std::chrono::steady_clock::now();
+    const int r = fs_piece_add_route(pc, b.c_str());
+    read_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - r0).count();   /* the calling thread's share */
+    worst = 0; over = 0;
+    for (int k = 0; k < (int)(30 * 48000 / 128); k++) {
+        fs_piece_walk(pc, r, k / 11250.0, 0);
+        if (k % 40 == 0) { double d[2] = { 10 + 5 * std::sin(k / 300.0), 20 }, rad[2] = { 50, 50 }, c[2] = { 2000, 2000 }, o[2] = { 0.5, 2.0 }; fs_piece_character(pc, 2, d, rad, c, o); }
+        auto t0 = std::chrono::steady_clock::now(); fs_process(pc, 128);
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        if (k > 375) { worst = std::max(worst, ms); over += ms > 1.5; }
+    }
+    fs_destroy(pc);
+}
 static void test_cost() {
     const char *fm[3] = { "fm", "fm", "am" }, *metal[3] = { "metal", "metal", "metal" };
     double w1, p1, w2, p2;
@@ -314,6 +337,13 @@ static void test_cost() {
     cost_of(R"(,"comp":{"voice":{"style":"strum","rate":"8n","tones":[0,1,2,3,4],"spread":20},"sect":{"style":"strum","rate":"8n","tones":[0,1,2,3,4],"spread":20},"v3":{"style":"swells","rate":"2n","tones":[0,1,2,3,4]}})", metal, w2, p2);
     std::printf("C cost: fm/fm/am arpeggio-strum-swells p99.9 %.3f ms worst %.3f ms; metal x3 strum-strum-swells p99.9 %.3f ms worst %.3f ms (every voice busy)\n", p1, w1, p2, w2);
     assert(p1 < 1.0 && p2 < 1.0 && w1 < 1.33);   /* the worst block alone for fm/fm/am: OS spikes reach any block (the old build too) */
+    int all = 0;
+    for (const char *syn : { "fm", "formant", "metal" }) {
+        double w, rd; int over; walk_cost(syn, w, over, rd); all += over;
+        std::printf("C cost: %s x3 strum-strum-swells, morphs on, onsets moving - slowest block %.3f ms, %d over 1.5 ms; the patch read %.1f ms\n", syn, w, over, rd);
+    }
+    /* a block is 2.67 ms; 1.5 ms leaves the device its slack. Two blocks in 3 x 11250 for the OS (a spike lands anywhere) */
+    assert(all <= 2);
 }
 /* a pool voice stops rendering only once its envelope is under -80 dB for good (Envelope::quiet): never while audible */
 static void test_quiet() {
@@ -391,12 +421,15 @@ static void test_levels() {
         { "swells 1n", R"({"style":"swells","rate":"1n","len":1,"tones":[0,2,4]})" },
         { "swells 2n.", R"({"style":"swells","rate":"2n.","len":1,"tones":[1,3],"lo":60,"hi":84,"attack":0.6,"release":0.5})" } };
     static const char *const SY[] = { "fm", "am", "duo", "mono", "simple", "pluck", "metal", "membrane", "wavetable", "comb", "formant" };
-    /* the bound per synth: 2 dB where a note's power is its envelope's (and pluck's burst's). Three are more than that, their
-       residue measured 2026-10-19 and open: mono's filter envelope opens on each strike and its low-pass keeps less of a high
-       note (a high euclid -2.2, a slow swell +2.3); the formants' norm follows the pitch 120 ms late, so a line of changing
-       notes is not its notes alone (+2..3.4 over Free); metal's highpass rides its envelope, so a held or overlapping note is
-       brighter than its envelope says (chords and swells to +4, a lone strike a bar under) */
-    auto bound = [](const char *sy) { return !std::strcmp(sy, "metal") ? 5.0 : !std::strcmp(sy, "formant") ? 4.0 : !std::strcmp(sy, "mono") ? 3.0 : 2.0; };
+    /* the bound per synth: 2 dB where a note's power is its envelope's (and pluck's burst's). Four are more than that, their
+       residue measured 2026-10-19 and open - the gains are worked out from the envelope when the patch is read, where a
+       render of the synth itself (50-350 ms a style) would stall the web's audio thread, which reads the patch between
+       blocks: mono's filter envelope opens on each strike and its low-pass keeps less of a high note (a high euclid -2.2, a
+       slow swell +2.3); comb's resonator keeps more of a low note (a high arpeggio -2.3); the formants' norm follows the
+       pitch 120 ms late, so a line of changing notes is not its notes alone (+2..4.1 over Free); metal's highpass rides its
+       envelope, so a held or overlapping note is brighter than its envelope says (chords and swells to +3.5, a bar's lone
+       strike -0.8) */
+    auto bound = [](const char *sy) { return !std::strcmp(sy, "metal") ? 5.0 : !std::strcmp(sy, "formant") ? 4.5 : !std::strcmp(sy, "mono") ? 3.0 : !std::strcmp(sy, "comb") ? 2.5 : 2.0; };
     double worst = 0, over = -1; const char *ws = "", *wy = "";
     std::printf("C levels (style - Free, dB, voice 2):");
     for (const char *sy : SY) {
@@ -409,7 +442,7 @@ static void test_levels() {
             over = std::max(over, std::fabs(d) - bound(sy));
         }
     }
-    std::printf("\nC levels: the furthest from Free %+.1f dB (%s %s); every synth inside its bound (2 dB; mono 3, formant 4, metal 5)\n", worst, wy, ws);
+    std::printf("\nC levels: the furthest from Free %+.1f dB (%s %s); every synth inside its bound (2 dB; comb 2.5, mono 3, formant 4.5, metal 5)\n", worst, wy, ws);
     assert(over <= 0);
 }
 
@@ -436,16 +469,17 @@ static Onsets onset_run(const char *sy, const char *st) {
     for (size_t i = 0; i < x.size(); i++) { y1 = (1 - a) * x[i] + a * y1; y2 = (1 - a) * y1 + a * y2; o.hf[i] = (float)std::fabs(x[i] - y2); }
     return o;
 }
-/* the high band over note k's first 6 ms (a stolen voice's 3 ms fade, then its attack; a pluck's comb speaks a period late,
-   so its period too): its peak, and its rise over the 3 ms before (a ringing note's own highs are not a click) */
+/* the high band over note k's first 15 ms (a stolen voice's fade, up to 12 ms, then its attack; a pluck's comb speaks a
+   period late, so its period too): its peak, and its rise over the 3 ms before (a ringing note's own highs are not a
+   click). A fade shorter than the note's period cut it (a 3 ms one: x1.08-1.10 here, over a clean attack) */
 static double onset_peak(const Onsets &o, size_t k, bool pluck, bool rise) {
-    const long long i = (long long)std::llround(o.t[k] * 48000), W = 288 + (pluck ? (long long)(48000 / o.f[k]) : 0), n = (long long)o.hf.size();
+    const long long i = (long long)std::llround(o.t[k] * 48000), W = 720 + (pluck ? (long long)(48000 / o.f[k]) : 0), n = (long long)o.hf.size();
     auto peak = [&](long long i0, long long i1) { float m = 0; for (long long j = std::max(0LL, i0); j < std::min(n, i1); j++) m = std::max(m, o.hf[j]); return (double)m; };
     return peak(i, i + W) - (rise ? peak(i - 144, i) : 0);
 }
 static void test_onsets() {
-    double worst = 0; const char *wsy = "", *wst = "";
-    for (const char *sy : { "fm", "am", "pluck" }) for (const char *st : { R"({"style":"pedal"})", R"({"style":"strum"})" }) {
+    double worst = 0, plw = 0; const char *wsy = "", *wst = "";
+    for (const char *sy : { "fm", "am", "pluck" }) for (const char *st : { R"({"style":"pedal"})", R"({"style":"strum"})", R"({"style":"strum","lo":36,"hi":60})" }) {
         const Onsets o = onset_run(sy, st);
         assert(!o.t.empty() && o.t[0] > 3.9);                   /* chord 1 silent */
         const bool pl = !std::strcmp(sy, "pluck");
@@ -468,16 +502,18 @@ static void test_onsets() {
         }
         std::printf("C onsets: %s %s - %d strikes after the clean ones, the largest rise in the highs x%.2f its pitch's clean attack\n", sy, st, n, most);
         assert(n >= 8);
-        if (most > worst) { worst = most; wsy = sy; wst = st; }
+        if (!pl && most > worst) { worst = most; wsy = sy; wst = st; }
+        if (pl) plw = std::max(plw, most);
     }
-    std::printf("C onsets: no retrigger past a clean attack (largest x%.2f, %s %s)\n", worst, wsy, wst);
-    assert(worst <= 1.35);   /* a strike rings on what was there and its velocity is not quite its brightness: 1.35, where a
-                                retrigger that broke the waveform was x1.5-1.7 (an fm strum, before the fade) */
+    std::printf("C onsets: no retrigger past a clean attack (largest x%.2f, %s %s; pluck x%.2f)\n", worst, wsy, wst, plw);
+    /* pluck is no envelope (nothing to fade): each strike is a fresh few ms of pink noise, its highs a draw - x1.6 */
+    assert(worst <= 1.0 && plw <= 1.6);
 }
 
 int main(int argc, char **argv) {
     if (argc > 1 && !std::strcmp(argv[1], "levels")) { test_levels(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "onsets")) { test_onsets(); return 0; }
+    if (argc > 1 && !std::strcmp(argv[1], "cost")) { test_cost(); return 0; }
     test_parse();
     test_resolve();
     test_kept();

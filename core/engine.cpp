@@ -9,6 +9,7 @@
 #include "fieldscape.h"
 #include "json.hpp"
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -63,6 +64,7 @@ struct Slot {
 
 struct fs_engine {
     float sr = 48000;
+    int slow = 0; float slow_ms = 0;   /* fs_engine_stats: blocks slower than their audio, the slowest since the last ask */
     fs_mix *mix = nullptr;
     fs_device *piece = nullptr;
     Slot slot[SLOTS];
@@ -470,7 +472,7 @@ void fs_engine_source_track(fs_engine *e, int kind, int index, int sub, const ch
         fs_piece_rhythm_track(e->piece, index, sub, json);
     }
 }
-void fs_engine_process(fs_engine *e, int frames) {
+static void engine_process(fs_engine *e, int frames) {
     fs_mix_process(e->mix, frames); e->frames += frames;
     if (!e->watch.empty()) {   /* 8a: a stretch point's own sound at its own gain, ~0.1 s mean square - not where the walker stands */
         double ms = 0, own = 1; bool found = false;
@@ -482,6 +484,17 @@ void fs_engine_process(fs_engine *e, int frames) {
         ms *= own * own;
         e->watch_ms += ((found ? ms / std::max(1, frames) : 0) - e->watch_ms) * (1 - std::exp(-frames / (0.1 * e->sr)));
     }
+}
+/* timed as fs_process times a device (core.cpp) */
+void fs_engine_process(fs_engine *e, int frames) {
+    const auto t0 = std::chrono::steady_clock::now();
+    engine_process(e, frames);
+    const float ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    if (ms > e->slow_ms) e->slow_ms = ms;
+    if (ms > 1000.0f * frames / e->sr) e->slow++;
+}
+void fs_engine_stats(fs_engine *e, fs_stats_t *out) {
+    *out = fs_stats_t{}; out->underruns = e->slow; out->max_process_ms = e->slow_ms; e->slow_ms = 0;
 }
 /* 8a: the point the screen shows; its level (and a rhythm point's recent grains) through fs_engine_point */
 void fs_engine_watch(fs_engine *e, const char *id) { e->watch = id ? id : ""; e->watch_ms = 0; }

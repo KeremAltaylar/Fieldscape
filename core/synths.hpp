@@ -62,10 +62,12 @@ struct Synth {
     /* composition's level match: a steady note's power at f against another's (1: the same at every pitch) */
     virtual double note_power(double) const { return 1; }
     /* composition: a voice taken for another pitch while it still rings - its frequency would jump under a sounding note
-       (the waveform's slope breaks: a click). It fades for `dur` first, and the note starts after (the piece's note()) */
+       (the waveform's slope breaks: a click). It fades over `dur` first (an exponential, a quarter of `dur` its time
+       constant: down to 2 % and no corner at its end), and the note starts after (the piece's note()) */
     double last_f = 0;
     virtual bool sounding(double t) { Envelope *v = amp(); return v && v->sig.value(t) > 1e-3; }
-    virtual void fade(double t, double dur) { if (Envelope *v = amp()) v->sig.linearRampTo(0, dur, t); }
+    static void fade_env(Envelope &e, double t, double dur) { e.sig.setRampPoint(t); e.sig.setTargetAtTime(0, t, dur / 4); }
+    virtual void fade(double t, double dur) { if (Envelope *v = amp()) fade_env(*v, t, dur); }
     EnvSpec own{}; bool own_kept = false, user_env = false;
     virtual void shape(const EnvSpec *e) {
         user_env = e != nullptr;
@@ -188,7 +190,7 @@ struct DuoSynth : Synth {
     void set(const Settings &st) override { harm.p.set(st.harm, 0); harm.a = harm.b = (float)st.harm; }
     /* 8b: both voices (the duo keeps its own envelope as any synth does: its amp() is v0's) */
     void shape(const EnvSpec *e) override { Synth::shape(e); v1.shape(e); }
-    void fade(double t, double dur) override { v0.env.sig.linearRampTo(0, dur, t); v1.env.sig.linearRampTo(0, dur, t); }
+    void fade(double t, double dur) override { fade_env(v0.env, t, dur); fade_env(v1.env, t, dur); }
     Envelope *amp() override { return &v0.env; }   /* both voices' envelope (they are struck and shaped together) */
     void attack(double f, double t, double vel) override {
         v0.env.triggerAttack(t, vel); v0.fenv.triggerAttack(t); v1.env.triggerAttack(t, vel); v1.fenv.triggerAttack(t);
