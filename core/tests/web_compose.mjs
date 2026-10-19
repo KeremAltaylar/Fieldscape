@@ -130,7 +130,7 @@ try {
   const g = JSON.parse(await ev(`JSON.stringify(__fa.routePatch(${R}).comp)`));
   check("Generate writes the form, a seed and chord overrides for the 16 chords", !!g.form && g.form.type === "AABA" && g.form.seed === g.seed && Object.keys(g.over.chord).length > 0 && Object.keys(g.over.chord).every((i) => +i < 16), g.form);
   check("the seed field shows the new seed", +(await ev("document.querySelector('#compose-dock .cd-head input').value")) === g.seed, null);
-  check("what it wrote is the model's generate (deterministic)", await ev(`(function(){ var b = ${gBefore}; return JSON.stringify(FsCompose.generate(b, { form: "AABA", contrast: ${g.form && g.form.contrast}, seed: ${g.seed}, nchords: 16 })) === JSON.stringify(__fa.routePatch(${R}).comp); })()`), null);
+  check("what it wrote is the model's generate (deterministic)", await ev(`(function(){ var b = ${gBefore}; return JSON.stringify(FsCompose.generate(b, { form: "AABA", contrast: ${g.form && g.form.contrast}, seed: ${g.seed}, nchords: 16, bpm: __fa.routePatch(${R}).tempo || 72 })) === JSON.stringify(__fa.routePatch(${R}).comp); })()`), null);
   check("the zones and sections stay", JSON.stringify(g.over.zone) === JSON.stringify(JSON.parse(gBefore).over.zone) && JSON.stringify(g.over.section) === JSON.stringify(JSON.parse(gBefore).over.section), null);
   check("the form row shows the letters over their chords", (await ev("[].map.call(document.querySelectorAll('#compose-dock .cd-form .cd-band'), function (b) { return b.textContent; }).join('|')")) === "A|A|B|A",
     await ev("[].map.call(document.querySelectorAll('#compose-dock .cd-form .cd-band'), function (b) { return b.textContent; })"));
@@ -141,9 +141,17 @@ try {
   await ev("document.body.focus(), document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true })), 0"); await sleep(300);
   check("one Ctrl+Z takes the whole generation back", (await ev(`JSON.stringify(__fa.routePatch(${R}).comp)`)) === gBefore && !(await ev("!!document.querySelector('#compose-dock .cd-form')")), null);
   await ev("(function(){ var i = document.querySelector('#compose-dock .cd-head input'); i.value = 7; i.dispatchEvent(new Event('change', { bubbles: true })); })(), 0"); await sleep(400);
-  check("the panel open, a typed seed is that seed's piece", await ev(`(function(){ var c = __fa.routePatch(${R}).comp; return c.seed === 7 && !!c.form && c.form.seed === 7 && JSON.stringify(c) === JSON.stringify(FsCompose.generate(${gBefore}, { form: "AABA", contrast: c.form.contrast, seed: 7, nchords: 16 })); })()`), null);
-  await ev("document.body.focus(), document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true })), 0"); await sleep(300);
-  await ev("document.querySelector('#compose-dock .cd-gen').click(), 0"); await sleep(200);
+  check("the panel open, a typed seed is that seed's piece", await ev(`(function(){ var c = __fa.routePatch(${R}).comp; return c.seed === 7 && !!c.form && c.form.seed === 7 && JSON.stringify(c) === JSON.stringify(FsCompose.generate(${gBefore}, { form: "AABA", contrast: c.form.contrast, seed: 7, nchords: 16, bpm: __fa.routePatch(${R}).tempo || 72 })); })()`), null);
+  /* fix round 1 #8: a hand edit keeps the form, marked edited; a template clears the form with its chords */
+  await ev("document.querySelector('#cd-lanes .cd-lane[data-voice=\"voice\"] .cd-cell[data-i=\"2\"]').click(), 0"); await sleep(300);
+  await ev("(function(){ var m = document.querySelector('#cd-insp .cd-row2[data-k=\"rate\"] select'); m.value = m.value === '4n' ? '2n' : '4n'; m.dispatchEvent(new Event('change', { bubbles: true })); })(), 0"); await sleep(400);
+  check("a hand edit after Generate: the form row says edited, dimmed", await ev(`(function(){ var r = document.querySelector('#compose-dock .cd-formrow'); return !!__fa.routePatch(${R}).comp.form.edited && !!r && r.classList.contains('edited') && r.querySelector('.cd-name').textContent === 'form · edited' && /generated · edited/.test(r.title) && getComputedStyle(r.querySelector('.cd-band')).opacity === '0.5'; })()`), null);
+  await shot("8-edited");
+  await ev("(function(){ var m = document.getElementById('cd-template'); m.value = 'ambient'; m.dispatchEvent(new Event('change', { bubbles: true })); })(), 0"); await sleep(400);
+  check("a template after Generate clears the form and its chords, keeps zones and sections", await ev(`(function(){ var c = __fa.routePatch(${R}).comp, b = ${gBefore}; return !c.form && JSON.stringify(c.over.chord) === '{}' && JSON.stringify(c.over.zone) === JSON.stringify(b.over.zone) && JSON.stringify(c.over.section) === JSON.stringify(b.over.section) && !document.querySelector('#compose-dock .cd-form'); })()`), null);
+  await ev("document.body.focus(), 0");
+  for (let i = 0; i < 3; i++) { await ev("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true })), 0"); await sleep(250); }
+  check("Ctrl+Z back through the template, the edit and the typed seed", (await ev(`JSON.stringify(__fa.routePatch(${R}).comp)`)) === gBefore, null);
   /* a zone on the route (made here, so the test never depends on the data): picked on the map, it is the dock's selection */
   const zid = await ev(`(function(){ var f = __fa.features().filter(function (g) { return g.properties.id === ${R}; })[0], c = f.geometry.coordinates[Math.floor(f.geometry.coordinates.length / 2)];
     return __fa.addPoint(c[0], c[1], "Compose test zone"); })()`);
@@ -186,6 +194,20 @@ try {
   check("1024x700: the Generate panel and the form row fit one screen", sspill.length === 0 && !!(await ev("!!document.querySelector('#compose-dock .cd-form')")), sspill.slice(0, 5));
   await shot("7-generate-1024");
   await ev("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true })), FsComposeDock.close(), 0"); await sleep(300);
+  /* fix round 1 #1: 24 chords - the form over the 16 the engine reads, and the panel says so */
+  await ev(`__fa.patchEdit(${R}, function (p) { window.__prog24 = p.prog; p.prog = p.prog.concat(p.prog.slice(0, 8)); }), 0`); await sleep(300);
+  await ev(`__fa.openPatchPanel(), document.getElementById('pp-compose').click(), 0`); await sleep(800);
+  await ev("document.querySelector('#compose-dock .cd-gen').click(), 0"); await sleep(300);
+  check("24 chords: the panel says the form is over chords 1-16 of 24", await ev("[].some.call(document.querySelectorAll('#cd-insp .cd-isub'), function (p) { return p.textContent === 'form over chords 1\u201316 of 24'; })"),
+    await ev("[].map.call(document.querySelectorAll('#cd-insp .cd-isub'), function (p) { return p.textContent; })"));
+  await ev("document.getElementById('cd-generate').click(), 0"); await sleep(500);
+  const g24 = JSON.parse(await ev(`JSON.stringify(__fa.routePatch(${R}).comp)`));
+  check("24 chords: overrides only on chords 1-16, the form row over them", Object.keys(g24.over.chord).every((i) => +i < 16) && await ev("(function(){ var b = document.querySelectorAll('#compose-dock .cd-form .cd-band'), c = document.querySelectorAll('#cd-strip .cd-chord')[15]; return b.length === 4 && b[3].getBoundingClientRect().right <= c.getBoundingClientRect().right + 2; })()"), Object.keys(g24.over.chord));
+  const s24 = await spillOf();
+  check("24 chords at 1024x700: one screen", s24.length === 0, s24.slice(0, 5));
+  await shot("9-24-chords-1024");
+  await ev("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true })), FsComposeDock.close(), 0"); await sleep(300);
+  await ev(`__fa.patchEdit(${R}, function (p) { p.prog = window.__prog24; }), 0`); await sleep(300);
   /* desk only: a phone's patch panel has no Compose */
   await s.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(600);
   await ev(`fsListen.select(${R}), __fa.openPatchPanel(), 0`); await sleep(600);

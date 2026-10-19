@@ -57,6 +57,7 @@ body.composing #app { height: calc(100dvh - var(--cd-h)); }
 .cd-row2[data-k="form"] .cd-seg { grid-template-columns: repeat(5, auto); }   /* each form as wide as its name needs, the rest shared */
 .cd-row2[data-k="form"] .cd-seg button { text-transform: none; padding-left: 0; padding-right: 0; }   /* the sentence's a a' b stays lower case */
 .cd-band.form.rep { border-style: dashed; background: none; color: var(--dim); }
+.cd-formrow.edited .cd-band.form { opacity: .5; }   /* hand edits since: the letters are where it started */
 
 /* the lanes: a word and a picture per chord; a repeat of the cell before carries the picture and drops the word */
 .cd-lanes { display: flex; flex-direction: column; gap: var(--s-1); flex: none; }

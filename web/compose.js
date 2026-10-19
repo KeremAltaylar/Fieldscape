@@ -43,7 +43,11 @@
   function same(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
   /* ctx.save says true, or why it could not store (shown with Retry until a save goes through) */
   function store() { var r = ctx.save(M.clone(comp)); saveErr = r === true || r === undefined ? null : String(r || "not stored"); }
-  function commit() { store(); hist.push(comp); render(); }
+  /* a hand edit to the route or a chord after Generate: the form row says "edited" (a section's or zone's edit is not the form's) */
+  function commit(fresh) {
+    if (comp.form && !fresh && sel.kind !== "section" && sel.kind !== "zone") { comp.form.edited = true; }
+    store(); hist.push(comp); render();
+  }
   function resize() { if (window.__fa && __fa.map) { setTimeout(function () { __fa.map.resize(); }, 0); } }
 
   function open(c) {
@@ -112,7 +116,9 @@
     M.TEMPLATES.forEach(function (x) { s.appendChild(new Option(x.label, x.id)); });
     s.value = cur ? cur.id : "";
     s.addEventListener("change", function () { var x = M.TEMPLATES.filter(function (y) { return y.id === s.value; })[0];
-      if (x) { var nc = x.comp(); nc.over = comp.over; nc.seed = comp.seed; comp = nc; commit(); } });
+      if (x) { var nc = x.comp(); nc.seed = comp.seed;
+        nc.over = comp.form ? { chord: {}, section: comp.over.section, zone: comp.over.zone } : comp.over;   /* a generated piece's chords go with its form */
+        comp = nc; commit(); } });
     tl.appendChild(s); h.appendChild(tl);
     var sd = el("label"); sd.appendChild(el("span", "cd-lbl", "seed"));
     var si = el("input"); si.type = "number"; si.min = 0; si.max = 99999; si.value = comp.seed; si.setAttribute("aria-label", "Seed");
@@ -133,16 +139,24 @@
   }
   /* the form's letters over their chords (a generated piece's), a repeat dashed */
   function formRow(n) {
-    var r = el("div", "cd-row cd-formrow"); r.appendChild(el("span", "cd-name", "form"));
+    var ed = !!comp.form.edited, r = el("div", "cd-row cd-formrow" + (ed ? " edited" : ""));
+    r.appendChild(el("span", "cd-name", ed ? "form · edited" : "form"));
     var t = el("div", "cd-track cd-form"), seen = {};
-    t.title = M.FORMS.filter(function (f) { return f.id === comp.form.type; })[0].label + " · seed " + comp.form.seed + " · contrast " + Math.round(comp.form.contrast * 100) + " %";
-    M.formSpans(comp.form.type, n).forEach(function (x) {
+    t.title = (ed ? "generated · edited: " : "generated: ") + M.FORMS.filter(function (f) { return f.id === comp.form.type; })[0].label + " · seed " + comp.form.seed +
+      " · contrast " + Math.round(comp.form.contrast * 100) + " %" + (n > M.NCHORD ? " · over chords 1–" + M.NCHORD + " of " + n : "");
+    r.title = t.title;
+    M.formSpans(comp.form.type, Math.min(n, M.NCHORD)).forEach(function (x) {
       var b = el("span", "cd-band form" + (seen[x.letter] ? " rep" : ""), x.letter); seen[x.letter] = true;
       b.style.left = (x.a / n * 100) + "%"; b.style.width = "calc(" + ((x.b - x.a) / n * 100) + "% - 3px)";   /* the strip's gap */ t.appendChild(b); });
     r.appendChild(t); return r;
   }
+  /* the bands over each chord (as the lanes take them): a section's keys are written on its chords, so the form plays over it */
   function generate(seed) {
-    comp = M.generate(comp, { form: genForm, contrast: genContrast, seed: seed, nchords: ctx.chords.length }); commit();
+    var n = ctx.chords.length, bs = M.bands(ctx.coords, ctx.sections() || [], ctx.zones()), at = [];
+    for (var i = 0; i < n; i++) { at.push(bs.filter(function (b) { return b.t0 < (i + 1) / n && b.t1 > i / n; })); }
+    comp = M.generate(comp, { form: genForm, contrast: genContrast, seed: seed, nchords: n, at: at,
+      bpm: ((ctx.route.properties || {}).patch || {}).tempo || 72 });   /* the core's own default tempo */
+    commit(true);
   }
   function strip(n) {
     var r = el("div", "cd-row"); r.appendChild(el("span", "cd-name", "chords"));
@@ -330,8 +344,9 @@
     ki.addEventListener("input", function () { genContrast = +ki.value; out.textContent = fmt(k, genContrast); fill(); });
     kc.appendChild(ki); q.appendChild(kc); q.appendChild(out); q.appendChild(el("span", "cd-src")); w.appendChild(q);
     /* how the chords split: "A A B A · 4 4 4 4 chords" */
-    var sp = M.formSpans(genForm, n);
-    w.appendChild(el("p", "cd-isub", sp.map(function (x) { return x.letter; }).join(" ") + " · " + sp.map(function (x) { return x.b - x.a; }).join(" ") + (n === 1 ? " chord" : " chords")));
+    var m = Math.min(n, M.NCHORD), sp = M.formSpans(genForm, m);
+    w.appendChild(el("p", "cd-isub", sp.map(function (x) { return x.letter; }).join(" ") + " · " + sp.map(function (x) { return x.b - x.a; }).join(" ") + (m === 1 ? " chord" : " chords")));
+    if (n > m) { var lim = el("p", "cd-isub", "form over chords 1–" + m + " of " + n); lim.title = "The engine reads " + m + " chords' own settings; the rest play the route's"; w.appendChild(lim); }
     w.appendChild(el("p", "cd-isub", "a new seed each press · Ctrl+Z undoes"));
     var tools = el("div", "cd-itools"); tools.dataset.fk = "tools";
     var g = el("button", "cd-listen", "Generate"); g.type = "button"; g.id = "cd-generate"; g.title = "Write a new piece in this form, with a new seed";

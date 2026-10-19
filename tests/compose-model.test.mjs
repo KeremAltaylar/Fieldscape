@@ -168,6 +168,7 @@ const CORE_STR = {
   style: strTable(/STYLES\[NSTYLE\] = \{([^}]*)\}/), role: strTable(/ROLES\[5\] = \{([^}]*)\}/), rate: strTable(/T\[\] = \{(.*)\};/),
   pedal: strTable(/P\[3\] = \{([^}]*)\}/), dir: strTable(/D\[3\] = \{([^}]*)\}/), mode: strTable(/M\[3\] = \{([^}]*)\}/)
 };
+const moving = (o) => o.role !== "off" && ["16n", "8n"].includes(o.rate) && !["pedal", "swells"].includes(o.style);
 const gen = (o, c = M.defaults()) => M.generate(c, Object.assign({ form: "AABA", contrast: 0.6, seed: 7, nchords: 16 }, o));
 const voicesAt = (c, i) => ["voice", "sect", "v3", "bass"].map((v) => Object.assign({}, c[v], (c.over.chord[String(i)] || {})[v] || {}));
 const fieldOf = (k) => M.FIELDS.common.concat(...Object.keys(M.FIELDS).filter((s) => s !== "common").map((s) => M.FIELDS[s]), M.BASS).find((f) => f.k === k);
@@ -224,10 +225,13 @@ test("generate: textures - one voice moves above one that sustains", () => {
   }
 });
 test("generate: each section's last chord thins; the route's last chord settles", () => {
-  const busy = (o) => o.role !== "off" && !["pedal", "swells"].includes(o.style);
+  /* fix round 1: strict - the section's end has fewer moving voices than the chord before it, over many seeds and forms */
+  for (let seed = 0; seed < 300; seed++) for (const form of ["AABA", "rondo"]) {
+    const g = gen({ seed, form }), cnt = (i) => voicesAt(g, i).slice(0, 3).filter(moving).length;
+    for (const s of M.formSpans(form, 16).slice(0, -1)) assert.ok(cnt(s.b - 1) < cnt(s.b - 2), form + " seed " + seed + " chord " + (s.b - 1) + " thins");
+  }
   for (const seed of [1, 2, 3]) {
-    const g = gen({ seed }), cnt = (i) => voicesAt(g, i).slice(0, 3).filter(busy).length;
-    for (const end of [3, 7, 11]) assert.ok(cnt(end) < cnt(end - 1) || cnt(end - 1) === 0, "seed " + seed + " chord " + end + " thins");
+    const g = gen({ seed });
     const last = voicesAt(g, 15);
     assert.ok(last.slice(0, 3).every((o) => o.role !== "off" && ["pedal", "swells"].includes(o.style)), JSON.stringify(last));
     assert.equal(last[3].mode, "hold");
@@ -253,4 +257,74 @@ test("generate: the route's last chord, with one chord", () => {
   const g = gen({ nchords: 1 }), v = voicesAt(g, 0);
   assert.ok(v.slice(0, 3).every((o) => o.role !== "off" && ["pedal", "swells"].includes(o.style)), JSON.stringify(v));
   assert.equal(v[3].mode, "hold"); checkParsable(g);
+});
+
+/* Generate form, fix round 1 */
+test("fix 1: the form covers the chords the core reads (NCHORD 16); the settle lands on chord 16", () => {
+  assert.equal(M.NCHORD, 16);
+  for (const n of [20, 64]) for (const seed of [1, 2, 3]) {
+    const g = gen({ nchords: n, seed });
+    assert.ok(Object.keys(g.over.chord).every((i) => +i < 16), n + ": " + Object.keys(g.over.chord));
+    const last = voicesAt(g, 15);
+    assert.ok(last.slice(0, 3).every((o) => o.role !== "off" && ["pedal", "swells"].includes(o.style)) && last[3].mode === "hold", JSON.stringify(last));
+    for (let j = 0; j < 3; j++) assert.deepEqual(voicesAt(g, j), voicesAt(g, 4 + j), "the spans are over 16 chords");
+  }
+});
+test("fix 2: a chord under a section that sets a voice's key writes the generated value, so the form plays", () => {
+  const c = M.defaults();
+  M.setValue(c, { kind: "section", i: 1 }, "voice", "style", "pedal");
+  M.setValue(c, { kind: "section", i: 1 }, "sect", "rate", "1n");
+  M.setValue(c, { kind: "section", i: 1 }, "bass", "mode", "off");
+  const at = []; for (let i = 0; i < 16; i++) at.push(i >= 4 && i < 12 ? [{ kind: "section", id: 1, t0: 0.25, t1: 0.75 }] : []);
+  const res = (g, i, v, sec) => Object.assign({}, g[v], sec ? (g.over.section["1"] || {})[v] || {} : {}, (g.over.chord[String(i)] || {})[v] || {});
+  for (const seed of [1, 2, 3, 4, 5, 6, 7, 8]) {
+    const g = gen({ seed, at }, c), plain = gen({ seed });
+    for (let i = 4; i < 12; i++) for (const [v, k] of [["voice", "style"], ["sect", "rate"], ["bass", "mode"]])
+      assert.deepEqual(res(g, i, v, true)[k], res(plain, i, v, false)[k], "seed " + seed + " chord " + i + " " + v + "." + k);
+    assert.deepEqual(g.over.section, c.over.section);
+    checkParsable(g);
+  }
+});
+test("fix 3: a' differs from A in one or two changes, never none, the octave either way", () => {
+  const dirs = new Set();
+  for (let seed = 0; seed < 500; seed++) {
+    const g = gen({ seed, form: "sentence" }), A = voicesAt(g, 0).slice(0, 3), P = voicesAt(g, 4).slice(0, 3);
+    let changes = 0;
+    const dlo = A.map((o, i) => P[i].lo - o.lo);
+    if (dlo[0] !== 0) { assert.ok(Math.abs(dlo[0]) === 12 && dlo.every((d, i) => d === dlo[0] && P[i].hi - A[i].hi === d), "seed " + seed + " octave " + dlo); changes++; dirs.add(dlo[0]); }
+    A.forEach((o, i) => { const ks = Object.keys(Object.assign({}, o, P[i])).filter((k) => k !== "lo" && k !== "hi" && JSON.stringify(o[k]) !== JSON.stringify(P[i][k]));
+      changes += ks.filter((k) => !(k === "spread" && ks.includes("rate"))).length; });   /* a strum's spread follows its rate (fix 5) */
+    assert.ok(changes >= 1 && changes <= 2, "seed " + seed + ": " + changes + " changes");
+  }
+  assert.deepEqual([...dirs].sort(), [-12, 12]);
+});
+test("fix 4: every letter has exactly one mover above one sustainer, the support between", () => {
+  const cnt = { mover: ["16n", "8n"], held: ["2n", "2n.", "1n"], support: ["4n", "4n."] };
+  for (let seed = 0; seed < 1000; seed++) for (const contrast of [0.25, 0.5, 0.75]) for (const f of M.FORMS) {
+    const g = gen({ seed, contrast, form: f.id });
+    for (const s of M.formSpans(f.id, 16)) {
+      const on = voicesAt(g, s.a).slice(0, 3).filter((o) => o.role !== "off"), by = (k) => on.filter((o) => cnt[k].includes(o.rate));
+      const where = f.id + " " + contrast + " seed " + seed + " " + s.letter + ": " + JSON.stringify(on.map((o) => [o.style, o.rate, o.lo, o.hi]));
+      assert.ok(by("mover").length === 1 && by("held").length === 1 && by("support").length === on.length - 2, where);
+      const m = by("mover")[0], h = by("held")[0];
+      assert.ok(m.lo > h.lo && m.hi > h.hi && by("support").every((x) => x.lo > h.lo && x.lo < m.lo), where);
+    }
+  }
+});
+test("fix 5 and 6: a strum's spread within 60% of its step; a swell's attack + release at most 0.95", () => {
+  const STRIDE = { "16n": 1, "8n": 2, "8n.": 3, "4n": 4, "4n.": 6, "2n": 8, "2n.": 12, "1n": 16 };
+  for (const bpm of [undefined, 72, 140]) for (let seed = 0; seed < 300; seed++) for (const form of ["AABA", "sentence"]) {
+    const g = gen({ seed, form, bpm, contrast: 1 }), step = (r) => 60000 / (bpm || 96) / 4 * STRIDE[r];
+    for (let i = 0; i < 16; i++) for (const o of voicesAt(g, i).slice(0, 3)) {
+      if (o.style === "strum") assert.ok((o.tones.length - 1) * o.spread <= 0.6 * step(o.rate) + 1e-9, "seed " + seed + " " + JSON.stringify(o));
+      if (o.style === "swells") assert.ok(o.attack + o.release <= 0.95 + 1e-9, "seed " + seed + " " + JSON.stringify(o));
+    }
+  }
+});
+test("fix 7: a one-chord section does not thin (the last chord still settles)", () => {
+  for (let seed = 0; seed < 50; seed++) {
+    const g = gen({ seed, nchords: 4 });
+    assert.equal(g.over.chord["0"], undefined, "chord 1 is A"); assert.equal(g.over.chord["1"], undefined, "chord 2 is A");
+    assert.deepEqual(voicesAt(g, 3).slice(0, 3).map((o) => ["pedal", "swells"].includes(o.style) && o.role !== "off"), [true, true, true]);
+  }
 });

@@ -209,14 +209,16 @@
     else if (st === "pedal") { o.pedal = one(r, ["root", "fifth"]); }
     return o;
   }
-  /* a voice for its role: the mover high and quick, the held voice low and long, the support between, slower, or resting;
-     `avoid` a style class it must not take (B's change from A) */
+  /* a voice for its role: the mover high and quick, the held voice low and long, the support between at 4n or 4n. (or
+     resting); `avoid` a style class it must not take (B's change from A). Registers never cross: held lo 38-46, hi to 62;
+     support lo 50-55; mover lo 60-67, hi from 77 */
+  var RANGE = { mover: ["16n", "8n"], held: ["2n", "2n.", "1n"], support: ["4n", "4n."] };
   function drawVoice(r, role, dense, avoid) {
     var o = voiceDefaults();
     o.style = one(r, ROLE_STYLES[role].filter(function (s) { return CLASS[s] !== avoid; }));
     if (role === "mover") { o.rate = dense ? "16n" : "8n"; o.lo = int(r, 60, 67); o.hi = o.lo + int(r, 17, 24); }
-    else if (role === "held") { o.rate = dense ? one(r, ["2n", "2n."]) : one(r, ["2n.", "1n"]); o.lo = int(r, 38, 46); o.hi = o.lo + int(r, 14, 20); }
-    else { o.rate = dense ? one(r, ["4n", "4n.", "2n"]) : one(r, ["2n", "1n"]); o.lo = int(r, 50, 55); o.hi = o.lo + int(r, 14, 19);
+    else if (role === "held") { o.rate = dense ? one(r, ["2n", "2n."]) : one(r, ["2n.", "1n"]); o.lo = int(r, 38, 46); o.hi = o.lo + int(r, 12, 16); }
+    else { o.rate = dense ? "4n" : "4n."; o.lo = int(r, 50, 55); o.hi = o.lo + int(r, 14, 19);
       if (avoid !== "off" && r() < (dense ? 0.2 : 0.45)) { o.role = "off"; } }
     return styleFields(r, o);
   }
@@ -230,32 +232,36 @@
     t.cad = int(r, 0, 2);
     return t;
   }
-  /* B or C: each voice changes with probability `contrast` (one at least, above 0) - its role swapped (the mover sustains, the held voice moves: the
-     registers trade), its style from another class, the density the other way */
+  /* B or C: the mover and the held voice change together with probability `contrast` - they trade roles (and so registers),
+     each taking a style from another class, the density the other way - and the support on its own; above 0, one of the two
+     at least. Exactly one voice moves and one sustains in every letter. */
   var SWAP = { mover: "held", held: "mover", support: "support" };
   function contrastOf(r, A, c) {
-    var t = { dense: !A.dense, roles: {}, v: {} }, u = VOICES.map(function () { return r(); }), least = Math.min.apply(null, u);
-    VOICES.forEach(function (v, i) {
-      if (u[i] < c || (c > 0 && u[i] === least)) {   /* any contrast changes a voice at least */ t.roles[v] = SWAP[A.roles[v]]; t.v[v] = drawVoice(r, t.roles[v], t.dense, cls(A.v[v])); }
+    var t = { dense: !A.dense, roles: {}, v: {} }, up = r(), us = r(), pair = up < c, sup = us < c;
+    if (c > 0 && !pair && !sup) { if (up <= us) { pair = true; } else { sup = true; } }
+    VOICES.forEach(function (v) {
+      if (A.roles[v] === "support" ? sup : pair) { t.roles[v] = SWAP[A.roles[v]]; t.v[v] = drawVoice(r, t.roles[v], t.dense, cls(A.v[v])); }
       else { t.roles[v] = A.roles[v]; t.v[v] = clone(A.v[v]); }
     });
     t.v.bass = r() < c ? (A.v.bass.mode === "hold" ? pedalBass(r) : { mode: "hold" }) : clone(A.v.bass);
     t.cad = r() < c ? int(r, 0, 2) : A.cad;
     return t;
   }
-  /* a': A with one or two changes - a voice's rate a step, its register an octave, or its pattern */
+  /* a': A with one or two distinct changes - a voice's rate a step within its role's, a voice's pattern, or the whole texture
+     an octave (down when it sits high, up when low: the voices keep their order) */
   function variantOf(r, A) {
-    var t = clone(A), on = VOICES.filter(function (v) { return t.v[v].role !== "off"; });
+    var t = clone(A), cands = ["octave"];
+    VOICES.forEach(function (v) { if (t.v[v].role !== "off") { cands.push("rate:" + v); if (t.v[v].style !== "free") { cands.push("pattern:" + v); } } });
     for (var n = r() < 0.5 ? 1 : 2; n > 0; n--) {
-      var o = t.v[one(r, on)], kind = int(r, 0, 2), ri = RATES.indexOf(o.rate), step = RATES[ri + 1 < RATES.length ? ri + 1 : ri - 1];
-      if (kind === 0) { o.rate = step; }
-      else if (kind === 1) { var d = o.hi + 12 <= 108 ? 12 : -12; o.lo += d; o.hi += d; }
+      var c = cands.splice(Math.floor(r() * cands.length), 1)[0], v = c.split(":")[1], o = t.v[v];
+      if (c === "octave") { var d = t.v[VOICES.filter(function (x) { return t.roles[x] === "mover"; })[0]].hi > 84 ? -12 : 12;
+        VOICES.forEach(function (x) { t.v[x].lo += d; t.v[x].hi += d; }); }
+      else if (c.indexOf("rate:") === 0) { var rg = RANGE[t.roles[v]], ri = rg.indexOf(o.rate); o.rate = rg[ri + 1 < rg.length ? ri + 1 : ri - 1]; }
       else if (o.style === "arpeggio") { var g = JSON.stringify(o.grid); o.grid = one(r, PRESETS.filter(function (p) { return JSON.stringify(p[1]) !== g; }))[1].slice(); }
       else if (o.style === "euclid") { o.rot = (o.rot + 1) % o.steps; }
       else if (o.style === "strum") { o.dir = o.dir === "up" ? "down" : "up"; }
       else if (o.style === "swells") { o.tones = o.tones.length > 2 ? o.tones.slice(0, 2) : [0, 1, 2, 3]; }
-      else if (o.style === "pedal") { o.pedal = o.pedal === "root" ? "fifth" : "root"; }
-      else { o.rate = step; }
+      else { o.pedal = o.pedal === "root" ? "fifth" : "root"; }
     }
     return t;
   }
@@ -264,12 +270,11 @@
     if (st === "swells") { x.tones = [0, 1, 2]; x.attack = 0.3; x.release = 0.5; } else { x.pedal = "root"; }
     return x;
   }
-  /* a section's last chord: its moving voice (with none, its quickest busy one) swells or pedals at 1n, or rests */
+  /* a section's last chord: its moving voice swells or pedals at 1n, or rests */
   function thin(t) {
-    var x = clone(t.v), busy = function (v) { return x[v].role !== "off" && CLASS[x[v].style] !== "held"; };
-    var movers = VOICES.filter(function (v) { return t.roles[v] === "mover" && busy(v); });
-    if (!movers.length) { movers = VOICES.filter(busy).sort(function (a, b) { return RATES.indexOf(x[a].rate) - RATES.indexOf(x[b].rate); }).slice(0, 1); }
-    movers.forEach(function (v) { if (t.cad === 2) { x[v].role = "off"; } else { x[v] = held(x[v], t.cad ? "pedal" : "swells"); } });
+    var x = clone(t.v);
+    VOICES.forEach(function (v) { if (t.roles[v] !== "mover") { return; }
+      if (t.cad === 2) { x[v].role = "off"; } else { x[v] = held(x[v], t.cad ? "pedal" : "swells"); } });
     return x;
   }
   /* the route's last chord: every voice swells or pedals, the bass holds the root */
@@ -278,22 +283,37 @@
     VOICES.forEach(function (v) { x[v] = held(A.v[v], r() < 0.5 ? "swells" : "pedal"); });
     return x;
   }
-  /* a new comp: the route's defaults are A; every chord that differs holds only its differing keys; old chord overrides go,
-     sections' and zones' stay */
+  /* playable as written: a strum's whole spread ((tones - 1) x spread) within 60% of its step at the route's tempo (96 bpm
+     when the caller does not say), a swell's attack + release at most 0.95 */
+  var STRIDE = { "16n": 1, "8n": 2, "8n.": 3, "4n": 4, "4n.": 6, "2n": 8, "2n.": 12, "1n": 16 };
+  function tame(x, bpm) {
+    VOICES.forEach(function (v) { var o = x[v];
+      if (o.style === "strum" && o.tones.length > 1) { o.spread = Math.min(o.spread, Math.floor(0.6 * 15000 / bpm * STRIDE[o.rate] / (o.tones.length - 1) / 5) * 5); }
+      if (o.style === "swells" && o.attack + o.release > 0.95) { o.release = Math.round((0.95 - o.attack) * 100) / 100; } });
+    return x;
+  }
+  /* a new comp: the route's defaults are A; every chord the core reads (the first NCHORD) that differs holds only its
+     differing keys - and, under a section that sets a voice's key (opt.at[i]: the bands over chord i, as cell() takes them),
+     that key too, so the form plays over the section; old chord overrides go, sections' and zones' stay. A zone is above a
+     chord (resolve: route < section < chord < zone), so nothing a chord writes can beat it: zones are left to win. */
+  var NCHORD = 16;
   function generate(comp, opt) {
-    var seed = Math.max(0, opt.seed | 0), c = Math.max(0, Math.min(1, +opt.contrast || 0)), n = Math.max(0, opt.nchords | 0), type = formOf(opt.form).id;
+    var seed = Math.max(0, opt.seed | 0), c = Math.max(0, Math.min(1, +opt.contrast || 0)), type = formOf(opt.form).id;
+    var n = Math.min(NCHORD, Math.max(0, opt.nchords | 0)), bpm = +opt.bpm > 0 ? +opt.bpm : 96;
     var r = rng(seed), A = textureA(r), tex = { A: A }, spans = formSpans(type, n), out = clone(comp), all = VOICES.concat(["bass"]);
     spans.forEach(function (s) { var k = texKey(s.letter); if (!tex[k]) { tex[k] = k === "A'" ? variantOf(r, A) : contrastOf(r, A, c); } });
-    var end = settle(r, A);
-    all.forEach(function (v) { out[v] = clone(A.v[v]); });
+    var end = tame(settle(r, A), bpm);
+    tame(A.v, bpm); all.forEach(function (v) { out[v] = clone(A.v[v]); });
     out.seed = seed; out.form = { type: type, contrast: c, seed: seed };
     out.over = { chord: {}, section: (comp.over && out.over.section) || {}, zone: (comp.over && out.over.zone) || {} };
     spans.forEach(function (s) {
-      var t = tex[texKey(s.letter)], cad = thin(t);
+      var t = tex[texKey(s.letter)], body = tame(clone(t.v), bpm), cad = tame(thin(t), bpm);
       for (var i = s.a; i < s.b; i++) {
-        var at = i === n - 1 ? end : i === s.b - 1 ? cad : t.v, o = {};
+        var at = i === n - 1 ? end : i === s.b - 1 && s.b - s.a > 1 ? cad : body, o = {}, secs = {};
+        ((opt.at || [])[i] || []).forEach(function (b) { var so = b.kind === "section" && out.over.section[String(b.id)];
+          if (so) { all.forEach(function (v) { Object.keys(so[v] || {}).forEach(function (k) { secs[v + "." + k] = true; }); }); } });
         all.forEach(function (v) { var d = {};
-          Object.keys(at[v]).forEach(function (k) { if (JSON.stringify(at[v][k]) !== JSON.stringify(out[v][k])) { d[k] = clone(at[v][k]); } });
+          Object.keys(at[v]).forEach(function (k) { if (secs[v + "." + k] || JSON.stringify(at[v][k]) !== JSON.stringify(out[v][k])) { d[k] = clone(at[v][k]); } });
           if (Object.keys(d).length) { o[v] = d; } });
         if (Object.keys(o).length) { out.over.chord[String(i)] = o; }
       }
@@ -305,6 +325,6 @@
   var api = { VOICES: VOICES, STYLES: STYLES, ROLES: ROLES, RATES: RATES, FIELDS: FIELDS, BASS: BASS, defaults: defaults, TEMPLATES: TEMPLATES,
     scopeObj: scopeObj, setValue: setValue, clearValue: clearValue, clearScope: clearScope, effective: effective, cell: cell,
     bands: bands, history: history, summary: summary, clone: clone, label: label,
-    PRESETS: PRESETS, FORMS: FORMS, formSpans: formSpans, generate: generate, roll: roll };
+    PRESETS: PRESETS, FORMS: FORMS, NCHORD: NCHORD, formSpans: formSpans, generate: generate, roll: roll };
   if (typeof module === "object" && module.exports) { module.exports = api; } else { root.FsCompose = api; }
 })(typeof globalThis !== "undefined" ? globalThis : this);
