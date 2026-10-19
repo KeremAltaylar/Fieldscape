@@ -3,6 +3,7 @@
 #include "../composer.hpp"
 #include "../fieldscape.h"
 #include "../tone.hpp"
+#include "../levels.hpp"
 #include <algorithm>
 #include <cassert>
 #include <chrono>
@@ -393,6 +394,7 @@ static double hd(const char *sy, int w) {     /* index.html SYNTH_PARAMS: pickin
     for (auto &d : D) if (!std::strcmp(d.n, sy)) return w ? d.i : d.h;
     return 0;
 }
+static const char *MOT = R"("motif":{"basis":"chord","notes":[{"deg":0,"start":0,"len":4},{"deg":2,"start":4,"len":4},{"deg":1,"start":8,"len":4},{"deg":4,"start":12,"len":4}]})";
 /* the engine's output rms (dBFS) from 1 s, walking the route in `secs` with voice 2 alone on synth `sy`, style `style` ("": Free) */
 static double level_db(const char *sy, const char *style, double secs) {
     char patch[4096], route[8192];
@@ -423,28 +425,33 @@ static const char *const LEVEL_ST[][2] = {
 static const char *const LEVEL_SY[] = { "fm", "am", "duo", "mono", "simple", "pluck", "metal", "membrane", "wavetable", "comb", "formant" };
 static void test_levels() {
     const auto &ST = LEVEL_ST; const auto &SY = LEVEL_SY;
-    /* the bound per synth: 2 dB where a note's power is its envelope's (and pluck's burst's). Four are more than that, their
-       residue measured 2026-10-19 and open - the gains are worked out from the envelope when the patch is read, where a
-       render of the synth itself (50-350 ms a style) would stall the web's audio thread, which reads the patch between
-       blocks: mono's filter envelope opens on each strike and its low-pass keeps less of a high note (a high euclid -2.2, a
-       slow swell +2.3); comb's resonator keeps more of a low note (a high arpeggio -2.3); the formants' norm follows the
-       pitch 120 ms late, so a line of changing notes is not its notes alone (+2..4.1 over Free); metal's highpass rides its
-       envelope, so a held or overlapping note is brighter than its envelope says (chords and swells to +3.5, a bar's lone
-       strike -0.8) */
-    auto bound = [](const char *sy) { return !std::strcmp(sy, "metal") ? 5.0 : !std::strcmp(sy, "formant") ? 4.5 : !std::strcmp(sy, "mono") ? 3.0 : !std::strcmp(sy, "comb") ? 2.5 : 2.0; };
+    /* 2 dB on every synth. The gains are worked out from the envelope when the patch is read (a render of the synth, 50-350
+       ms a style, would stall the web's audio thread); what the envelope misses - mono's filter envelope, comb's resonator,
+       the formants' norm 120 ms behind the pitch, metal's highpass riding its envelope (up to 4.1 dB, measured 2026-10-19) -
+       is measured offline into core/levels.hpp (Task 5: node tools/levels.mjs) */
     double worst = 0, over = -1; const char *ws = "", *wy = "";
     std::printf("C levels (style - Free, dB, voice 2):");
     for (const char *sy : SY) {
         const bool pl = !std::strcmp(sy, "pluck");
         const double fr = level_db(sy, "", pl ? 61 : 41), secs = pl ? 31 : 9;   /* Free's sparse line over its whole walk */
         std::printf("\n  %-9s free %5.1f dBFS", sy, fr);
+        double mine = 0;
         for (auto &st : ST) {
             const double d = level_db(sy, st[1], secs) - fr; std::printf(" %+.1f", d);
             if (std::fabs(d) > std::fabs(worst)) { worst = d; ws = st[0]; wy = sy; }
-            over = std::max(over, std::fabs(d) - bound(sy));
+            if (std::fabs(d) > std::fabs(mine)) mine = d;
+            over = std::max(over, std::fabs(d) - 2.0);
         }
+        {   /* a melody voice too (Task 5: formant's sat +2.3 before the table) */
+            const std::string mel = std::string(R"({"role":"melody","lo":50,"hi":81}, )") + MOT;
+            const double d = level_db(sy, mel.c_str(), secs) - fr; std::printf(" mel %+.1f", d);
+            if (std::fabs(d) > std::fabs(worst)) { worst = d; ws = "melody"; wy = sy; }
+            if (std::fabs(d) > std::fabs(mine)) mine = d;
+            over = std::max(over, std::fabs(d) - 2.0);
+        }
+        std::printf("  worst %+.1f", mine);
     }
-    std::printf("\nC levels: the furthest from Free %+.1f dB (%s %s); every synth inside its bound (2 dB; comb 2.5, mono 3, formant 4.5, metal 5)\n", worst, wy, ws);
+    std::printf("\nC levels: the furthest from Free %+.1f dB (%s %s); every synth within 2 dB\n", worst, wy, ws);
     assert(over <= 0);
 }
 
@@ -536,7 +543,6 @@ static void test_motif_parse() {
 }
 
 /* D minor 7 (key 50), the walk's first chord for >= 2 bars: a 4-note chord-degree motif root-5th-3rd-9th, each a quarter */
-static const char *MOT = R"("motif":{"basis":"chord","notes":[{"deg":0,"start":0,"len":4},{"deg":2,"start":4,"len":4},{"deg":1,"start":8,"len":4},{"deg":4,"start":12,"len":4}]})";
 static std::string melody(const char *chain, const char *extra = "") {
     char b[2048]; std::snprintf(b, sizeof b, R"(,"comp":{"voice":{"role":"melody","lo":50,"hi":81},"sect":{"role":"off"},"v3":{"role":"off"},"bass":{"mode":"off"},%s,"chain":%s%s})", MOT, chain, extra);
     return b;
@@ -694,14 +700,14 @@ static void test_patch_read_cost() {
     assert(worst < 1.0 && edit < 1.0);
 }
 /* Task 4: the coarser solve (10 ms steps) keeps every gain within 0.3 dB of the old one's (5 ms), on all 11 synths x the
-   levels test's styles and a melody voice, on each voice, at three tempos */
+   levels test's styles and a melody voice, on each voice, at five tempos (Task 5: 180 and 200 too) */
 static void test_gain_lengths() {
     double worst = 0; const char *ws = "", *wy = ""; int wq = 0;
     std::vector<std::string> st; for (auto &e : LEVEL_ST) st.push_back(e[1]);
     st.push_back(std::string(R"({"role":"melody","lo":50,"hi":81}, )") + MOT);
     for (const char *sy : LEVEL_SY) for (size_t k = 0; k < st.size(); k++) {
         const bool mel = k + 1 == st.size();
-      for (int tempo : { 60, 96, 140 }) {
+      for (int tempo : { 60, 96, 140, 180, 200 }) {
         char p[4096]; std::snprintf(p, sizeof p, R"({"version":17,"tempo":%d,"key":50,"prog":[{"r":0,"q":"m7"},{"r":5,"q":"maj7"},{"r":7,"q":"7"},{"r":0,"q":"m9"}],"bed":{"on":false},"zones":{"on":false},
             "voice":{"on":true,"synth":"%s","harm":%g,"index":%g},"sect":{"on":true,"synth":"%s","harm":%g,"index":%g},"v3":{"on":true,"synth":"%s","harm":%g,"index":%g},
             "comp":{"bass":{"mode":"off"},"voice":%s,"sect":%s,"v3":%s}})", tempo, sy, hd(sy, 0), hd(sy, 1), sy, hd(sy, 0), hd(sy, 1), sy, hd(sy, 0), hd(sy, 1),
@@ -713,11 +719,67 @@ static void test_gain_lengths() {
     std::printf("C gains at 10 ms steps: furthest %+.2f dB from the 5 ms solve's (%s %s, voice %d)\n", worst, wy, ws, wq + 1);
     assert(std::fabs(worst) <= 0.3);
 }
+/* Task 5: core/levels.hpp's measurements (node tools/levels.mjs runs this as "levels-table"). Each synth x style x rate class
+   (16n, 8n, 4n, 2n+): the style's level over Free's as test_levels measures it, the levels test's styles in their classes
+   (two in a class: their mean) and each style's defaults at the rate where the test has none; plus a melody voice. Prints
+   what the table holds now plus that gap: the next table */
+static void levels_table() {
+    static const struct { int st, c; const char *j; } CELL[] = {
+        { comp::ARPEGGIO, 0, LEVEL_ST[5][1] }, { comp::ARPEGGIO, 1, LEVEL_ST[0][1] }, { comp::ARPEGGIO, 2, R"({"style":"arpeggio","rate":"4n"})" }, { comp::ARPEGGIO, 3, R"({"style":"arpeggio","rate":"2n"})" },
+        { comp::PEDAL, 0, R"({"style":"pedal","rate":"16n"})" }, { comp::PEDAL, 1, LEVEL_ST[1][1] }, { comp::PEDAL, 2, R"({"style":"pedal","rate":"4n"})" }, { comp::PEDAL, 3, LEVEL_ST[7][1] },
+        { comp::STRUM, 0, R"({"style":"strum","rate":"16n"})" }, { comp::STRUM, 1, LEVEL_ST[2][1] }, { comp::STRUM, 2, R"({"style":"strum","rate":"4n"})" }, { comp::STRUM, 3, LEVEL_ST[6][1] },
+        { comp::EUCLID, 0, LEVEL_ST[8][1] }, { comp::EUCLID, 1, LEVEL_ST[3][1] }, { comp::EUCLID, 2, R"({"style":"euclid","rate":"4n"})" }, { comp::EUCLID, 3, R"({"style":"euclid","rate":"2n"})" },
+        { comp::SWELLS, 0, R"({"style":"swells","rate":"16n"})" }, { comp::SWELLS, 1, LEVEL_ST[4][1] }, { comp::SWELLS, 2, R"({"style":"swells","rate":"4n"})" }, { comp::SWELLS, 3, LEVEL_ST[9][1] }, { comp::SWELLS, 3, LEVEL_ST[10][1] } };
+    const std::string mel = std::string(R"({"role":"melody","lo":50,"hi":81}, )") + MOT;
+    for (int y = 0; y < 11; y++) {
+        const char *sy = LEVEL_SY[y]; const bool pl = !std::strcmp(sy, "pluck");
+        const double fr = level_db(sy, "", pl ? 61 : 41), secs = pl ? 31 : 9;
+        double sum[comp::NSTYLE][4] = {}; int n[comp::NSTYLE][4] = {};
+        for (auto &c : CELL) { sum[c.st][c.c] += level_db(sy, c.j, secs) - fr; n[c.st][c.c]++; }
+        for (int s = 1; s < comp::NSTYLE; s++) for (int c = 0; c < 4; c++) std::printf("LEVEL %d %d %d %.3f %.3f\n", y, s, c, sum[s][c] / n[s][c], LEVEL_FIX[y][s][c]);
+        std::printf("MELODY %d %.3f %.3f\n", y, level_db(sy, mel.c_str(), secs) - fr, LEVEL_FIX_MELODY[y]);
+        std::fflush(stdout);
+    }
+}
+
+/* Task 5 (Task 4's review): a memoised gain is the gain. A patch read after another, through the public path with the memo
+   warm, differing in one thing at a time, has the gains a fresh solve of it has */
+static void test_gain_memo() {
+    auto patch = [](const char *key, const char *prog, const char *mot, const char *dens, const char *env, const char *tempo, const char *harm) {
+        char b[4096]; std::snprintf(b, sizeof b, R"({"version":17,"tempo":%s,"key":%s,"prog":%s,"bed":{"on":false},"zones":{"on":false},
+            "voice":{"on":true,"synth":"fm","density":%s},"sect":{"on":true,"synth":"metal","harm":4.1,"index":1.2%s},"v3":{"on":true,"synth":"formant","harm":%s,"index":0.5},
+            "comp":{"bass":{"mode":"off"},"voice":{"role":"melody","lo":50,"hi":81},"sect":{"style":"arpeggio","rate":"16n"},"v3":{"style":"swells"},%s}})",
+            tempo, key, prog, dens, env, harm, mot);
+        return std::string(b);
+    };
+    const char *P0 = R"([{"r":0,"q":"m7"},{"r":5,"q":"maj7"},{"r":7,"q":"7"},{"r":0,"q":"m9"}])", *P1 = R"([{"r":0,"q":"m7"},{"r":3,"q":"maj7"},{"r":7,"q":"7"},{"r":0,"q":"m9"}])";
+    const char *M1 = R"("motif":{"basis":"chord","notes":[{"deg":0,"start":0,"len":4},{"deg":3,"start":4,"len":8},{"deg":1,"start":12,"len":4}]})";
+    const char *E0 = R"(,"env":[0.05,0.3,0.6,1.5])";   /* metal's own envelope set, so the variant changes its numbers, not whether it has one */
+    const std::string A = patch("50", P0, MOT, "0.5", E0, "96", "0.5");
+    const std::string B[] = { patch("53", P0, MOT, "0.5", E0, "96", "0.5"), patch("50", P1, MOT, "0.5", E0, "96", "0.5"), patch("50", P0, M1, "0.5", E0, "96", "0.5"),
+        patch("50", P0, MOT, "0.8", E0, "96", "0.5"), patch("50", P0, MOT, "0.5", R"(,"env":[0.2,0.3,0.6,1.5])", "96", "0.5"), patch("50", P0, MOT, "0.5", E0, "120", "0.5"),
+        patch("50", P0, MOT, "0.5", E0, "96", "0.9") };
+    const char *what[] = { "key", "progression", "motif", "density", "envelope", "tempo", "harm" };
+    fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128);
+    const int r = fs_piece_add_route(pc, A.c_str()); float a[3]; fs_piece_test_route_gains(pc, r, a);
+    int moved = 0;
+    for (int i = 0; i < 7; i++) {
+        fs_piece_set_route(pc, r, A.c_str());   /* A's gains in the memo */
+        fs_piece_set_route(pc, r, B[i].c_str());
+        float got[3], fresh[3]; fs_piece_test_route_gains(pc, r, got); fs_piece_test_gains(B[i].c_str(), 0, 0, 0, fresh);
+        for (int q = 0; q < 3; q++) { if (got[q] != fresh[q]) std::printf("C gain memo: %s voice %d %g, fresh %g\n", what[i], q + 1, got[q], fresh[q]); assert(got[q] == fresh[q]); }
+        if (got[0] != a[0] || got[1] != a[1] || got[2] != a[2]) moved++; else std::printf("C gain memo: %s left the gains\n", what[i]);
+    }
+    fs_destroy(pc);
+    std::printf("C gain memo: 7 patches read after another (key, progression, motif, density, envelope, tempo, formant harm) have a fresh solve's gains; %d of 7 moved them\n", moved);
+    assert(moved == 7);
+}
 int main(int argc, char **argv) {
     if (argc > 1 && !std::strcmp(argv[1], "levels")) { test_levels(); return 0; }
+    if (argc > 1 && !std::strcmp(argv[1], "levels-table")) { levels_table(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "onsets")) { test_onsets(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "cost")) { test_cost(); return 0; }
-    if (argc > 1 && !std::strcmp(argv[1], "read")) { test_gain_lengths(); test_patch_read_cost(); return 0; }
+    if (argc > 1 && !std::strcmp(argv[1], "read")) { test_gain_memo(); test_gain_lengths(); test_patch_read_cost(); return 0; }
     test_parse();
     test_resolve();
     test_motif_parse();
@@ -738,6 +800,7 @@ int main(int argc, char **argv) {
     test_quiet();
     test_chord_past_16();
     test_patch_read_cost();
+    test_gain_memo();
     test_gain_lengths();
     test_cost();
     test_engine_zone();

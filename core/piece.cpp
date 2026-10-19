@@ -20,6 +20,7 @@
 #include "samplers.hpp"
 #include "eq.hpp"
 #include "composer.hpp"
+#include "levels.hpp"
 
 #include <cstdio>
 #include <cstring>
@@ -820,6 +821,13 @@ static void melody_hits(const Patch &P, const comp::Voice &v, std::vector<Hit> &
 /* the gains (above) for every layer of the patch's comp, into P.cgain */
 static uint64_t fnv(uint64_t h, const void *p, size_t n) { const unsigned char *b = (const unsigned char *)p; for (size_t i = 0; i < n; i++) h = (h ^ b[i]) * 0x100000001b3ULL; return h; }
 template <class T> static uint64_t fnv(uint64_t h, const T &x) { return fnv(h, &x, sizeof x); }   /* scalars only: no padding */
+/* Task 5: what the solve misses of a synth's own level (core/levels.hpp, measured), as a factor on the gain. Taken after
+   the memo, which holds the solve's own gains, so a regenerated table is never stale against it */
+static double level_fix(int type, const comp::Voice &v, bool mel) {
+    if (type < 0 || type > FORMANT) return 1;
+    const int c = v.rate <= 1 ? 0 : v.rate <= 3 ? 1 : v.rate <= 6 ? 2 : 3;
+    return std::pow(10.0, -(mel ? LEVEL_FIX_MELODY[type] : LEVEL_FIX[type][v.style][c]) / 20);
+}
 static void comp_gains(Patch &P, GainMemo *memo) {
     using namespace levels;
     for (auto &l : P.cgain) for (float &x : l) x = 1;
@@ -869,7 +877,8 @@ static void comp_gains(Patch &P, GainMemo *memo) {
             std::vector<Hit> h; h.reserve(MAXH); if (mel) melody_hits(P, v, h); else style_hits(P, v, nv, h);
             uint64_t kg = fnv(fnv(fnv(fnv(fnv(fnv(fnv(fnv(kf, nv), es.a), es.d), es.s), es.r), es.aexp), es.rexp), h.data(), h.size() * sizeof(Hit));
             double mg;
-            if (memo && memo->get(kg, mg)) { P.cgain[L][q] = (float)mg; if (nseen < (int)(sizeof got / sizeof got[0])) { seen[nseen] = v; got[nseen++] = (float)mg; } continue; }
+            const double fix = level_fix(types[q], v, mel);
+            if (memo && memo->get(kg, mg)) { P.cgain[L][q] = (float)(mg * fix); if (nseen < (int)(sizeof got / sizeof got[0])) { seen[nseen] = v; got[nseen++] = P.cgain[L][q]; } continue; }
             const double from = 16 * six, to = 16 * BARS * six;
             auto power = [&](double g) { return pk ? pluck_power(pk, h, from, to, g) : env_power(es, h, nv, from, to, sy.get(), g, true); };
             /* note() holds an envelope's velocity to 1: a boosted style is solved for with that in (a few steps) */
@@ -879,8 +888,8 @@ static void comp_gains(Patch &P, GainMemo *memo) {
                 if (std::fabs(ng / g - 1) < 0.01) { g = ng; break; }
                 g = ng; ps = power(g);
             }
-            P.cgain[L][q] = (float)g; if (memo) memo->put(kg, g);
-            if (nseen < (int)(sizeof got / sizeof got[0])) { seen[nseen] = v; got[nseen++] = (float)g; }
+            P.cgain[L][q] = (float)(g * fix); if (memo) memo->put(kg, g);
+            if (nseen < (int)(sizeof got / sizeof got[0])) { seen[nseen] = v; got[nseen++] = P.cgain[L][q]; }
         }
     }
 }
@@ -2594,6 +2603,10 @@ void fs_piece_test_gains(const char *patch_json, int free_bars, int bars, double
     Json j = Json::parse(patch_json); std::unique_ptr<Patch> P(new Patch); patch_of(&j, *P);
     levels::FREE_BARS = fb; levels::BARS = b; levels::STEP = st;
     for (int q = 0; q < comp::NVOICE; q++) out[q] = P->cgain[0][q];
+}
+void fs_piece_test_route_gains(fs_device *d, int i, float *out) {
+    Piece *p = P(d); if (!p) return; std::lock_guard<std::mutex> g(p->mu);
+    if (i >= 0 && i < (int)p->in.routes.size()) for (int q = 0; q < comp::NVOICE; q++) out[q] = p->in.routes[i].cgain[0][q];
 }
 int fs_piece_test_kept(fs_device *d) { Piece *p = P(d); if (!p) return -1; std::lock_guard<std::mutex> g(p->mu); sweep(p); return (int)p->keep.b.size(); }
 void fs_piece_test_hooks(fs_device *d, double (*rnd)(void *), void *rnd_ctx,
