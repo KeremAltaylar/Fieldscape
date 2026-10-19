@@ -4,6 +4,7 @@
    inherited ones dimmed with their source. Edits go through ctx.save (the route's patch): heard at once. Desk only. */
 (function () {
   var M = window.FsCompose, ctx = null, comp = null, hist = null, sel = { kind: "route" }, voice = "voice", grown = false, saveErr = null, nowTimer = null, statsTimer = null, audio = [], polls = 0;
+  var gen = false, genForm = "AABA", genContrast = 0.6;   /* the Generate form panel: open, its form and contrast */
   var VS = ["voice", "sect", "v3", "bass"];
   var NAME = { voice: "voice 1", sect: "voice 2", v3: "voice 3", bass: "voice 1 bass" };
   var TAB = { voice: "voice 1", sect: "voice 2", v3: "voice 3", bass: "bass" };
@@ -32,10 +33,7 @@
     close: '<path d="M4 4 L12 12 M12 4 L4 12" fill="none" stroke="currentColor" stroke-width="1.5"/>'
   };
   var RATE = { "16n": "1/16", "8n": "1/8", "8n.": "1/8 .", "4n": "1/4", "4n.": "1/4 .", "2n": "1/2", "2n.": "1/2 .", "1n": "1 bar" };
-  /* the arpeggio's patterns: chord degrees per step (0 root, 1 3rd, 2 5th, 3 7th, 4 9th); 8 and 10 are the root and 3rd again
-     (the octave is the voice's range and its octaves setting) */
-  var PRESETS = [["up", [0, 1, 2, 3]], ["down", [3, 2, 1, 0]], ["up-down", [0, 1, 2, 3, 2, 1]], ["1-5-8-10", [0, 2, 0, 1]], ["Alberti", [0, 2, 1, 2]]]
-    .map(function (p) { var g = []; for (var i = 0; i < 16; i++) { g.push(p[1][i % p[1].length]); } return [p[0], g]; });
+  var PRESETS = M.PRESETS;   /* the arpeggio's patterns (the model's: Generate draws from them too) */
 
   function el(tag, cls, text) { var e = document.createElement(tag); if (cls) { e.className = cls; } if (text != null) { e.textContent = text; } return e; }
   function svg(vb, inner) { return '<svg viewBox="0 0 ' + vb + '" preserveAspectRatio="none" aria-hidden="true">' + inner + "</svg>"; }
@@ -49,7 +47,7 @@
   function resize() { if (window.__fa && __fa.map) { setTimeout(function () { __fa.map.resize(); }, 0); } }
 
   function open(c) {
-    ctx = c; comp = M.clone(ctx.comp()); hist = M.history(100); hist.push(comp); sel = { kind: "route" }; voice = "voice"; saveErr = null;
+    ctx = c; comp = M.clone(ctx.comp()); hist = M.history(100); hist.push(comp); sel = { kind: "route" }; voice = "voice"; saveErr = null; gen = false;
     var d = document.getElementById("compose-dock");
     if (!d) { d = el("section", "cd"); d.id = "compose-dock"; d.setAttribute("aria-label", "Compose"); document.body.appendChild(d); }
     document.body.classList.add("composing"); d.hidden = false; resize();
@@ -90,7 +88,7 @@
     }
     var main = el("div", "cd-main"), insp = el("aside", "cd-insp"); insp.id = "cd-insp";
     var secs = ctx.sections(), zs = ctx.zones(), bs = M.bands(ctx.coords, secs || [], zs);
-    main.appendChild(header()); main.appendChild(strip(n));
+    main.appendChild(header()); if (comp.form) { main.appendChild(formRow(n)); } main.appendChild(strip(n));
     bandRows(main, bs, secs === null, zs); main.appendChild(el("div", "cd-sep"));
     main.appendChild(lanes(n, bs)); main.appendChild(foot());
     d.appendChild(main); inspector(insp, bs, n); d.appendChild(insp);
@@ -118,14 +116,33 @@
     tl.appendChild(s); h.appendChild(tl);
     var sd = el("label"); sd.appendChild(el("span", "cd-lbl", "seed"));
     var si = el("input"); si.type = "number"; si.min = 0; si.max = 99999; si.value = comp.seed; si.setAttribute("aria-label", "Seed");
-    si.addEventListener("change", function () { comp.seed = Math.max(0, Math.min(99999, +si.value | 0)); commit(); });
+    si.addEventListener("change", function () { var v = Math.max(0, Math.min(99999, +si.value | 0));
+      if (gen) { generate(v); } else { comp.seed = v; commit(); } });   /* the panel open: that seed's piece */
     sd.appendChild(si); h.appendChild(sd);
+    var gb = el("button", "cd-gen", "Generate"); gb.appendChild(el("span", "cd-lbl", " form")); gb.type = "button"; gb.setAttribute("aria-pressed", String(gen));
+    gb.title = "Write a whole piece in a form: its sections' voices, styles and settings (one Ctrl+Z takes it back)";
+    gb.addEventListener("click", function () { gen = !gen;
+      if (gen && comp.form) { genForm = comp.form.type; genContrast = comp.form.contrast; } render(); });
+    h.appendChild(gb);
     [[ICON.undo, "Undo (Ctrl+Z)", undo, hist.canUndo()], [ICON.redo, "Redo (Ctrl+Shift+Z)", redo, hist.canRedo()],
      [grown ? ICON.shrink : ICON.grow, grown ? "Show the map" : "Grow the dock", function () { grown = !grown; document.body.classList.toggle("composing-grown", grown); resize(); render(); }, true],
      [ICON.close, "Close", close, true]].forEach(function (x) {
       var b = el("button", "cd-icon"); b.type = "button"; b.innerHTML = '<svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">' + x[0] + "</svg>";
       b.title = x[1]; b.setAttribute("aria-label", x[1]); b.disabled = !x[3]; b.addEventListener("click", x[2]); h.appendChild(b); });
     return h;
+  }
+  /* the form's letters over their chords (a generated piece's), a repeat dashed */
+  function formRow(n) {
+    var r = el("div", "cd-row cd-formrow"); r.appendChild(el("span", "cd-name", "form"));
+    var t = el("div", "cd-track cd-form"), seen = {};
+    t.title = M.FORMS.filter(function (f) { return f.id === comp.form.type; })[0].label + " · seed " + comp.form.seed + " · contrast " + Math.round(comp.form.contrast * 100) + " %";
+    M.formSpans(comp.form.type, n).forEach(function (x) {
+      var b = el("span", "cd-band form" + (seen[x.letter] ? " rep" : ""), x.letter); seen[x.letter] = true;
+      b.style.left = (x.a / n * 100) + "%"; b.style.width = "calc(" + ((x.b - x.a) / n * 100) + "% - 3px)";   /* the strip's gap */ t.appendChild(b); });
+    r.appendChild(t); return r;
+  }
+  function generate(seed) {
+    comp = M.generate(comp, { form: genForm, contrast: genContrast, seed: seed, nchords: ctx.chords.length }); commit();
   }
   function strip(n) {
     var r = el("div", "cd-row"); r.appendChild(el("span", "cd-name", "chords"));
@@ -228,16 +245,16 @@
   }
   function foot() {
     var f = el("div", "cd-foot"), lg = el("div", "cd-legend");
-    [["route", ""], ["a section changed it", " by-section"], ["a zone changed it", " by-zone"], ["a chord changed it", " by-chord"]].forEach(function (x) {
+    [["route", ""], ["by a section", " by-section"], ["by a zone", " by-zone"], ["by a chord", " by-chord"]].forEach(function (x) {
       var s = el("span"); s.appendChild(el("i", x[1].trim() || null)); s.appendChild(document.createTextNode(x[0])); lg.appendChild(s); });
     f.appendChild(lg);
     var k = el("span", "cd-keys");
-    k.innerHTML = "<kbd>←</kbd><kbd>→</kbd> cells · <kbd>Enter</kbd> open · <kbd>Del</kbd> clear · <kbd>Space</kbd> sound";
+    k.innerHTML = "<kbd>←</kbd><kbd>→</kbd> cells <kbd>Enter</kbd> open <kbd>Del</kbd> clear <kbd>Space</kbd> sound";
     f.appendChild(k);
     var au = el("span", "cd-audio"); au.id = "cd-audio"; au.setAttribute("role", "status"); au.appendChild(el("i")); au.appendChild(el("span"));
     f.appendChild(au); setTimeout(showAudio, 0); return f;
   }
-  function pick(s) { sel = s; ctx.light(s.kind === "chord" ? { chord: s.i } : s.kind === "zone" ? { zone: s.id } : null); render(); }
+  function pick(s) { sel = s; gen = false; ctx.light(s.kind === "chord" ? { chord: s.i } : s.kind === "zone" ? { zone: s.id } : null); render(); }
   function listen(t) { ctx.listenAt(t); render(); }
 
   function ownOf(s, v) { return s.kind === "route" ? null : ((M.scopeObj(comp, s, false) || {})[v] || null); }
@@ -255,6 +272,7 @@
     return s + (bass ? (s ? " and the bass" : "the bass") : ""); }
 
   function inspector(w, bs, n) {
+    if (gen) { genPanel(w, n); return; }
     var ih = el("div", "cd-ih"), title; ih.dataset.fk = "ih";
     var cap = TAB[voice].charAt(0).toUpperCase() + TAB[voice].slice(1);
     if (sel.kind === "chord") { title = cap + " · chord " + (sel.i + 1); }
@@ -292,6 +310,32 @@
     sm.addEventListener("click", function () { ctx.show(sel.kind === "chord" ? { chord: sel.i } : sel.kind === "zone" ? { zone: sel.id } : null); });
     tools.appendChild(sm);
     w.appendChild(tools);
+  }
+  /* the Generate form panel (in the inspector's place): the form, how far B and C move from A, Generate - each press a new seed */
+  function genPanel(w, n) {
+    var ih = el("div", "cd-ih"); ih.dataset.fk = "ih";
+    var h = el("h3", null, "Generate form"); h.id = "cd-insp-title"; ih.appendChild(h);
+    var cl = el("button", "ghost cd-clear", "close"); cl.type = "button"; cl.title = "Close Generate form";
+    cl.addEventListener("click", function () { gen = false; render(); }); ih.appendChild(cl); w.appendChild(ih);
+    var f = M.FORMS.filter(function (x) { return x.id === (comp.form || {}).type; })[0];
+    w.appendChild(el("p", "cd-isub", f ? "now " + f.label + " · seed " + comp.form.seed + " · contrast " + Math.round(comp.form.contrast * 100) + " %" : "writes every chord’s voices · sections and zones stay"));
+    var r = el("div", "cd-row2 wide mine"); r.dataset.k = "form"; r.dataset.fk = "row:form"; r.appendChild(el("span", "cd-k", "form"));
+    var c = el("span", "cd-ctl"); c.appendChild(seg(M.FORMS.map(function (x) { return [x.id, x.label]; }), genForm, function (v) { genForm = v; render(); }, "form")); r.appendChild(c); w.appendChild(r);
+    var k = { fmt: "pct" };
+    var q = el("div", "cd-row2 mine"); q.dataset.k = "contrast"; q.dataset.fk = "row:contrast"; q.appendChild(el("span", "cd-k", "contrast"));
+    var kc = el("span", "cd-ctl"), ki = el("input"), out = el("span", "cd-v", fmt(k, genContrast));
+    ki.type = "range"; ki.min = 0; ki.max = 1; ki.step = 0.05; ki.value = genContrast; ki.setAttribute("aria-label", "contrast");
+    ki.title = "How far B and C move from A: 0 the same, 100 % every voice another kind";
+    var fill = function () { ki.style.setProperty("--fill", (+ki.value * 100) + "%"); }; fill();
+    ki.addEventListener("input", function () { genContrast = +ki.value; out.textContent = fmt(k, genContrast); fill(); });
+    kc.appendChild(ki); q.appendChild(kc); q.appendChild(out); q.appendChild(el("span", "cd-src")); w.appendChild(q);
+    /* how the chords split: "A A B A · 4 4 4 4 chords" */
+    var sp = M.formSpans(genForm, n);
+    w.appendChild(el("p", "cd-isub", sp.map(function (x) { return x.letter; }).join(" ") + " · " + sp.map(function (x) { return x.b - x.a; }).join(" ") + (n === 1 ? " chord" : " chords")));
+    w.appendChild(el("p", "cd-isub", "a new seed each press · Ctrl+Z undoes"));
+    var tools = el("div", "cd-itools"); tools.dataset.fk = "tools";
+    var g = el("button", "cd-listen", "Generate"); g.type = "button"; g.id = "cd-generate"; g.title = "Write a new piece in this form, with a new seed";
+    g.addEventListener("click", function () { generate(M.roll(comp.seed)); }); tools.appendChild(g); w.appendChild(tools);
   }
   function seg(opts, value, onPick, label) {
     var s = el("span", "cd-seg"); s.style.setProperty("--n", opts.length); s.setAttribute("role", "group"); if (label) { s.setAttribute("aria-label", label); }

@@ -118,6 +118,32 @@ try {
   await sleep(800);
   check("the engine got the comp", await ev(`(function(){ var s = __fa.coreSentFeature(${JSON.stringify(rid)}); return !!s && JSON.parse(s).properties.patch.comp.voice.style === 'arpeggio'; })()`), null);
   check("the chord's stretch is lit on the map", await ev("(function(){ var m = __fa.map, s = m.getSource('compsel'); var d = s && s.serialize().data; return !!m.getLayer('compsel-line') && !!d && d.features.length === 1 && d.features[0].geometry.type === 'LineString'; })()"), null);
+  /* Generate form (generate-brief.md): the header's control opens its panel; Generate writes a whole piece in one undo step */
+  check("the foot's key hints read in full at 1440", await ev("(function(){ var k = document.querySelector('#compose-dock .cd-keys'); return !!k && k.scrollWidth <= k.clientWidth; })()"),
+    await ev("(function(){ var k = document.querySelector('#compose-dock .cd-keys'); return k && [k.scrollWidth, k.clientWidth]; })()"));
+  const gBefore = await ev(`JSON.stringify(__fa.routePatch(${R}).comp)`);
+  await ev("document.querySelector('#compose-dock .cd-gen').click(), 0"); await sleep(300);
+  check("Generate form opens its panel: the forms, contrast, Generate", await ev("/Generate form/.test(document.getElementById('cd-insp-title').textContent) && [].map.call(document.querySelectorAll('#cd-insp .cd-row2[data-k=\"form\"] button'), function (b) { return b.textContent; }).join('|') === 'AABA|ABAB|ABAC|a a′ b|ABACA' && !!document.querySelector('#cd-insp .cd-row2[data-k=\"contrast\"] input') && !!document.getElementById('cd-generate')"), null);
+  const gspill = await spillOf();
+  check("the Generate panel fits one screen at 1440x900", gspill.length === 0, gspill.slice(0, 5));
+  await ev("document.getElementById('cd-generate').focus(), document.getElementById('cd-generate').click(), 0"); await sleep(500);
+  const g = JSON.parse(await ev(`JSON.stringify(__fa.routePatch(${R}).comp)`));
+  check("Generate writes the form, a seed and chord overrides for the 16 chords", !!g.form && g.form.type === "AABA" && g.form.seed === g.seed && Object.keys(g.over.chord).length > 0 && Object.keys(g.over.chord).every((i) => +i < 16), g.form);
+  check("the seed field shows the new seed", +(await ev("document.querySelector('#compose-dock .cd-head input').value")) === g.seed, null);
+  check("what it wrote is the model's generate (deterministic)", await ev(`(function(){ var b = ${gBefore}; return JSON.stringify(FsCompose.generate(b, { form: "AABA", contrast: ${g.form && g.form.contrast}, seed: ${g.seed}, nchords: 16 })) === JSON.stringify(__fa.routePatch(${R}).comp); })()`), null);
+  check("the zones and sections stay", JSON.stringify(g.over.zone) === JSON.stringify(JSON.parse(gBefore).over.zone) && JSON.stringify(g.over.section) === JSON.stringify(JSON.parse(gBefore).over.section), null);
+  check("the form row shows the letters over their chords", (await ev("[].map.call(document.querySelectorAll('#compose-dock .cd-form .cd-band'), function (b) { return b.textContent; }).join('|')")) === "A|A|B|A",
+    await ev("[].map.call(document.querySelectorAll('#compose-dock .cd-form .cd-band'), function (b) { return b.textContent; })"));
+  check("Generate keeps focus on its button", await ev("document.activeElement === document.getElementById('cd-generate')"), await ev("document.activeElement && document.activeElement.outerHTML.slice(0, 80)"));
+  const gspill2 = await spillOf();
+  check("generated, with the form row and the panel: one screen", gspill2.length === 0, gspill2.slice(0, 5));
+  await shot("6-generate");
+  await ev("document.body.focus(), document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true })), 0"); await sleep(300);
+  check("one Ctrl+Z takes the whole generation back", (await ev(`JSON.stringify(__fa.routePatch(${R}).comp)`)) === gBefore && !(await ev("!!document.querySelector('#compose-dock .cd-form')")), null);
+  await ev("(function(){ var i = document.querySelector('#compose-dock .cd-head input'); i.value = 7; i.dispatchEvent(new Event('change', { bubbles: true })); })(), 0"); await sleep(400);
+  check("the panel open, a typed seed is that seed's piece", await ev(`(function(){ var c = __fa.routePatch(${R}).comp; return c.seed === 7 && !!c.form && c.form.seed === 7 && JSON.stringify(c) === JSON.stringify(FsCompose.generate(${gBefore}, { form: "AABA", contrast: c.form.contrast, seed: 7, nchords: 16 })); })()`), null);
+  await ev("document.body.focus(), document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true })), 0"); await sleep(300);
+  await ev("document.querySelector('#compose-dock .cd-gen').click(), 0"); await sleep(200);
   /* a zone on the route (made here, so the test never depends on the data): picked on the map, it is the dock's selection */
   const zid = await ev(`(function(){ var f = __fa.features().filter(function (g) { return g.properties.id === ${R}; })[0], c = f.geometry.coordinates[Math.floor(f.geometry.coordinates.length / 2)];
     return __fa.addPoint(c[0], c[1], "Compose test zone"); })()`);
@@ -151,6 +177,15 @@ try {
   const before = await ev(`JSON.stringify(__fa.routePatch(${R}).comp)`), pp = await ev("window.__pp");
   const untouched = await ev("['Delete', ' ', 'ArrowRight', 'Enter'].every(function (k) { return document.body.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true })); }) && document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true, cancelable: true }))");
   check("with the dock closed its keys do nothing", untouched && before === (await ev(`JSON.stringify(__fa.routePatch(${R}).comp)`)) && pp === (await ev("window.__pp")), null);
+  /* 1024x700 with the Generate panel open and a generated piece: one screen */
+  await s.send("Emulation.setDeviceMetricsOverride", { width: 1024, height: 700, deviceScaleFactor: 1, mobile: false }); await sleep(600);
+  await ev(`fsListen.select(${R}), __fa.openPatchPanel(), document.getElementById('pp-compose').click(), 0`); await sleep(800);
+  await ev("document.querySelector('#compose-dock .cd-gen').click(), 0"); await sleep(300);
+  await ev("document.getElementById('cd-generate').click(), 0"); await sleep(500);
+  const sspill = await spillOf();
+  check("1024x700: the Generate panel and the form row fit one screen", sspill.length === 0 && !!(await ev("!!document.querySelector('#compose-dock .cd-form')")), sspill.slice(0, 5));
+  await shot("7-generate-1024");
+  await ev("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true })), FsComposeDock.close(), 0"); await sleep(300);
   /* desk only: a phone's patch panel has no Compose */
   await s.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(600);
   await ev(`fsListen.select(${R}), __fa.openPatchPanel(), 0`); await sleep(600);
