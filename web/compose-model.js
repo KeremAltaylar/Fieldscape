@@ -351,15 +351,22 @@
      that key too, so the form plays over the section; old chord overrides go, sections' and zones' stay. A zone is above a
      chord (resolve: route < section < chord < zone), so nothing a chord writes can beat it: zones are left to win. */
   var NCHORD = 64;
-  /* a motif of 3-6 chord-degree notes (0 root .. 4 9th), a step or two apart, on an even grid over one bar */
+  /* a motif of 3-6 chord-degree notes (0 root .. 4 9th) with a shape: starts on the root or 5th, steps of one degree with at
+     most one leap, no degree three times running, 3+ distinct degrees, a rise and a fall, ending off where it began; a rhythm
+     of two or more lengths over one bar. Drawn again until it fits (seeded, so deterministic). */
+  var RHYTHMS = { 3: [[4, 4, 8], [6, 2, 8], [4, 8, 4], [8, 4, 4]], 4: [[6, 2, 4, 4], [4, 4, 6, 2], [2, 2, 4, 8], [4, 2, 2, 8]],
+                  5: [[4, 2, 2, 4, 4], [2, 2, 4, 4, 4], [6, 2, 2, 2, 4]], 6: [[2, 2, 4, 2, 2, 4], [4, 2, 2, 2, 2, 4]] };
+  function shaped(d) {
+    var up = false, down = false, leaps = 0, uniq = {};
+    d.forEach(function (x, i) { uniq[x] = 1; if (i) { up = up || x > d[i - 1]; down = down || x < d[i - 1]; leaps += Math.abs(x - d[i - 1]) > 1 ? 1 : 0; }
+      if (i > 1 && x === d[i - 1] && x === d[i - 2]) { leaps += 9; } });
+    return Object.keys(uniq).length >= 3 && up && down && leaps <= 1 && d[d.length - 1] !== d[0];
+  }
   function drawMotif(r) {
-    var k = int(r, 3, 6), deg = one(r, [0, 2, 4]), notes = [];
-    for (var i = 0; i < k; i++) {
-      var st = Math.floor(i * 8 / k) * 2, nx = i + 1 < k ? Math.floor((i + 1) * 8 / k) * 2 : 16;
-      notes.push({ deg: deg, start: st, len: nx - st });
-      deg = clamp(deg + one(r, [-2, -1, -1, 1, 1, 2]), 0, 4);
-    }
-    return { basis: "chord", bars: 1, notes: notes };
+    var k = int(r, 3, 6), len = one(r, RHYTHMS[k]), d;
+    do { d = [one(r, [0, 2])]; for (var i = 1; i < k; i++) { d.push(clamp(d[i - 1] + one(r, [-2, -1, -1, 0, 1, 1, 2]), 0, 4)); } } while (!shaped(d));
+    var at = 0;
+    return { basis: "chord", bars: 1, notes: d.map(function (x, i) { var n = { deg: x, start: at, len: len[i] }; at += len[i]; return n; }) };
   }
   /* the chain: a letter's op over its chords (A repeats, A' sequences by 1 or 2 either way, B inverts or fragments, C
      retrogrades), then a cadence on its last chord - half inside the form, full at the route's end */

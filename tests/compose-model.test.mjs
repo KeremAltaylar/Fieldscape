@@ -452,3 +452,15 @@ test("generate: A repeats, A' sequences by 1 or 2, B inverts or fragments, C ret
 test("generate: no chords, no chain (the motif is still drawn)", () => {
   const e = gen({ nchords: 0 }); assert.deepEqual(e.chain, []); assert.ok(e.motif.notes.length >= 3);
 });
+test("generate: a motif has a shape (500 seeds)", () => {
+  for (let seed = 0; seed < 500; seed++) {
+    const g = gen({ seed }), n = g.motif.notes, d = n.map((x) => x.deg), w = "seed " + seed + " " + d;
+    assert.ok(new Set(d).size >= 3, "distinct " + w);
+    assert.ok(d.every((x, i) => i < 2 || !(x === d[i - 1] && x === d[i - 2])), "3 in a row " + w);
+    assert.ok(d.some((x, i) => i && x > d[i - 1]) && d.some((x, i) => i && x < d[i - 1]), "contour " + w);
+    assert.ok([0, 2].includes(d[0]) && d[d.length - 1] !== d[0], "ends " + w);
+    assert.ok(d.filter((x, i) => i && Math.abs(x - d[i - 1]) > 1).length <= 1, "leaps " + w);
+    assert.ok(new Set(n.map((x) => x.len)).size >= 2, "rhythm " + w);
+    assert.ok(n.every((x, i) => x.start >= 0 && x.start + x.len <= 16 && (!i || x.start > n[i - 1].start)), "grid " + w);
+  }
+});
