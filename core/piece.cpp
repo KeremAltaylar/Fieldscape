@@ -805,9 +805,10 @@ static void style_hits(const Patch &P, const comp::Voice &v, int nv, std::vector
 }
 /* a melody voice's stream: chord 0's phrase over BARS bars from its start, the progression's chords a bar each (the cadence's pitch aside) */
 static void melody_hits(const Patch &P, const comp::Voice &v, std::vector<Hit> &h) {
-    comp::Phrase ph; comp::motif_step(P.comp, 0, ph);
-    const double six = 60.0 / P.tempo / 4; const int nb = std::max(1, ph.len16 / 16);
+    const double six = 60.0 / P.tempo / 4;
     for (int b = 0; b < BARS; b++) {
+        comp::Phrase ph; comp::motif_step(P.comp, b % std::max(1, P.nprog), ph);   /* each chord has its own chain step (final review M2) */
+        const int nb = std::max(1, ph.len16 / 16);
         int tn[8]; const int nt = tones_of(P, b % std::max(1, P.nprog), tn), cb = b % nb;
         for (int i = 0; i < ph.n; i++) {
             const comp::MNote &x = ph.note[i]; if (x.start / 16 != cb) continue;
@@ -868,7 +869,7 @@ static void comp_gains(Patch &P, GainMemo *memo) {
             if (o && (!o->used || !o->v[q].mask)) { P.cgain[L][q] = P.cgain[0][q]; continue; }
             const comp::Voice &v = r.v[q];
             const bool mel = v.role == comp::MELODY && P.comp.motif.n > 0;   /* a melody voice: its phrase, its style aside */
-            if (!mel && (v.style == comp::FREE || v.role == comp::OFF)) { P.cgain[L][q] = 1; continue; }
+            if (!mel && (v.style == comp::FREE || v.role == comp::OFF || v.role == comp::MELODY)) {   /* a melody with no motif is Free */ P.cgain[L][q] = 1; continue; }
             int same = -1; for (int i = 0; i < nseen && same < 0; i++) if (!std::memcmp(&seen[i], &v, sizeof v)) same = i;   /* the same settings once worked out (padding that differs only works it out again) */
             if (same >= 0) { P.cgain[L][q] = got[same]; continue; }
             const int nv = !mel && (v.style == comp::STRUM || v.style == comp::SWELLS) ? Role::pool_n(types[q]) + 1 : 1;
@@ -917,11 +918,12 @@ struct Piece : Device {
     uint64_t zin[16] = {}; int nzin = 0; struct Ent { uint64_t id; long long bar; } zent[8]; int nzent = 0;
     int cpulse[comp::NVOICE] = {}, calt[comp::NVOICE] = {}, cped_root[comp::NVOICE] = {-1, -1, -1}; bool swell_shaped[comp::NVOICE] = {};
     double cg[comp::NVOICE] = { 1, 1, 1 };   /* each voice's style gain now (comp_bar glides it to its layer's) */
-    bool styled(int q) const { return patch.comp.on && comp_live && (ccur[q].style != comp::FREE || ccur[q].role == comp::OFF || melodic(q)); }
+    bool styled(int q) const { return patch.comp.on && comp_live && ((ccur[q].style != comp::FREE && !bare(q)) || ccur[q].role == comp::OFF || melodic(q)); }
     /* composition 2: a melody voice plays the motif (its style aside); the phrase in force this bar; a cadence's last chord on
        the other voices (OTH_HOLD: none), and each voice's notes so far this bar (`thin` keeps a fast voice's first) */
     comp::Phrase mel; int cad_oth = comp::OTH_HOLD, nbar[comp::NVOICE] = {};
     int mel_step = -2; long long mel_bar0 = 0;   /* the chain step in force, and the bar it began on: the phrase counts from there */
+    bool bare(int q) const { return ccur[q].role == comp::MELODY && patch.comp.motif.n == 0; }   /* a melody with no motif plays as Free, whatever style it holds */
     bool melodic(int q) const { return ccur[q].role == comp::MELODY && patch.comp.motif.n > 0; }
     bool cad_rest(int q, bool fast) const {
         if (cad_oth == comp::OTH_HOLD || melodic(q)) return false;
@@ -1464,7 +1466,7 @@ struct Piece : Device {
         for (int q = 0; q < comp::NVOICE; q++) {
             const comp::Voice &v = ccur[q];
             if (melodic(q)) { play_melody(q, v, k, bar, time); continue; }
-            if (v.style == comp::FREE || v.role == comp::OFF || v.rate == 0 || k % v.rate || cad_rest(q, v.rate < 4)) continue;
+            if (v.style == comp::FREE || bare(q) || v.role == comp::OFF || v.rate == 0 || k % v.rate || cad_rest(q, v.rate < 4)) continue;
             play_style(q, v, k, bar, time);
         }
     }

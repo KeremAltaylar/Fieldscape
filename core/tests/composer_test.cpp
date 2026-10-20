@@ -396,7 +396,7 @@ static double hd(const char *sy, int w) {     /* index.html SYNTH_PARAMS: pickin
 }
 static const char *MOT = R"("motif":{"basis":"chord","notes":[{"deg":0,"start":0,"len":4},{"deg":2,"start":4,"len":4},{"deg":1,"start":8,"len":4},{"deg":4,"start":12,"len":4}]})";
 /* the engine's output rms (dBFS) from 1 s, walking the route in `secs` with voice 2 alone on synth `sy`, style `style` ("": Free) */
-static double level_db(const char *sy, const char *style, double secs) {
+static double level_db(const char *sy, const char *style, double secs, double from_s = 1) {
     char patch[4096], route[8192];
     std::snprintf(patch, sizeof patch, R"({"version":17,"tempo":96,"key":50,"prog":[{"r":0,"q":"m7"},{"r":5,"q":"maj7"},{"r":7,"q":"7"},{"r":0,"q":"m9"}],"bed":{"on":false},"zones":{"on":false},
         "fx":{"delayWet":0,"revWet":0},"fx2":{"delayWet":0,"revWet":0},"fx3":{"delayWet":0,"revWet":0},"morph":{"on":false},
@@ -408,7 +408,7 @@ static double level_db(const char *sy, const char *style, double secs) {
     for (int b = 0; b < blocks; b++) {
         if (b % 40 == 0) fs_engine_step(e, 29.0 + 0.004 * b / blocks, 41.0);
         fs_engine_process(e, 128);
-        if (b >= 375) { const float *l = fs_engine_out(e, 0); for (int i = 0; i < 128; i++) { s += (double)l[i] * l[i]; n++; } }
+        if (b >= (int)(from_s * 375)) { const float *l = fs_engine_out(e, 0); for (int i = 0; i < 128; i++) { s += (double)l[i] * l[i]; n++; } }
     }
     fs_engine_destroy(e); return 10 * std::log10(s / std::max(1LL, n) + 1e-30);
 }
@@ -453,6 +453,29 @@ static void test_levels() {
     }
     std::printf("\nC levels: the furthest from Free %+.1f dB (%s %s); every synth within 2 dB\n", worst, wy, ws);
     assert(over <= 0);
+}
+
+/* final review I1: a melody voice with no motif plays as Free (the dock says so), whatever style it holds - Generate's
+   Arpeggio included: its notes are the same route's with the voice's style Free */
+static void test_empty_motif() {
+    const Log a = render(R"(,"comp":{"voice":{"role":"melody","style":"arpeggio","rate":"16n"}})", 20),
+              f = render(R"(,"comp":{"voice":{"role":"melody","style":"free"}})", 20);
+    Log a1, f1;
+    for (size_t i = 0; i < a.f.size(); i++) if (a.role[i] == 1) { a1.f.push_back(a.f[i]); a1.t.push_back(a.t[i]); a1.d.push_back(a.d[i]); a1.role.push_back(1); }
+    for (size_t i = 0; i < f.f.size(); i++) if (f.role[i] == 1) { f1.f.push_back(f.f[i]); f1.t.push_back(f.t[i]); f1.d.push_back(f.d[i]); f1.role.push_back(1); }
+    std::printf("C empty motif: melody + arpeggio %zu notes, melody + free %zu; identical %d\n", a1.f.size(), f1.f.size(), (int)same(a1, f1));
+    assert(f1.f.size() > 5 && same(a1, f1));
+}
+/* final review M2: the melody's gain is solved over the progression's chords, each with its own chain step - a fragment of
+   one note on chord 0 left chords 1..3 (repeat, four notes) several dB loud */
+static void test_melody_gain_chain() {
+    for (const char *sy : { "fm", "am" }) {
+        const double fr = level_db(sy, "", 41);
+        const std::string mel = std::string(R"({"role":"melody","lo":50,"hi":81}, )") + MOT + R"(, "chain":[{"op":"fragment","arg":1,"from":0,"to":0}])";
+        const double d = level_db(sy, mel.c_str(), 20, 8) - fr;   /* chord 1 on from bar 3 (7.5 s) of a 20 s walk */
+        std::printf("C melody gain, fragment 1 on chord 0: %s chords 1..3 %+.1f dB from Free\n", sy, d);
+        assert(std::fabs(d) <= 2);
+    }
 }
 
 /* Kerem 2026-10-19 (clicks in Pedal and Strum): a retrigger must not click. Voice 2 alone, Pedal or Strum at 1/8 on fm, am
@@ -875,6 +898,7 @@ static void test_room() {
 }
 
 int main(int argc, char **argv) {
+    if (argc > 1 && !std::strcmp(argv[1], "final")) { test_empty_motif(); test_melody_gain_chain(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "room")) { test_room(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "levels")) { test_levels(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "levels-table")) { levels_table(); return 0; }
@@ -891,6 +915,7 @@ int main(int argc, char **argv) {
     test_cadence();
     test_melody_change_at_bar();
     test_swell_to_melody();
+    test_empty_motif();
     test_styles();
     test_bass();
     test_bass_switch();
@@ -907,6 +932,7 @@ int main(int argc, char **argv) {
     test_engine_zone();
     test_onsets();
     test_levels();
+    test_melody_gain_chain();
     test_room();
     std::printf("composer ok\n");
     return 0;

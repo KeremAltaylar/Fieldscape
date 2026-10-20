@@ -132,7 +132,8 @@ static void chain_of(const Json *a, ChainStep *o, int &n) {
 }
 
 void comp_of(const Json *j, Cfg &c) {
-    c = Cfg();
+    static const Cfg kDefault;   /* static, not a ~25 KB temporary on the wasm stack */
+    c = kDefault;
     if (!j || j->kind != Json::OBJ) return;
     c.on = true;
     c.seed = (uint32_t)std::max(0.0, j->n("seed", 1));
