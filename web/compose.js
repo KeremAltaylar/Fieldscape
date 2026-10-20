@@ -77,7 +77,7 @@
   function stepWord(s) {
     if (!s) { return "repeat"; }
     var a = Math.round(s.arg || 0), o = M.OPS.filter(function (x) { return x.id === s.op; })[0];
-    return s.op === "cadence" ? "cadence · " + (s.cad || "full") : s.op === "seq" ? "sequence " + fmt({ fmt: "sgn" }, a) : s.op === "fragment" ? "fragment " + a : o ? o.label : s.op;
+    return s.op === "cadence" ? "cadence · " + (s.cad || "full") : s.op === "seq" ? "sequence " + fmt({ fmt: "sgn" }, a) : s.op === "fragment" ? "fragment " + a : o ? o.label + (s.op === "augment" && motif().bars === 2 ? " · bar 1" : "") : s.op;
   }
   function shortWord(s) {
     var a = Math.round(s.arg || 0);
@@ -106,7 +106,7 @@
     render();
     if (ctx.show) { setTimeout(function () { if (ctx) { ctx.show(null); } }, 60); }   /* the route in view, in the map's new half */
     clearInterval(nowTimer); nowTimer = setInterval(markNow, 500);
-    audio = []; clearInterval(statsTimer); statsTimer = setInterval(pollAudio, 1000); pollAudio();
+    audio = []; gapLog = []; clearInterval(statsTimer); statsTimer = setInterval(pollAudio, 1000); pollAudio();
   }
   function close() {
     var d = document.getElementById("compose-dock"); if (d) { d.hidden = true; }
@@ -349,7 +349,8 @@
       (scale ? "scale degrees of " + modeName() + " · lit: " + ((ctx.chords[gi] || {}).label || "") + "’s tones" : "chord degrees")));
     h.appendChild(t);
     if (capped) { var cp = el("span", "cd-mcap", "8 notes at most · remove one to add another"); cp.setAttribute("role", "status"); h.appendChild(cp); }
-    var bs = seg([["chord", "chord"], ["scale", "scale"]], m.basis || "chord", function (v) { editMotif(function (x) { x.basis = v; }); }, "Degrees of"); bs.id = "cd-basis";
+    var bs = seg([["chord", "chord"], ["scale", "scale"]], m.basis || "chord", function (v) { editMotif(function (x) { x.basis = v; var R = rowsOf(x).length;   /* fold each degree into the new rows, its octaves carried (the core wraps by the new count) */
+  x.notes.forEach(function (y) { var o = Math.floor(y.deg / R); y.deg -= o * R; y.oct = Math.max(-2, Math.min(2, (y.oct || 0) + o)); if (!y.oct) { delete y.oct; } }); }); }, "Degrees of"); bs.id = "cd-basis";
     bs.title = "Rows: the chord's own tones, or the key's scale"; h.appendChild(bs);
     h.appendChild(seg([[1, "1 bar"], [2, "2 bars"]], L / 16, function (v) { editMotif(function (x) { x.bars = +v;
       x.notes = x.notes.filter(function (y) { return y.start < 16 * v; }).map(function (y) { y.len = Math.min(y.len, 16 * v - y.start); return y; }); }); }, "Length"));
@@ -478,10 +479,11 @@
     m.notes.forEach(function (y) { if (y.start > x.start) { end = Math.min(end, y.start); } });
     var mv = function (ev) { len = Math.max(1, Math.min(end - x.start, Math.round((ev.clientX - gr.left + 1) / pc) - x.start));
       nb.style.width = "calc((100% + 2px) * " + (len / L) + " - 2px)"; };
-    var up = function () { document.removeEventListener("pointermove", mv); document.removeEventListener("pointerup", up);
+    try { nb.setPointerCapture(e.pointerId); } catch (_) { /* no live pointer (a synthetic event): the handle still hears its own */ }
+    var up = function () { ["pointermove", "pointerup", "pointercancel"].forEach(function (t) { nb.removeEventListener(t, t === "pointermove" ? mv : up); });
       setTimeout(function () { dragged = false; }, 0); ni = i; sel = { kind: "sent" };
       if (len !== x.len) { editMotif(function (y) { y.notes[i].len = len; }); } else { render(); } };
-    document.addEventListener("pointermove", mv); document.addEventListener("pointerup", up);
+    nb.addEventListener("pointermove", mv); nb.addEventListener("pointerup", up); nb.addEventListener("pointercancel", up);
   }
   /* the walker's chord: a dot on voice 1's cell it plays, kept current while the dock is open */
   function markNow() {
@@ -491,7 +493,7 @@
   }
   /* the foot's dropout readout: the engine's slow blocks (web/core-worklet.js), asked once a second while the dock is open;
      "audio ok", or how many in the last minute (warn), the slowest block in its title. Tests read __fa.dropouts */
-  var gaps0 = null;
+  var gapLog = [];   /* the device's gap count, stamped: the last minute's are the ones shown */
   function pollAudio() {
     polls++;
     if (!ctx || !ctx.stats || !ctx.stats(function (m) {
@@ -509,8 +511,14 @@
     var e = document.getElementById("cd-audio"); if (!e) { return; }
     /* slow blocks are the engine running late; the device's own gap count (Chrome's playbackStats) says whether it was heard */
     var as = window.__fa.audioStats, gaps = as && typeof as.underruns === "number" ? as.underruns : null;
-    if (gaps != null && gaps0 == null) { gaps0 = gaps; }
-    var heard = gaps != null ? gaps - gaps0 : null;
+    var heard = null;
+    if (gaps != null) {
+      var nowT = Date.now(), lastG = gapLog[gapLog.length - 1];
+      if (lastG && gaps < lastG.g) { gapLog = []; }   /* a new engine: its count starts again */
+      gapLog.push({ at: nowT, g: gaps });
+      while (gapLog.length > 1 && nowT - gapLog[1].at >= 60000) { gapLog.shift(); }
+      heard = gaps - gapLog[0].g;
+    }
     e.classList.toggle("warn", n > 0 || heard > 0);
     e.lastChild.textContent = heard > 0 ? heard + (heard === 1 ? " gap heard" : " gaps heard") + " · " + n + " slow" :
       n ? n + (n === 1 ? " slow block" : " slow blocks") + " in the last minute" : "audio ok";

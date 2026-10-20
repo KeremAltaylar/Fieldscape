@@ -66,6 +66,14 @@ try {
   const au = await ev("(function(){ var a = document.getElementById('cd-audio'); return a ? { text: a.textContent, title: a.title, n: window.__fa.dropouts && __fa.dropouts.n, polls: window.__fa.dropouts && __fa.dropouts.polls } : null; })()");
   check("the foot's audio readout: 'audio ok', slow blocks or gaps heard", !!au && (au.text === "audio ok" ? au.n === 0 : /^\d+ slow blocks? in the last minute$|^\d+ gaps? heard/.test(au.text) && au.n > 0) && /slowest block/.test(au.title), au);
   check("the readout polls while the dock is open (__fa.dropouts)", !!au && au.polls >= 1, au);
+  /* final review M5: "gaps heard" counts the last minute (stubbed device count; Date.now shifted past the minute), and starts again with a new engine */
+  const gapText = async () => { await sleep(1200); return ev("document.getElementById('cd-audio').textContent"); };
+  await ev("window.__fa.audioStats = { underruns: 5 }, 0"); const g0 = await gapText();
+  await ev("window.__fa.audioStats = { underruns: 7 }, 0"); const g1 = await gapText();
+  await ev("window.__off = 61000, window.__dn = Date.now, Date.now = function () { return window.__dn.call(Date) + window.__off; }, window.__fa.audioStats = { underruns: 7 }, 0"); const g2 = await gapText();
+  await ev("window.__fa.audioStats = { underruns: 1 }, 0"); const g3 = await gapText();
+  await ev("Date.now = window.__dn, delete window.__fa.audioStats, 0");
+  check("gaps heard: the last minute's, not the page's; a new engine starts again", /^2 gaps heard/.test(g1) && !/gap/.test(g2) && !/gap/.test(g3), [g0, g1, g2, g3]);
   const spill = await spillOf();
   check("one screen: nothing scrolls or spills", spill.length === 0, spill.slice(0, 5));
   check("the selects read as menus (the chevron)", await ev("/gradient/.test(getComputedStyle(document.getElementById('cd-template')).backgroundImage)"), null);
@@ -196,6 +204,11 @@ try {
   check("2 bars, then an empty roll cell in bar 2 adds a note", c2.motif.bars === 2 && c2.motif.notes.length === 5 && ni >= 0 && c2.motif.notes[ni].len === 4, c2.motif);
   await dragEnd(ni, 2); await snap();
   check("dragging a note's end lengthens it", (await C()).motif.notes[ni].len === 6, (await C()).motif.notes[ni]);
+  /* final review M6: a cancelled drag (the pointer lost) ends the drag too - the handle hears its own pointer events */
+  await ev(`(function(){ var nb = document.querySelector('#cd-motif .cd-mnote[data-i="${ni}"]'), r = nb.getBoundingClientRect(), g = document.querySelector('#cd-motif .cd-mgrid').getBoundingClientRect(), pc = (g.width + 2) / 32;
+    var f = function (t, x) { nb.dispatchEvent(new PointerEvent(t, { bubbles: true, clientX: x, clientY: r.top + 3, pointerId: 77, button: 0 })); };
+    f("pointerdown", r.right - 2); f("pointermove", r.right - 2 + pc); f("pointercancel", r.right - 2 + pc); })(), 0`); await sleep(400); await snap();
+  check("a cancelled drag still ends it, the length kept", (await C()).motif.notes[ni].len === 7, (await C()).motif.notes[ni]);
   await ev(`${mcell(3, 24)}.click(), 0`); await sleep(400); await snap();
   await dragEnd(ni, 6); await snap();
   check("dragged over the next note, its end stops at that note", (await C()).motif.notes[ni].len === 8, (await C()).motif.notes[ni]);
@@ -280,6 +293,18 @@ try {
   const k8 = await ev(`JSON.stringify(__fa.routePatch(${R}).comp)`);
   await ev(`${mcell(5, 2)}.click(), 0`); await sleep(300);
   check("a ninth note: nothing added, the roll says why", (await C()).motif.notes.length === 8 && k8 === (await ev(`JSON.stringify(__fa.routePatch(${R}).comp)`)) && /8 notes at most/.test(await ev("(document.querySelector('#compose-dock .cd-mcap') || {}).textContent || ''")), null);
+  /* final review M3: scale -> chord folds degrees 5..6 (rows the chord's roll lacks) into the new rows, their octave carried */
+  const six = (await C()).motif.notes.filter((x) => x.deg === 6).length;
+  await ev(`${btn("#cd-basis button", "chord")}.click(), 0`); await sleep(400); await snap();
+  c2 = await C();
+  check("scale -> chord: every degree 0..4, octaves within +-2, the sixth folded to 2nd tone +1 octave", six === 4 && c2.motif.basis === "chord" && c2.motif.notes.every((x) => x.deg >= 0 && x.deg < 5 && Math.abs(x.oct || 0) <= 2) && c2.motif.notes.filter((x) => x.deg === 1 && x.oct === 1).length === six, c2.motif.notes);
+  await ev(`${btn("#cd-basis button", "scale")}.click(), 0`); await sleep(400); await snap();
+  /* final review M7: augment on a two-bar motif says it plays bar 1 */
+  await ev(`${btn("#compose-dock .cd-edh button", "2 bars")}.click(), 0`); await sleep(400); await snap();
+  await ev("(function(){ var m = document.getElementById('cd-addstep'); m.value = 'augment'; m.dispatchEvent(new Event('change', { bubbles: true })); })(), 0"); await sleep(400); await snap();
+  check("augment on a 2-bar motif: the chip says bar 1", /augment · bar 1/.test(await ev("[].map.call(document.querySelectorAll('#cd-chain .cd-step'), function (b) { return b.title; }).join('|')")), await ev("[].map.call(document.querySelectorAll('#cd-chain .cd-step'), function (b) { return b.title; }).join('|')"));
+  await ev("document.querySelector('#cd-chain .cd-step[data-i=\"2\"]').focus(), 0"); await key("Delete", "Delete"); await sleep(300); await snap();
+  await ev(`${btn("#compose-dock .cd-edh button", "1 bar")}.click(), 0`); await sleep(400); await snap();
   /* deleting the last chain step: focus on the step before it */
   await ev("document.querySelector('#cd-chain .cd-step[data-i=\"1\"]').focus(), 0"); await key("Delete", "Delete"); await snap();
   check("Delete on the last chain step: it goes, focus on the one before", (await C()).chain.length === 1 && (await active()) === "step:0", await active());
