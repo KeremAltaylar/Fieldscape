@@ -410,6 +410,16 @@ test("cell: a melody voice shows its development; summary says Motif", () => {
   const s = M.defaults(); s.voice.role = "melody"; s.sect.style = "strum"; s.v3.style = "pedal";
   assert.equal(M.summary(s), "Motif · Strum · Pedal");
 });
+test("cell: a melody's label takes its chain step's form letter (the mock: A, A↑2, B inv, cad.) when told the chord count", () => {
+  const c = withChain([{ op: "seq", arg: 2, from: 4, to: 7 }, { op: "invert", from: 8, to: 10 }, { op: "cadence", from: 11, to: 11 }]);
+  c.voice.role = "melody"; c.form = { type: "AABA", contrast: 0.6, seed: 1 };
+  const lab = (i) => M.cell(c, i, [], 16)[0].label;
+  assert.deepEqual([0, 4, 8, 11, 12].map(lab), ["A", "A↑2", "B inv", "cad.", "A"]);
+  assert.equal(M.cell(c, 8)[0].label, "A inv");            /* no chord count: no form letters */
+  c.form = { type: "sentence", contrast: 0.6, seed: 1 };    /* a a′ b: the letter's first, upper case */
+  assert.deepEqual([0, 4, 8].map(lab), ["A", "A↑2", "B inv"]);
+  assert.equal(M.FIELDS.common.filter((f) => f.k === "role")[0].label, "role");
+});
 test("generate: a motif and a chain follow the form; one melody voice at a time", () => {
   for (const form of M.FORMS) for (const n of [1, 3, 8, 16, 40]) for (let seed = 1; seed < 40; seed++) {
     const g = gen({ form: form.id, nchords: n, seed });

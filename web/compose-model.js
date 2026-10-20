@@ -13,7 +13,7 @@
   var RATES = ["16n", "8n", "8n.", "4n", "4n.", "2n", "2n.", "1n"];
   var COMMON = [
     { k: "style", label: "style", kind: "menu", options: STYLES, def: "free" },
-    { k: "role", label: "voice", kind: "menu", options: ROLES, def: "accomp" },
+    { k: "role", label: "role", kind: "menu", options: ROLES, def: "accomp" },
     { k: "rate", label: "rate", kind: "menu", options: RATES.map(function (r) { return { id: r, label: r }; }), def: "8n" },
     { k: "lo", label: "lowest", kind: "knob", min: 24, max: 96, step: 1, def: 48, fmt: "note" },
     { k: "hi", label: "highest", kind: "knob", min: 36, max: 108, step: 1, def: 84, fmt: "note" },
@@ -121,7 +121,8 @@
     return { values: values, source: source, style: style };
   }
   /* a lane cell: chord i, with the bands over it; zone > chord > section > route */
-  function cell(comp, i, bandsAt) {
+  /* n: the route's chord count - a melody's label then takes its chain step's form letter (B inv), else A */
+  function cell(comp, i, bandsAt, n) {
     return VOICES.map(function (v) {
       var style = comp[v].style, styleSource = "route", role = comp[v].role, roleSource = "route";
       (bandsAt || []).filter(function (b) { return b.kind === "section"; }).forEach(function (b) {
@@ -130,7 +131,7 @@
       (bandsAt || []).filter(function (b) { return b.kind === "zone"; }).forEach(function (b) {
         var o = comp.over.zone[b.id]; if (o && o[v]) { if (o[v].style) { style = o[v].style; styleSource = "zone"; } if (o[v].role) { role = o[v].role; roleSource = "zone"; } } });
       /* an off cell is the doing of the layer that turned it off */
-      if (role === "melody") { return { style: "melody", label: melodyLabel(comp, i), source: roleSource }; }
+      if (role === "melody") { return { style: "melody", label: melodyLabel(comp, i, n), source: roleSource }; }
       return role === "off" ? { style: "off", source: roleSource } : { style: style, source: styleSource };
     });
   }
@@ -174,11 +175,12 @@
     }
     return { op: op, notes: n, len16: len16, last: last, cad: st && st.cad || "full", others: st && st.others || "thin", strength: st && st.strength !== undefined ? st.strength : 1 };
   }
-  function melodyLabel(comp, i) {
+  function melodyLabel(comp, i, n) {
     var st = chainAt(comp, i);
     if (!st) { return "A"; }
-    var a = Math.round(st.arg || 0);
-    return { seq: "A" + (a < 0 ? "↓" + -a : "↑" + a), invert: "A inv", retro: "A retro", augment: "A aug", diminish: "A dim", fragment: "A frag " + a, cadence: "cad." }[st.op] || "A";
+    var a = Math.round(st.arg || 0), L = "A";
+    if (comp.form && n) { formSpans(comp.form.type, Math.min(n, NCHORD)).forEach(function (s) { if (st.from >= s.a && st.from < s.b) { L = s.letter.charAt(0).toUpperCase(); } }); }
+    return { seq: L + (a < 0 ? "↓" + -a : "↑" + a), invert: L + " inv", retro: L + " retro", augment: L + " aug", diminish: L + " dim", fragment: L + " frag " + a, cadence: "cad." }[st.op] || L;
   }
   function dist(a, b) { var R = 6371008.8, la = (a[1] + b[1]) / 2 * Math.PI / 180;
     var dx = (b[0] - a[0]) * Math.PI / 180 * Math.cos(la) * R, dy = (b[1] - a[1]) * Math.PI / 180 * R; return Math.sqrt(dx * dx + dy * dy); }
