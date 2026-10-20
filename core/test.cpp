@@ -2096,8 +2096,9 @@ int main() {
             if (rec) { fs_piece_role_source(d, 2, 1, (long long)tone20.size(), tnp); fs_piece_role_analysis(d, 2, tjson.c_str()); }
             int r = fs_piece_add_route(d, patch); fs_piece_walk(d, r, 0.3, 0);
             for (int i = 0; i < (int)(secs * SR / 128); i++) { fs_process(d, 128); const float *l = fs_out(d, 0); out.insert(out.end(), l, l + 128); }
+        /* composition 2 (the room's combs sweep): this check is the sampler's pitch, so fx3's room is off - a moving room smears the tail by cents */
             fs_destroy(d); };
-        const char *only_v3 = "{\"version\":17,\"prog\":[{\"r\":0,\"q\":\"m9\"},{\"r\":5,\"q\":\"maj7#11\"},{\"r\":10,\"q\":\"maj9\"},{\"r\":3,\"q\":\"6/9\"}],\"bed\":{\"on\":false},\"voice\":{\"on\":false},\"sect\":{\"on\":false},\"zones\":{\"on\":false},\"v3\":{\"synth\":\"s-retune\",\"warp\":0,\"drive\":0,\"sampler\":{\"colour\":1}}}";
+        const char *only_v3 = "{\"version\":17,\"prog\":[{\"r\":0,\"q\":\"m9\"},{\"r\":5,\"q\":\"maj7#11\"},{\"r\":10,\"q\":\"maj9\"},{\"r\":3,\"q\":\"6/9\"}],\"bed\":{\"on\":false},\"voice\":{\"on\":false},\"sect\":{\"on\":false},\"zones\":{\"on\":false},\"fx3\":{\"revWet\":0},\"v3\":{\"synth\":\"s-retune\",\"warp\":0,\"drive\":0,\"sampler\":{\"colour\":1}}}";
         /* the route with the Third voice off: other layers of a route still sound (-26 dB, measured) - the baseline */
         TLog l0; std::vector<float> base; run("{\"version\":17,\"prog\":[{\"r\":0,\"q\":\"m9\"},{\"r\":5,\"q\":\"maj7#11\"},{\"r\":10,\"q\":\"maj9\"},{\"r\":3,\"q\":\"6/9\"}],\"bed\":{\"on\":false},\"voice\":{\"on\":false},\"sect\":{\"on\":false},\"zones\":{\"on\":false},\"v3\":{\"on\":false}}", false, 40, l0, base);
         const double base_db = rms_db(base, 0, base.size());

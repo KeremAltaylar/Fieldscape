@@ -774,7 +774,108 @@ static void test_gain_memo() {
     std::printf("C gain memo: 7 patches read after another (key, progression, motif, density, envelope, tempo, formant harm) have a fresh solve's gains; %d of 7 moved them\n", moved);
     assert(moved == 7);
 }
+
+/* Task 6 (Kerem 2026-10-20: voice 3's D3 sat 15 dB under its A3, even alone): the cause was the Freeverb room, not the voice.
+   Its eight combs are fixed, so a held pitch met them as one gain and phase - and at some pitches the room's tail cancelled the
+   dry note (a 20 dB scatter, D3 -43 dB beside -30 around it, on every voice). The comb delays now move slowly (tone.hpp).
+   Checks: (1) voice 3 alone holding each of MIDI 38-74 through fx3 with its echo off (the echo is a comb of its own, +-3 dB of the same kind), am and fm, the level
+   averaged over 10 s (the combs now sweep) - the pitches within 6 dB (+-3); (2) the room against the old one (its code below, as it was) on noise bursts: the wet level and the tail's decay
+   within 1 dB; (3) no discontinuity in the room's output (the highs, as the onset checks measure them); (4) the room's cost. */
+static double held_db(const char *syn, int m, bool delay_off) {
+    char p[4096];
+    std::snprintf(p, sizeof p, R"({"version":17,"tempo":96,"key":%d,"prog":[{"r":0,"q":"m7"}],"bed":{"on":false},"zones":{"on":false},"morph":{"on":false},
+        %s"voice":{"on":false},"sect":{"on":false},"v3":{"on":true,"synth":"%s"},
+        "comp":{"bass":{"mode":"off"},"v3":{"style":"swells","rate":"1n","tones":[0],"lo":%d,"hi":%d}}})", m, delay_off ? R"("fx3":{"delayWet":0},)" : "", syn, m - 6, m + 5);
+    unsigned seed = 11; fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128); fs_piece_test_hooks(pc, draw, &seed, nullptr, nullptr);
+    const int r = fs_piece_add_route(pc, p); double s = 0; long n = 0;
+    const double secs = std::getenv("HELD_SECS") ? std::atof(std::getenv("HELD_SECS")) : 10;
+    for (int k = 0; k < (int)(secs * 48000 / 128); k++) { fs_piece_walk(pc, r, 0, 0); fs_process(pc, 128);
+        if (k * 128 >= 0.9 * 48000) { const float *o = fs_out(pc, 0); for (int i = 0; i < 128; i++) s += (double)o[i] * o[i]; n += 128; } }
+    fs_destroy(pc); return 10 * std::log10(s / n + 1e-30);
+}
+/* the room as it was before: whole-sample combs at fixed delays */
+struct OldRoom {
+    tone::LowpassComb comb[8]; tone::Biquad ap[2][4]; tone::Ctl room, wet;
+    void init(double sr, double room_size, double damp) {
+        static const double tune[8] = { 1557, 1617, 1491, 1422, 1277, 1356, 1188, 1116 }, apf[4] = { 225, 556, 441, 341 };
+        for (int i = 0; i < 8; i++) comb[i].init(sr, tune[i] / 44100.0, room_size, damp);
+        for (int q = 0; q < 2; q++) for (int k = 0; k < 4; k++) { ap[q][k].type = tone::ALLPASS; ap[q][k].design(apf[k], 1, sr); }
+        room.init(room_size); wet.init(0);
+    }
+    void process(float *L, float *R, int n, double t_end) {
+        room.block(t_end); wet.block(t_end); for (auto &c : comb) c.block(t_end);
+        for (int i = 0; i < n; i++) {
+            float l = L[i], r = R[i], sl = 0, sr_ = 0, fb = room.at(i, n);
+            for (int k = 0; k < 4; k++) sl += comb[k].run(0, l, fb);
+            for (int k = 4; k < 8; k++) sr_ += comb[k].run(1, r, fb);
+            for (int k = 0; k < 4; k++) { sl = ap[0][k].run(0, sl); sr_ = ap[1][k].run(1, sr_); }
+            float d, w; tone::xfade(wet.at(i, n), d, w);
+            L[i] = l * d + sl * w; R[i] = r * d + sr_ * w;
+        }
+    }
+};
+template <class R> static std::vector<float> room_run(R &rv, const std::vector<float> &in, double wetv) {
+    rv.wet.init(wetv);
+    std::vector<float> out; float L[128], Rr[128];
+    for (size_t b = 0; b + 128 <= in.size(); b += 128) {
+        for (int i = 0; i < 128; i++) L[i] = Rr[i] = in[b + i];
+        rv.process(L, Rr, 128, (double)(b + 128) / 48000); out.insert(out.end(), L, L + 128);
+    }
+    return out;
+}
+static double e_db(const std::vector<float> &x, size_t a, size_t b) { double s = 0; for (size_t i = a; i < b && i < x.size(); i++) s += (double)x[i] * x[i]; return 10 * std::log10(s / (double)(b - a) + 1e-30); }
+static void test_room() {
+    double hi = -1e9; const char *sy[2] = { "am", "fm" };
+    const int step = std::getenv("ROOM_TABLE") ? 1 : 3;   /* every 3rd semitone (13 renders a synth); ROOM_TABLE=1: all 37, with the levels */
+    if (!std::getenv("ROOM_FAST"))   /* (a dev knob: skip the long renders) */
+    for (int q = 0; q < 2; q++) {
+        double a = 1e9, b = -1e9, ea = 1e9, eb = -1e9;
+        for (int m = 38; m <= 74; m += step) {
+            const double d = held_db(sy[q], m, true), e = held_db(sy[q], m, false);   /* echo off, then fx3 as it comes */
+            a = std::min(a, d); b = std::max(b, d); ea = std::min(ea, e); eb = std::max(eb, e);
+            if (std::getenv("ROOM_TABLE")) std::printf("%d:%.1f/%.1f ", m, d, e);
+        }
+        std::printf("C room: voice 3 holding MIDI 38-74 on %s, fx3 with its echo off: %.1f .. %.1f dB (spread %.1f); default fx3, echo on: spread %.1f (not asserted: the echo is a comb of its own)\n", sy[q], a, b, b - a, eb - ea);
+        hi = std::max(hi, b - a);
+    }
+    std::printf("C room: pitch spread %.1f dB at worst (was 19.6)\n", hi);
+    assert(hi <= 6.0 || std::getenv("ROOM_FAST"));
+    /* noise bursts: 0.4 s of seeded noise, then silence; wet 1 (the room alone) and the route's fx3 (0.26) */
+    unsigned sd = 5; std::vector<float> in(48000 * 6, 0.0f); for (int i = 0; i < 48000 * 4 / 10; i++) in[i] = (float)(draw(&sd) * 2 - 1) * 0.5f;
+    double dw = 0, dd = 0, hf = 0, hfold = 0;
+    for (double decay : { 5.0, 1.8, 3.4 }) for (double wv : { 1.0, 0.26 }) {
+        const double rs = std::min(0.95, std::max(0.0, 0.45 + decay * 0.062));
+        OldRoom o; o.init(48000, rs, 3000); tone::Freeverb nw; nw.init(48000, rs, 3000);
+        const std::vector<float> a = room_run(o, in, wv), b = room_run(nw, in, wv);
+        const double wl = e_db(b, 0, 48000 * 2) - e_db(a, 0, 48000 * 2);
+        const double tail = (e_db(b, 21600, 33600) - e_db(b, 33600, 45600)) - (e_db(a, 21600, 33600) - e_db(a, 33600, 45600));   /* the fall per 0.25 s, from 0.45 s in */
+        dw = std::max(dw, std::fabs(wl)); dd = std::max(dd, std::fabs(tail));
+        /* discontinuity: a 220 Hz sine through the room, against the old room */
+        std::vector<float> sn(48000 * 3); for (size_t i = 0; i < sn.size(); i++) sn[i] = 0.3f * (float)std::sin(2 * 3.141592653589793 * 220 * i / 48000);
+        OldRoom o2; o2.init(48000, rs, 3000); tone::Freeverb n2; n2.init(48000, rs, 3000);
+        const std::vector<float> a2 = room_run(o2, sn, wv), b2 = room_run(n2, sn, wv);
+        /* the largest second difference over the output's rms: a click is a spike of it, a smooth tone a steady ~(2 pi f / sr)^2 */
+        auto high = [&](const std::vector<float> &x) { double m = 0, e = 0; for (size_t i = 48001; i < x.size(); i++) { m = std::max(m, (double)std::fabs(x[i] - 2 * x[i - 1] + x[i - 2])); e += (double)x[i] * x[i]; } return m / std::sqrt(e / (x.size() - 48001) + 1e-30); };
+        hf = std::max(hf, high(b2)); hfold = std::max(hfold, high(a2));
+        std::printf("C room: decay %.1f wet %.2f - level %+.2f dB, tail fall %+.2f dB per 0.25 s against the old room\n", decay, wv, wl, tail);
+    }
+    std::printf("C room: wet level within %.2f dB, tail decay within %.2f dB per 0.25 s; largest second difference over rms %.5f (old %.5f)\n", dw, dd, hf, hfold);
+    assert(dw <= 1.0 && dd <= 1.0 && hf <= hfold * 3);
+    /* cost: 128-frame blocks, 7500 of them, the best of 3 */
+    auto cost = [&](auto &rv) { double best = 1e9; float L[128], R[128];
+        for (int rep = 0; rep < 3; rep++) {
+            const auto t0 = std::chrono::steady_clock::now();
+            for (int b = 0; b < 7500; b++) { for (int i = 0; i < 128; i++) L[i] = R[i] = 0.2f * (float)std::sin(i * 0.3); rv.process(L, R, 128, (b + 1) * 128.0 / 48000); }
+            best = std::min(best, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() / 7500); }
+        return best; };
+    OldRoom oc; oc.init(48000, 0.76, 3000); oc.wet.init(0.26); tone::Freeverb nc; nc.init(48000, 0.76, 3000); nc.wet.init(0.26);
+    const double co = cost(oc), cn = cost(nc);
+    std::printf("C room: cost per 128-frame block, old %.4f ms, new %.4f ms (x%.2f)\n", co, cn, cn / co);
+    assert(cn < 0.05);   /* a block is 2.67 ms; three rooms run per block */
+}
+
 int main(int argc, char **argv) {
+    if (argc > 1 && !std::strcmp(argv[1], "room")) { test_room(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "levels")) { test_levels(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "levels-table")) { levels_table(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "onsets")) { test_onsets(); return 0; }
@@ -806,6 +907,7 @@ int main(int argc, char **argv) {
     test_engine_zone();
     test_onsets();
     test_levels();
+    test_room();
     std::printf("composer ok\n");
     return 0;
 }
