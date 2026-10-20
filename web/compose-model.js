@@ -364,7 +364,9 @@
   }
   function drawMotif(r) {
     var k = int(r, 3, 6), len = one(r, RHYTHMS[k]), d;
-    do { d = [one(r, [0, 2])]; for (var i = 1; i < k; i++) { d.push(clamp(d[i - 1] + one(r, [-2, -1, -1, 0, 1, 1, 2]), 0, 4)); } } while (!shaped(d));
+    var tries = 0;   /* a capped retry: a shape every draw tested so far finds in a few tries; past 200, a known shape */
+    do { d = [one(r, [0, 2])]; for (var i = 1; i < k; i++) { d.push(clamp(d[i - 1] + one(r, [-2, -1, -1, 0, 1, 1, 2]), 0, 4)); } } while (!shaped(d) && ++tries < 200);
+    if (!shaped(d)) { d = [[2, 3, 1], [0, 1, 2, 1], [0, 1, 2, 3, 1], [0, 1, 2, 3, 2, 1]][k - 3]; }
     var at = 0;
     return { basis: "chord", bars: 1, notes: d.map(function (x, i) { var n = { deg: x, start: at, len: len[i] }; at += len[i]; return n; }) };
   }
