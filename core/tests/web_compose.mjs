@@ -22,8 +22,9 @@ try {
   await sleep(2000); await ev("fsListen._gate(true), 0"); await sleep(600);
   const rid = await ev("(__fa.features().filter(function (f) { return f.properties.kind === 'route' && (f.properties.patch || {}).prog; })[0] || {properties:{}}).properties.id");
   const R = JSON.stringify(rid);
-  const key = async (k, code, mods = 0) => { await s.send("Input.dispatchKeyEvent", { type: "keyDown", key: k, code, windowsVirtualKeyCode: { " ": 32, Delete: 46, Escape: 27, z: 90 }[k], modifiers: mods, text: k === " " ? " " : undefined });
-    await s.send("Input.dispatchKeyEvent", { type: "keyUp", key: k, code, windowsVirtualKeyCode: { " ": 32, Delete: 46, Escape: 27, z: 90 }[k], modifiers: mods }); await sleep(300); };
+  const VK = { " ": 32, Delete: 46, Escape: 27, z: 90, Enter: 13, ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40 };
+  const key = async (k, code, mods = 0) => { await s.send("Input.dispatchKeyEvent", { type: "keyDown", key: k, code, windowsVirtualKeyCode: VK[k], modifiers: mods, text: k === " " ? " " : k === "Enter" ? "\r" : undefined });
+    await s.send("Input.dispatchKeyEvent", { type: "keyUp", key: k, code, windowsVirtualKeyCode: VK[k], modifiers: mods }); await sleep(300); };
   const spillOf = () => ev(`(function(){ var out = [];
     [["#compose-dock", "#compose-dock > *"], [".cd-main", ".cd-main > *, .cd-cell, .cd-chord"], ["#cd-insp", "#cd-insp > *, #cd-insp .cd-row2 > *"]].forEach(function (k) {
       var c = document.querySelector(k[0]); if (!c) { out.push(k[0] + " missing"); return; } var r = c.getBoundingClientRect();
@@ -132,8 +133,8 @@ try {
   check("the seed field shows the new seed", +(await ev("document.querySelector('#compose-dock .cd-head input').value")) === g.seed, null);
   check("what it wrote is the model's generate (deterministic)", await ev(`(function(){ var b = ${gBefore}; return JSON.stringify(FsCompose.generate(b, { form: "AABA", contrast: ${g.form && g.form.contrast}, seed: ${g.seed}, nchords: 16, bpm: __fa.routePatch(${R}).tempo || 72 })) === JSON.stringify(__fa.routePatch(${R}).comp); })()`), null);
   check("the zones and sections stay", JSON.stringify(g.over.zone) === JSON.stringify(JSON.parse(gBefore).over.zone) && JSON.stringify(g.over.section) === JSON.stringify(JSON.parse(gBefore).over.section), null);
-  check("the form row shows the letters over their chords", (await ev("[].map.call(document.querySelectorAll('#compose-dock .cd-form .cd-band'), function (b) { return b.textContent; }).join('|')")) === "A|A|B|A",
-    await ev("[].map.call(document.querySelectorAll('#compose-dock .cd-form .cd-band'), function (b) { return b.textContent; })"));
+  check("the form · chain row: the letters' steps over their chords", (await ev("(function(){ var seen = {}, out = []; [].forEach.call(document.querySelectorAll('#compose-dock .cd-form .cd-step'), function (b) { if (!seen[b.dataset.span]) { seen[b.dataset.span] = 1; out.push(b.dataset.letter); } }); return out.join('|'); })()")) === "A|A|B|A",
+    await ev("(function(){ var seen = {}, out = []; [].forEach.call(document.querySelectorAll('#compose-dock .cd-form .cd-step'), function (b) { if (!seen[b.dataset.span]) { seen[b.dataset.span] = 1; out.push(b.dataset.letter); } }); return out.join('|'); })()"));
   check("Generate keeps focus on its button", await ev("document.activeElement === document.getElementById('cd-generate')"), await ev("document.activeElement && document.activeElement.outerHTML.slice(0, 80)"));
   const gspill2 = await spillOf();
   check("generated, with the form row and the panel: one screen", gspill2.length === 0, gspill2.slice(0, 5));
@@ -145,13 +146,91 @@ try {
   /* fix round 1 #8: a hand edit keeps the form, marked edited; a template clears the form with its chords */
   await ev("document.querySelector('#cd-lanes .cd-lane[data-voice=\"voice\"] .cd-cell[data-i=\"2\"]').click(), 0"); await sleep(300);
   await ev("(function(){ var m = document.querySelector('#cd-insp .cd-row2[data-k=\"rate\"] select'); m.value = m.value === '4n' ? '2n' : '4n'; m.dispatchEvent(new Event('change', { bubbles: true })); })(), 0"); await sleep(400);
-  check("a hand edit after Generate: the form row says edited, dimmed", await ev(`(function(){ var r = document.querySelector('#compose-dock .cd-formrow'); return !!__fa.routePatch(${R}).comp.form.edited && !!r && r.classList.contains('edited') && r.querySelector('.cd-name').textContent === 'form · edited' && /generated · edited/.test(r.title) && getComputedStyle(r.querySelector('.cd-band')).opacity === '0.5'; })()`), null);
+  check("a hand edit after Generate: the form row says edited, dimmed", await ev(`(function(){ var r = document.querySelector('#compose-dock .cd-formrow'); return !!__fa.routePatch(${R}).comp.form.edited && !!r && r.classList.contains('edited') && r.querySelector('.cd-name').textContent === 'form · edited' && /generated · edited/.test(r.title) && getComputedStyle(r.querySelector('.cd-step em')).opacity === '0.5'; })()`), null);
   await shot("8-edited");
   await ev("(function(){ var m = document.getElementById('cd-template'); m.value = 'ambient'; m.dispatchEvent(new Event('change', { bubbles: true })); })(), 0"); await sleep(400);
   check("a template after Generate clears the form and its chords, keeps zones and sections", await ev(`(function(){ var c = __fa.routePatch(${R}).comp, b = ${gBefore}; return !c.form && JSON.stringify(c.over.chord) === '{}' && JSON.stringify(c.over.zone) === JSON.stringify(b.over.zone) && JSON.stringify(c.over.section) === JSON.stringify(b.over.section) && !document.querySelector('#compose-dock .cd-form'); })()`), null);
   await ev("document.body.focus(), 0");
   for (let i = 0; i < 3; i++) { await ev("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true })), 0"); await sleep(250); }
   check("Ctrl+Z back through the template, the edit and the typed seed", (await ev(`JSON.stringify(__fa.routePatch(${R}).comp)`)) === gBefore, null);
+  /* composition 2 (task-9-brief.md): the melody voice, the motif roll, the chain, Show layers; every edit one undo step */
+  const snaps = [await ev(`JSON.stringify(__fa.routePatch(${R}).comp)`)];
+  const snap = async () => snaps.push(await ev(`JSON.stringify(__fa.routePatch(${R}).comp)`));
+  const C = async () => JSON.parse(await ev(`JSON.stringify(__fa.routePatch(${R}).comp)`));
+  const setIn = (k, v) => ev(`(function(){ var m = document.querySelector('#cd-insp .cd-row2[data-k="${k}"] select, #cd-insp .cd-row2[data-k="${k}"] input'); m.value = '${v}'; m.dispatchEvent(new Event('change', { bubbles: true })); })(), 0`);
+  const vcell = (i) => `document.querySelector('#cd-lanes .cd-lane[data-voice="voice"] .cd-cell[data-i="${i}"]')`;
+  const words = () => ev(`[0, 2, 3, 4].map(function (i) { return document.querySelector('#cd-lanes .cd-lane[data-voice="voice"] .cd-cell[data-i="' + i + '"] span').textContent; }).join('|')`);
+  await ev("FsComposeDock.close(), __fa.openPatchPanel(), document.getElementById('pp-compose').click(), 0"); await sleep(800);
+  await setIn("role", "melody"); await sleep(400); await snap();
+  let c2 = await C();
+  check("voice 1 melody: the role and a starting motif in one edit", c2.voice.role === "melody" && c2.motif && c2.motif.notes.length === 4, c2.motif);
+  check("the melody's cells read A", (await ev(`${vcell(0)}.querySelector('span').textContent`)) === "A", await ev(`${vcell(0)}.textContent`));
+  check("no motif roll in the normal dock", !(await ev("!!document.getElementById('cd-motif')")), null);
+  await ev("document.querySelector('#compose-dock .cd-icon[aria-label=\"Grow the dock\"]').click(), 0"); await sleep(600);
+  check("grown: the motif roll is there", await ev("(function(){ var m = document.getElementById('cd-motif'); return !!m && m.offsetHeight > 60 && m.querySelectorAll('.cd-mnote').length === 4; })()"), null);
+  let sp = await spillOf();
+  check("grown with the motif: one screen at 1440x900", sp.length === 0, sp.slice(0, 5));
+  await ev("document.querySelector('#cd-motif .cd-mcell[data-row=\"4\"][data-col=\"2\"]').click(), 0"); await sleep(400); await snap();
+  c2 = await C(); const ni = c2.motif.notes.findIndex((x) => x.start === 2 && x.deg === 4);
+  check("an empty roll cell adds a note", c2.motif.notes.length === 5 && ni >= 0, c2.motif.notes);
+  const nr = await ev(`(function(){ var r = document.querySelector('#cd-motif .cd-mnote[data-i="${ni}"]').getBoundingClientRect(), c = document.querySelector('#cd-motif .cd-mcell[data-row="4"][data-col="2"]').getBoundingClientRect(); return [r.right - 2, r.top + r.height / 2, c.width + 2]; })()`);
+  const mouse = (type, x, y) => s.send("Input.dispatchMouseEvent", { type, x, y, button: "left", buttons: type === "mouseReleased" ? 0 : 1, clickCount: 1 });
+  await mouse("mousePressed", nr[0], nr[1]); for (let k = 1; k <= 4; k++) { await mouse("mouseMoved", nr[0] + nr[2] * 2 * k / 4, nr[1]); await sleep(30); }
+  await mouse("mouseReleased", nr[0] + nr[2] * 2, nr[1]); await sleep(400); await snap();
+  c2 = await C();
+  check("dragging a note's end lengthens it", c2.motif.notes[ni].len === JSON.parse(snaps[2]).motif.notes[ni].len + 2, [JSON.parse(snaps[2]).motif.notes[ni], c2.motif.notes[ni]]);
+  await ev("[].filter.call(document.querySelectorAll('#cd-basis button'), function (b) { return b.textContent === 'scale'; })[0].click(), 0"); await sleep(400); await snap();
+  c2 = await C();
+  check("the basis switch: scale degrees, the roll 1..7", c2.motif.basis === "scale" && (await ev("document.querySelectorAll('#cd-motif .cd-mrk').length")) === 7, c2.motif.basis);
+  await ev("(function(){ var m = document.getElementById('cd-addstep'); m.value = 'seq'; m.dispatchEvent(new Event('change', { bubbles: true })); })(), 0"); await sleep(400); await snap();
+  check("+ step adds a chain step, the inspector on it", (await C()).chain.length === 1 && /Chain step 1/.test(await ev("document.getElementById('cd-insp-title').textContent")), await ev("document.getElementById('cd-insp-title').textContent"));
+  await setIn("arg", 2); await sleep(300); await snap();
+  await setIn("from", 2); await sleep(300); await snap();
+  await setIn("to", 3); await sleep(300); await snap();
+  c2 = await C();
+  check("the chain holds sequence +2 over chords 3-4", c2.chain.length === 1 && c2.chain[0].op === "seq" && c2.chain[0].arg === 2 && c2.chain[0].from === 2 && c2.chain[0].to === 3, c2.chain);
+  check("those cells read A↑2, the others A", (await words()) === "A|A↑2|A↑2|A", await words());
+  check("the chain row shows the step over its chords", await ev("(function(){ var b = document.querySelector('#cd-chain .cd-step[data-i=\"0\"]'), a = document.querySelectorAll('#cd-strip .cd-chord'); if (!b) return false; var r = b.getBoundingClientRect(); return Math.abs(r.left - a[2].getBoundingClientRect().left) < 3 && Math.abs(r.right - a[3].getBoundingClientRect().right) < 4; })()"), null);
+  check("the fitted preview names the notes over the chords", /over .+ · /.test(await ev("(document.querySelector('#compose-dock .cd-fit') || {}).textContent || ''")), await ev("(document.querySelector('#compose-dock .cd-fit') || {}).textContent"));
+  sp = await spillOf();
+  check("grown with a chain step selected: one screen", sp.length === 0, sp.slice(0, 5));
+  await shot("10-motif");
+  /* the roll's keyboard: arrows move, Enter adds and removes a note, Delete removes the selected note */
+  await ev("document.querySelector('#cd-motif .cd-mcell[data-row=\"6\"][data-col=\"13\"]').focus(), 0");
+  await key("ArrowRight", "ArrowRight");
+  check("an arrow moves in the roll", await ev("document.activeElement.dataset.row === '6' && document.activeElement.dataset.col === '14'"), await ev("document.activeElement && document.activeElement.outerHTML.slice(0, 90)"));
+  const n0 = (await C()).motif.notes.length;
+  await key("Enter", "Enter"); await snap();
+  check("Enter adds a note there", (await C()).motif.notes.length === n0 + 1 && (await C()).motif.notes.some((x) => x.deg === 6 && x.start === 14), (await C()).motif.notes);
+  await key("Enter", "Enter"); await snap();
+  check("Enter again removes it", (await C()).motif.notes.length === n0, (await C()).motif.notes);
+  await key("Enter", "Enter"); await snap();
+  await key("Delete", "Delete"); await snap();
+  check("Delete removes the selected note", (await C()).motif.notes.length === n0 && !(await C()).motif.notes.some((x) => x.deg === 6 && x.start === 14), (await C()).motif.notes);
+  await ev("[].filter.call(document.querySelectorAll('#compose-dock .cd-edh button'), function (b) { return b.textContent === 'clear'; })[0].click(), 0"); await sleep(400); await snap();
+  check("cleared: Draw a motif, or generate one", (await C()).motif.notes.length === 0 && /Draw a motif, or generate one/.test(await ev("(document.querySelector('#compose-dock .cd-mempty') || {}).textContent || ''")), null);
+  sp = await spillOf();
+  check("the empty motif state fits", sp.length === 0, sp.slice(0, 5));
+  await ev("[].filter.call(document.querySelectorAll('#compose-dock .cd-mempty button'), function (b) { return b.textContent === 'Use a starter'; })[0].click(), 0"); await sleep(400); await snap();
+  check("Use a starter: the default motif, the basis kept", (await C()).motif.notes.length === 4 && (await C()).motif.basis === "scale", (await C()).motif);
+  await ev("document.querySelector('#compose-dock .cd-icon[aria-label=\"Show the map\"]').click(), 0"); await sleep(600);
+  /* Show layers on voice 1: zone, chord, section, route; the winner lit */
+  await ev(`${vcell(1)}.click(), 0`); await sleep(300);
+  await setIn("role", "off"); await sleep(300); await snap();
+  await ev("document.querySelector('#cd-lanes .cd-lane[data-voice=\"voice\"] .cd-layers').click(), 0"); await sleep(400);
+  check("Show layers: four sub-rows, zone chord section route", (await ev("[].map.call(document.querySelectorAll('#cd-lanes .cd-lane[data-voice=\"voice\"] .cd-layer'), function (r) { return r.dataset.k; }).join('|')")) === "zone|chord|section|route", null);
+  check("the chord row lit where the chord says (chord 2 off), the route's elsewhere", await ev("(function(){ var L = function (k, i) { return document.querySelector('#cd-lanes .cd-layer[data-k=\"' + k + '\"] [data-i=\"' + i + '\"]'); }; return L('chord', 1).classList.contains('win') && /off/.test(L('chord', 1).textContent) && !L('route', 1).classList.contains('win') && L('route', 0).classList.contains('win') && /melody/.test(L('route', 0).textContent); })()"), null);
+  sp = await spillOf();
+  check("layers open: one screen at 1440x900", sp.length === 0, sp.slice(0, 5));
+  await shot("11-layers");
+  await ev("document.body.focus(), 0");
+  let undoOk = true, undoAt = -1;
+  for (let i = snaps.length - 2; i >= 0; i--) {
+    await ev("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true })), 0"); await sleep(200);
+    if ((await ev(`JSON.stringify(__fa.routePatch(${R}).comp)`)) !== snaps[i]) { undoOk = false; undoAt = i; break; }
+  }
+  check("Ctrl+Z backs out every sentence edit one step at a time (" + (snaps.length - 1) + " edits)", undoOk, undoAt);
+  await ev("document.querySelector('#cd-lanes .cd-lane[data-voice=\"voice\"] .cd-layers').click(), 0"); await sleep(200);
   /* a zone on the route (made here, so the test never depends on the data): picked on the map, it is the dock's selection */
   const zid = await ev(`(function(){ var f = __fa.features().filter(function (g) { return g.properties.id === ${R}; })[0], c = f.geometry.coordinates[Math.floor(f.geometry.coordinates.length / 2)];
     return __fa.addPoint(c[0], c[1], "Compose test zone"); })()`);
@@ -193,6 +272,18 @@ try {
   const sspill = await spillOf();
   check("1024x700: the Generate panel and the form row fit one screen", sspill.length === 0 && !!(await ev("!!document.querySelector('#compose-dock .cd-form')")), sspill.slice(0, 5));
   await shot("7-generate-1024");
+  await ev("document.querySelector('#compose-dock .cd-icon[aria-label=\"Grow the dock\"]').click(), 0"); await sleep(600);
+  await ev("(function(){ var b = document.querySelectorAll('#cd-chain .cd-step'); b[b.length - 1].click(); })(), 0"); await sleep(400);
+  check("a cadence step's inspector: type, others, strength", await ev("!!document.querySelector('#cd-insp .cd-row2[data-k=\"cad\"]') && !!document.querySelector('#cd-insp .cd-row2[data-k=\"others\"]') && !!document.querySelector('#cd-insp .cd-row2[data-k=\"strength\"]')"), null);
+  const gr1024 = await spillOf();
+  check("1024x700 grown, a generated motif and chain: one screen", gr1024.length === 0 && !!(await ev("!!document.getElementById('cd-motif')")), gr1024.slice(0, 5));
+  await shot("12-grown-1024");
+  await ev("document.querySelector('#compose-dock .cd-icon[aria-label=\"Show the map\"]').click(), 0"); await sleep(600);
+  await ev("document.querySelector('#cd-lanes .cd-lane[data-voice=\"voice\"] .cd-layers').click(), 0"); await sleep(400);
+  const ly1024 = await spillOf();
+  check("1024x700 layers open: one screen", ly1024.length === 0 && (await ev("document.querySelectorAll('#cd-lanes .cd-layer').length")) === 4, ly1024.slice(0, 5));
+  await shot("13-layers-1024");
+  await ev("document.querySelector('#cd-lanes .cd-lane[data-voice=\"voice\"] .cd-layers').click(), 0"); await sleep(200);
   await ev("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true })), FsComposeDock.close(), 0"); await sleep(300);
   /* 24 chords: the form spans all 24 (the core reads 64); past 64 the panel says so */
   await ev(`__fa.patchEdit(${R}, function (p) { window.__prog24 = p.prog; p.prog = p.prog.concat(p.prog.slice(0, 8)); }), 0`); await sleep(300);
@@ -202,7 +293,7 @@ try {
     await ev("[].map.call(document.querySelectorAll('#cd-insp .cd-isub'), function (p) { return p.textContent; })"));
   await ev("document.getElementById('cd-generate').click(), 0"); await sleep(500);
   const g24 = JSON.parse(await ev(`JSON.stringify(__fa.routePatch(${R}).comp)`));
-  check("24 chords: overrides reach past chord 16, none past 24, the form row ends at chord 24", Object.keys(g24.over.chord).some((i) => +i >= 16) && Object.keys(g24.over.chord).every((i) => +i < 24) && await ev("(function(){ var b = document.querySelectorAll('#compose-dock .cd-form .cd-band'), c = document.querySelectorAll('#cd-strip .cd-chord')[23]; return b.length === 4 && b[3].getBoundingClientRect().right <= c.getBoundingClientRect().right + 2; })()"), Object.keys(g24.over.chord));
+  check("24 chords: overrides reach past chord 16, none past 24, the form row ends at chord 24", Object.keys(g24.over.chord).some((i) => +i >= 16) && Object.keys(g24.over.chord).every((i) => +i < 24) && await ev("(function(){ var b = document.querySelectorAll('#compose-dock .cd-form .cd-step'), c = document.querySelectorAll('#cd-strip .cd-chord')[23]; return new Set([].map.call(b, function (x) { return x.dataset.span; })).size === 4 && b[b.length - 1].getBoundingClientRect().right <= c.getBoundingClientRect().right + 2; })()"), Object.keys(g24.over.chord));
   const s24 = await spillOf();
   check("24 chords at 1024x700: one screen", s24.length === 0, s24.slice(0, 5));
   await shot("9-24-chords-1024");
