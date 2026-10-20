@@ -5,7 +5,11 @@
   var VOICES = ["voice", "sect", "v3"];
   var STYLES = [{ id: "free", label: "Free" }, { id: "arpeggio", label: "Arpeggio" }, { id: "pedal", label: "Pedal" },
                 { id: "strum", label: "Strum" }, { id: "euclid", label: "Euclidean" }, { id: "swells", label: "Swells" }];
-  var ROLES = [{ id: "accomp", label: "on" }, { id: "off", label: "off" }];
+  var ROLES = [{ id: "accomp", label: "on" }, { id: "melody", label: "melody" }, { id: "off", label: "off" }];
+  /* composition 2: the chain's operations (core/composer.hpp Op) */
+  var OPS = [{ id: "repeat", label: "repeat" }, { id: "seq", label: "sequence", arg: { min: -7, max: 7, def: 1 } }, { id: "invert", label: "invert" },
+             { id: "retro", label: "retrograde" }, { id: "augment", label: "augment" }, { id: "diminish", label: "diminish" },
+             { id: "fragment", label: "fragment", arg: { min: 1, max: 8, def: 2 } }, { id: "cadence", label: "cadence" }];
   var RATES = ["16n", "8n", "8n.", "4n", "4n.", "2n", "2n.", "1n"];
   var COMMON = [
     { k: "style", label: "style", kind: "menu", options: STYLES, def: "free" },
@@ -126,8 +130,55 @@
       (bandsAt || []).filter(function (b) { return b.kind === "zone"; }).forEach(function (b) {
         var o = comp.over.zone[b.id]; if (o && o[v]) { if (o[v].style) { style = o[v].style; styleSource = "zone"; } if (o[v].role) { role = o[v].role; roleSource = "zone"; } } });
       /* an off cell is the doing of the layer that turned it off */
+      if (role === "melody") { return { style: "melody", label: melodyLabel(comp, i), source: roleSource }; }
       return role === "off" ? { style: "off", source: roleSource } : { style: style, source: styleSource };
     });
+  }
+  function motifDefault() {
+    return { basis: "chord", bars: 1, notes: [{ deg: 0, start: 0, len: 4 }, { deg: 2, start: 4, len: 4 }, { deg: 1, start: 8, len: 4 }, { deg: 0, oct: 1, start: 12, len: 4 }] };
+  }
+  function setMotif(comp, motif) { comp.motif = clone(motif); }
+  function setChain(comp, chain) { comp.chain = clone(chain); }
+  function clamp(x, a, b) { return Math.max(a, Math.min(b, x)); }
+  /* the chain step covering a chord, the later one winning; null: none (the motif repeats) */
+  function chainAt(comp, chord) {
+    var ch = comp.chain || [];
+    for (var i = ch.length - 1; i >= 0; i--) { if (chord >= ch[i].from && chord <= ch[i].to) { return ch[i]; } }
+    return null;
+  }
+  /* the motif as developed for one chord - comp::motif_step (core/composer.cpp) in JS, with the core's parse clamps (motif_of):
+     { op, notes: [{ deg, oct, start, len }], len16, last, cad, others, strength }; times in sixteenths from the phrase's start */
+  function motifStep(comp, chord) {
+    var m = comp.motif || {}, bars = clamp(Math.round(m.bars || 1), 1, 2), L = bars * 16, base = [];
+    (m.notes || []).forEach(function (x) {
+      var s0 = Math.round(x.start || 0);
+      if (base.length >= 8 || s0 < 0 || s0 >= L) { return; }
+      base.push({ deg: clamp(Math.round(x.deg || 0), -7, 13), oct: clamp(Math.round(x.oct || 0), -2, 2), start: s0, len: clamp(Math.round(Math.min(L - s0, x.len === undefined ? 4 : x.len)), 1, 32) });
+    });
+    var st = chainAt(comp, chord), op = st ? st.op : "repeat", arg = st ? Math.round(st.arg || 0) : 0, len16 = L, n = base.map(function (x) { return Object.assign({}, x); });
+    if (op === "seq") { n.forEach(function (x) { x.deg += clamp(arg, -7, 7); }); }
+    else if (op === "invert") { n.forEach(function (x, i) { x.deg = 2 * base[0].deg - base[i].deg; }); }
+    else if (op === "retro") { n = base.slice().reverse().map(function (x) { return Object.assign({}, x, { start: Math.max(0, L - (x.start + x.len)) }); }); }
+    else if (op === "augment") { len16 = Math.min(2 * L, 32); n.forEach(function (x) { x.start *= 2; x.len *= 2; }); }
+    else if (op === "diminish") {
+      n.forEach(function (x) { x.start = Math.floor(x.start / 2); x.len = Math.max(1, Math.floor(x.len / 2)); });
+      n = n.concat(n.map(function (x) { return Object.assign({}, x, { start: x.start + L / 2 }); }));
+    }
+    else if (op === "fragment") { n = n.slice(0, clamp(arg, 1, 8)); }
+    n = n.filter(function (x) { return x.start < len16; }).map(function (x) { x.len = Math.min(x.len, len16 - x.start); return x; });
+    n = n.filter(function (x, i) { return !n.slice(i + 1).some(function (y) { return y.start === x.start; }); });   /* one note a start: the later kept */
+    var last = !!st && chord === st.to;
+    if (op === "cadence" && last && n.length) {   /* the latest note goes last, held to the phrase's end */
+      var j = 0; n.forEach(function (x, i) { if (x.start >= n[j].start) { j = i; } });
+      var t = n[j]; n[j] = n[n.length - 1]; n[n.length - 1] = t; t.len = len16 - t.start;
+    }
+    return { op: op, notes: n, len16: len16, last: last, cad: st && st.cad || "full", others: st && st.others || "thin", strength: st && st.strength !== undefined ? st.strength : 1 };
+  }
+  function melodyLabel(comp, i) {
+    var st = chainAt(comp, i);
+    if (!st) { return "A"; }
+    var a = Math.round(st.arg || 0);
+    return { seq: "A" + (a < 0 ? "↓" + -a : "↑" + a), invert: "A inv", retro: "A retro", augment: "A aug", diminish: "A dim", fragment: "A frag " + a, cadence: "cad." }[st.op] || "A";
   }
   function dist(a, b) { var R = 6371008.8, la = (a[1] + b[1]) / 2 * Math.PI / 180;
     var dx = (b[0] - a[0]) * Math.PI / 180 * Math.cos(la) * R, dy = (b[1] - a[1]) * Math.PI / 180 * R; return Math.sqrt(dx * dx + dy * dy); }
@@ -216,7 +267,7 @@
   function drawVoice(r, role, dense, avoid) {
     var o = voiceDefaults();
     o.style = one(r, ROLE_STYLES[role].filter(function (s) { return CLASS[s] !== avoid; }));
-    if (role === "mover") { o.rate = dense ? "16n" : "8n"; o.lo = int(r, 60, 67); o.hi = o.lo + int(r, 17, 24); }
+    if (role === "mover") { o.role = "melody"; o.rate = dense ? "16n" : "8n"; o.lo = int(r, 60, 67); o.hi = o.lo + int(r, 17, 24); }
     else if (role === "held") { o.rate = dense ? one(r, ["2n", "2n."]) : one(r, ["2n.", "1n"]); o.lo = int(r, 38, 46); o.hi = o.lo + int(r, 12, 16); }
     else { o.rate = dense ? "4n" : "4n."; o.lo = int(r, 50, 55); o.hi = o.lo + int(r, 14, 19);
       if (avoid !== "off" && r() < (dense ? 0.2 : 0.45)) { o.role = "off"; } }
@@ -274,13 +325,14 @@
   function thin(t) {
     var x = clone(t.v);
     VOICES.forEach(function (v) { if (t.roles[v] !== "mover") { return; }
-      if (t.cad === 2) { x[v].role = "off"; } else { x[v] = held(x[v], t.cad ? "pedal" : "swells"); } });
+      var mel = x[v].role === "melody";   /* the melody never rests: the cadence op ends it */
+      if (t.cad === 2 && !mel) { x[v].role = "off"; } else { x[v] = held(x[v], t.cad ? "pedal" : "swells"); if (mel) { x[v].role = "melody"; } } });
     return x;
   }
   /* the route's last chord: every voice swells or pedals, the bass holds the root */
   function settle(r, A) {
     var x = { bass: { mode: "hold" } };
-    VOICES.forEach(function (v) { x[v] = held(A.v[v], r() < 0.5 ? "swells" : "pedal"); });
+    VOICES.forEach(function (v) { x[v] = held(A.v[v], r() < 0.5 ? "swells" : "pedal"); if (A.v[v].role === "melody") { x[v].role = "melody"; } });
     return x;
   }
   /* playable as written: a strum's whole spread ((tones - 1) x spread) within 60% of its step at the route's tempo (96 bpm
@@ -297,6 +349,28 @@
      that key too, so the form plays over the section; old chord overrides go, sections' and zones' stay. A zone is above a
      chord (resolve: route < section < chord < zone), so nothing a chord writes can beat it: zones are left to win. */
   var NCHORD = 64;
+  /* a motif of 3-6 chord-degree notes (0 root .. 4 9th), a step or two apart, on an even grid over one bar */
+  function drawMotif(r) {
+    var k = int(r, 3, 6), deg = one(r, [0, 2, 4]), notes = [];
+    for (var i = 0; i < k; i++) {
+      var st = Math.floor(i * 8 / k) * 2, nx = i + 1 < k ? Math.floor((i + 1) * 8 / k) * 2 : 16;
+      notes.push({ deg: deg, start: st, len: nx - st });
+      deg = clamp(deg + one(r, [-2, -1, -1, 1, 1, 2]), 0, 4);
+    }
+    return { basis: "chord", bars: 1, notes: notes };
+  }
+  /* the chain: a letter's op over its chords (A repeats, A' sequences by 1 or 2 either way, B inverts or fragments, C
+     retrogrades), then a cadence on its last chord - half inside the form, full at the route's end */
+  function drawChain(r, spans, n) {
+    var ops = {}, chain = [];
+    spans.forEach(function (s) { var k = texKey(s.letter);
+      if (!ops[k]) { ops[k] = k === "A" ? { op: "repeat" } : k === "A'" ? { op: "seq", arg: one(r, [-2, -1, 1, 2]) } : k === "C" ? { op: "retro" } :
+        r() < 0.5 ? { op: "invert" } : { op: "fragment", arg: int(r, 2, 3) }; }
+      if (s.b - s.a > 1) { chain.push(Object.assign({ from: s.a, to: s.b - 2 }, ops[k])); }
+      chain.push({ op: "cadence", cad: s.b === n ? "full" : "half", others: "thin", from: s.b - 1, to: s.b - 1 });
+    });
+    return chain;
+  }
   function generate(comp, opt) {
     var seed = Math.max(0, opt.seed | 0), c = Math.max(0, Math.min(1, +opt.contrast || 0)), type = formOf(opt.form).id;
     var n = Math.min(NCHORD, Math.max(0, opt.nchords | 0)), bpm = +opt.bpm > 0 ? +opt.bpm : 96;
@@ -304,6 +378,7 @@
     spans.forEach(function (s) { var k = texKey(s.letter); if (!tex[k]) { tex[k] = k === "A'" ? variantOf(r, A) : contrastOf(r, A, c); } });
     var end = tame(settle(r, A), bpm);
     tame(A.v, bpm); all.forEach(function (v) { out[v] = clone(A.v[v]); });
+    out.motif = drawMotif(r); out.chain = drawChain(r, spans, n);
     out.seed = seed; out.form = { type: type, contrast: c, seed: seed };
     out.over = { chord: {}, section: (comp.over && out.over.section) || {}, zone: (comp.over && out.over.zone) || {} };
     spans.forEach(function (s) {
@@ -321,8 +396,8 @@
     return out;
   }
   function label(id) { for (var i = 0; i < STYLES.length; i++) { if (STYLES[i].id === id) { return STYLES[i].label; } } return id; }
-  function summary(comp) { return VOICES.map(function (v) { return comp[v].role === "off" ? "Off" : label(comp[v].style); }).join(" · "); }
-  var api = { VOICES: VOICES, STYLES: STYLES, ROLES: ROLES, RATES: RATES, FIELDS: FIELDS, BASS: BASS, defaults: defaults, TEMPLATES: TEMPLATES,
+  function summary(comp) { return VOICES.map(function (v) { return comp[v].role === "off" ? "Off" : comp[v].role === "melody" ? "Motif" : label(comp[v].style); }).join(" · "); }
+  var api = { VOICES: VOICES, STYLES: STYLES, ROLES: ROLES, OPS: OPS, motifDefault: motifDefault, motifStep: motifStep, setMotif: setMotif, setChain: setChain, chainAt: chainAt, RATES: RATES, FIELDS: FIELDS, BASS: BASS, defaults: defaults, TEMPLATES: TEMPLATES,
     scopeObj: scopeObj, setValue: setValue, clearValue: clearValue, clearScope: clearScope, effective: effective, cell: cell,
     bands: bands, history: history, summary: summary, clone: clone, label: label,
     PRESETS: PRESETS, FORMS: FORMS, NCHORD: NCHORD, formSpans: formSpans, generate: generate, roll: roll };

@@ -166,8 +166,10 @@ const CORE_KEYS = new Set([...CORE.matchAll(/(?:has|get)\("(\w+)"\)/g)].map((m) 
 const strTable = (re) => [...CORE.match(re)[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
 const CORE_STR = {
   style: strTable(/STYLES\[NSTYLE\] = \{([^}]*)\}/), role: strTable(/ROLES\[5\] = \{([^}]*)\}/), rate: strTable(/T\[\] = \{(.*)\};/),
-  pedal: strTable(/P\[3\] = \{([^}]*)\}/), dir: strTable(/D\[3\] = \{([^}]*)\}/), mode: strTable(/M\[3\] = \{([^}]*)\}/)
+  pedal: strTable(/P\[3\] = \{([^}]*)\}/), dir: strTable(/D\[3\] = \{([^}]*)\}/), mode: strTable(/M\[3\] = \{([^}]*)\}/),
+  op: strTable(/OPS\[NOP\] = \{([^}]*)\}/), cad: strTable(/CAD\[3\] = \{([^}]*)\}/), others: strTable(/OTH\[3\] = \{([^}]*)\}/)
 };
+const CORE_NOTE_KEYS = new Set([...CORE.matchAll(/\bx->[ns]\("(\w+)"/g)].map((m) => m[1]));   /* a motif note's and a chain step's keys */
 const moving = (o) => o.role !== "off" && ["16n", "8n"].includes(o.rate) && !["pedal", "swells"].includes(o.style);
 const gen = (o, c = M.defaults()) => M.generate(c, Object.assign({ form: "AABA", contrast: 0.6, seed: 7, nchords: 16 }, o));
 const voicesAt = (c, i) => ["voice", "sect", "v3", "bass"].map((v) => Object.assign({}, c[v], (c.over.chord[String(i)] || {})[v] || {}));
@@ -184,6 +186,20 @@ function checkParsable(c) {
       if (k === "tones") assert.ok(v.length && v.every((x) => Number.isInteger(x) && x >= 0 && x <= 4), where + " tones " + v);
     }
   }
+  if (c.motif) {
+    assert.ok(CORE.includes('"scale"') && ["chord", "scale"].includes(c.motif.basis), "basis " + c.motif.basis);
+    assert.ok(c.motif.bars >= 1 && c.motif.bars <= 2 && c.motif.notes.length >= 1 && c.motif.notes.length <= 8);
+    for (const n of c.motif.notes) {
+      for (const k of Object.keys(n)) assert.ok(CORE_NOTE_KEYS.has(k), "motif note key " + k);
+      assert.ok(n.start >= 0 && n.start < c.motif.bars * 16 && n.deg >= -7 && n.deg <= 13 && (n.oct || 0) >= -2 && (n.oct || 0) <= 2, JSON.stringify(n));
+    }
+  }
+  for (const s of c.chain || []) {
+    for (const k of Object.keys(s)) assert.ok(CORE_NOTE_KEYS.has(k), "chain key " + k);
+    assert.ok(CORE_STR.op.includes(s.op) && CORE_STR.cad.includes(s.cad || "full") && CORE_STR.others.includes(s.others || "thin"), JSON.stringify(s));
+    assert.ok(s.from >= 0 && s.to >= s.from && s.to < 64, JSON.stringify(s));
+  }
+  assert.ok((c.chain || []).length <= 16);
 }
 test("generate: the forms and how a route's chords split among their letters", () => {
   assert.deepEqual(M.FORMS.map((f) => f.id), ["AABA", "ABAB", "ABAC", "sentence", "rondo"]);
@@ -329,4 +345,100 @@ test("fix 7: a one-chord section does not thin (the last chord still settles)", 
     assert.equal(g.over.chord["0"], undefined, "chord 1 is A"); assert.equal(g.over.chord["1"], undefined, "chord 2 is A");
     assert.deepEqual(voicesAt(g, 3).slice(0, 3).map((o) => ["pedal", "swells"].includes(o.style) && o.role !== "off"), [true, true, true]);
   }
+});
+
+/* Composition 2: motifs, chains, the melody voice (the cases of core/tests/composer_test.cpp's test_melody / test_cadence) */
+const tri = (r) => r.notes.map((n) => [n.deg, n.start, n.len, n.oct || 0]);
+const withChain = (chain, motif = M.motifDefault()) => { const c = M.defaults(); M.setMotif(c, motif); M.setChain(c, chain); return c; };
+const step = (op, extra = {}, from = 0, to = 3) => [Object.assign({ op, from, to }, extra)];
+test("tables: OPS, the melody role and the default motif", () => {
+  assert.deepEqual(M.OPS.map((o) => o.id), CORE_STR.op);
+  assert.deepEqual(M.OPS.filter((o) => o.arg).map((o) => [o.id, o.arg.min, o.arg.max, o.arg.def]), [["seq", -7, 7, 1], ["fragment", 1, 8, 2]]);
+  assert.ok(M.ROLES.some((r) => r.id === "melody" && r.label === "melody") && M.ROLES.every((r) => CORE_STR.role.includes(r.id)));
+  assert.deepEqual(M.motifDefault(), { basis: "chord", bars: 1, notes: [{ deg: 0, start: 0, len: 4 }, { deg: 2, start: 4, len: 4 }, { deg: 1, start: 8, len: 4 }, { deg: 0, oct: 1, start: 12, len: 4 }] });
+});
+test("motifStep: each op on the default motif, as comp::motif_step", () => {
+  const at = (chain, chord = 0) => M.motifStep(withChain(chain), chord);
+  assert.equal(at([]).op, "repeat");
+  assert.deepEqual(tri(at([])), [[0, 0, 4, 0], [2, 4, 4, 0], [1, 8, 4, 0], [0, 12, 4, 1]]);
+  assert.deepEqual(tri(at(step("seq", { arg: 1 }))), [[1, 0, 4, 0], [3, 4, 4, 0], [2, 8, 4, 0], [1, 12, 4, 1]]);
+  assert.deepEqual(tri(at(step("invert"))), [[0, 0, 4, 0], [-2, 4, 4, 0], [-1, 8, 4, 0], [0, 12, 4, 1]]);   /* around the first note's degree */
+  assert.deepEqual(tri(at(step("retro"))), [[0, 0, 4, 1], [1, 4, 4, 0], [2, 8, 4, 0], [0, 12, 4, 0]]);
+  assert.deepEqual(tri(at(step("fragment", { arg: 2 }))), [[0, 0, 4, 0], [2, 4, 4, 0]]);
+  const aug = at(step("augment")); assert.equal(aug.len16, 32);
+  assert.deepEqual(tri(aug), [[0, 0, 8, 0], [2, 8, 8, 0], [1, 16, 8, 0], [0, 24, 8, 1]]);
+  assert.deepEqual(tri(at(step("diminish"))), [[0, 0, 2, 0], [2, 2, 2, 0], [1, 4, 2, 0], [0, 6, 2, 1], [0, 8, 2, 0], [2, 10, 2, 0], [1, 12, 2, 0], [0, 14, 2, 1]]);
+  assert.equal(at(step("invert", {}, 4, 5)).op, "repeat", "a chord outside the step");
+  assert.equal(at(step("seq", { arg: 2 })).op, "seq");
+});
+test("motifStep: later chain step wins; invert uses the first note; clamps; one note a start; clip to the phrase", () => {
+  const two = [{ op: "seq", arg: 1, from: 0, to: 5 }, { op: "retro", from: 2, to: 3 }];
+  assert.equal(M.chainAt(withChain(two), 2).op, "retro"); assert.equal(M.chainAt(withChain(two), 4).op, "seq"); assert.equal(M.chainAt(withChain(two), 6), null);
+  const inv = { bars: 1, notes: [{ deg: 2, start: 0, len: 4 }, { deg: 4, start: 4, len: 4 }] };
+  assert.deepEqual(tri(M.motifStep(withChain(step("invert"), inv), 0)), [[2, 0, 4, 0], [0, 4, 4, 0]]);
+  /* parse clamps: len to the bar's end (12 + 8 -> 4), deg -7..13, oct -2..2, more than 8 notes: 8, a start past the bar dropped */
+  const wild = { bars: 1, notes: [{ deg: 99, oct: 9, start: 12, len: 8 }, { deg: -99, start: 16 }].concat([1, 2, 3, 4, 5, 6, 7, 8, 9].map((i) => ({ start: i }))) };
+  const w = M.motifStep(withChain([], wild), 0); assert.equal(w.notes.length, 8);
+  assert.deepEqual(tri(w)[0], [13, 12, 4, 2]);
+  /* diminish: starts 0 and 1 land both on 0 and on 8, the later kept */
+  const d = { notes: [{ deg: 0, start: 0, len: 4 }, { deg: 2, start: 1, len: 4 }] };
+  assert.deepEqual(tri(M.motifStep(withChain(step("diminish", {}, 0, 0), d), 0)), [[2, 0, 2, 0], [2, 8, 2, 0]]);
+  /* a two-bar motif augmented: the phrase stays 32, a note starting at 40 is dropped, one held past the end is clipped */
+  const long = { bars: 2, notes: [{ deg: 0, start: 0, len: 4 }, { deg: 1, start: 12, len: 8 }, { deg: 2, start: 20, len: 4 }] };
+  assert.deepEqual(tri(M.motifStep(withChain(step("augment"), long), 0)), [[0, 0, 8, 0], [1, 24, 8, 0]]);
+  assert.equal(M.motifStep(withChain([], { notes: [] }), 0).notes.length, 0);
+  assert.equal(M.motifStep(M.defaults(), 0).notes.length, 0, "no motif: the core has none");
+});
+test("motifStep: a cadence's last chord puts the latest note last, held to the phrase's end", () => {
+  const m = { notes: [{ deg: 0, start: 8, len: 2 }, { deg: 2, start: 0, len: 4 }, { deg: 1, start: 4, len: 2 }] };
+  const c = withChain([{ op: "cadence", cad: "half", others: "stop", strength: 0.5, from: 0, to: 1 }], m);
+  const in0 = M.motifStep(c, 0), end = M.motifStep(c, 1);
+  assert.equal(in0.last, false); assert.deepEqual(tri(in0), [[0, 8, 2, 0], [2, 0, 4, 0], [1, 4, 2, 0]]);
+  assert.equal(end.last, true); assert.equal(end.cad, "half"); assert.equal(end.others, "stop");
+  assert.deepEqual(tri(end), [[1, 4, 2, 0], [2, 0, 4, 0], [0, 8, 8, 0]]);
+});
+test("cell: a melody voice shows its development; summary says Motif", () => {
+  const c = withChain([{ op: "seq", arg: 2, from: 0, to: 0 }, { op: "seq", arg: -1, from: 1, to: 1 }, { op: "invert", from: 2, to: 2 }, { op: "fragment", arg: 2, from: 3, to: 3 },
+    { op: "cadence", from: 4, to: 4 }, { op: "retro", from: 5, to: 5 }, { op: "augment", from: 6, to: 6 }, { op: "diminish", from: 7, to: 7 }]);
+  c.voice.role = "melody";
+  const lab = (i) => M.cell(c, i)[0].label;
+  assert.deepEqual([0, 1, 2, 3, 4, 5, 6, 7, 8].map(lab), ["A↑2", "A↓1", "A inv", "A frag 2", "cad.", "A retro", "A aug", "A dim", "A"]);
+  assert.deepEqual(M.cell(c, 0)[0], { style: "melody", label: "A↑2", source: "route" });
+  assert.deepEqual(M.cell(c, 0)[1], { style: "free", source: "route" });
+  M.setValue(c, { kind: "chord", i: 0 }, "voice", "role", "off"); assert.deepEqual(M.cell(c, 0)[0], { style: "off", source: "chord" });
+  M.setValue(c, { kind: "chord", i: 0 }, "voice", "role", "melody"); assert.equal(M.cell(c, 0)[0].source, "chord");
+  const s = M.defaults(); s.voice.role = "melody"; s.sect.style = "strum"; s.v3.style = "pedal";
+  assert.equal(M.summary(s), "Motif · Strum · Pedal");
+});
+test("generate: a motif and a chain follow the form; one melody voice at a time", () => {
+  for (const form of M.FORMS) for (const n of [1, 3, 8, 16, 40]) for (let seed = 1; seed < 40; seed++) {
+    const g = gen({ form: form.id, nchords: n, seed });
+    assert.equal(g.motif.basis, "chord"); assert.equal(g.motif.bars, 1);
+    assert.ok(g.motif.notes.length >= 3 && g.motif.notes.length <= 6, JSON.stringify(g.motif));
+    assert.ok(g.motif.notes.every((x) => Number.isInteger(x.deg) && x.deg >= 0 && x.deg <= 4), JSON.stringify(g.motif));
+    const starts = g.motif.notes.map((x) => x.start); assert.ok(starts.every((x, i) => x >= 0 && x < 16 && (i === 0 || x > starts[i - 1])), String(starts));
+    for (let i = 0; i < n; i++) assert.equal(voicesAt(g, i).slice(0, 3).filter((o) => o.role === "melody").length, 1, form.id + " n" + n + " seed " + seed + " chord " + i);
+    checkParsable(g);
+    const last = M.chainAt(g, n - 1); assert.deepEqual([last.op, last.cad, last.to], ["cadence", "full", n - 1]);
+    for (const sp of M.formSpans(form.id, n)) {
+      assert.ok(sp.b - sp.a === 1 || M.chainAt(g, sp.a).from === sp.a);
+      if (sp.b < n) { const e = M.chainAt(g, sp.b - 1); assert.deepEqual([e.op, e.cad], ["cadence", "half"]); }
+    }
+  }
+});
+test("generate: A repeats, A' sequences by 1 or 2, B inverts or fragments, C retrogrades", () => {
+  const seen = new Set();
+  for (let seed = 1; seed < 60; seed++) {
+    const g = gen({ form: "ABAC", seed }), sp = M.formSpans("ABAC", 16), op = (k) => M.chainAt(g, sp[k].a);
+    assert.deepEqual([op(0).op, op(2).op], ["repeat", "repeat"]);
+    assert.ok(["invert", "fragment"].includes(op(1).op)); assert.equal(op(3).op, "retro");
+    seen.add(op(1).op);
+    const gs = gen({ form: "sentence", seed }), s = M.chainAt(gs, M.formSpans("sentence", 16)[1].a);
+    assert.ok(s.op === "seq" && [-2, -1, 1, 2].includes(s.arg), JSON.stringify(s)); seen.add("seq" + s.arg);
+    assert.equal(M.chainAt(gs, 0).op, "repeat");
+  }
+  assert.deepEqual([...seen].sort(), ["fragment", "invert", "seq-1", "seq-2", "seq1", "seq2"]);
+});
+test("generate: no chords, no chain (the motif is still drawn)", () => {
+  const e = gen({ nchords: 0 }); assert.deepEqual(e.chain, []); assert.ok(e.motif.notes.length >= 3);
 });
