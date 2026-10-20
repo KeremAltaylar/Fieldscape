@@ -137,6 +137,7 @@ void comp_of(const Json *j, Cfg &c) {
     if (!j || j->kind != Json::OBJ) return;
     c.on = true;
     c.seed = (uint32_t)std::max(0.0, j->n("seed", 1));
+    c.develop = j->s("bars", "develop") == std::string("repeat") ? 0 : 1;
     for (int q = 0; q < NVOICE; q++) voice_of(j->get(VKEYS[q]), c.v[q], true);
     bass_of(j->get("bass"), c.bass, true);
     motif_of(j->get("motif"), c.motif);

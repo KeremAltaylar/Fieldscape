@@ -176,7 +176,7 @@
     M.TEMPLATES.forEach(function (x) { s.appendChild(new Option(x.label, x.id)); });
     s.value = cur ? cur.id : "";
     s.addEventListener("change", function () { var x = M.TEMPLATES.filter(function (y) { return y.id === s.value; })[0];
-      if (x) { var nc = x.comp(); nc.seed = comp.seed;
+      if (x) { var nc = x.comp(); nc.seed = comp.seed; nc.bars = comp.bars || "develop";
         nc.over = comp.form ? { chord: {}, section: comp.over.section, zone: comp.over.zone } : comp.over;   /* a generated piece's chords go with its form */
         comp = nc; commit(); } });
     tl.appendChild(s); h.appendChild(tl);
@@ -185,6 +185,11 @@
     si.addEventListener("change", function () { var v = Math.max(0, Math.min(99999, +si.value | 0));
       if (gen) { generate(v); } else { comp.seed = v; commit(); } });   /* the panel open: that seed's piece */
     sd.appendChild(si); h.appendChild(sd);
+    /* composition 2: a chord of several bars develops its bar (variants) or repeats it as step 1 did */
+    var bb = seg([["develop", "develop"], ["repeat", "repeat"]], comp.bars === "repeat" ? "repeat" : "develop", function (v) { comp.bars = v; commit(true); }, "Bars within a chord");
+    [].forEach.call(bb.children, function (b, i) { b.textContent = ""; b.appendChild(el("span", "cd-w", i ? "repeat" : "develop")); b.appendChild(el("span", "cd-n", i ? "rep" : "dev")); });   /* the narrow desk reads dev | rep */
+    bb.classList.add("cd-bars"); bb.title = "A chord that lasts several bars: develop varies each bar (answer, sequence, held ending, inversion; the arpeggio reverses, the euclid turns), repeat plays the first bar again";
+    h.appendChild(bb);
     var gb = el("button", "cd-gen", "Generate"); gb.appendChild(el("span", "cd-lbl", " form")); gb.type = "button"; gb.setAttribute("aria-pressed", String(gen));
     gb.title = "Write a whole piece in a form: its sections' voices, styles and settings (one Ctrl+Z takes it back)";
     gb.addEventListener("click", function () { gen = !gen;

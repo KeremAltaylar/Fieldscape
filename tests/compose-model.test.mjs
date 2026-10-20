@@ -8,6 +8,12 @@ test("defaults are today's sound, written out", () => {
   assert.equal(c.voice.style, "free"); assert.equal(c.sect.style, "free"); assert.equal(c.v3.style, "free");
   assert.equal(c.bass.mode, "hold"); assert.deepEqual(c.over, { chord: {}, section: {}, zone: {} });
 });
+test("bars: a chord's later bars develop by default, and Generate writes it", () => {
+  assert.equal(M.defaults().bars, "develop");
+  const g = M.generate(M.defaults(), { form: "AABA", contrast: 0.5, seed: 4, nchords: 8 });
+  assert.equal(g.bars, "develop");
+  assert.equal(M.generate(Object.assign(M.defaults(), { bars: "repeat" }), { form: "AABA", contrast: 0.5, seed: 4, nchords: 8 }).bars, "develop");
+});
 test("a chord override holds only what it changes; clearing it removes the key and the empty scope", () => {
   const c = M.defaults();
   M.setValue(c, { kind: "chord", i: 4 }, "voice", "style", "strum");

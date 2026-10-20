@@ -122,6 +122,13 @@ try {
   await ev("(function(){ var m = document.getElementById('cd-template'); m.value = 'arp-strum-pedal'; m.dispatchEvent(new Event('change', { bubbles: true })); })(), 0"); await sleep(500);
   check("a template writes the route's styles", await ev(`__fa.routePatch(${JSON.stringify(rid)}).comp.voice.style === 'arpeggio'`), null);
   await shot("2-template");
+  /* composition 2: the header's bars switch - develop by default, repeat writes comp.bars, one undo step, the header holds it */
+  const headFit = "(function(){ var h = document.querySelector('#compose-dock .cd-head'), r = h.getBoundingClientRect(); return h.scrollWidth <= h.clientWidth + 1 && [].every.call(h.children, function (c) { var q = c.getBoundingClientRect(); return !q.width || (q.right <= r.right + 1 && q.left >= r.left - 1); }); })()";
+  check("the header's bars switch reads develop and fits the header at 1440", await ev("(function(){ var b = document.querySelectorAll('#compose-dock .cd-bars button'); return b.length === 2 && b[0].querySelector('.cd-w').textContent === 'develop' && b[0].getAttribute('aria-pressed') === 'true'; })()") && await ev(headFit), null);
+  await ev("document.querySelectorAll('#compose-dock .cd-bars button')[1].click(), 0"); await sleep(400);
+  check("repeat writes comp.bars", await ev(`__fa.routePatch(${R}).comp.bars === 'repeat'`), null);
+  await ev("document.body.focus(), document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true })), 0"); await sleep(400);
+  check("one Ctrl+Z takes it back to develop", await ev(`__fa.routePatch(${R}).comp.bars === 'develop' && document.querySelectorAll('#compose-dock .cd-bars button')[0].getAttribute('aria-pressed') === 'true'`), null);
   /* the engine has it */
   await ev("fsListen.sound()"); for (let i = 0; i < 30 && !(await ev("!!__fa.coreSentFeature")); i++) await sleep(300);
   await sleep(800);
@@ -373,6 +380,8 @@ try {
   const sspill = await spillOf();
   check("1024x700: the Generate panel and the form row fit one screen", sspill.length === 0 && !!(await ev("!!document.querySelector('#compose-dock .cd-form')")), sspill.slice(0, 5));
   await shot("7-generate-1024");
+  check("1024: the bars switch fits the header", await ev("(function(){ var h = document.querySelector('#compose-dock .cd-head'), r = h.getBoundingClientRect(); return !!h.querySelector('.cd-bars') && h.scrollWidth <= h.clientWidth + 1 && [].every.call(h.children, function (c) { var q = c.getBoundingClientRect(); return !q.width || (q.right <= r.right + 1 && q.left >= r.left - 1); }); })()"), await ev("(function(){ var h = document.querySelector('#compose-dock .cd-head'), r = h.getBoundingClientRect(); return [].map.call(h.children, function (c) { var q = c.getBoundingClientRect(); return [c.className, Math.round(q.left - r.left), Math.round(q.right - r.right), Math.round(q.width)]; }); })()"));
+  check("Generate wrote bars: develop", await ev(`__fa.routePatch(${R}).comp.bars === 'develop'`), null);
   await ev("document.querySelector('#compose-dock .cd-icon[aria-label=\"Grow the dock\"]').click(), 0"); await sleep(600);
   await ev("(function(){ var b = document.querySelectorAll('#cd-chain .cd-step'); b[b.length - 1].click(); })(), 0"); await sleep(400);
   check("1024: a one-chord cadence step reads cad. in full", await ev("[].every.call(document.querySelectorAll('#cd-chain .cd-step.cad'), function (b) { return b.textContent === 'cad.' && b.scrollWidth <= b.clientWidth; })"), await ev("[].map.call(document.querySelectorAll('#cd-chain .cd-step.cad'), function (b) { return [b.textContent, b.scrollWidth, b.clientWidth]; })"));

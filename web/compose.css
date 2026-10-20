@@ -26,6 +26,9 @@ body.composing-grown #map { grid-column: 1 / -1; grid-row: 1; }
 .cd-saved { font: var(--t-xs) var(--font-mono); color: var(--faint); letter-spacing: .04em; white-space: nowrap; margin-right: var(--s-3); }
 .cd-saved.warn { color: var(--lamp); display: flex; align-items: center; flex: none; }
 .cd-retry { padding: 2px var(--s-2); margin-left: var(--s-1); }
+.cd-bars { --n: 2; font: var(--t-xs) var(--font-mono); text-transform: uppercase; flex: none; }
+.cd-bars button { padding: 7px var(--s-2); }
+.cd-bars .cd-n { display: none; }
 .cd-gen { height: 34px; padding: 0 var(--s-3); flex: none; white-space: nowrap; }
 .cd-icon { width: 34px; height: 34px; padding: 0; display: grid; place-items: center; letter-spacing: 0; flex: none; }
 .cd-icon svg { display: block; }
@@ -293,7 +296,11 @@ body.composing-grown #ls-panel { display: none; }   /* the listener's sheet: the
   .cd { grid-template-columns: minmax(0, 1fr) 300px; }
   .cd-keys, .cd-lbl, .cd-saved:not(.warn) { display: none; }
   .cd-audio { margin-left: auto; }   /* the keys gone: the readout keeps the right edge */
-  .cd-title { min-width: 6rem; }
+  .cd-title { min-width: 3.5rem; }
+  .cd input[type=number] { width: 3.8rem; }
+  .cd-bars .cd-w { display: none; }
+  .cd-bars .cd-n { display: inline; }
+  .cd-bars button { padding: 7px 5px; }
   .cd-row2 { grid-template-columns: 4.8rem minmax(0, 1fr) 2.8rem 3.4rem; }
   .cd-cell span { display: none; }      /* a cell is ~35px: the picture says the style, the tooltip the word */
   .cd-cell { justify-content: center; }

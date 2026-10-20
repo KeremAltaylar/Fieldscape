@@ -47,7 +47,7 @@
   function clone(x) { return JSON.parse(JSON.stringify(x)); }
   function voiceDefaults() { return { style: "free", role: "accomp", rate: "8n", lo: 48, hi: 84, len: 0.9, variation: 0 }; }
   function defaults() {
-    return { seed: 1, voice: voiceDefaults(), sect: voiceDefaults(), v3: voiceDefaults(), bass: { mode: "hold" }, over: { chord: {}, section: {}, zone: {} } };
+    return { seed: 1, bars: "develop", voice: voiceDefaults(), sect: voiceDefaults(), v3: voiceDefaults(), bass: { mode: "hold" }, over: { chord: {}, section: {}, zone: {} } };
   }
   function tmpl(mod) { return function () { var c = defaults(); mod(c); return c; }; }
   var TEMPLATES = [
@@ -390,7 +390,7 @@
     var end = tame(settle(r, A), bpm);
     tame(A.v, bpm); all.forEach(function (v) { out[v] = clone(A.v[v]); });
     out.motif = drawMotif(r); out.chain = drawChain(r, spans, n);
-    out.seed = seed; out.form = { type: type, contrast: c, seed: seed };
+    out.seed = seed; out.bars = "develop"; out.form = { type: type, contrast: c, seed: seed };
     out.over = { chord: {}, section: (comp.over && out.over.section) || {}, zone: (comp.over && out.over.zone) || {} };
     spans.forEach(function (s) {
       var t = tex[texKey(s.letter)], body = tame(clone(t.v), bpm), cad = tame(thin(t), bpm);

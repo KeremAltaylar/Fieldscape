@@ -922,6 +922,12 @@ struct Piece : Device {
     /* composition 2: a melody voice plays the motif (its style aside); the phrase in force this bar; a cadence's last chord on
        the other voices (OTH_HOLD: none), and each voice's notes so far this bar (`thin` keeps a fast voice's first) */
     comp::Phrase mel; int cad_oth = comp::OTH_HOLD, nbar[comp::NVOICE] = {};
+    /* "bars": develop - the bars since this chord began (cj), and the melody's bar when it is a variant: its notes (starts within the
+       bar) and the last four bars' lists, so no bar repeats one of them */
+    int cchord = -2; long long cbar0 = 0, cj = 0;
+    struct MBar { int n = 0; comp::MNote note[comp::MOTIF_MAX * 2]; };
+    MBar mvar, mhist[4]; bool mvar_on = false; int nhist = 0;
+    int dj() const { return patch.comp.develop ? (int)std::min<long long>(cj, 1 << 20) : 0; }
     int mel_step = -2; long long mel_bar0 = 0;   /* the chain step in force, and the bar it began on: the phrase counts from there */
     bool bare(int q) const { return ccur[q].role == comp::MELODY && patch.comp.motif.n == 0; }   /* a melody with no motif plays as Free, whatever style it holds */
     bool melodic(int q) const { return ccur[q].role == comp::MELODY && patch.comp.motif.n > 0; }
@@ -1415,6 +1421,8 @@ struct Piece : Device {
         comp::Resolved r;
         const int chord = chord_index(t_along);
         comp::resolve(patch.comp, chord, patch.nprog, sector, patch.sect.n, zin, nzin, ent, ne, r);
+        if (chord != cchord) { cchord = chord; cbar0 = bar; }
+        cj = bar - cbar0;
         for (int q = 0; q < comp::NVOICE; q++) {
             /* the gain of the layer that sets this voice (zone > chord > section > route, as resolve), glided as the settings are */
             int L = 0;
@@ -1440,10 +1448,11 @@ struct Piece : Device {
         for (int &x : nbar) x = 0;
         cad_oth = comp::OTH_HOLD;
         int mq = -1; for (int q = 0; q < comp::NVOICE && mq < 0; q++) if (melodic(q)) mq = q;
-        if (mq < 0) mel_step = -2;
+        if (mq < 0) { mel_step = -2; mvar_on = false; }
         else {
             comp::motif_step(patch.comp, chord, mel);
             if (mel.step != mel_step) { mel_step = mel.step; mel_bar0 = bar; }
+            melody_bar(chord, bar, mq);
             /* drawn once a chord (salted apart from the styles' draws), so a long last chord holds one way */
             if (mel.cadence && mel.last && comp::rand01(patch.comp.seed ^ 0xCAD0u, chord, comp::NVOICE, 0) < mel.strength) cad_oth = mel.others;
         }
@@ -1475,6 +1484,58 @@ struct Piece : Device {
         const int nt = std::max(1, H.ntones), o = floor_div(d, nt);
         return fold(H.tones[d - o * nt] + 12 * (o + oct), lo, hi);
     }
+    int mel_pitch(const comp::MNote &x, const comp::Voice &v, bool cad) const {
+        return cad ? scale_midi(patch, mel.cad == comp::CAD_FULL ? 0 : mel.cad == comp::CAD_HALF ? 4 : 5, 0, v.lo, v.hi)
+                   : patch.comp.motif.basis == comp::SCALE_DEG ? scale_midi(patch, x.deg, x.oct, v.lo, v.hi) : deg_midi(x.deg, v.lo, v.hi, x.oct);
+    }
+    static bool same_bar(const MBar &a, const MBar &b) {
+        if (a.n != b.n) return false;
+        for (int i = 0; i < a.n; i++) { const comp::MNote &x = a.note[i], &y = b.note[i]; if (x.start != y.start || x.len != y.len || x.deg != y.deg || x.oct != y.oct) return false; }
+        return true;
+    }
+    static void by_start(MBar &b) { std::stable_sort(b.note, b.note + b.n, [](const comp::MNote &x, const comp::MNote &y) { return x.start < y.start; }); }
+    /* "bars": develop - bar j >= 1 of a chord plays a seeded variant of the phrase's bar (answer: its times mirrored, sequence +1
+       degree, the first half then the last note held to the bar's end, inversion about the first note), never one of the last four
+       bars' notes. A cadence's chord rests after its first bar: the cadence has landed on it (the chord's length is not known ahead,
+       so it cannot fall on its last bar), and restating the motif over it would undo that. Bar 0 is the phrase as it always was. */
+    void melody_bar(int chord, long long bar, int q) {
+        const int j = dj(), cb = (int)((bar - mel_bar0) % std::max(1, mel.len16 / 16));
+        MBar b;   /* this bar of the phrase, by start */
+        for (int i = 0; i < mel.n; i++) { const comp::MNote &x = mel.note[i]; if (x.start >= cb * 16 && x.start < cb * 16 + 16) { b.note[b.n] = x; b.note[b.n++].start = (uint8_t)(x.start - cb * 16); } }
+        by_start(b);
+        mvar_on = false;
+        if (j == 0) { mhist[0] = b; nhist = 1; return; }
+        if (mel.cadence && mel.last) { mvar_on = true; mvar = MBar(); return; }
+        if (b.n == 0) return;
+        if (nhist == 0) { mhist[0] = b; nhist = 1; }
+        const int first = (int)std::floor(comp::rand01(patch.comp.seed ^ 0xDE70u, chord, q, (int)j) * 4);
+        for (int t = 0; t <= 4; t++) {
+            MBar v = b; const int kind = (first + t) % 4;
+            if (t == 4) v = MBar();   /* every variant was just heard: rest rather than repeat */
+            else if (kind == 0) {
+                for (int i = 0; i < v.n; i++) v.note[i].start = (uint8_t)std::max(0, 16 - (b.note[i].start + b.note[i].len));
+                by_start(v);
+            } else if (kind == 1) { for (int i = 0; i < v.n; i++) v.note[i].deg = (int8_t)(v.note[i].deg + 1); }
+            else if (kind == 2) {
+                const int keep = std::max(1, b.n / 2); v.n = keep;
+                if (b.n == 1) v.note[0].len = (uint8_t)(16 - v.note[0].start);
+                else {
+                    comp::MNote tail = b.note[b.n - 1];
+                    tail.start = (uint8_t)std::min(15, std::max((int)v.note[keep - 1].start + 1, 8)); tail.len = (uint8_t)(16 - tail.start);
+                    v.note[keep - 1].len = (uint8_t)std::max(1, std::min((int)v.note[keep - 1].len, tail.start - v.note[keep - 1].start));
+                    v.note[v.n++] = tail;
+                }
+            } else for (int i = 0; i < v.n; i++) v.note[i].deg = (int8_t)(2 * b.note[0].deg - b.note[i].deg);
+            int k = 0;   /* one note a start, the later kept */
+            for (int i = 0; i < v.n; i++) { bool dup = false; for (int u = i + 1; u < v.n && !dup; u++) dup = v.note[u].start == v.note[i].start; if (!dup) v.note[k++] = v.note[i]; }
+            v.n = k;
+            bool seen = false; for (int h = 0; h < nhist && !seen; h++) seen = same_bar(v, mhist[h]);
+            if (!seen || t == 4) { mvar = v; break; }
+        }
+        mvar_on = true;
+        for (int h = std::min(nhist, 3); h > 0; h--) mhist[h] = mhist[h - 1];
+        mhist[0] = mvar; nhist = std::min(nhist + 1, 4);
+    }
     /* the phrase's notes starting on this sixteenth (the phrase taken at the bar line, comp_bar): the cursor is the bars since its
        chain step began, modulo its bars;
        a note is held to its bar's end at most, the cadence's last note is the key's tonic, 5th or 6th */
@@ -1483,14 +1544,19 @@ struct Piece : Device {
         const int cb = (int)((bar - mel_bar0) % std::max(1, ph.len16 / 16)), at = cb * 16 + (int)(k % 16);
         Synth *sy = (q == 0 ? top : q == 1 ? sectr : v3r).sy();
         const double s16 = 60.0 / patch.tempo / 4, g = cg[q];
+        if (mvar_on) {
+            for (int i = 0; i < mvar.n; i++) {
+                const comp::MNote &x = mvar.note[i];
+                if (x.start == k % 16) note(q + 1, sy, note_hz(mel_pitch(x, v, false)), std::min((int)x.len, 16 - x.start) * s16 * v.len, time, (0.22 + 0.4 * x.acc / 100.0) * g, true);
+            }
+            return;
+        }
         for (int i = 0; i < ph.n; i++) {
             const comp::MNote &x = ph.note[i];
             if (x.start != at) continue;
             const bool cad = ph.cadence && ph.last && i == ph.n - 1;
-            const int m = cad ? scale_midi(patch, ph.cad == comp::CAD_FULL ? 0 : ph.cad == comp::CAD_HALF ? 4 : 5, 0, v.lo, v.hi)
-                        : patch.comp.motif.basis == comp::SCALE_DEG ? scale_midi(patch, x.deg, x.oct, v.lo, v.hi) : deg_midi(x.deg, v.lo, v.hi, x.oct);
             const double dur = std::min((int)x.len, cb * 16 + 16 - x.start) * s16 * v.len;
-            note(q + 1, sy, note_hz(m), dur, time, (0.22 + 0.4 * x.acc / 100.0) * g * (cad ? 0.5 + 0.5 * ph.strength : 1), true);
+            note(q + 1, sy, note_hz(mel_pitch(x, v, cad)), dur, time, (0.22 + 0.4 * x.acc / 100.0) * g * (cad ? 0.5 + 0.5 * ph.strength : 1), true);
         }
     }
     /* C1: a chord's next note's voice - the role's instrument or one of its pool, in turn; busy until the note has rung out */
@@ -1512,7 +1578,10 @@ struct Piece : Device {
                 rl.synced[rl.cur][j] = true;
             }
         const double g = cg[q];   /* each style at Free's level (comp_gains, comp_bar) */
-        const int role = q + 1, col = (int)((k % 16) / v.rate), ncols = std::max(1, (16 + v.rate - 1) / v.rate);
+        const int role = q + 1, ncols = std::max(1, (16 + v.rate - 1) / v.rate), j = dj();
+        /* "bars": develop - an arpeggio's grid read backwards on odd bars of a chord, two columns on in bar 2 (of 4) */
+        int col = (int)((k % 16) / v.rate);
+        if (v.style == comp::ARPEGGIO && j > 0) { if (j & 1) col = ncols - 1 - col; else if (j % 4 == 2) col = (col + 2) % ncols; }
         const double step_s = 60.0 / patch.tempo / 4 * v.rate, dur = step_s * v.len;
         auto vel = [&](int c) { return (0.22 + 0.4 * v.acc[c % comp::MAX_COLS] / 100.0) * g; };
         /* variation: a seeded chance to take another chord tone, and a seeded wobble of the level (0 = exactly as set) */
@@ -1539,10 +1608,12 @@ struct Piece : Device {
         }
         case comp::STRUM: {
             int ds[5], nd = 0; for (int d = 0; d < 5; d++) if (v.tones & (1u << d)) ds[nd++] = d;
-            const bool down = v.dir == 1 || (v.dir == 2 && (calt[q]++ & 1));
+            const bool down = (v.dir == 1 || (v.dir == 2 && (calt[q]++ & 1))) != ((j & 1) != 0);   /* develop: the other way on odd bars, a 4-tone chord's top tone dropped */
+            const double mk = (j & 1) && nd >= 4 ? std::sqrt(nd / (nd - 1.0)) : 1;   /* a tone fewer, the rest as loud as the chord was (power) */
+            if (mk > 1) nd--;
             for (int i = 0; i < nd; i++) {
                 const int d = ds[down ? nd - 1 - i : i]; const double off = i * v.spread_ms / 1000.0;
-                double vl = vel(col) + (i == 0 ? 0.12 * g : 0); vary(d, vl, col * 5 + i);
+                double vl = (vel(col) + (i == 0 ? 0.12 * g : 0)) * mk; vary(d, vl, col * 5 + i);
                 const double nd_s = std::max(0.03, dur - off);
                 note(role, chord_voice(rl, time + off + nd_s), note_hz(deg_midi(d, v.lo, v.hi, 0)), nd_s, time + off, vl, true);
             }
@@ -1550,7 +1621,7 @@ struct Piece : Device {
         }
         case comp::EUCLID: {
             const int E = std::max(1, (int)v.steps), at = (int)((k / v.rate) % E);
-            if (!euclid_at(std::min((int)v.pulses, E), E, v.rot % E, at)) return;
+            if (!euclid_at(std::min((int)v.pulses, E), E, (v.rot + j) % E, at)) return;   /* develop: a step on a bar */
             int seq[comp::MAX_COLS], ns = 0; for (int i = 0; i < comp::MAX_COLS; i++) if (v.grid[i] >= 0) seq[ns++] = v.grid[i];
             if (!ns) return;
             int d = seq[cpulse[q]++ % ns]; double vl = vel(at); d = vary(d, vl, at);
@@ -1560,7 +1631,10 @@ struct Piece : Device {
         case comp::SWELLS: {
             const EnvSpec e{ std::max(0.005, v.attack * dur), 0.005, 1.0, std::max(0.02, v.release * dur), false, true };
             if (sy) { rl.each([&](Synth *s) { s->shape(&e); }); swell_shaped[q] = true; }
-            for (int d = 0; d < 5; d++) if (v.tones & (1u << d)) { double vl = (0.15 + 0.45 * v.peak) * g; vary(d, vl, d); note(role, chord_voice(rl, time + dur), note_hz(deg_midi(d, v.lo, v.hi, 0)), dur, time, vl, true); }
+            int nt = 0, drop = -1; for (int d = 0; d < 5; d++) if (v.tones & (1u << d)) nt++;
+            if (j > 0 && nt >= 2) drop = (j - 1) % nt;   /* develop: the voicing rotates - one tone silent, a different one each bar */
+            int ti = -1;
+            for (int d = 0; d < 5; d++) if (v.tones & (1u << d)) { if (++ti == drop) continue; double vl = (0.15 + 0.45 * v.peak) * g * (drop >= 0 ? std::sqrt(nt / (nt - 1.0)) : 1); vary(d, vl, d); note(role, chord_voice(rl, time + dur), note_hz(deg_midi(d, v.lo, v.hi, 0)), dur, time, vl, true); }
             break;
         }
         default: break;
@@ -1861,7 +1935,7 @@ struct Piece : Device {
         patch = routes[near];
         apply_patch(now);
         H.idx = -1; H.chord = -1; H.ntones = -1;
-        sector = -1; comp_live = false; nzent = 0; cad_oth = comp::OTH_HOLD; mel_step = -2; for (int q = 0; q < comp::NVOICE; q++) { cped_root[q] = -1; cpulse[q] = 0; calt[q] = 0; }
+        sector = -1; comp_live = false; nzent = 0; cad_oth = comp::OTH_HOLD; mel_step = -2; cchord = -2; mvar_on = false; nhist = 0; for (int q = 0; q < comp::NVOICE; q++) { cped_root[q] = -1; cpulse[q] = 0; calt[q] = 0; }
         synth_to(walk_level(route_dist), now);
     }
     void walk(int r, double t, double dist, double now) {

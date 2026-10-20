@@ -490,7 +490,7 @@ static Onsets onset_run(const char *sy, const char *st) {
     std::snprintf(patch, sizeof patch, R"({"version":17,"tempo":96,"key":50,"prog":[{"r":0,"q":"m7"},{"r":5,"q":"maj7"},{"r":7,"q":"7"},{"r":0,"q":"m9"}],"bed":{"on":false},"zones":{"on":false},
         "fx":{"delayWet":0,"revWet":0},"fx2":{"delayWet":0,"revWet":0},"fx3":{"delayWet":0,"revWet":0},"morph":{"on":false},
         "voice":{"on":false},"sect":{"on":true,"synth":"%s","harm":%g,"index":%g},"v3":{"on":false},
-        "comp":{"bass":{"mode":"off"},"sect":%s,"over":{"chord":{"0":{"sect":{"role":"off"}}}}}})", sy, hd(sy, 0), hd(sy, 1), st);
+        "comp":{"bars":"repeat","bass":{"mode":"off"},"sect":%s,"over":{"chord":{"0":{"sect":{"role":"off"}}}}}})", sy, hd(sy, 0), hd(sy, 1), st);
     unsigned seed = 11; Onsets o; fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128); fs_piece_test_hooks(pc, draw, &seed, onv, &o);
     const int r = fs_piece_add_route(pc, patch); const int blocks = (int)(24 * 48000 / 128);
     std::vector<float> x; x.reserve(blocks * 128);
@@ -509,9 +509,13 @@ static double onset_peak(const Onsets &o, size_t k, bool pluck, bool rise) {
     auto peak = [&](long long i0, long long i1) { float m = 0; for (long long j = std::max(0LL, i0); j < std::min(n, i1); j++) m = std::max(m, o.hf[j]); return (double)m; };
     return peak(i, i + W) - (rise ? peak(i - 144, i) : 0);
 }
+/* "bars":"repeat" here: the clean attacks are chord 2's first strum, an up strum with its accent (+0.12) on the lowest note; the
+   develop mode's odd bars strum down, the accent on the highest, so the lowest struck unaccented reads x1.76 against an accented
+   reference (velocity does not scale the highs linearly) - no retrigger, a reference of another accent. A down strum is measured
+   here on its own, against its own first strum. */
 static void test_onsets() {
     double worst = 0, plw = 0; const char *wsy = "", *wst = "";
-    for (const char *sy : { "fm", "am", "pluck" }) for (const char *st : { R"({"style":"pedal"})", R"({"style":"strum"})", R"({"style":"strum","lo":36,"hi":60})" }) {
+    for (const char *sy : { "fm", "am", "pluck" }) for (const char *st : { R"({"style":"pedal"})", R"({"style":"strum"})", R"({"style":"strum","lo":36,"hi":60})", R"({"style":"strum","dir":"down"})" }) {
         const Onsets o = onset_run(sy, st);
         assert(!o.t.empty() && o.t[0] > 3.9);                   /* chord 1 silent */
         const bool pl = !std::strcmp(sy, "pluck");
@@ -567,7 +571,7 @@ static void test_motif_parse() {
 
 /* D minor 7 (key 50), the walk's first chord for >= 2 bars: a 4-note chord-degree motif root-5th-3rd-9th, each a quarter */
 static std::string melody(const char *chain, const char *extra = "") {
-    char b[2048]; std::snprintf(b, sizeof b, R"(,"comp":{"voice":{"role":"melody","lo":50,"hi":81},"sect":{"role":"off"},"v3":{"role":"off"},"bass":{"mode":"off"},%s,"chain":%s%s})", MOT, chain, extra);
+    char b[2048]; std::snprintf(b, sizeof b, R"(,"comp":{"voice":{"role":"melody","lo":50,"hi":81},"sect":{"role":"off"},"v3":{"role":"off"},"bass":{"mode":"off"},%s,"chain":%s,"bars":"repeat"%s})", MOT, chain, extra);
     return b;
 }
 static void test_melody() {
@@ -897,6 +901,76 @@ static void test_room() {
     assert(cn < 0.05);   /* a block is 2.67 ms; three rooms run per block */
 }
 
+
+/* composition 2, "bars": every voice's bar-0 pattern repeating (today's sound) is "repeat", bit for bit: a hash of every note's
+   (role, pitch, time, length, velocity) over two routes of 30 s that run all the styles and a melody with a cadence */
+static unsigned long long log_hash(const Log &l) {
+    unsigned long long h = 1469598103934665603ull;
+    auto mix = [&](double x) { unsigned long long b; std::memcpy(&b, &x, 8); for (int i = 0; i < 8; i++) { h ^= (b >> (8 * i)) & 255; h *= 1099511628211ull; } };
+    for (size_t i = 0; i < l.f.size(); i++) { mix(l.role[i]); mix(l.f[i]); mix(l.t[i]); mix(l.d[i]); mix(l.v[i]); }
+    return h;
+}
+static unsigned long long repeat_hash(const char *bars, size_t *nn) {
+    char a[2048], b[2048];
+    std::snprintf(a, sizeof a, R"(,"comp":{"seed":3,"voice":{"style":"arpeggio","rate":"16n","lo":50,"hi":74,"variation":0.4,"grid":[0,1,2,3,0,1,2,3,0,1,2,3,0,1,2,3]},"sect":{"style":"strum","rate":"2n","tones":[0,1,2,3],"spread":40,"dir":"alt","lo":50,"hi":74},"v3":{"style":"euclid","rate":"16n","pulses":5,"steps":8,"rot":1,"grid":[2,4,1],"lo":55,"hi":80}%s})", bars);
+    std::snprintf(b, sizeof b, R"(,"comp":{"seed":5,"voice":{"role":"melody","lo":50,"hi":81},"sect":{"style":"swells","rate":"1n","tones":[0,2,4],"len":1},"v3":{"style":"pedal","rate":"4n"},%s,"chain":[{"op":"seq","arg":1,"from":0,"to":0},{"op":"retro","from":1,"to":1},{"op":"cadence","cad":"full","from":2,"to":3}]%s})", MOT, bars);
+    const Log x = render(a, 30), y = render(b, 30);
+    *nn = x.f.size() + y.f.size();
+    return log_hash(x) * 31 + log_hash(y);
+}
+static void test_repeat_hash() {
+    size_t n; const unsigned long long h = repeat_hash(R"(,"bars":"repeat")", &n);
+    std::printf("C bars repeat: %zu notes, hash %llu\n", n, h);
+    assert(h == 7233712993534382426ull);   /* recorded on the build before "bars" existed */
+}
+
+/* composition 2, "bars": develop (the default) - a chord that lasts bars does not play its one bar again and again */
+typedef std::vector<std::pair<int, int>> Seq;   /* a bar's notes as (sixteenth in the bar, pitch) */
+static Seq bar_seq(const Log &l, int role, int b) {
+    Seq o; for (size_t i = 0; i < l.f.size(); i++) if (l.role[i] == role && l.t[i] >= b * 2.5 - 1e-6 && l.t[i] < (b + 1) * 2.5 - 1e-6)
+        o.push_back({ (int)std::lround((l.t[i] - b * 2.5) / 0.15625), (int)std::lround(midi(l.f[i])) });
+    return o;
+}
+static void test_develop() {
+    /* 40 s over 4 chords: chord 0 lasts 4 bars (0..3). Melody: four distinct bars, every one with a note */
+    char b[2048];
+    std::snprintf(b, sizeof b, R"(,"comp":{"voice":{"role":"melody","lo":50,"hi":81},"sect":{"role":"off"},"v3":{"role":"off"},"bass":{"mode":"off"},%s,"chain":[]})", MOT);
+    const Log m = render(b, 40);
+    int distinct = 0; Seq mb[4];
+    for (int i = 0; i < 4; i++) { mb[i] = bar_seq(m, 1, i); assert(!mb[i].empty()); }
+    for (int i = 0; i < 4; i++) for (int j = i + 1; j < 4; j++) { assert(mb[i] != mb[j]); distinct++; }
+    { const Log r = render(melody("[]"), 40); assert(bar_seq(r, 1, 0) == bar_seq(r, 1, 1) && bar_seq(r, 1, 1) == bar_seq(r, 1, 3)); }   /* repeat: as it was */
+    /* arpeggio: odd bars reversed, bar 2 rotated by 2 columns */
+    const Log a = render(R"(,"comp":{"voice":{"style":"arpeggio","rate":"16n","lo":50,"hi":74,"grid":[0,1,2,3,0,1,2,3,0,1,2,3,0,1,2,3]},"sect":{"role":"off"},"v3":{"role":"off"},"bass":{"mode":"off"}})", 40);
+    const Seq a0 = bar_seq(a, 1, 0), a1 = bar_seq(a, 1, 1), a2 = bar_seq(a, 1, 2);
+    assert(a0.size() == 16 && a1.size() == 16 && a0 != a1 && a2 != a0 && a2 != a1);
+    for (int i = 0; i < 16; i++) assert(a1[i].second == a0[15 - i].second && a2[i].second == a0[(i + 2) % 16].second);
+    /* euclid: the rotation advances a step a bar */
+    const Log e = render(R"(,"comp":{"voice":{"style":"euclid","rate":"8n","pulses":3,"steps":8,"rot":0,"grid":[0],"lo":50,"hi":74},"sect":{"role":"off"},"v3":{"role":"off"},"bass":{"mode":"off"}})", 40);
+    Seq e0 = bar_seq(e, 1, 0), e1 = bar_seq(e, 1, 1);
+    assert(e0.size() == 3 && e1.size() == 3 && e0 != e1);
+    /* strum: the direction alternates a bar, and a 4-tone chord drops its top tone on odd bars */
+    const Log s = render(R"(,"comp":{"voice":{"role":"off"},"sect":{"role":"off"},"v3":{"style":"strum","rate":"1n","tones":[0,1,2,3],"dir":"up","spread":40,"lo":50,"hi":74},"bass":{"mode":"off"}})", 40);
+    const Seq s0 = bar_seq(s, 3, 0), s1 = bar_seq(s, 3, 1), s2 = bar_seq(s, 3, 2);
+    assert(s0.size() == 4 && s1.size() == 3 && s2.size() == 4 && s0[0].second < s0[1].second && s1[0].second > s1[1].second && s2[0].second < s2[1].second);
+    /* swells: the voicing rotates, a tone fewer in turn */
+    const Log w = render(R"(,"comp":{"voice":{"role":"off"},"sect":{"style":"swells","rate":"1n","tones":[0,2,4],"len":1},"v3":{"role":"off"},"bass":{"mode":"off"}})", 40);
+    const Seq w0 = bar_seq(w, 2, 0), w1 = bar_seq(w, 2, 1), w2 = bar_seq(w, 2, 2);
+    assert(w0.size() == 3 && w1.size() == 2 && w2.size() == 2 && w0 != w1 && w1 != w2);
+    std::printf("C develop: melody bars 0-3 pairwise distinct (%d pairs), arpeggio bar 1 reversed and bar 2 rotated, euclid rotates, strum flips (4 -> 3 -> 4 tones), swells rotate\n", distinct);
+    /* the draw is the seed's: same seed, same notes; another seed, another variant somewhere */
+    auto mel_seed = [&](int sd) { char c[2048]; std::snprintf(c, sizeof c, R"(,"comp":{"seed":%d,"voice":{"role":"melody","lo":50,"hi":81},"sect":{"role":"off"},"v3":{"role":"off"},"bass":{"mode":"off"},%s,"chain":[]})", sd, MOT); return render(c, 40); };
+    const Log m1 = mel_seed(1); int differs = 0; assert(same(m1, mel_seed(1)));
+    for (int sd = 2; sd <= 7; sd++) if (!same(m1, mel_seed(sd))) differs++;
+    assert(differs > 0);
+    /* a cadence lands on its chord's first bar as it did, and the chord's later bars do not restart the motif: they rest */
+    std::snprintf(b, sizeof b, R"(,"comp":{"voice":{"role":"melody","lo":50,"hi":81},"sect":{"role":"off"},"v3":{"role":"off"},"bass":{"mode":"off"},%s,"chain":[{"op":"cadence","cad":"full","from":0,"to":0}]})", MOT);
+    const Log cd = render(b, 40), cr = render(melody(R"([{"op":"cadence","cad":"full","from":0,"to":0}])"), 40);
+    assert(bar_seq(cd, 1, 0) == bar_seq(cr, 1, 0) && !bar_seq(cd, 1, 0).empty());
+    for (int i = 1; i < 4; i++) assert(bar_seq(cd, 1, i).empty());
+    std::printf("C develop: %d of 6 other seeds change the melody; the cadence lands on bar 0 and its chord's later bars rest\n", differs);
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && !std::strcmp(argv[1], "final")) { test_empty_motif(); test_melody_gain_chain(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "room")) { test_room(); return 0; }
@@ -905,6 +979,8 @@ int main(int argc, char **argv) {
     if (argc > 1 && !std::strcmp(argv[1], "onsets")) { test_onsets(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "cost")) { test_cost(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "read")) { test_gain_memo(); test_gain_lengths(); test_patch_read_cost(); return 0; }
+    test_repeat_hash();
+    test_develop();
     test_parse();
     test_resolve();
     test_motif_parse();

@@ -44,7 +44,8 @@ struct ChainStep { uint8_t op = OP_REPEAT; int8_t arg = 0; uint8_t from = 0, to 
                    uint8_t cad = CAD_FULL, others = OTH_THIN; float strength = 1; };
 struct Cfg { bool on = false; uint32_t seed = 1; Voice v[NVOICE]; Bass bass;
              Over chord[NCHORD], section[NSECTION], zone[NZONE]; int nzone = 0;
-             Motif motif; ChainStep chain[CHAIN_MAX]; int nchain = 0; };
+             Motif motif; ChainStep chain[CHAIN_MAX]; int nchain = 0;
+             uint8_t develop = 1; };   /* "bars": 1 develop - a chord's later bars vary its first (Piece::comp_bar); 0 repeat */
 struct Resolved { Voice v[NVOICE]; Bass bass; int blend = 0; };
 /* the motif as developed for one chord step: its notes (times in sixteenths from the phrase's start), the phrase's length */
 struct Phrase { int n = 0; MNote note[MOTIF_MAX * 2]; uint8_t len16 = 16; bool cadence = false; uint8_t cad = CAD_FULL, others = OTH_THIN; float strength = 1; bool last = false;
