@@ -10,5 +10,7 @@ class CompSummaryTest {
         compSummary(mapOf("voice" to v("arpeggio"), "sect" to v("strum"), "v3" to v("pedal"))))
     @Test fun roleOff() = assertEquals("Off \u00B7 Euclidean \u00B7 Swells",
         compSummary(mapOf("voice" to v("free", "off"), "sect" to v("euclid"), "v3" to v("swells"))))
+    @Test fun melodyIsMotif() = assertEquals("Motif · Strum · Pedal",
+        compSummary(mapOf("voice" to mapOf("role" to "melody"), "sect" to v("strum"), "v3" to v("pedal"))))
     @Test fun missingStyle() = assertEquals("Free \u00B7 Free \u00B7 Free", compSummary(mapOf("voice" to mapOf("role" to "accomp"))))
 }
