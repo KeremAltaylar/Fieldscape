@@ -465,28 +465,74 @@
     });
     return word;
   }
-  /* one relation over the first B or C letter, at contrast >= 0.5: the support voice takes the melody as a canon (half a bar, +2)
-     or answers it (source half); drawn last, so the rest of a seed's piece is as it was */
-  function relate(out, r, tex, spans, c) {
-    var sp = spans.filter(function (s) { return texKey(s.letter) === "B" || texKey(s.letter) === "C"; })[0];
-    if (!sp || c < 0.5) { return; }
-    var t = tex[texKey(sp.letter)], mel = -1, sup = -1;
+  /* what a letter's texture says about who plays what: the melody, the voice that follows it (the support, or the held voice
+     when the support rests) and the third. Never Free as a leader: a mover or held voice always has a style. */
+  function cast(t) {
+    var mel = -1, rest = [];
     VOICES.forEach(function (v, k) { if (mel < 0 && t.v[v].role === "melody") { mel = k; } });
-    VOICES.forEach(function (v, k) { if (k !== mel && (sup < 0 || (t.roles[v] === "support" && t.roles[VOICES[sup]] !== "support"))) { sup = k; } });
-    if (mel < 0 || sup < 0) { return; }
-    var canon = r() < 0.5, i = addRelation(out, canon ? "canon" : "call", mel, sup, { from: sp.a, to: sp.b - 1 });
-    if (canon) { setRelation(out, i, "delay", 8); setRelation(out, i, "trans", 2); } else { setRelation(out, i, "source", "half"); }
+    VOICES.forEach(function (v, k) { if (k !== mel) { rest.push(k); } });
+    if (mel < 0) { return null; }
+    var rank = function (k) { var v = VOICES[k]; return t.v[v].role === "off" ? 2 : t.roles[v] === "support" ? 0 : 1; };
+    rest.sort(function (x, y) { return rank(x) - rank(y); });
+    return { mel: mel, sup: rest[0], third: rest[1] };
+  }
+  /* a gentle relation (A, and the second one in a rich B): heterophony, or a motion rule - { type, f: fields } */
+  function gentle(r) {
+    if (r() < 0.5) { return { type: "hetero", f: { offset: int(r, 30, 60), ornament: 0.05 * int(r, 0, 6) } }; }
+    return { type: "motion", f: { motion: "contrary", strength: 0.6 + 0.05 * int(r, 0, 8) } };
+  }
+  /* A' : A's relation with one parameter moved */
+  function vary(r, g) {
+    var x = clone(g), ks = Object.keys(x.f).filter(function (k) { return k !== "motion"; }), k = ks[Math.floor(r() * ks.length)], v = x.f[k];
+    x.f[k] = Math.round((k === "offset" ? (v <= 45 ? v + 15 : v - 15) : k === "ornament" ? (v < 0.15 ? v + 0.15 : v - 0.15) : (v >= 0.8 ? v - 0.2 : v + 0.2)) * 20) / 20;
+    return x;
+  }
+  /* B or C: below 0.5 parallel motion; above, a canon, a call or a hocket */
+  function contrasting(r, c) {
+    if (c < 0.5) { return { type: "motion", f: { motion: one(r, ["par3", "par6"]), strength: 0.6 + 0.05 * int(r, 0, 8) } }; }
+    var k = one(r, ["canon", "call", "hocket"]);
+    if (k === "canon") { var d = int(r, 4, 8), tr = one(r, [-2, 2]); return { type: k, f: { delay: d, trans: tr, transform: c >= 0.8 ? one(r, ["none", "invert"]) : "none" } }; }
+    if (k === "call") { return { type: k, f: { source: one(r, ["half", "mirror"]) } }; }
+    return { type: k, f: { split: one(r, ["alt", "every"]), every: 2 } };
+  }
+  function put(out, g, a, b, from, to) {
+    var i = addRelation(out, g.type, a, b, { from: from, to: to });
+    if (i >= 0) { Object.keys(g.f).forEach(function (k) { setRelation(out, i, k, g.f[k]); }); }
+    return i;
+  }
+  /* composition 3: relations that fit the form, drawn last so a seed's textures, motif and chain are as they were.
+     "some": one per letter over its chords but the cadence chord (a repeated letter the same, A' a parameter off), and one
+     unison for every cadence; "rich" adds a shared density over the route and a second relation in B */
+  function relate(out, r, tex, spans, c, mode, n) {
+    if (mode === "none" || !n) { return; }
+    var rel = {}, A = cast(tex.A);
+    if (!A) { return; }
+    spans.forEach(function (s) {
+      var k = texKey(s.letter), t = tex[k], w = cast(t);
+      if (!rel[k]) { rel[k] = k === "A" ? gentle(r) : k === "A'" ? vary(r, rel.A) : contrasting(r, c); }
+      if (w && s.b - s.a >= 2) { put(out, rel[k], w.mel, w.sup, s.a, s.b - 2); }
+    });
+    var u = addRelation(out, "unison", A.mel, A.sup, { from: 0, to: n - 1 });
+    if (u >= 0) { setRelation(out, u, "octave", "octave"); setRelation(out, u, "c", A.third); }
+    if (mode !== "rich") { return; }
+    var dens = tex.A.dense, d = addRelation(out, "density", A.mel, A.sup, { from: 0, to: n - 1 });
+    if (d >= 0) { setRelation(out, d, "cap", dens ? int(r, 12, 14) : int(r, 10, 12)); var w3 = [1, 1, 1]; w3[A.mel] = 2; setRelation(out, d, "weight", w3); }
+    var g2 = gentle(r);
+    spans.forEach(function (s) {
+      var w = texKey(s.letter) === "B" && cast(tex.B);
+      if (w && s.b - s.a >= 2 && tex.B.v[VOICES[w.third]].role !== "off") { put(out, g2, w.mel, w.third, s.a, s.b - 2); }
+    });
   }
   function generate(comp, opt) {
     var seed = Math.max(0, opt.seed | 0), c = Math.max(0, Math.min(1, +opt.contrast || 0)), type = formOf(opt.form).id;
-    var n = Math.min(NCHORD, Math.max(0, opt.nchords | 0)), bpm = +opt.bpm > 0 ? +opt.bpm : 96;
+    var mode = opt.relations === "none" || opt.relations === "rich" ? opt.relations : "some", n = Math.min(NCHORD, Math.max(0, opt.nchords | 0)), bpm = +opt.bpm > 0 ? +opt.bpm : 96;
     var r = rng(seed), A = textureA(r), tex = { A: A }, spans = formSpans(type, n), out = clone(comp), all = VOICES.concat(["bass"]);
     spans.forEach(function (s) { var k = texKey(s.letter); if (!tex[k]) { tex[k] = k === "A'" ? variantOf(r, A) : contrastOf(r, A, c); } });
     var end = tame(settle(r, A), bpm);
     tame(A.v, bpm); all.forEach(function (v) { out[v] = clone(A.v[v]); });
     out.motif = drawMotif(r); out.chain = drawChain(r, spans, n);
-    delete out.relations; relate(out, r, tex, spans, c);
-    out.seed = seed; out.bars = "develop"; out.form = { type: type, contrast: c, seed: seed };
+    delete out.relations; relate(out, r, tex, spans, c, mode, n);
+    out.seed = seed; out.bars = "develop"; out.form = { type: type, contrast: c, seed: seed, relations: mode };
     out.over = { chord: {}, section: (comp.over && out.over.section) || {}, zone: (comp.over && out.over.zone) || {} };
     spans.forEach(function (s) {
       var t = tex[texKey(s.letter)], body = tame(clone(t.v), bpm), cad = tame(thin(t), bpm);

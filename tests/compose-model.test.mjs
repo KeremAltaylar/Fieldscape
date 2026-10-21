@@ -223,7 +223,7 @@ test("generate: pure and deterministic; a new seed is a new piece", () => {
   assert.equal(JSON.stringify(c), before, "generate changed its input");
   assert.notDeepEqual(gen({ seed: 8 }), gen({ seed: 7 }));
   const g = gen({});
-  assert.equal(g.seed, 7); assert.deepEqual(g.form, { type: "AABA", contrast: 0.6, seed: 7 });
+  assert.equal(g.seed, 7); assert.deepEqual(g.form, { type: "AABA", contrast: 0.6, seed: 7, relations: "some" });
 });
 test("generate: a repeated A is identical; B differs from A at contrast 1 and equals it at 0", () => {
   for (const seed of [1, 2, 3, 4, 5]) {
@@ -558,24 +558,72 @@ test("relations: links for drawing, and cells marked", () => {
   assert.equal(M.cell(M.defaults(), 3, [], 8)[1].rel, undefined);
   assert.equal(M.cell(c, 3, [], 8)[0].label, "A", "the melody keeps its label");
 });
-test("generate: a relation only in a B/C letter at contrast >= 0.5, one, seeded, over that letter, parsable", () => {
-  const seen = new Set();
-  for (let seed = 1; seed < 80; seed++) {
-    const g = gen({ form: "AABA", seed, contrast: 0.7 }), sp = M.formSpans("AABA", 16)[2];
-    assert.equal(g.relations.length, 1, "seed " + seed);
-    const r = g.relations[0]; seen.add(r.type);
-    assert.deepEqual([r.from, r.to], [sp.a, sp.b - 1]);
-    assert.notEqual(r.a, r.b); assert.equal(voicesAt(g, r.from)[r.a].role, "melody", "a leads the melody");
-    assert.notEqual(voicesAt(g, r.from)[r.b].role, "melody");
-    if (r.type === "canon") assert.deepEqual([r.delay, r.trans], [8, 2]); else assert.deepEqual([r.type, r.source], ["call", "half"]);
-    assert.equal(JSON.stringify(gen({ form: "AABA", seed, contrast: 0.7 }).relations), JSON.stringify(g.relations));
-    for (const k of Object.keys(r)) assert.ok(REL_KEYS.has(k), k);
-    assert.equal(gen({ form: "AABA", seed, contrast: 0.4 }).relations, undefined);
-    assert.equal(gen({ form: "AABA", seed, contrast: 0.7 }, g).relations.length, 1, "regenerate replaces");
-    const f = gen({ form: "AABA", seed, contrast: 0.7 }), lo = gen({ form: "AABA", seed, contrast: 0.7 }); delete f.relations;
-    assert.equal(JSON.stringify(f), JSON.stringify((delete lo.relations, lo)));
+import { createHash } from "node:crypto";
+const relsOf = (g) => g.relations || [];
+const letterSpans = (form, n = 16) => M.formSpans(form, n);
+const FORM_IDS = ["AABA", "ABAB", "ABAC", "sentence", "rondo"];
+test("generate relations: 'some' writes one relation per letter span (cadence chord left out) and one cadence unison", () => {
+  for (const form of FORM_IDS) for (let seed = 1; seed < 40; seed++) {
+    const g = gen({ form, seed, contrast: 0.7 }), sp = letterSpans(form), rs = relsOf(g), un = rs.filter((r) => r.type === "unison"), rest = rs.filter((r) => r.type !== "unison");
+    assert.equal(g.form.relations, "some"); assert.equal(rs.length, sp.length + 1, form + seed);
+    assert.equal(un.length, 1); assert.deepEqual([un[0].meet, un[0].octave, un[0].from, un[0].to], ["cadence", "octave", 0, 15]);
+    assert.equal(voicesAt(g, 0)[un[0].a].role, "melody");
+    sp.forEach((s, i) => assert.deepEqual([rest[i].from, rest[i].to], [s.a, s.b - 2], "over the letter, not its cadence chord"));
+    assert.ok(!rs.some((r) => r.type === "density"));
   }
-  assert.deepEqual([...seen].sort(), ["call", "canon"]);
-  assert.equal(gen({ form: "ABAC", seed: 3, contrast: 1 }).relations.length, 1, "one, though B and C both differ");
+});
+test("generate relations: A letters gentle, a repeated A the same, A' one parameter off, B/C by contrast", () => {
+  const seenHi = new Set(), body = (x) => { const y = Object.assign({}, x); delete y.from; delete y.to; return y; };
+  for (let seed = 1; seed < 150; seed++) {
+    const g = gen({ form: "AABA", seed, contrast: 0.7 }), r = relsOf(g).filter((x) => x.type !== "unison");
+    assert.ok(["hetero", "motion"].includes(r[0].type), "A is gentle"); assert.deepEqual(body(r[0]), body(r[1]), "A repeated"); assert.deepEqual(body(r[0]), body(r[3]));
+    if (r[0].type === "hetero") assert.ok(r[0].offset >= 30 && r[0].offset <= 60 && r[0].ornament >= 0 && r[0].ornament <= 0.3 + 1e-9);
+    else assert.ok(r[0].motion === "contrary" && r[0].strength >= 0.6 && r[0].strength <= 1);
+    seenHi.add(r[2].type); const b = r[2];
+    if (b.type === "canon") { assert.ok(b.delay >= 4 && b.delay <= 8 && Math.abs(b.trans) === 2 && b.transform === "none", "invert only at contrast >= 0.8"); }
+    if (b.type === "call") assert.ok(["half", "mirror"].includes(b.source));
+    if (b.type === "hocket") assert.ok(b.split === "alt" || (b.split === "every" && b.every === 2));
+    const lo = relsOf(gen({ form: "AABA", seed, contrast: 0.4 })).filter((x) => x.type !== "unison")[2];
+    assert.ok(lo.type === "motion" && ["par3", "par6"].includes(lo.motion), "low contrast: par3/par6, no canon/call/hocket");
+  }
+  assert.deepEqual([...seenHi].sort(), ["call", "canon", "hocket"]);
+  const inv = new Set(); for (let seed = 1; seed < 150; seed++) relsOf(gen({ form: "AABA", seed, contrast: 0.9 })).forEach((x) => x.type === "canon" && inv.add(x.transform));
+  assert.deepEqual([...inv].sort(), ["invert", "none"]);
+  for (let seed = 1; seed < 60; seed++) {
+    const r = relsOf(gen({ form: "sentence", seed, contrast: 0.7 })).filter((x) => x.type !== "unison"), vary = ["offset", "ornament", "strength"].filter((k) => r[0][k] !== r[1][k]);
+    assert.equal(r[0].type, r[1].type); assert.equal(vary.length, 1, "a' varies exactly one parameter"); assert.equal(r[0].a, r[1].a);
+  }
+});
+test("generate relations: 'rich' adds one shared density and a second relation in B; 'none' writes none", () => {
+  let second = 0;
+  for (const form of FORM_IDS) for (let seed = 1; seed < 40; seed++) {
+    const some = relsOf(gen({ form, seed, contrast: 0.6 })), g = gen({ form, seed, contrast: 0.6, relations: "rich" }), rs = relsOf(g), d = rs.filter((r) => r.type === "density");
+    assert.equal(g.form.relations, "rich"); assert.equal(d.length, 1); assert.deepEqual([d[0].from, d[0].to], [0, 15]);
+    assert.ok(d[0].cap >= 10 && d[0].cap <= 14); assert.deepEqual([...d[0].weight].sort(), [1, 1, 2]); assert.equal(d[0].weight[d[0].a], 2, "the melody weighs 2");
+    assert.ok(rs.length > some.length && rs.length <= 12, form + seed); if (rs.length > some.length + 1) second++;
+    for (const r of some) assert.ok(rs.some((x) => JSON.stringify(x) === JSON.stringify(r)), "'rich' keeps what 'some' writes");
+    const none = gen({ form, seed, contrast: 0.6, relations: "none" }); assert.equal(none.relations, undefined); assert.equal(none.form.relations, "none");
+  }
+  assert.ok(second > 100, "a second relation in B when its third voice sounds: " + second);
+});
+test("generate relations: valid for the model, leaders never Free, deterministic, earlier output unchanged", () => {
+  for (const form of FORM_IDS) for (const relations of ["some", "rich"]) for (let seed = 1; seed < 60; seed++) for (const contrast of [0, 0.45, 0.5, 0.85]) {
+    const g = gen({ form, seed, contrast, relations }), c = M.defaults();
+    assert.equal(JSON.stringify(g), JSON.stringify(gen({ form, seed, contrast, relations })), "deterministic");
+    assert.ok(g.relations.length <= 12); assert.ok(g.relations.filter((r) => r.type === "density").length <= 1);
+    for (const r of g.relations) {
+      const i = M.addRelation(c, r.type, r.a, r.b, { from: r.from, to: r.to }); assert.ok(i >= 0, "addRelation took it");
+      if (r.c !== undefined) assert.ok(M.setRelation(c, i, "c", r.c));
+      for (const k of Object.keys(r)) { if (!["type", "a", "b", "c", "from", "to"].includes(k)) assert.ok(M.setRelation(c, i, k, r[k]), k); }
+      assert.deepEqual(c.relations[i], r); assert.notEqual(r.a, r.b);
+      for (let ch = r.from; ch <= r.to; ch++) { const v = voicesAt(g, ch)[r.a]; assert.ok(v.role === "melody" || v.style !== "free", "leader " + r.a + " at " + ch); }
+    }
+  }
+  const out = [];
+  for (const form of M.FORMS.map((f) => f.id)) for (const contrast of [0, 0.3, 0.5, 0.8, 1]) for (let seed = 1; seed <= 40; seed++) for (const nchords of [1, 3, 16]) {
+    const g = M.generate(M.defaults(), { form, contrast, seed, nchords }); delete g.relations; delete g.form.relations; out.push(g);
+  }
+  assert.equal(createHash("sha256").update(JSON.stringify(out)).digest("hex"), "01fd863e9cb1f585220bae1d67ea17c646af67b446a975e15800cb2c314d6662", "textures, motif, chain as before relations were drawn");
   assert.equal(gen({ form: "AABA", nchords: 0, contrast: 1 }).relations, undefined);
+  assert.equal(gen({ form: "AABA", seed: 3 }).form.relations, "some", "the default");
 });
