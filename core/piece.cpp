@@ -946,6 +946,7 @@ struct Piece : Device {
     int chg = 0, ufirst[comp::NVOICE] = { -1, -1, -1 };   /* chord changes so far; the change each voice last sounded a note in (unison: its first note after one) */
     bool cad_chord = false;                               /* this chord is covered by a chain cadence step (its first bar: cj == 0) */
     int hcnt[comp::REL_MAX] = {};                     /* hocket: line notes dealt so far in the relation's span */
+    int dcnt[comp::NVOICE] = {};                      /* density: notes each voice has sounded this bar (a strum's tones each count) */
     int ccall[comp::NVOICE] = { -1, -1, -1 };         /* the call (rel index) a voice answers this step, -1: none */
     int dj() const { return patch.comp.develop ? (int)std::min<long long>(cj, 1 << 20) : 0; }
     int mel_step = -2; long long mel_bar0 = 0;   /* the chain step in force, and the bar it began on: the phrase counts from there */
@@ -1389,6 +1390,29 @@ struct Piece : Device {
         }
         return -1;
     }
+    /* composition 3, shared density: the bar's heard notes (every composed voice's, a relation's own - canon, hetero, hocket, call
+       - and a strum's chord tones each counted; no look-ahead, no sorting) stay near `cap`, shared by weight. A voice with weight w
+       has a quota of ceil(cap * w / W) notes, W the weights of the voices that play (role not off): within it a note always sounds
+       (so a voice that has notes keeps at least one, whatever the cap - Review Focus 5); past it a note sounds only while the bar
+       is under the cap and no other voice is short of its own quota (the lowest share goes first). A weight-0 voice sounds only
+       while the bar is under the cap. A relation's note is dropped by the same rule (its voice's quota). Cap >= what the voices
+       play changes nothing. ponytail: a voice that plays little holds its unspent quota back from the busy ones for the bar */
+    bool density_ok(int q) {
+        for (int i = 0; i < nract; i++) {
+            const comp::Relation &c = patch.comp.rel[ract[i]]; if (c.type != comp::R_DENSITY) continue;
+            int W = 0, total = 0; for (int x = 0; x < comp::NVOICE; x++) { total += dcnt[x]; if (ccur[x].role != comp::OFF) W += c.weight[x]; }
+            auto quota = [&](int x) { return std::max(1, (c.cap * c.weight[x] + W - 1) / W); };
+            bool ok;
+            if (c.weight[q] == 0 || W == 0) ok = total < c.cap;
+            else {
+                ok = dcnt[q] < quota(q);
+                if (!ok && total < c.cap) { ok = true; for (int x = 0; x < comp::NVOICE; x++) if (x != q && c.weight[x] > 0 && ccur[x].role != comp::OFF && dcnt[x] < quota(x)) ok = false; }
+            }
+            if (ok) dcnt[q]++;
+            return ok;
+        }
+        return true;
+    }
     void note(int role, Synth *sy, double f, double dur, double t, double vel, bool composed = false) {
         Role *rr = role == 0 ? &bass : role == 1 ? &top : role == 2 ? &sectr : role == 3 ? &v3r : nullptr;
         if (role >= 1 && role <= 3) nbar[role - 1]++;
@@ -1397,6 +1421,7 @@ struct Piece : Device {
             ufirst[role - 1] = chg;
         }
         if (composed && ck >= 0 && !relmade && role >= 1 && role <= 3 && own_note(role - 1, f, dur, t, vel)) return;   /* hocket: it sounds on another member */
+        if (composed && ck >= 0 && nract && role >= 1 && role <= 3 && !density_ok(role - 1)) return;
         if (composed && ck >= 0 && role >= 1 && role <= 3 && ccall[role - 1] >= 0 && dur > 0) {   /* an answer ends before the caller's next note */
             const int n = a_next(patch.comp.rel[ccall[role - 1]].a, ck);
             if (n < 32) dur = std::max(0.02, std::min(dur, ctime + n * 60.0 / patch.tempo / 4 - 0.005 - t));
@@ -1601,6 +1626,7 @@ struct Piece : Device {
         if (cbass.mode == comp::BASS_PEDAL && r.bass.mode == comp::HOLD) H.held = false;
         /* composition 2: the melody's phrase for this bar (it changes only here), and its cadence on the other voices */
         for (int &x : nbar) x = 0;
+        for (int &x : dcnt) x = 0;
         cad_oth = comp::OTH_HOLD;
         int mq = -1; for (int q = 0; q < comp::NVOICE && mq < 0; q++) if (melodic(q)) mq = q;
         if (mq < 0) {

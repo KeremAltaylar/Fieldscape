@@ -5,6 +5,7 @@
 #include "../tone.hpp"
 #include "../levels.hpp"
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <chrono>
 #include <cmath>
@@ -298,7 +299,7 @@ static void test_model_defaults() {
 }
 
 /* worst block and p99.9 over 30 s, 128 frames, of a route with this comp and these synths (voice, sect, v3) */
-static void cost_of(const char *comp, const char *syn[3], double &worst, double &p999) {
+static void cost_of(const char *comp, const char *syn[3], double &worst, double &p999, int *over = nullptr) {
     char buf[8192]; std::snprintf(buf, sizeof buf, ROUTE, comp);
     std::string b(buf); const char *was[3] = { R"("voice":{"on":true,"synth":"fm"})", R"("sect":{"on":true,"synth":"fm"})", R"("v3":{"on":true,"synth":"am"})" };
     const char *key[3] = { "voice", "sect", "v3" };
@@ -308,6 +309,7 @@ static void cost_of(const char *comp, const char *syn[3], double &worst, double 
     for (int k = 0; k < (int)(30 * 48000 / 128); k++) { fs_piece_walk(pc, r, k / 11250.0, 0);
         auto t0 = std::chrono::steady_clock::now(); fs_process(pc, 128); if (k > 375) ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count()); }
     fs_destroy(pc);
+    if (over) { *over = 0; for (double m : ms) *over += m > 1.5; }
     std::sort(ms.begin(), ms.end()); worst = ms.back(); p999 = ms[(size_t)(ms.size() * 0.999)];
 }
 /* fix round 1 (review C1): a style's level was worked out on the audio thread, again whenever the walk moved the onsets or
@@ -341,6 +343,14 @@ static void test_cost() {
     cost_of(R"(,"comp":{"voice":{"style":"strum","rate":"8n","tones":[0,1,2,3,4],"spread":20},"sect":{"style":"strum","rate":"8n","tones":[0,1,2,3,4],"spread":20},"v3":{"style":"swells","rate":"2n","tones":[0,1,2,3,4]}})", metal, w2, p2);
     std::printf("C cost: fm/fm/am arpeggio-strum-swells p99.9 %.3f ms worst %.3f ms; metal x3 strum-strum-swells p99.9 %.3f ms worst %.3f ms (every voice busy)\n", p1, w1, p2, w2);
     assert(p1 < 1.0 && p2 < 1.0 && w1 < 1.33);   /* the worst block alone for fm/fm/am: OS spikes reach any block (the old build too) */
+    /* composition 3 (task 5): all seven relations at once - one of each across the three voices, every voice busy */
+    double w3, p3; int o3;
+    cost_of(R"(,"comp":{"seed":1,"voice":{"role":"melody","lo":50,"hi":81},"sect":{"style":"strum","rate":"8n","tones":[0,1,2,3,4],"spread":20,"lo":45,"hi":75},"v3":{"style":"arpeggio","rate":"16n","lo":55,"hi":70},"bass":{"mode":"off"},
+        "motif":{"basis":"chord","bars":2,"notes":[{"deg":0,"start":0,"len":4},{"deg":2,"start":4,"len":4},{"deg":1,"start":8,"len":4},{"deg":4,"start":12,"len":4}]},
+        "relations":[{"type":"canon","a":0,"b":2,"delay":8,"trans":4},{"type":"hetero","a":2,"b":1,"offset":30,"ornament":0.4},{"type":"hocket","a":2,"b":1,"c":0,"split":"alt"},
+        {"type":"call","a":0,"b":2,"gap":2},{"type":"motion","a":0,"b":2,"motion":"contrary"},{"type":"unison","a":0,"b":1,"meet":"change"},{"type":"density","cap":8,"weight":[2,1,1]}]})", fm, w3, p3, &o3);
+    std::printf("C cost: all seven relations at once (fm/fm/am) p99.9 %.3f ms worst %.3f ms, %d blocks over 1.5 ms\n", p3, w3, o3);
+    assert(p3 < 1.0 && o3 <= 2);
     int all = 0;
     for (const char *syn : { "fm", "formant", "metal" }) {
         double w, rd; int over; walk_cost(syn, w, over, rd); all += over;
@@ -1314,6 +1324,45 @@ static void test_unison() {
     std::printf("C unison: change puts each voice's first note after a chord change on a (pitch %d = %d at tick %d), octave keeps b's register, cadence meets only at the cadence chord, never is nothing\n", ub[SPAN], ua[SPAN], SPAN);
 }
 
+/* composition 3, task 5: shared density. voice 0 = arpeggio on every sixteenth, voice 1 = 8n strum of 4, voice 2 = 8n euclid */
+static std::string dn_route(const char *rels, const char *sect = R"({"style":"strum","rate":"8n","tones":[0,1,2,3],"spread":0,"lo":45,"hi":75})",
+                            const char *v3 = R"({"style":"euclid","rate":"8n","pulses":5,"steps":8,"lo":55,"hi":80})") { return rel_comp(ARPV1, v3, MOT, rels, sect); }
+static void bar_counts(const Log &l, int bars, std::vector<std::array<int, 3>> &c) {
+    c.assign(bars, {0, 0, 0});
+    for (size_t i = 0; i < l.f.size(); i++) { const int b = tick_of(l.t[i]) / 16; if (l.role[i] >= 1 && l.role[i] <= 3 && b < bars) c[b][l.role[i] - 1]++; }
+}
+static void test_density() {
+    const int bars = span_ticks() / 16 - 1;
+    std::vector<std::array<int, 3>> c0, c; bar_counts(render(dn_route("[]"), 40), bars, c0);
+    const Log d = render(dn_route(R"([{"type":"density","cap":8,"weight":[2,1,1]}])"), 40); bar_counts(d, bars, c);
+    int tot = 0, nb = 0, worst = 0;
+    for (int b = 1; b < bars; b++) {   /* bar 0 can hold the chord's first notes only */
+        assert(c0[b][0] + c0[b][1] + c0[b][2] > 8);
+        const int want[3] = { 4, 2, 2 };
+        for (int q = 0; q < 3; q++) { worst = std::max(worst, std::abs(c[b][q] - want[q])); assert(std::abs(c[b][q] - want[q]) <= 1); }
+        tot += c[b][0] + c[b][1] + c[b][2]; nb++;
+    }
+    assert(tot <= 8 * nb);
+    /* weight 0: that voice's notes past the cap are dropped (it sounds only while the bar is under the cap) */
+    const Log z = render(dn_route(R"([{"type":"density","cap":8,"weight":[1,0,1]}])"), 40);
+    int zn = 0;
+    for (int b = 1; b < bars; b++) { int run = 0;
+        for (size_t i = 0; i < z.f.size(); i++) if (tick_of(z.t[i]) / 16 == b && z.role[i] >= 1 && z.role[i] <= 3) { assert(run < 8 || z.role[i] != 2); run++; zn += z.role[i] == 2; } }
+    /* cap above what the voices play: nothing changes (quota 16/8/8 holds arp 16, strum 2n 8, euclid <= 8) */
+    const char *quiet = R"({"style":"strum","rate":"2n","tones":[0,1,2,3],"spread":0,"lo":45,"hi":75})";
+    assert(same(render(dn_route("[]", quiet), 40), render(dn_route(R"([{"type":"density","cap":32,"weight":[2,1,1]}])", quiet), 40)));
+    /* every busy voice keeps a note a bar however small the cap or lopsided the weights; weight 0 may go silent */
+    int kept = 0;
+    for (const char *r : { R"([{"type":"density","cap":1,"weight":[1,1,1]}])", R"([{"type":"density","cap":2,"weight":[4,1,1]}])", R"([{"type":"density","cap":3,"weight":[1,4,1]}])" }) {
+        bar_counts(render(dn_route(r), 40), bars, c);
+        for (int b = 1; b < bars; b++) for (int q = 0; q < 3; q++) { assert(c[b][q] >= 1); kept++; }
+    }
+    bar_counts(render(dn_route(R"([{"type":"density","cap":1,"weight":[1,0,1]}])"), 40), bars, c);
+    for (int b = 1; b < bars; b++) assert(c[b][0] >= 1 && c[b][2] >= 1 && c[b][1] <= 1);
+    std::printf("C density: cap 8 weights 2/1/1 over %d bars - %.1f notes a bar (was %d), shares within %d of 4/2/2; weight 0 past the cap drops its notes (%d heard); cap 32 changes nothing; %d voice-bars each keep a note\n",
+                nb, (double)tot / nb, c0[1][0] + c0[1][1] + c0[1][2], worst, zn, kept);
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && !std::strcmp(argv[1], "final")) { test_empty_motif(); test_melody_gain_chain(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "room")) { test_room(); return 0; }
@@ -1334,6 +1383,7 @@ int main(int argc, char **argv) {
     test_call();
     test_motion();
     test_unison();
+    test_density();
     test_parse();
     test_resolve();
     test_motif_parse();
