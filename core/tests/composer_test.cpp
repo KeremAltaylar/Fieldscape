@@ -1363,6 +1363,92 @@ static void test_density() {
                 nb, (double)tot / nb, c0[1][0] + c0[1][1] + c0[1][2], worst, zn, kept);
 }
 
+/* composition 3, Task 6: a voice whose material comes from a relation is at Free's level too. The follower (voice 2, sect) alone
+   on the engine, dry: its leader (voice 1) has no instrument, so only what the relation gives voice 2 is heard. The leader is
+   sparse (a melody, 4 notes a bar) or dense (an arpeggio, 16n); canon and heterophony replay it, hocket deals it among members.
+   Each within 2 dB of voice 2's Free line (what level_db measures for it) on fm, am and metal */
+static double rel_db(const char *sy, const char *leader, const char *rels, double secs) {
+    char patch[4096], route[8192];
+    std::snprintf(patch, sizeof patch, R"({"version":17,"tempo":96,"key":50,"prog":[{"r":0,"q":"m7"},{"r":5,"q":"maj7"},{"r":7,"q":"7"},{"r":0,"q":"m9"}],"bed":{"on":false},"zones":{"on":false},
+        "fx":{"delayWet":0,"revWet":0},"fx2":{"delayWet":0,"revWet":0},"fx3":{"delayWet":0,"revWet":0},"morph":{"on":false},
+        "voice":{"on":false},"sect":{"on":true,"synth":"%s","harm":%g,"index":%g},"v3":{"on":false},
+        "comp":{"bass":{"mode":"off"},"voice":%s,"sect":{"role":"off"},"v3":{"role":"off"},%s,"chain":[],"bars":"repeat","relations":%s}})",
+        sy, hd(sy, 0), hd(sy, 1), leader, MOT, rels);
+    std::snprintf(route, sizeof route, R"({"type":"Feature","geometry":{"type":"LineString","coordinates":[[29.0,41.0],[29.004,41.0]]},"properties":{"id":"r1","kind":"route","name":"R","patch":%s}})", patch);
+    fs_engine *e = fs_engine_create(48000, 128); fs_engine_upsert(e, route);
+    const int blocks = (int)(secs * 48000 / 128); double s = 0; long long n = 0;
+    for (int b = 0; b < blocks; b++) {
+        if (b % 40 == 0) fs_engine_step(e, 29.0 + 0.004 * b / blocks, 41.0);
+        fs_engine_process(e, 128);
+        if (b >= 375) { const float *l = fs_engine_out(e, 0); for (int i = 0; i < 128; i++) { s += (double)l[i] * l[i]; n++; } }
+    }
+    fs_engine_destroy(e); return 10 * std::log10(s / std::max(1LL, n) + 1e-30);
+}
+static void test_relation_levels() {
+    static const struct { const char *n, *leader; } LD[] = { { "melody", R"({"role":"melody","lo":50,"hi":81})" },
+        { "arp16", R"({"style":"arpeggio","rate":"16n","lo":55,"hi":84,"grid":[0,1,2,3,0,1,2,3,0,1,2,3,0,1,2,3]})" } };
+    static const struct { const char *n, *r; } RL[] = {
+        { "canon", R"([{"type":"canon","a":0,"b":1,"delay":8}])" }, { "hetero", R"([{"type":"hetero","a":0,"b":1,"offset":30,"ornament":0}])" },
+        { "hocket2", R"([{"type":"hocket","a":0,"b":1,"split":"alt"}])" }, { "hocket3", R"([{"type":"hocket","a":0,"b":1,"c":2,"split":"alt"}])" } };
+    double worst = 0; const char *wn = "";
+    std::printf("C relation levels (member - Free, dB, voice 2):");
+    for (const char *sy : { "fm", "am", "metal" }) {
+        const double fr = level_db(sy, "", 41); std::printf("\n  %-6s", sy);
+        for (auto &l : LD) for (auto &r : RL) {
+            const double d = rel_db(sy, l.leader, r.r, 9) - fr; std::printf(" %s/%s %+.1f", l.n, r.n, d);
+            if (std::fabs(d) > std::fabs(worst)) { worst = d; wn = r.n; }
+        }
+    }
+    std::printf("\nC relation levels: the furthest from Free %+.1f dB (%s)\n", worst, wn);
+    assert(std::fabs(worst) <= 2.0);
+}
+/* Task 6: the patch read with every relation worked out (64 chords overridden, 7 relations), warm, under 1 ms; and a relation
+   edit reads the gains a fresh solve gives (the memo holds what the hits decide, so an edit re-solves only what it changed) */
+static void test_relation_read() {
+    auto ms = [](std::chrono::steady_clock::time_point t0) { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(); };
+    double worst = 0, cold = 0;
+    for (const char *sy : { "fm", "formant", "metal" }) {
+        std::string prog = "[", over = "{"; for (int i = 0; i < 64; i++) { prog += std::string(i ? "," : "") + R"({"r":0,"q":"m7"})";
+            over += std::string(i ? "," : "") + "\"" + std::to_string(i) + "\":{\"voice\":{\"style\":\"" + (i % 3 == 0 ? "strum" : i % 3 == 1 ? "swells" : "arpeggio") + "\"}}"; }
+        prog += "]"; over += "}";
+        const char *rels = R"([{"type":"canon","a":0,"b":2,"delay":8},{"type":"canon","a":1,"b":0,"delay":4},{"type":"hetero","a":2,"b":1,"offset":30,"ornament":0.4},{"type":"hetero","a":0,"b":1},
+            {"type":"hocket","a":1,"b":0,"c":2,"split":"alt"},{"type":"call","a":0,"b":1},{"type":"density","cap":8}])";
+        std::string r = std::string(R"({"version":17,"tempo":96,"key":50,"prog":)") + prog + R"(,"voice":{"on":true,"synth":")" + sy + R"("},"sect":{"on":true,"synth":")" + sy + R"("},"v3":{"on":true,"synth":")" + sy +
+            R"("},"zones":{"on":false},"bed":{"on":false},"comp":{"voice":{"style":"arpeggio","rate":"16n"},"sect":{"style":"strum"},"v3":{"style":"swells"},"over":{"chord":)" + over + R"(},"relations":)" + rels + "}}";
+        fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128);
+        auto t0 = std::chrono::steady_clock::now(); const int id = fs_piece_add_route(pc, r.c_str()); cold = std::max(cold, ms(t0));
+        for (int rep = 0; rep < 5; rep++) { t0 = std::chrono::steady_clock::now(); fs_piece_set_route(pc, id, r.c_str()); worst = std::max(worst, ms(t0)); }
+        float rg[36]; fs_piece_test_route_rgains(pc, id, rg); int solved = 0; for (float x : rg) solved += x > 0;
+        std::printf("C relation read %-7s: %d of 36 relation gains solved\n", sy, solved); assert(solved == 7);   /* 2 canons, 2 heterophonies, a hocket of 3 members: the call and density have no material to level */
+        fs_destroy(pc);
+    }
+    std::printf("C relation read: worst %.2f ms warm (64 chords overridden, 7 relations; fm, formant, metal), cold %.2f ms\n", worst, cold);
+    assert(worst < 1.0);
+    /* the memo: a relation edit, read after the unedited patch, is the fresh solve */
+    auto patch = [](const char *rels) { char b[4096]; std::snprintf(b, sizeof b, R"({"version":17,"tempo":96,"key":50,"prog":[{"r":0,"q":"m7"},{"r":5,"q":"maj7"},{"r":7,"q":"7"},{"r":0,"q":"m9"}],"bed":{"on":false},"zones":{"on":false},
+        "voice":{"on":true,"synth":"fm"},"sect":{"on":true,"synth":"metal","harm":4.1,"index":1.2},"v3":{"on":true,"synth":"formant","harm":0.5,"index":0.5},
+        "comp":{"bass":{"mode":"off"},"voice":{"role":"melody","lo":50,"hi":81},"sect":{"style":"arpeggio","rate":"16n"},"v3":{"style":"swells"},%s,"relations":%s}})", MOT, rels); return std::string(b); };
+    const std::string A = patch(R"([{"type":"canon","a":0,"b":2},{"type":"hocket","a":1,"b":0,"split":"alt"}])");
+    const std::string B[] = { patch(R"([{"type":"canon","a":1,"b":2},{"type":"hocket","a":1,"b":0,"split":"alt"}])"), patch(R"([{"type":"canon","a":0,"b":2},{"type":"hocket","a":1,"b":0,"c":2,"split":"alt"}])"),
+        patch(R"([{"type":"canon","a":0,"b":2},{"type":"hocket","a":1,"b":0,"split":"every","every":2}])"), patch(R"([{"type":"canon","a":0,"b":2},{"type":"hocket","a":1,"b":0,"split":"alt"},{"type":"hetero","a":1,"b":2}])"),
+        patch(R"([{"type":"hocket","a":1,"b":0,"split":"alt"}])"), patch(R"([{"type":"canon","a":0,"b":2,"delay":4,"trans":3},{"type":"hocket","a":1,"b":0,"split":"alt"}])") };
+    const char *what[] = { "canon leader", "hocket third member", "hocket split", "relation added", "relation removed", "canon delay (same material)" };
+    fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128);
+    const int id = fs_piece_add_route(pc, A.c_str()); int moved = 0;
+    for (int i = 0; i < 6; i++) {
+        fs_piece_set_route(pc, id, A.c_str()); fs_piece_set_route(pc, id, B[i].c_str());
+        float got[36], fresh[36], a[36], c0[3], c1[3];
+        fs_piece_test_route_rgains(pc, id, got); fs_piece_test_rgains(B[i].c_str(), fresh); fs_piece_test_rgains(A.c_str(), a);
+        fs_piece_test_route_gains(pc, id, c0); fs_piece_test_gains(B[i].c_str(), 0, 0, 0, c1);
+        for (int k = 0; k < 36; k++) { if (got[k] != fresh[k]) std::printf("C relation memo: %s slot %d %g, fresh %g\n", what[i], k, got[k], fresh[k]); assert(got[k] == fresh[k]); }
+        for (int q = 0; q < 3; q++) assert(c0[q] == c1[q]);
+        bool mv = false; for (int k = 0; k < 36; k++) mv = mv || got[k] != a[k]; moved += mv;
+    }
+    fs_destroy(pc);
+    std::printf("C relation memo: 6 relation edits read after the unedited patch have a fresh solve's gains; %d moved them (the delay edit keeps the material, so it does not)\n", moved);
+    assert(moved == 5);
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && !std::strcmp(argv[1], "final")) { test_empty_motif(); test_melody_gain_chain(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "room")) { test_room(); return 0; }
@@ -1370,6 +1456,7 @@ int main(int argc, char **argv) {
     if (argc > 1 && !std::strcmp(argv[1], "levels-table")) { levels_table(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "onsets")) { test_onsets(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "cost")) { test_cost(); return 0; }
+    if (argc > 1 && !std::strcmp(argv[1], "rel")) { test_relation_levels(); test_relation_read(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "read")) { test_gain_memo(); test_gain_lengths(); test_patch_read_cost(); return 0; }
     test_repeat_hash();
     test_develop();
@@ -1407,11 +1494,13 @@ int main(int argc, char **argv) {
     test_chord_past_16();
     test_patch_read_cost();
     test_gain_memo();
+    test_relation_read();
     test_gain_lengths();
     test_cost();
     test_engine_zone();
     test_onsets();
     test_levels();
+    test_relation_levels();
     test_melody_gain_chain();
     test_room();
     std::printf("composer ok\n");
