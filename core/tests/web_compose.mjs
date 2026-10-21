@@ -481,6 +481,59 @@ try {
   check("Esc closes the menu first, the dock stays", await ev("!document.getElementById('cd-relmenu') && FsComposeDock.isOpen()"), null);
   for (let k = 0; k < 4; k++) { await ev(`(function(){ var c = document.querySelectorAll('#cd-relrow .cd-rchip'); c[c.length - 1].click(); })(), 0`); await sleep(200); await ev(`${rmBtn()}.click(), 0`); await sleep(250); }
   check("all removed: the row says no relations yet", (await rels()).length === 0 && await ev("document.querySelectorAll('#cd-relrow .cd-rchip').length === 0"), null);
+  /* final review: relations on Free voices, the default leader, a second density, grown row, arrows, the Generate note */
+  const reopen = async (edit) => { await ev(`FsComposeDock.close(), 0`); await sleep(300);
+    await ev(`__fa.patchEdit(${R}, function (p) { if (!window.__compSave) { window.__compSave = p.comp; } p.comp = FsCompose.defaults(); (${edit})(p.comp); }), 0`); await sleep(300);
+    await ev(`fsListen.select(${R}), __fa.openPatchPanel(), document.getElementById('pp-compose').click(), 0`); await sleep(800); };
+  const undoKey = async () => { await ev("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true })), 0"); await sleep(300); };
+  await reopen("function (c) { c.sect.style = 'arpeggio'; }");
+  await addRel("heterophony");
+  const dl = (await rels())[0] || {};
+  check("a new pair relation's leader is the first voice that plays something (voice 2 here), the follower another", dl.a === 1 && dl.b === 0, dl);
+  await ev(`${rmBtn()}.click(), 0`); await sleep(300);
+  await reopen("function (c) { }");
+  await addRel("canon");
+  check("a canon from a Free voice: the chip is dimmed", await ev(`${chip(0)}.classList.contains('dim')`), null);
+  check("a canon from a Free voice: the driven voice's cells are not tagged", await ev("document.querySelectorAll('#cd-lanes .cd-cell.relx').length === 0"), null);
+  check("a canon from a Free voice: the inspector says so, with a one-click fix", /voice 1 is Free, so there is nothing to follow/.test(await insp()) && await ev(`!!${btn("#cd-insp button", "give voice 1 a style")}`), await insp());
+  await ev(`${btn("#cd-insp button", "give voice 1 a style")}.click(), 0`); await sleep(400);
+  check("the fix gives the voice an arpeggio, the chip lights, the cells read canon", (await ev(`__fa.routePatch(${R}).comp.voice.style`)) === "arpeggio" && await ev(`!${chip(0)}.classList.contains('dim')`) && await ev("document.querySelectorAll('#cd-lanes .cd-lane[data-voice=\"sect\"] .cd-cell.relx').length > 0"), await ev(`__fa.routePatch(${R}).comp.voice.style`));
+  await undoKey();
+  check("one Ctrl+Z takes the style back (Free again, dimmed)", (await ev(`__fa.routePatch(${R}).comp.voice.style`)) === "free" && await ev(`${chip(0)}.classList.contains('dim')`), await ev(`__fa.routePatch(${R}).comp.voice.style`));
+  /* a density-weighted voice that is Free: dimmed too, any member */
+  await ev(`${rmBtn()}.click(), 0`); await sleep(300);
+  await addRel("shared density");
+  check("a shared density with Free voices: dimmed", await ev(`${chip(0)}.classList.contains('dim')`), null);
+  await ev("document.getElementById('cd-addrel').click(), 0"); await sleep(200);
+  check("a second shared density cannot be added: its menu item is disabled, saying why", await ev(`(function(){ var b = [].filter.call(document.querySelectorAll('#cd-relmenu button'), function (x) { return /shared density/.test(x.textContent); })[0]; return b.disabled && /already/.test(b.title); })()`), null);
+  await ev("document.getElementById('cd-addrel').click(), 0"); await sleep(200);
+  await ev(`${rmBtn()}.click(), 0`); await sleep(300);
+  /* the grown dock keeps the relations row */
+  await addRel("canon"); await addRel("hocket");
+  for (const [w, h] of [[1440, 900], [1024, 700]]) {
+    await s.send("Emulation.setDeviceMetricsOverride", { width: w, height: h, deviceScaleFactor: 1, mobile: false }); await sleep(700);
+    for (const gr of [false, true]) {
+      const isG = await ev("document.body.classList.contains('composing-grown')");
+      if (isG !== gr) { await ev("document.querySelector('#compose-dock .cd-icon[aria-label=\"" + (gr ? "Grow the dock" : "Show the map") + "\"]').click(), 0"); await sleep(600); }
+      const spx = await spillOf();
+      check(`${w}x${h} ${gr ? "grown" : "normal"}: the relations row and both links are there, one screen`, spx.length === 0 && await ev("document.querySelectorAll('#cd-relrow .cd-rchip').length === 2 && document.querySelectorAll('#cd-rels .cd-link').length === 2"), spx.slice(0, 5));
+      if (gr && w === 1440) { await shot("16-relations-grown"); }
+    }
+  }
+  await ev("document.querySelector('#compose-dock .cd-icon[aria-label=\"Show the map\"]').click(), 0"); await sleep(600);
+  await s.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false }); await sleep(700);
+  /* arrows move between chips, and between links */
+  await ev(`${chip(0)}.focus(), 0`); await key("ArrowRight", "ArrowRight");
+  const ar1 = await active(); await key("ArrowRight", "ArrowRight"); const ar2 = await active(); await key("ArrowLeft", "ArrowLeft"); const ar3 = await active();
+  check("arrows move between relation chips (clamped at the ends)", ar1 === "rel:1" && ar2 === "rel:1" && ar3 === "rel:0", [ar1, ar2, ar3]);
+  await ev("document.querySelector('#cd-rels .cd-link[data-i=\"0\"]').focus(), 0"); await key("ArrowRight", "ArrowRight");
+  const al1 = await active(); await key("ArrowLeft", "ArrowLeft"); const al2 = await active();
+  check("arrows move between links", al1 === "link:1" && al2 === "link:0", [al1, al2]);
+  /* Generate says what it replaces */
+  await ev("document.querySelector('#compose-dock .cd-gen').click(), 0"); await sleep(300);
+  check("the Generate panel says it replaces the motif, chain and relations", await ev("[].some.call(document.querySelectorAll('#cd-insp .cd-isub'), function (p) { return /replaces the motif, chain and relations · Ctrl.Z undoes/.test(p.textContent); })"), await ev("[].map.call(document.querySelectorAll('#cd-insp .cd-isub'), function (p) { return p.textContent; })"));
+  await ev(`FsComposeDock.close(), 0`); await sleep(300);
+  await ev(`__fa.patchEdit(${R}, function (p) { p.comp = window.__compSave; window.__compSave = null; }), 0`); await sleep(300);
   await ev(`FsComposeDock.close(), 0`); await sleep(300);
   await s.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false }); await sleep(600);
   await ev(`fsListen.select(${R}), __fa.openPatchPanel(), document.getElementById('pp-compose').click(), 0`); await sleep(800);
