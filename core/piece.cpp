@@ -986,6 +986,7 @@ struct Piece : Device {
     int chg = 0, ufirst[comp::NVOICE] = { -1, -1, -1 };   /* chord changes so far; the change each voice last sounded a note in (unison: its first note after one) */
     bool cad_chord = false;                               /* this chord is covered by a chain cadence step (its first bar: cj == 0) */
     int hcnt[comp::REL_MAX] = {};                     /* hocket: line notes dealt so far in the relation's span */
+    int ownd = -1;                                    /* density's verdict on the voice's own note, taken in own_note before its doubles (-1: not taken) */
     int dcnt[comp::NVOICE] = {};                      /* density: notes each voice has sounded this bar (a strum's tones each count) */
     int ccall[comp::NVOICE] = { -1, -1, -1 };         /* the call (rel index) a voice answers this step, -1: none */
     int dj() const { return patch.comp.develop ? (int)std::min<long long>(cj, 1 << 20) : 0; }
@@ -1354,14 +1355,16 @@ struct Piece : Device {
                          : c.split == comp::S_EVERY ? (n / std::max(1, (int)c.every)) % nm : n % nm;
             const int tgt = mi == 0 ? q : mi == 1 ? c.b : c.c;
             Role &rb = tgt == 0 ? top : tgt == 1 ? sectr : v3r;
-            if (tgt == q || !rb.sy()) { if (patch.rgain[ract[i]][q] > 0) vel = vu * patch.rgain[ract[i]][q]; return false; }   /* a's share at a's level */
+            if (tgt == q || !rb.sy()) { if (patch.rgain[ract[i]][q] > 0) vel = vu * patch.rgain[ract[i]][q]; break; }   /* a's share at a's level; a heterophony still doubles it */
             relmade = true;
             if (chord) sync_pool(rb);
             note(tgt + 1, chord ? chord_voice(rb, t + dur) : rb.sy(), f, dur, t, vu * rg(ract[i], tgt), true);
             relmade = false;
             return true;
         }
-        for (int i = 0; i < nract; i++) {
+        /* the density rule sees a's own note before its doubles: a note it drops has no double */
+        ownd = density_ok(q) ? 1 : 0;
+        for (int i = 0; i < nract && ownd; i++) {
             const comp::Relation &c = patch.comp.rel[ract[i]];
             if (c.type != comp::R_HETERO || c.a != q) continue;
             const int b = c.b; Role &rb = b == 0 ? top : b == 1 ? sectr : v3r;
@@ -1463,7 +1466,8 @@ struct Piece : Device {
             ufirst[role - 1] = chg;
         }
         if (composed && ck >= 0 && !relmade && role >= 1 && role <= 3 && own_note(role - 1, f, dur, t, vel)) return;   /* hocket: it sounds on another member */
-        if (composed && ck >= 0 && nract && role >= 1 && role <= 3 && !density_ok(role - 1)) return;
+        const int od = ownd; ownd = -1;
+        if (composed && ck >= 0 && nract && role >= 1 && role <= 3 && !(od >= 0 ? od == 1 : density_ok(role - 1))) return;
         if (composed && ck >= 0 && role >= 1 && role <= 3 && ccall[role - 1] >= 0 && dur > 0) {   /* an answer ends before the caller's next note */
             const int n = a_next(patch.comp.rel[ccall[role - 1]].a, ck);
             if (n < 32) dur = std::max(0.02, std::min(dur, ctime + n * 60.0 / patch.tempo / 4 - 0.005 - t));
@@ -1783,9 +1787,13 @@ struct Piece : Device {
             if (c.type == comp::R_HOCKET && c.b != c.a) { mute[c.b] = true; if (c.c < comp::NVOICE && c.c != c.a) mute[c.c] = true; }
             else if (c.type == comp::R_CALL && c.b != c.a && ccall[c.b] < 0) ccall[c.b] = ract[i];
         }
-        for (int pass = 0; pass < 2; pass++) for (int q = 0; q < comp::NVOICE; q++) {
+        /* a pitch relation's follower plays after its leader in the same sixteenth, whatever their order (it reads the leader's
+           current pitch): pass 0 the rest, pass 1 those followers, pass 2 the call's answers */
+        bool pf[comp::NVOICE] = {};
+        for (int i = 0; i < nract; i++) { const comp::Relation &c = patch.comp.rel[ract[i]]; if ((c.type == comp::R_MOTION || c.type == comp::R_UNISON) && c.b != c.a) pf[c.b] = true; }
+        for (int pass = 0; pass < 3; pass++) for (int q = 0; q < comp::NVOICE; q++) {
             const comp::Voice &v = ccur[q];
-            if ((ccall[q] >= 0) != (pass == 1)) continue;
+            if ((ccall[q] >= 0 ? 2 : pf[q] ? 1 : 0) != pass) continue;
             if (fol[q] >= 0) { play_canon(q, fol[q], sp[fol[q]].a, sp[fol[q]].b, k, time); continue; }
             if (mute[q]) continue;
             if (ccall[q] >= 0) {

@@ -1230,6 +1230,25 @@ static void test_hocket_mask() {
     for (size_t i = 0; i < line.size(); i++) { const int role = ((int)(i / 2) % 3) == 0 ? 1 : ((int)(i / 2) % 3) == 1 ? 3 : 2; assert(has_note(e, role, line[i].first, line[i].second)); }
     std::printf("C hocket mask: x..x.xx.x...xx.. puts %d notes on a and %d on b exactly; every 2 over three voices cycles a a b b c c\n", na, nb);
 }
+/* hetero doubles what a keeps of a hocket, and no double of a note the density cap dropped */
+static void test_hetero_with() {
+    const int SPAN = span_ticks();
+    const char *v3 = R"({"role":"off"})";
+    const Log l = render(rel_comp(ARPV1, v3, MOT, R"([{"type":"hocket","a":0,"b":2,"split":"alt","from":0,"to":0},{"type":"hetero","a":0,"b":1,"offset":30,"ornament":0,"from":0,"to":0}])", R"({"role":"off","lo":50,"hi":74})"), 40);
+    int na = 0, nd = 0;
+    for (size_t i = 0; i < l.f.size(); i++) if (l.role[i] == 1 && tick_of(l.t[i]) < SPAN) { na++; bool found = false;
+        for (size_t j = 0; j < l.f.size(); j++) if (l.role[j] == 2 && std::fabs(l.t[j] - (l.t[i] + 0.03)) < 1e-3 && l.f[j] == l.f[i]) found = true;
+        assert(found); nd++; }
+    assert(na >= 12 && nd == na);
+    /* density: every double on b has its leader note sounding 30 ms before it */
+    const Log d = render(rel_comp(ARPV1, v3, MOT, R"([{"type":"hetero","a":0,"b":2,"offset":30,"ornament":0,"from":0,"to":0},{"type":"density","cap":4,"weight":[1,1,3]}])"), 40);
+    int nb = 0;
+    for (size_t j = 0; j < d.f.size(); j++) if (d.role[j] == 3) { nb++; bool found = false;
+        for (size_t i = 0; i < d.f.size(); i++) if (d.role[i] == 1 && std::fabs(d.t[i] + 0.03 - d.t[j]) < 1e-3) found = true;
+        assert(found); }
+    assert(nb > 0);
+    std::printf("C hetero with hocket/density: a's hocket-kept notes are doubled (%d of %d); %d doubles under a density cap, each with its leader note sounding\n", nd, na, nb);
+}
 static const char *MOT2 = R"("motif":{"basis":"chord","bars":2,"notes":[{"deg":0,"start":0,"len":4},{"deg":2,"start":4,"len":4},{"deg":1,"start":8,"len":4},{"deg":4,"start":12,"len":4},{"deg":4,"start":24,"len":4},{"deg":3,"start":28,"len":2}]})";
 static const char *MOT1 = R"("motif":{"basis":"chord","bars":2,"notes":[{"deg":0,"start":0,"len":4},{"deg":2,"start":4,"len":4},{"deg":1,"start":8,"len":4},{"deg":4,"start":12,"len":4}]})";
 static void test_call() {
@@ -1299,6 +1318,11 @@ static void test_motion() {
     assert(n > 100 && mv > n / 4 && mv < n * 3 / 4);
     /* every moved note on every chord (a 4-chord walk): inside 55..70 */
     for (size_t i = 0; i < h.f.size(); i++) if (h.role[i] == 3) assert(pitch(h, i) >= 55 && pitch(h, i) <= 70);
+    /* a leader that plays after its follower in the voice order (a = voice 2, b = voice 0): b still reads a's CURRENT pitch, not the previous one */
+    { const Log p = render(rel_comp(ARPV1, ARPV3, MOT, R"([{"type":"motion","a":2,"b":0,"motion":"par3","from":0,"to":0}])"), 40);
+      const std::vector<int> pa = by_tick(p, 3, SPAN), pb = by_tick(p, 1, SPAN); int ok = 0, nn = 0;
+      for (int k = 0; k < SPAN; k++) if (pa[k] >= 0 && pb[k] >= 0) { nn++; const int d = (((pa[k] - pb[k]) % 12) + 12) % 12; if (d == 3 || d == 4) ok++; }
+      assert(nn >= SPAN * 9 / 10 && ok >= nn * 9 / 10); }
     std::printf("C motion: contrary opposes a on %d of 31 moves (never with it), par3/par6 are a diatonic 3rd/6th below on >=90%% of %d onsets, strength 0 and free are the route unchanged, 0.5 moved %d of %d notes\n", strict, SPAN, mv, n);
 }
 static void test_unison() {
@@ -1454,6 +1478,7 @@ int main(int argc, char **argv) {
     if (argc > 1 && !std::strcmp(argv[1], "room")) { test_room(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "levels")) { test_levels(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "levels-table")) { levels_table(); return 0; }
+    if (argc > 1 && !std::strcmp(argv[1], "fix")) { test_hetero_with(); test_motion(); test_density(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "onsets")) { test_onsets(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "cost")) { test_cost(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "rel")) { test_relation_levels(); test_relation_read(); return 0; }
@@ -1467,6 +1492,7 @@ int main(int argc, char **argv) {
     test_canon_swap();
     test_hocket();
     test_hocket_mask();
+    test_hetero_with();
     test_call();
     test_motion();
     test_unison();
