@@ -400,10 +400,10 @@
   var REL_MAX = 12;
   function relField(r, k) { var t = RELATIONS[r.type], f = null; if (t) { t.fields.forEach(function (x) { if (x.k === k) { f = x; } }); } return f; }
   function isVoice(x) { return Number.isInteger(x) && x >= 0 && x <= 2; }
-  /* the index it took, or -1 (unknown type, a voice outside 0..2, a == b, or REL_MAX reached) */
+  /* the index it took, or -1 (unknown type, a voice outside 0..2, a == b, REL_MAX reached, or a second density) */
   function addRelation(comp, type, a, b, span) {
     var t = RELATIONS[type], rs = comp.relations || [];
-    if (!t || !isVoice(a) || !isVoice(b) || a === b || rs.length >= REL_MAX) { return -1; }
+    if (!t || !isVoice(a) || !isVoice(b) || a === b || rs.length >= REL_MAX || (type === "density" && rs.some(function (x) { return x.type === "density"; }))) { return -1; }   /* the core reads the first density only */
     var r = { type: type, a: a, b: b, from: 0, to: NCHORD - 1 };
     if (span && Number.isInteger(span.from) && Number.isInteger(span.to) && span.from >= 0 && span.to >= span.from && span.to < NCHORD) { r.from = span.from; r.to = span.to; }
     t.fields.forEach(function (f) { r[f.k] = clone(f.def); });

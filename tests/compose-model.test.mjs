@@ -510,7 +510,9 @@ test("relations: add writes the type's defaults and the span; a == b and bad voi
   const n = c.relations.length;
   for (const bad of [["canon", 1, 1], ["canon", 0, 3], ["canon", -1, 1], ["nope", 0, 1]]) assert.equal(M.addRelation(c, ...bad), -1, bad.join());
   assert.equal(c.relations.length, n);
-  for (let i = 0; i < 20; i++) M.addRelation(c, "density", 0, 1);
+  const d = base(); assert.equal(M.addRelation(d, "density", 0, 1), 0);
+  assert.equal(M.addRelation(d, "density", 0, 1), -1, "only the first density relation acts, so a second is refused"); assert.equal(d.relations.length, 1);
+  for (let i = 0; i < 20; i++) M.addRelation(c, "canon", 0, 1);
   assert.equal(c.relations.length, 12, "REL_MAX");
 });
 test("relations: set validates and clamps; remove; each edit is one history step", () => {
