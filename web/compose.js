@@ -4,7 +4,7 @@
    inherited ones dimmed with their source. Edits go through ctx.save (the route's patch): heard at once. Desk only. */
 (function () {
   var M = window.FsCompose, ctx = null, comp = null, hist = null, sel = { kind: "route" }, voice = "voice", grown = false, saveErr = null, nowTimer = null, statsTimer = null, audio = [], polls = 0;
-  var gen = false, genForm = "AABA", genContrast = 0.6;   /* the Generate form panel: open, its form and contrast */
+  var gen = false, genForm = "AABA", genContrast = 0.6, genRel = "some";   /* the Generate form panel: open, its form and contrast */
   /* composition 2: the selected chain step and motif note (sel.kind "sent" puts them in the inspector), the roll's cursor, the
      lane whose layers are shown, the motif generator's seed */
   var si = -1, ni = -1, cur = { row: 0, col: 0 }, lay = null, mseed = 0;
@@ -200,7 +200,7 @@
     var gb = el("button", "cd-gen", "Generate"); gb.appendChild(el("span", "cd-lbl", " form")); gb.type = "button"; gb.setAttribute("aria-pressed", String(gen));
     gb.title = "Write a whole piece in a form: its sections' voices, styles and settings (one Ctrl+Z takes it back)";
     gb.addEventListener("click", function () { gen = !gen;
-      if (gen && comp.form) { genForm = comp.form.type; genContrast = comp.form.contrast; } render(); });
+      if (gen && comp.form) { genForm = comp.form.type; genContrast = comp.form.contrast; genRel = comp.form.relations || "some"; } render(); });
     h.appendChild(gb);
     [[ICON.undo, "Undo (Ctrl+Z)", undo, hist.canUndo()], [ICON.redo, "Redo (Ctrl+Shift+Z)", redo, hist.canRedo()],
      [grown ? ICON.shrink : ICON.grow, grown ? "Show the map" : "Grow the dock", growDock, true],
@@ -239,7 +239,7 @@
   function generate(seed) {
     var n = ctx.chords.length, bs = M.bands(ctx.coords, ctx.sections() || [], ctx.zones()), at = [];
     for (var i = 0; i < n; i++) { at.push(bs.filter(function (b) { return b.t0 < (i + 1) / n && b.t1 > i / n; })); }
-    comp = M.generate(comp, { form: genForm, contrast: genContrast, seed: seed, nchords: n, at: at,
+    comp = M.generate(comp, { form: genForm, contrast: genContrast, relations: genRel, seed: seed, nchords: n, at: at,
       bpm: ((ctx.route.properties || {}).patch || {}).tempo || 72 });   /* the core's own default tempo */
     commit(true);
   }
@@ -695,6 +695,8 @@
     w.appendChild(el("p", "cd-isub", f ? "now " + f.label + " · seed " + comp.form.seed + " · contrast " + Math.round(comp.form.contrast * 100) + " %" : "writes every chord’s voices · sections and zones stay"));
     var r = el("div", "cd-row2 wide mine"); r.dataset.k = "form"; r.dataset.fk = "row:form"; r.appendChild(el("span", "cd-k", "form"));
     var c = el("span", "cd-ctl"); c.appendChild(seg(M.FORMS.map(function (x) { return [x.id, x.label]; }), genForm, function (v) { genForm = v; render(); }, "form")); r.appendChild(c); w.appendChild(r);
+    var rr = el("div", "cd-row2 wide mine"); rr.dataset.k = "relations"; rr.dataset.fk = "row:relations"; rr.appendChild(el("span", "cd-k", "relations"));
+    var rc = el("span", "cd-ctl"); rc.appendChild(seg([["none", "none"], ["some", "some"], ["rich", "rich"]], genRel, function (v) { genRel = v; render(); }, "relations")); rr.appendChild(rc); w.appendChild(rr);
     var k = { fmt: "pct" };
     var q = el("div", "cd-row2 mine"); q.dataset.k = "contrast"; q.dataset.fk = "row:contrast"; q.appendChild(el("span", "cd-k", "contrast"));
     var kc = el("span", "cd-ctl"), ki = el("input"), out = el("span", "cd-v", fmt(k, genContrast));

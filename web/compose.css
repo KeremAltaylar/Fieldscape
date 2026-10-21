@@ -61,6 +61,7 @@ body.composing-grown #map { grid-column: 1 / -1; grid-row: 1; }
 .cd-band.form { top: 0; bottom: 0; display: flex; align-items: center; padding: 0 5px; border: 1px solid color-mix(in oklch, var(--lamp) 55%, transparent);
   background: color-mix(in oklch, var(--lamp) 12%, transparent); font: var(--t-xs)/1 var(--font-mono); letter-spacing: .04em; color: var(--ink); }
 .cd-row2.wide[data-k="form"] { grid-template-columns: 2.4rem minmax(0, 1fr); }
+.cd-row2.wide[data-k="relations"] { grid-template-columns: 5.6rem minmax(0, 1fr); }   /* the key as wide as contrast's, so "relations" is not cut */
 .cd-row2[data-k="form"] .cd-seg { grid-template-columns: repeat(5, auto); }   /* each form as wide as its name needs, the rest shared */
 .cd-row2[data-k="form"] .cd-seg button { text-transform: none; padding-left: 0; padding-right: 0; }   /* the sentence's a a' b stays lower case */
 .cd-band.form.rep { border-style: dashed; background: none; color: var(--dim); }

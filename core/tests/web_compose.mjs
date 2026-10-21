@@ -151,7 +151,8 @@ try {
   check("the form · chain row: the letters' steps over their chords", (await ev("(function(){ var seen = {}, out = []; [].forEach.call(document.querySelectorAll('#compose-dock .cd-form .cd-step'), function (b) { if (!seen[b.dataset.span]) { seen[b.dataset.span] = 1; out.push(b.dataset.letter); } }); return out.join('|'); })()")) === "A|A|B|A",
     await ev("(function(){ var seen = {}, out = []; [].forEach.call(document.querySelectorAll('#compose-dock .cd-form .cd-step'), function (b) { if (!seen[b.dataset.span]) { seen[b.dataset.span] = 1; out.push(b.dataset.letter); } }); return out.join('|'); })()"));
   check("Generate keeps focus on its button", await ev("document.activeElement === document.getElementById('cd-generate')"), await ev("document.activeElement && document.activeElement.outerHTML.slice(0, 80)"));
-  const gspill2 = await spillOf();
+  check("the relations row: none · some · rich, 'some' on; Generate wrote form.relations and the row shows its chips", await ev(`(function(){ var c = __fa.routePatch(${R}).comp; return [].map.call(document.querySelectorAll('#cd-insp .cd-row2[data-k="relations"] button'), function (b) { return b.textContent; }).join('|') === 'none|some|rich' && c.form.relations === 'some' && c.relations.length === 8 && document.querySelectorAll('#cd-relrow .cd-rchip').length === c.relations.length; })()`), await ev(`JSON.stringify((__fa.routePatch(${R}).comp.form || {}).relations)`));
+  await shot("6a-generate-some-relations");  const gspill2 = await spillOf();
   check("generated, with the form row and the panel: one screen", gspill2.length === 0, gspill2.slice(0, 5));
   /* fix round 1: a generated chain's chips all show, and + step, grown at 1440; the melody's cells take the form's letters */
   await ev("document.querySelector('#compose-dock .cd-icon[aria-label=\"Grow the dock\"]').click(), 0"); await sleep(600);
@@ -562,7 +563,14 @@ try {
   await ev("document.getElementById('cd-generate').click(), 0"); await sleep(500);
   const sspill = await spillOf();
   check("1024x700: the Generate panel and the form row fit one screen", sspill.length === 0 && !!(await ev("!!document.querySelector('#compose-dock .cd-form')")), sspill.slice(0, 5));
-  await shot("7-generate-1024");
+  await ev("[].filter.call(document.querySelectorAll('#cd-insp .cd-row2[data-k=\"relations\"] button'), function (b) { return b.textContent === 'rich'; })[0].click(), 0"); await sleep(300);
+  await ev("document.getElementById('cd-generate').click(), 0"); await sleep(500);
+  const rspill = await spillOf();
+  check("1024x700: the relations switch to rich writes form.relations, the row shows every chip, one screen", rspill.length === 0 && await ev(`(function(){ var c = __fa.routePatch(${R}).comp; return c.form.relations === 'rich' && c.relations.filter(function (r) { return r.type === 'density'; }).length === 1 && document.querySelectorAll('#cd-relrow .cd-rchip').length === c.relations.length; })()`), rspill.slice(0, 5));
+  await shot("7b-generate-rich-1024");
+  await ev("[].filter.call(document.querySelectorAll('#cd-insp .cd-row2[data-k=\"relations\"] button'), function (b) { return b.textContent === 'none'; })[0].click(), 0"); await sleep(300);
+  await ev("document.getElementById('cd-generate').click(), 0"); await sleep(500);
+  check("none writes no relations and the row has no chips", await ev(`(function(){ var c = __fa.routePatch(${R}).comp; return c.form.relations === 'none' && !(c.relations || []).length && document.querySelectorAll('#cd-relrow .cd-rchip').length === 0; })()`), null);  await shot("7-generate-1024");
   check("1024: the bars switch fits the header", await ev("(function(){ var h = document.querySelector('#compose-dock .cd-head'), r = h.getBoundingClientRect(); return !!h.querySelector('.cd-bars') && h.scrollWidth <= h.clientWidth + 1 && [].every.call(h.children, function (c) { var q = c.getBoundingClientRect(); return !q.width || (q.right <= r.right + 1 && q.left >= r.left - 1); }); })()"), await ev("(function(){ var h = document.querySelector('#compose-dock .cd-head'), r = h.getBoundingClientRect(); return [].map.call(h.children, function (c) { var q = c.getBoundingClientRect(); return [c.className, Math.round(q.left - r.left), Math.round(q.right - r.right), Math.round(q.width)]; }); })()"));
   check("Generate wrote bars: develop", await ev(`__fa.routePatch(${R}).comp.bars === 'develop'`), null);
   await ev("document.querySelector('#compose-dock .cd-icon[aria-label=\"Grow the dock\"]').click(), 0"); await sleep(600);

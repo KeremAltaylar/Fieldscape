@@ -562,12 +562,12 @@ import { createHash } from "node:crypto";
 const relsOf = (g) => g.relations || [];
 const letterSpans = (form, n = 16) => M.formSpans(form, n);
 const FORM_IDS = ["AABA", "ABAB", "ABAC", "sentence", "rondo"];
-test("generate relations: 'some' writes one relation per letter span (cadence chord left out) and one cadence unison", () => {
+test("generate relations: 'some' writes one relation per letter span (cadence chord left out) and a unison on each cadence chord", () => {
   for (const form of FORM_IDS) for (let seed = 1; seed < 40; seed++) {
     const g = gen({ form, seed, contrast: 0.7 }), sp = letterSpans(form), rs = relsOf(g), un = rs.filter((r) => r.type === "unison"), rest = rs.filter((r) => r.type !== "unison");
-    assert.equal(g.form.relations, "some"); assert.equal(rs.length, sp.length + 1, form + seed);
-    assert.equal(un.length, 1); assert.deepEqual([un[0].meet, un[0].octave, un[0].from, un[0].to], ["cadence", "octave", 0, 15]);
-    assert.equal(voicesAt(g, 0)[un[0].a].role, "melody");
+    assert.equal(g.form.relations, "some"); assert.equal(rs.length, 2 * sp.length, form + seed);
+    assert.equal(un.length, sp.length);
+    un.forEach((u, i) => { assert.deepEqual([u.meet, u.octave, u.from, u.to], ["cadence", "octave", sp[i].b - 1, sp[i].b - 1]); assert.equal(voicesAt(g, u.from)[u.a].role, "melody"); assert.equal(new Set([u.a, u.b, u.c]).size, 3); });
     sp.forEach((s, i) => assert.deepEqual([rest[i].from, rest[i].to], [s.a, s.b - 2], "over the letter, not its cadence chord"));
     assert.ok(!rs.some((r) => r.type === "density"));
   }

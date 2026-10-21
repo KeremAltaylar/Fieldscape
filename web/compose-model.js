@@ -501,8 +501,8 @@
     return i;
   }
   /* composition 3: relations that fit the form, drawn last so a seed's textures, motif and chain are as they were.
-     "some": one per letter over its chords but the cadence chord (a repeated letter the same, A' a parameter off), and one
-     unison for every cadence; "rich" adds a shared density over the route and a second relation in B */
+     "some": one per letter over its chords but the cadence chord (a repeated letter the same, A' a parameter off), and a
+     unison at each cadence chord; "rich" adds a shared density over the route and a second relation in B */
   function relate(out, r, tex, spans, c, mode, n) {
     if (mode === "none" || !n) { return; }
     var rel = {}, A = cast(tex.A);
@@ -511,9 +511,9 @@
       var k = texKey(s.letter), t = tex[k], w = cast(t);
       if (!rel[k]) { rel[k] = k === "A" ? gentle(r) : k === "A'" ? vary(r, rel.A) : contrasting(r, c); }
       if (w && s.b - s.a >= 2) { put(out, rel[k], w.mel, w.sup, s.a, s.b - 2); }
+      if (w) { var z = s.b === n ? A : w, u = addRelation(out, "unison", z.mel, z.sup, { from: s.b - 1, to: s.b - 1 });   /* the route's last chord settles from A */   /* one per cadence chord: a route-wide unison would mark a melody lane "unison" on every chord */
+        if (u >= 0) { setRelation(out, u, "octave", "octave"); setRelation(out, u, "c", z.third); } }
     });
-    var u = addRelation(out, "unison", A.mel, A.sup, { from: 0, to: n - 1 });
-    if (u >= 0) { setRelation(out, u, "octave", "octave"); setRelation(out, u, "c", A.third); }
     if (mode !== "rich") { return; }
     var dens = tex.A.dense, d = addRelation(out, "density", A.mel, A.sup, { from: 0, to: n - 1 });
     if (d >= 0) { setRelation(out, d, "cap", dens ? int(r, 12, 14) : int(r, 10, 12)); var w3 = [1, 1, 1]; w3[A.mel] = 2; setRelation(out, d, "weight", w3); }
