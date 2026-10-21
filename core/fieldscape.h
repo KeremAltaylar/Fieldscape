@@ -237,6 +237,11 @@ int fs_piece_test_kept(fs_device *d);
 void fs_piece_test_hooks(fs_device *d, double (*rnd)(void *), void *rnd_ctx,
                          void (*on_note)(void *, int, double, double, double, double), void *note_ctx);
 void fs_piece_test_walk(fs_device *d, double seconds);                 /* tests: walk the route over this long */
+/* tests: a patch's route-layer gains (comp_gains) per voice into out[3], its simulation free_bars of Free and bars of the
+   style, step s apart (0: the core's own) */
+void fs_piece_test_gains(const char *patch_json, int free_bars, int bars, double step, float *out);
+/* tests: route i's route-layer gains as the piece read them (its memo warm) into out[3] */
+void fs_piece_test_route_gains(fs_device *d, int i, float *out);
 
 /* The whole walk in one object (core/engine.cpp): four stretch slots + the piece + the mix, and the
    walk logic that drives them (updateBed, worldMove, zones, sections, rhythm points). Hand it the

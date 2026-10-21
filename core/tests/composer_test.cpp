@@ -3,12 +3,14 @@
 #include "../composer.hpp"
 #include "../fieldscape.h"
 #include "../tone.hpp"
+#include "../levels.hpp"
 #include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <set>
 #include <string>
 #include <vector>
 #ifdef __EMSCRIPTEN__
@@ -21,7 +23,7 @@ static void test_parse() {
     assert(!c.on);
     Json j = Json::parse(R"({"seed":7,"voice":{"style":"arpeggio","rate":"16n","lo":60,"hi":84,"grid":[0,1,2,-1]},
         "sect":{"style":"pedal","pedal":"fifth"},"bass":{"mode":"off"},
-        "over":{"chord":{"3":{"voice":{"style":"strum"}},"40":{"voice":{"style":"swells"}}},
+        "over":{"chord":{"3":{"voice":{"style":"strum"}},"70":{"voice":{"style":"swells"}}},
                 "section":{"2":{"v3":{"role":"off"}}},
                 "zone":{"p-1":{"when":"enter","blend":2,"sect":{"variation":0.5}}}}})");
     comp::comp_of(&j, c);
@@ -32,7 +34,7 @@ static void test_parse() {
     assert(c.chord[3].used && c.chord[3].v[0].mask == comp::F_STYLE && c.chord[3].v[0].style == comp::STRUM);
     assert(c.section[2].used && c.section[2].v[2].role == comp::OFF);
     assert(c.nzone == 1 && c.zone[0].zone == comp::id_hash("p-1") && c.zone[0].when == comp::ENTER && c.zone[0].blend == 2);
-    for (int i = 0; i < comp::NCHORD; i++) if (i != 3) assert(!c.chord[i].used);   /* "40": out of range, ignored */
+    for (int i = 0; i < comp::NCHORD; i++) if (i != 3) assert(!c.chord[i].used);   /* "70": out of range, ignored */
     assert(c.bass.mask == comp::B_ALL);
     Json k = Json::parse(R"({"over":{"section":{"1":{"voice":{"rot":3},"bass":{"pedal":"fifth"}}}}})");
     comp::Cfg d; comp::comp_of(&k, d);
@@ -71,8 +73,8 @@ static void test_resolve() {
     std::printf("C resolve: zone > chord > section > route, field by field; an enter-zone acts only after entering\n");
 }
 
-struct Log { std::vector<double> f, t, d; std::vector<int> role; };
-static void lg(void *p, int role, double f, double dur, double t, double) { Log *l = (Log *)p; l->f.push_back(f); l->t.push_back(t); l->d.push_back(dur); l->role.push_back(role); }
+struct Log { std::vector<double> f, t, d, v; std::vector<int> role; };
+static void lg(void *p, int role, double f, double dur, double t, double vel) { Log *l = (Log *)p; l->f.push_back(f); l->t.push_back(t); l->d.push_back(dur); l->v.push_back(vel); l->role.push_back(role); }
 static double draw(void *p) { unsigned *s = (unsigned *)p; *s = *s * 1664525u + 1013904223u; return (*s >> 8) / 16777216.0; }
 static const char *ROUTE = R"({"version":17,"tempo":96,"key":50,"prog":[{"r":0,"q":"m7"},{"r":5,"q":"maj7"},{"r":7,"q":"7"},{"r":0,"q":"m9"}],
     "voice":{"on":true,"synth":"fm"},"sect":{"on":true,"synth":"fm"},"v3":{"on":true,"synth":"am"},"zones":{"on":false},"bed":{"on":false}%s})";
@@ -392,8 +394,9 @@ static double hd(const char *sy, int w) {     /* index.html SYNTH_PARAMS: pickin
     for (auto &d : D) if (!std::strcmp(d.n, sy)) return w ? d.i : d.h;
     return 0;
 }
+static const char *MOT = R"("motif":{"basis":"chord","notes":[{"deg":0,"start":0,"len":4},{"deg":2,"start":4,"len":4},{"deg":1,"start":8,"len":4},{"deg":4,"start":12,"len":4}]})";
 /* the engine's output rms (dBFS) from 1 s, walking the route in `secs` with voice 2 alone on synth `sy`, style `style` ("": Free) */
-static double level_db(const char *sy, const char *style, double secs) {
+static double level_db(const char *sy, const char *style, double secs, double from_s = 1) {
     char patch[4096], route[8192];
     std::snprintf(patch, sizeof patch, R"({"version":17,"tempo":96,"key":50,"prog":[{"r":0,"q":"m7"},{"r":5,"q":"maj7"},{"r":7,"q":"7"},{"r":0,"q":"m9"}],"bed":{"on":false},"zones":{"on":false},
         "fx":{"delayWet":0,"revWet":0},"fx2":{"delayWet":0,"revWet":0},"fx3":{"delayWet":0,"revWet":0},"morph":{"on":false},
@@ -405,13 +408,12 @@ static double level_db(const char *sy, const char *style, double secs) {
     for (int b = 0; b < blocks; b++) {
         if (b % 40 == 0) fs_engine_step(e, 29.0 + 0.004 * b / blocks, 41.0);
         fs_engine_process(e, 128);
-        if (b >= 375) { const float *l = fs_engine_out(e, 0); for (int i = 0; i < 128; i++) { s += (double)l[i] * l[i]; n++; } }
+        if (b >= (int)(from_s * 375)) { const float *l = fs_engine_out(e, 0); for (int i = 0; i < 128; i++) { s += (double)l[i] * l[i]; n++; } }
     }
     fs_engine_destroy(e); return 10 * std::log10(s / std::max(1LL, n) + 1e-30);
 }
-static void test_levels() {
-    /* the dock's default rate (1/8) for each style, then the templates' (web/compose-model.js), their registers too */
-    static const char *const ST[][2] = {
+/* the dock's default rate (1/8) for each style, then the templates' (web/compose-model.js), their registers too */
+static const char *const LEVEL_ST[][2] = {
         { "arp 8n", R"({"style":"arpeggio"})" }, { "pedal 8n", R"({"style":"pedal"})" }, { "strum 8n", R"({"style":"strum"})" },
         { "euclid 8n", R"({"style":"euclid"})" }, { "swells 8n", R"({"style":"swells"})" },
         { "arp 16n", R"({"style":"arpeggio","rate":"16n","lo":55,"hi":84})" },
@@ -420,30 +422,60 @@ static void test_levels() {
         { "euclid 16n", R"({"style":"euclid","rate":"16n","pulses":3,"steps":8,"rot":2,"grid":[2,4],"lo":62,"hi":86})" },
         { "swells 1n", R"({"style":"swells","rate":"1n","len":1,"tones":[0,2,4]})" },
         { "swells 2n.", R"({"style":"swells","rate":"2n.","len":1,"tones":[1,3],"lo":60,"hi":84,"attack":0.6,"release":0.5})" } };
-    static const char *const SY[] = { "fm", "am", "duo", "mono", "simple", "pluck", "metal", "membrane", "wavetable", "comb", "formant" };
-    /* the bound per synth: 2 dB where a note's power is its envelope's (and pluck's burst's). Four are more than that, their
-       residue measured 2026-10-19 and open - the gains are worked out from the envelope when the patch is read, where a
-       render of the synth itself (50-350 ms a style) would stall the web's audio thread, which reads the patch between
-       blocks: mono's filter envelope opens on each strike and its low-pass keeps less of a high note (a high euclid -2.2, a
-       slow swell +2.3); comb's resonator keeps more of a low note (a high arpeggio -2.3); the formants' norm follows the
-       pitch 120 ms late, so a line of changing notes is not its notes alone (+2..4.1 over Free); metal's highpass rides its
-       envelope, so a held or overlapping note is brighter than its envelope says (chords and swells to +3.5, a bar's lone
-       strike -0.8) */
-    auto bound = [](const char *sy) { return !std::strcmp(sy, "metal") ? 5.0 : !std::strcmp(sy, "formant") ? 4.5 : !std::strcmp(sy, "mono") ? 3.0 : !std::strcmp(sy, "comb") ? 2.5 : 2.0; };
+static const char *const LEVEL_SY[] = { "fm", "am", "duo", "mono", "simple", "pluck", "metal", "membrane", "wavetable", "comb", "formant" };
+static void test_levels() {
+    const auto &ST = LEVEL_ST; const auto &SY = LEVEL_SY;
+    /* 2 dB on every synth. The gains are worked out from the envelope when the patch is read (a render of the synth, 50-350
+       ms a style, would stall the web's audio thread); what the envelope misses - mono's filter envelope, comb's resonator,
+       the formants' norm 120 ms behind the pitch, metal's highpass riding its envelope (up to 4.1 dB, measured 2026-10-19) -
+       is measured offline into core/levels.hpp (Task 5: node tools/levels.mjs) */
     double worst = 0, over = -1; const char *ws = "", *wy = "";
     std::printf("C levels (style - Free, dB, voice 2):");
     for (const char *sy : SY) {
         const bool pl = !std::strcmp(sy, "pluck");
         const double fr = level_db(sy, "", pl ? 61 : 41), secs = pl ? 31 : 9;   /* Free's sparse line over its whole walk */
         std::printf("\n  %-9s free %5.1f dBFS", sy, fr);
+        double mine = 0;
         for (auto &st : ST) {
             const double d = level_db(sy, st[1], secs) - fr; std::printf(" %+.1f", d);
             if (std::fabs(d) > std::fabs(worst)) { worst = d; ws = st[0]; wy = sy; }
-            over = std::max(over, std::fabs(d) - bound(sy));
+            if (std::fabs(d) > std::fabs(mine)) mine = d;
+            over = std::max(over, std::fabs(d) - 2.0);
         }
+        {   /* a melody voice too (Task 5: formant's sat +2.3 before the table) */
+            const std::string mel = std::string(R"({"role":"melody","lo":50,"hi":81}, )") + MOT;
+            const double d = level_db(sy, mel.c_str(), secs) - fr; std::printf(" mel %+.1f", d);
+            if (std::fabs(d) > std::fabs(worst)) { worst = d; ws = "melody"; wy = sy; }
+            if (std::fabs(d) > std::fabs(mine)) mine = d;
+            over = std::max(over, std::fabs(d) - 2.0);
+        }
+        std::printf("  worst %+.1f", mine);
     }
-    std::printf("\nC levels: the furthest from Free %+.1f dB (%s %s); every synth inside its bound (2 dB; comb 2.5, mono 3, formant 4.5, metal 5)\n", worst, wy, ws);
+    std::printf("\nC levels: the furthest from Free %+.1f dB (%s %s); every synth within 2 dB\n", worst, wy, ws);
     assert(over <= 0);
+}
+
+/* final review I1: a melody voice with no motif plays as Free (the dock says so), whatever style it holds - Generate's
+   Arpeggio included: its notes are the same route's with the voice's style Free */
+static void test_empty_motif() {
+    const Log a = render(R"(,"comp":{"voice":{"role":"melody","style":"arpeggio","rate":"16n"}})", 20),
+              f = render(R"(,"comp":{"voice":{"role":"melody","style":"free"}})", 20);
+    Log a1, f1;
+    for (size_t i = 0; i < a.f.size(); i++) if (a.role[i] == 1) { a1.f.push_back(a.f[i]); a1.t.push_back(a.t[i]); a1.d.push_back(a.d[i]); a1.role.push_back(1); }
+    for (size_t i = 0; i < f.f.size(); i++) if (f.role[i] == 1) { f1.f.push_back(f.f[i]); f1.t.push_back(f.t[i]); f1.d.push_back(f.d[i]); f1.role.push_back(1); }
+    std::printf("C empty motif: melody + arpeggio %zu notes, melody + free %zu; identical %d\n", a1.f.size(), f1.f.size(), (int)same(a1, f1));
+    assert(f1.f.size() > 5 && same(a1, f1));
+}
+/* final review M2: the melody's gain is solved over the progression's chords, each with its own chain step - a fragment of
+   one note on chord 0 left chords 1..3 (repeat, four notes) several dB loud */
+static void test_melody_gain_chain() {
+    for (const char *sy : { "fm", "am" }) {
+        const double fr = level_db(sy, "", 41);
+        const std::string mel = std::string(R"({"role":"melody","lo":50,"hi":81}, )") + MOT + R"(, "chain":[{"op":"fragment","arg":1,"from":0,"to":0}])";
+        const double d = level_db(sy, mel.c_str(), 20, 8) - fr;   /* chord 1 on from bar 3 (7.5 s) of a 20 s walk */
+        std::printf("C melody gain, fragment 1 on chord 0: %s chords 1..3 %+.1f dB from Free\n", sy, d);
+        assert(std::fabs(d) <= 2);
+    }
 }
 
 /* Kerem 2026-10-19 (clicks in Pedal and Strum): a retrigger must not click. Voice 2 alone, Pedal or Strum at 1/8 on fm, am
@@ -458,7 +490,7 @@ static Onsets onset_run(const char *sy, const char *st) {
     std::snprintf(patch, sizeof patch, R"({"version":17,"tempo":96,"key":50,"prog":[{"r":0,"q":"m7"},{"r":5,"q":"maj7"},{"r":7,"q":"7"},{"r":0,"q":"m9"}],"bed":{"on":false},"zones":{"on":false},
         "fx":{"delayWet":0,"revWet":0},"fx2":{"delayWet":0,"revWet":0},"fx3":{"delayWet":0,"revWet":0},"morph":{"on":false},
         "voice":{"on":false},"sect":{"on":true,"synth":"%s","harm":%g,"index":%g},"v3":{"on":false},
-        "comp":{"bass":{"mode":"off"},"sect":%s,"over":{"chord":{"0":{"sect":{"role":"off"}}}}}})", sy, hd(sy, 0), hd(sy, 1), st);
+        "comp":{"bars":"repeat","bass":{"mode":"off"},"sect":%s,"over":{"chord":{"0":{"sect":{"role":"off"}}}}}})", sy, hd(sy, 0), hd(sy, 1), st);
     unsigned seed = 11; Onsets o; fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128); fs_piece_test_hooks(pc, draw, &seed, onv, &o);
     const int r = fs_piece_add_route(pc, patch); const int blocks = (int)(24 * 48000 / 128);
     std::vector<float> x; x.reserve(blocks * 128);
@@ -477,9 +509,13 @@ static double onset_peak(const Onsets &o, size_t k, bool pluck, bool rise) {
     auto peak = [&](long long i0, long long i1) { float m = 0; for (long long j = std::max(0LL, i0); j < std::min(n, i1); j++) m = std::max(m, o.hf[j]); return (double)m; };
     return peak(i, i + W) - (rise ? peak(i - 144, i) : 0);
 }
+/* "bars":"repeat" here: the clean attacks are chord 2's first strum, an up strum with its accent (+0.12) on the lowest note; the
+   develop mode's odd bars strum down, the accent on the highest, so the lowest struck unaccented reads x1.76 against an accented
+   reference (velocity does not scale the highs linearly) - no retrigger, a reference of another accent. A down strum is measured
+   here on its own, against its own first strum. */
 static void test_onsets() {
     double worst = 0, plw = 0; const char *wsy = "", *wst = "";
-    for (const char *sy : { "fm", "am", "pluck" }) for (const char *st : { R"({"style":"pedal"})", R"({"style":"strum"})", R"({"style":"strum","lo":36,"hi":60})" }) {
+    for (const char *sy : { "fm", "am", "pluck" }) for (const char *st : { R"({"style":"pedal"})", R"({"style":"strum"})", R"({"style":"strum","lo":36,"hi":60})", R"({"style":"strum","dir":"down"})" }) {
         const Onsets o = onset_run(sy, st);
         assert(!o.t.empty() && o.t[0] > 3.9);                   /* chord 1 silent */
         const bool pl = !std::strcmp(sy, "pluck");
@@ -510,15 +546,452 @@ static void test_onsets() {
     assert(worst <= 1.0 && plw <= 1.6);
 }
 
+static void test_motif_parse() {
+    const char *J = R"({"comp":{"voice":{"role":"melody"},
+      "motif":{"basis":"chord","bars":1,"notes":[{"deg":0,"start":0,"len":4},{"deg":2,"start":4,"len":4},{"deg":1,"oct":1,"start":8,"len":2,"acc":100},{"deg":4,"start":12,"len":8}]},
+      "chain":[{"op":"repeat","from":0,"to":1},{"op":"seq","arg":2,"from":2,"to":3},{"op":"cadence","cad":"half","others":"stop","from":3,"to":3},
+               {"op":"bogus","from":4,"to":5},{"op":"repeat","from":9,"to":2},{"op":"invert","from":70,"to":80}]}})";
+    Json j = Json::parse(J); comp::Cfg c; comp::comp_of(j.get("comp"), c);
+    assert(c.on && c.v[0].role == comp::MELODY && (c.v[0].mask & comp::F_ROLE));
+    assert(c.motif.n == 4 && c.motif.basis == comp::CHORD_DEG && c.motif.bars == 1);
+    assert(c.motif.note[2].deg == 1 && c.motif.note[2].oct == 1 && c.motif.note[2].acc == 100 && c.motif.note[2].len == 2);
+    assert(c.motif.note[3].start == 12 && c.motif.note[3].len == 4);       /* clipped to the bar: 12 + 4 = 16 */
+    assert(c.nchain == 3);                                                   /* bogus op, from > to, out of range: dropped */
+    assert(c.chain[1].op == comp::OP_SEQ && c.chain[1].arg == 2 && c.chain[2].cad == comp::CAD_HALF && c.chain[2].others == comp::OTH_STOP);
+    /* more than 8 notes: the first 8; a note starting past the motif: dropped */
+    Json k = Json::parse(R"({"comp":{"motif":{"bars":1,"notes":[{"start":0},{"start":1},{"start":2},{"start":3},{"start":4},{"start":5},{"start":6},{"start":16},{"start":7},{"start":8}]}}})");
+    comp::Cfg d; comp::comp_of(k.get("comp"), d);
+    assert(d.motif.n == 8 && d.motif.note[7].start == 7);
+    /* from/to rounded before they are checked: 63.6 -> 64 is past the chords, dropped */
+    Json r = Json::parse(R"({"comp":{"chain":[{"op":"repeat","from":63.6,"to":63.7},{"op":"repeat","from":62.6,"to":62.7}]}})");
+    comp::Cfg e; comp::comp_of(r.get("comp"), e);
+    assert(e.nchain == 1 && e.chain[0].from == 63 && e.chain[0].to == 63);
+    std::printf("C motif parse: 4 notes (one clipped to the bar), 3 of 6 chain steps kept, melody role\n");
+}
+
+/* D minor 7 (key 50), the walk's first chord for >= 2 bars: a 4-note chord-degree motif root-5th-3rd-9th, each a quarter */
+static std::string melody(const char *chain, const char *extra = "") {
+    char b[2048]; std::snprintf(b, sizeof b, R"(,"comp":{"voice":{"role":"melody","lo":50,"hi":81},"sect":{"role":"off"},"v3":{"role":"off"},"bass":{"mode":"off"},%s,"chain":%s,"bars":"repeat"%s})", MOT, chain, extra);
+    return b;
+}
+static void test_melody() {
+    /* repeat: D (50) A (57) F (53) and the 9th of a 4-tone chord = degree 4 -> root an octave up (62) on the quarters of bar 0 */
+    const Log l = render(melody("[]"), 6);
+    std::vector<int> n = bar_notes(l, 1, 0);
+    std::printf("C melody repeat bar 0:"); for (int m : n) std::printf(" %d", m); std::printf("\n");
+    assert(n.size() == 4 && n[0] == 50 && n[1] == 57 && n[2] == 53 && n[3] == 62);
+    /* sequence +1 degree on chord 0: 3rd 7th 5th, root+octave+1 -> F C A (53 60 57) and degree 5 -> 3rd up an octave (65) */
+    const Log s = render(melody(R"([{"op":"seq","arg":1,"from":0,"to":3}])"), 6);
+    n = bar_notes(s, 1, 0); assert(n.size() == 4 && n[0] == 53 && n[1] == 60 && n[2] == 57 && n[3] == 65);
+    /* retrograde: 9th, 3rd, 5th, root in time order */
+    const Log r = render(melody(R"([{"op":"retro","from":0,"to":3}])"), 6);
+    n = bar_notes(r, 1, 0); assert(n.size() == 4 && n[0] == 62 && n[1] == 53 && n[2] == 57 && n[3] == 50);
+    /* fragment 2: the first two notes only */
+    const Log f = render(melody(R"([{"op":"fragment","arg":2,"from":0,"to":3}])"), 6);
+    n = bar_notes(f, 1, 0); assert(n.size() == 2 && n[0] == 50 && n[1] == 57);
+    /* diminish: 8 notes in the bar (the halved motif twice) */
+    const Log d = render(melody(R"([{"op":"diminish","from":0,"to":3}])"), 6);
+    assert(bar_notes(d, 1, 0).size() == 8);
+    /* augment: 2 notes in bar 0, the next 2 in bar 1 */
+    const Log a = render(melody(R"([{"op":"augment","from":0,"to":3}])"), 12);
+    assert(bar_notes(a, 1, 0).size() == 2 && bar_notes(a, 1, 1).size() == 2);
+    /* a triad never silences the 9th (Review Focus 3): every motif note sounds on every bar of a 40 s walk */
+    const Log t = render(melody("[]"), 40);
+    int bars = 0, short_bars = 0; for (int b = 0; b < 15; b++) { bars++; if (bar_notes(t, 1, b).size() != 4) short_bars++; }
+    assert(short_bars == 0);
+    /* invert around the root: degrees 0 -2 -1 -4 -> A and C below, folded up into the register: D A C D */
+    const Log iv = render(melody(R"([{"op":"invert","from":0,"to":3}])"), 6);
+    n = bar_notes(iv, 1, 0); assert(n.size() == 4 && n[0] == 50 && n[1] == 57 && n[2] == 60 && n[3] == 50);
+    /* one note per start (a mono voice's second would cut the first): diminishing starts 0 and 1 lands both on 0, the later kept */
+    { Json j = Json::parse(R"({"motif":{"notes":[{"deg":0,"start":0,"len":4},{"deg":2,"start":1,"len":4}]},"chain":[{"op":"diminish","from":0,"to":0}]})");
+      comp::Cfg c; comp::comp_of(&j, c); comp::Phrase ph; comp::motif_step(c, 0, ph);
+      assert(ph.n == 2 && ph.note[0].start == 0 && ph.note[0].deg == 2 && ph.note[1].start == 8 && ph.note[1].deg == 2); }
+    /* the phrase counts its bars from where its chain step starts (here chord 1, bar 3 of a 20 s walk), not the route's start:
+       augmented, its first bar plays the motif's first two notes - G and D of G maj7 (55 62), then B and the root up (59 67) */
+    const Log ao = render(melody(R"([{"op":"augment","from":1,"to":1}])"), 20);
+    n = bar_notes(ao, 1, 3); std::vector<int> n4 = bar_notes(ao, 1, 4);
+    std::printf("C melody augment from bar 3:"); for (int m : n) std::printf(" %d", m); std::printf(" |"); for (int m : n4) std::printf(" %d", m); std::printf("\n");
+    assert(n.size() == 2 && n[0] == 55 && n[1] == 62 && n4.size() == 2 && n4[0] == 59 && n4[1] == 67);
+    /* the scale basis: D minor (an m7 first chord: aeolian) degrees 0 1 2 6 -> D E F C */
+    const Log sc = render(R"(,"comp":{"voice":{"role":"melody","lo":50,"hi":81},"sect":{"role":"off"},"v3":{"role":"off"},"bass":{"mode":"off"},"motif":{"basis":"scale","notes":[{"deg":0,"start":0},{"deg":1,"start":4},{"deg":2,"start":8},{"deg":6,"start":12}]},"chain":[]})", 6);
+    n = bar_notes(sc, 1, 0); assert(n.size() == 4 && n[0] == 50 && n[1] == 52 && n[2] == 53 && n[3] == 60);
+    std::printf("C melody: repeat / seq +1 / invert / retro / fragment 2 / diminish (one note a start) / augment from its step's first bar; the scale's degrees too\n");
+}
+static void test_cadence() {
+    /* a one-chord-step cadence on chord 0, full: the last note is the key's tonic D (50 or 62 in range), held to the bar's end */
+    const Log c = render(melody(R"([{"op":"cadence","cad":"full","from":0,"to":0}])"), 6);
+    std::vector<int> n = bar_notes(c, 1, 0); assert(!n.empty() && (n.back() % 12) == (50 % 12));
+    const Log h = render(melody(R"([{"op":"cadence","cad":"half","from":0,"to":0}])"), 6);
+    n = bar_notes(h, 1, 0); assert(!n.empty() && (n.back() % 12) == (57 % 12));          /* A, the key's 5th */
+    const Log dc = render(melody(R"([{"op":"cadence","cad":"deceptive","from":0,"to":0}])"), 6);
+    n = bar_notes(dc, 1, 0); assert(!n.empty() && (n.back() % 12) == (58 % 12));           /* B flat, D minor's 6th */
+    /* strength scales the cadence note's velocity by 0.5 + 0.5 x strength; the other notes as they were */
+    { const Log s1 = render(melody(R"([{"op":"cadence","cad":"full","others":"hold","strength":1,"from":0,"to":0}])"), 6),
+                s5 = render(melody(R"([{"op":"cadence","cad":"full","others":"hold","strength":0.5,"from":0,"to":0}])"), 6);
+      std::vector<double> v1, v5; for (size_t i = 0; i < s1.f.size(); i++) if (s1.role[i] == 1 && s1.t[i] < 2.5 - 1e-6) v1.push_back(s1.v[i]);
+      for (size_t i = 0; i < s5.f.size(); i++) if (s5.role[i] == 1 && s5.t[i] < 2.5 - 1e-6) v5.push_back(s5.v[i]);
+      assert(v1.size() == 4 && v5.size() == 4 && v1[0] < 1 && std::fabs(v5[0] - v1[0]) < 1e-9 && std::fabs(v5[3] / v1[3] - 0.75) < 1e-9); }
+    /* strength 0.5: the chance is drawn once a chord - a 3-bar last chord (bars 0-2 of a 20 s walk) stops voice 2 on all its
+       bars or none, and some seed of eight goes each way */
+    { int stopped = 0, played = 0;
+      for (int sd = 1; sd <= 8; sd++) {
+          char b[2048]; std::snprintf(b, sizeof b, R"(,"comp":{"seed":%d,"voice":{"role":"melody","lo":50,"hi":81},"sect":{"style":"strum","rate":"4n"},"v3":{"role":"off"},"bass":{"mode":"off"},%s,"chain":[{"op":"cadence","cad":"full","others":"stop","strength":0.5,"from":0,"to":0}]})", sd, MOT);
+          const Log l = render(b, 20); const bool e0 = bar_notes(l, 2, 0).empty(), e1 = bar_notes(l, 2, 1).empty(), e2 = bar_notes(l, 2, 2).empty();
+          assert(e0 == e1 && e1 == e2); (e0 ? stopped : played)++;
+      }
+      assert(stopped > 0 && played > 0); }
+    /* others "stop": with voice 2 strumming, voice 2 is silent on the cadence chord's bars */
+    char b[2048]; std::snprintf(b, sizeof b, R"(,"comp":{"voice":{"role":"melody","lo":50,"hi":81},"sect":{"style":"strum","rate":"4n"},"v3":{"role":"off"},"bass":{"mode":"off"},%s,"chain":[{"op":"cadence","cad":"full","others":"stop","from":0,"to":0}]})", MOT);
+    const Log s = render(b, 6);
+    assert(bar_notes(s, 2, 0).empty() && !bar_notes(s, 1, 0).empty());
+    /* others "thin": voice 2 arpeggiating in sixteenths keeps only its first note of the cadence chord's bar */
+    std::snprintf(b, sizeof b, R"(,"comp":{"voice":{"role":"melody","lo":50,"hi":81},"sect":{"style":"arpeggio","rate":"16n"},"v3":{"role":"off"},"bass":{"mode":"off"},%s,"chain":[{"op":"cadence","cad":"full","others":"thin","from":0,"to":0}]})", MOT);
+    const Log th = render(b, 6);
+    assert(bar_notes(th, 2, 0).size() == 1);
+    std::printf("C cadence: full ends on the tonic, half on the 5th, deceptive on the 6th; strength 0.5 -> x0.75 velocity, drawn once a chord; others stop / thin\n");
+}
+static void test_melody_change_at_bar() {
+    /* Review Focus 4: the motif replaced mid-bar via fs_piece_set_route takes effect at the next bar line, no note longer than its bar */
+    Log l = render(melody("[]"), 6);
+    for (size_t i = 0; i < l.f.size(); i++) if (l.role[i] == 1) assert(l.d[i] <= 2.5 + 1e-6);
+    /* the chain changed 1 s into bar 0 (repeat -> seq +2): bar 0 keeps the old phrase, bar 1 (still chord 0) plays the new -
+       D minor 7's 5th, 9th (root up), 7th, and degree 6 (the 5th up): 57 62 60 69 */
+    char a[8192], b[8192]; std::snprintf(a, sizeof a, ROUTE, melody("[]").c_str()); std::snprintf(b, sizeof b, ROUTE, melody(R"([{"op":"seq","arg":2,"from":0,"to":3}])").c_str());
+    unsigned sd = 11; Log m;
+    fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128); fs_piece_test_hooks(pc, draw, &sd, lg, &m);
+    const int r = fs_piece_add_route(pc, a); const int blocks = (int)(20 * 48000 / 128);
+    for (int k = 0; k < blocks; k++) { fs_piece_walk(pc, r, (double)k / blocks, 0); if (k == 375) fs_piece_set_route(pc, r, b); fs_process(pc, 128); }
+    fs_destroy(pc);
+    std::vector<int> n0 = bar_notes(m, 1, 0), n1 = bar_notes(m, 1, 1);
+    assert(n0.size() == 4 && n0[0] == 50 && n0[1] == 57 && n0[2] == 53 && n0[3] == 62);
+    assert(n1.size() == 4 && n1[0] == 57 && n1[1] == 62 && n1[2] == 60 && n1[3] == 69);
+    std::printf("C melody: no note outlasts its bar; a chain changed mid-bar plays from the next bar line\n");
+}
+
+static void test_swell_to_melody() {
+    /* Swells at the route, the melody on chord 1 (bars 3-4 of a 20 s walk): the melody plays with the voice's own envelope - its
+       level 100 ms into bar 4's note is the level of a voice that was the melody all along */
+    /* one note a bar, its tail gone before the next: the meter (~0.1 s) reads the note's own rise */
+    static const char *ONE = R"("motif":{"notes":[{"deg":0,"start":0,"len":4}]})";
+    { double lv[2];
+      for (int run = 0; run < 2; run++) {
+          char cm[2048], buf[8192];
+          std::snprintf(cm, sizeof cm, run ? R"(,"comp":{"voice":{"role":"off"},"sect":{"style":"swells","rate":"1n","lo":50,"hi":81},"v3":{"role":"off"},"bass":{"mode":"off"},%s,"over":{"chord":{"1":{"sect":{"role":"melody"}}}}})"
+                                           : R"(,"comp":{"voice":{"role":"off"},"sect":{"role":"melody","lo":50,"hi":81},"v3":{"role":"off"},"bass":{"mode":"off"},%s})", ONE);
+          std::snprintf(buf, sizeof buf, ROUTE, cm);
+          unsigned sd = 11; fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128); fs_piece_test_hooks(pc, draw, &sd, nullptr, nullptr);
+          const int r = fs_piece_add_route(pc, buf); const int blocks = (int)(20 * 48000 / 128); float rl[3 * 8];
+          for (int k = 0; k < blocks; k++) { fs_piece_walk(pc, r, (double)k / blocks, 0); fs_process(pc, 128);
+              if (k == (int)(10.1 * 48000 / 128)) { fs_piece_roles(pc, rl, 6); lv[run] = rl[8]; } }
+          fs_destroy(pc);
+      }
+      std::printf("C swells to melody: the Second voice 100 ms into a note %.1f dB, the melody all along %.1f dB\n", lv[1], lv[0]);
+      assert(std::fabs(lv[1] - lv[0]) < 3); }
+}
+static void test_chord_past_16() {
+    std::string prog = "["; for (int i = 0; i < 20; i++) prog += std::string(i ? "," : "") + (i % 2 ? R"({"r":5,"q":"maj7"})" : R"({"r":0,"q":"m7"})"); prog += "]";
+    char route[4096]; std::snprintf(route, sizeof route, R"({"version":17,"tempo":96,"key":50,"prog":%s,"voice":{"on":true,"synth":"fm"},"sect":{"on":false},"v3":{"on":false},"zones":{"on":false},"bed":{"on":false},"comp":{"voice":{"style":"arpeggio","rate":"16n"},"bass":{"mode":"off"},"over":{"chord":{"18":{"voice":{"style":"pedal","rate":"4n","pedal":"root"}}}}}})", prog.c_str());
+    unsigned seed = 11; Log l; fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128); fs_piece_test_hooks(pc, draw, &seed, lg, &l);
+    const int r = fs_piece_add_route(pc, route); const double secs = 120; const int blocks = (int)(secs * 48000 / 128);
+    for (int b = 0; b < blocks; b++) { fs_piece_walk(pc, r, (double)b / blocks, 0); fs_process(pc, 128); }
+    fs_destroy(pc);
+    const double c0 = secs * 18 / 20 + 3, c1 = secs * 19 / 20 - 1;     /* well inside chord 18's stretch */
+    std::set<int> p; for (size_t i = 0; i < l.f.size(); i++) if (l.role[i] == 1 && l.t[i] > c0 && l.t[i] < c1) p.insert((int)std::lround(midi(l.f[i])));
+    assert(p.size() == 1);
+    std::printf("C chord 19 of 20 obeys its own override (NCHORD %d)\n", comp::NCHORD);
+}
+/* Task 4: the patch read (comp_gains runs in it; the web reads it on the audio thread, between blocks) of a 64-chord route
+   with every chord overridden, on fm / formant / metal: fs_piece_set_route's worst under 1 ms, and an edit of one chord's
+   style (what a setter sends) too. A cold read (a new piece: nothing worked out yet) is reported */
+static void test_patch_read_cost() {
+    double worst = 0, edit = 0, cold = 0;
+    auto ms = [](std::chrono::steady_clock::time_point t0) { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(); };
+    for (const char *sy : { "fm", "formant", "metal" }) {
+        std::string prog = "[", over = "{"; for (int i = 0; i < 64; i++) { prog += std::string(i ? "," : "") + R"({"r":0,"q":"m7"})";
+            over += std::string(i ? "," : "") + "\"" + std::to_string(i) + "\":{\"voice\":{\"style\":\"" + (i % 3 == 0 ? "strum" : i % 3 == 1 ? "swells" : "arpeggio") + "\"}}"; }
+        prog += "]"; over += "}";
+        std::string r = std::string(R"({"version":17,"tempo":96,"key":50,"prog":)") + prog + R"(,"voice":{"on":true,"synth":")" + sy + R"("},"sect":{"on":true,"synth":")" + sy + R"("},"v3":{"on":true,"synth":")" + sy + R"("},"zones":{"on":false},"bed":{"on":false},"comp":{"voice":{"style":"arpeggio"},"sect":{"style":"strum"},"v3":{"style":"swells"},"over":{"chord":)" + over + "}}}";
+        const double w0 = worst, e0 = edit, c0 = cold; worst = edit = cold = 0;
+        fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128);
+        auto t0 = std::chrono::steady_clock::now(); const int id = fs_piece_add_route(pc, r.c_str()); cold = std::max(cold, ms(t0));
+        for (int rep = 0; rep < 5; rep++) { t0 = std::chrono::steady_clock::now(); fs_piece_set_route(pc, id, r.c_str()); worst = std::max(worst, ms(t0)); }
+        for (const char *st : { "pedal", "euclid" }) {   /* chord 7 (was swells) to another style */
+            std::string e = r; const size_t at = e.find(R"("7":{"voice":{"style":"swells")"); assert(at != std::string::npos);
+            e.replace(at, 30, std::string(R"("7":{"voice":{"style":")") + st + "\"");
+            t0 = std::chrono::steady_clock::now(); fs_piece_set_route(pc, id, e.c_str()); edit = std::max(edit, ms(t0)); }
+        fs_destroy(pc);
+        std::printf("C patch read %-7s: %.2f ms, a chord edited %.2f, cold %.2f\n", sy, worst, edit, cold);
+        worst = std::max(worst, w0); edit = std::max(edit, e0); cold = std::max(cold, c0);
+    }
+    std::printf("C patch read: worst %.2f ms, a chord's style edited %.2f ms (64 chords overridden; fm, formant, metal); cold %.2f ms\n", worst, edit, cold);
+    assert(worst < 1.0 && edit < 1.0);
+}
+/* Task 4: the coarser solve (10 ms steps) keeps every gain within 0.3 dB of the old one's (5 ms), on all 11 synths x the
+   levels test's styles and a melody voice, on each voice, at five tempos (Task 5: 180 and 200 too) */
+static void test_gain_lengths() {
+    double worst = 0; const char *ws = "", *wy = ""; int wq = 0;
+    std::vector<std::string> st; for (auto &e : LEVEL_ST) st.push_back(e[1]);
+    st.push_back(std::string(R"({"role":"melody","lo":50,"hi":81}, )") + MOT);
+    for (const char *sy : LEVEL_SY) for (size_t k = 0; k < st.size(); k++) {
+        const bool mel = k + 1 == st.size();
+      for (int tempo : { 60, 96, 140, 180, 200 }) {
+        char p[4096]; std::snprintf(p, sizeof p, R"({"version":17,"tempo":%d,"key":50,"prog":[{"r":0,"q":"m7"},{"r":5,"q":"maj7"},{"r":7,"q":"7"},{"r":0,"q":"m9"}],"bed":{"on":false},"zones":{"on":false},
+            "voice":{"on":true,"synth":"%s","harm":%g,"index":%g},"sect":{"on":true,"synth":"%s","harm":%g,"index":%g},"v3":{"on":true,"synth":"%s","harm":%g,"index":%g},
+            "comp":{"bass":{"mode":"off"},"voice":%s,"sect":%s,"v3":%s}})", tempo, sy, hd(sy, 0), hd(sy, 1), sy, hd(sy, 0), hd(sy, 1), sy, hd(sy, 0), hd(sy, 1),
+            st[k].c_str(), mel ? R"({"style":"strum"})" : st[k].c_str(), mel ? R"({"style":"swells"})" : st[k].c_str());
+        float ref[3], now[3]; fs_piece_test_gains(p, 16, 6, 0.005, ref); fs_piece_test_gains(p, 0, 0, 0, now);
+        for (int q = 0; q < 3; q++) { const double d = 20 * std::log10(now[q] / ref[q]); if (std::fabs(d) > std::fabs(worst)) { worst = d; ws = mel ? "melody" : LEVEL_ST[k][0]; wy = sy; wq = q; } }
+      }
+    }
+    std::printf("C gains at 10 ms steps: furthest %+.2f dB from the 5 ms solve's (%s %s, voice %d)\n", worst, wy, ws, wq + 1);
+    assert(std::fabs(worst) <= 0.3);
+}
+/* Task 5: core/levels.hpp's measurements (node tools/levels.mjs runs this as "levels-table"). Each synth x style x rate class
+   (16n, 8n, 4n, 2n+): the style's level over Free's as test_levels measures it, the levels test's styles in their classes
+   (two in a class: their mean) and each style's defaults at the rate where the test has none; plus a melody voice. Prints
+   what the table holds now plus that gap: the next table */
+static void levels_table() {
+    static const struct { int st, c; const char *j; } CELL[] = {
+        { comp::ARPEGGIO, 0, LEVEL_ST[5][1] }, { comp::ARPEGGIO, 1, LEVEL_ST[0][1] }, { comp::ARPEGGIO, 2, R"({"style":"arpeggio","rate":"4n"})" }, { comp::ARPEGGIO, 3, R"({"style":"arpeggio","rate":"2n"})" },
+        { comp::PEDAL, 0, R"({"style":"pedal","rate":"16n"})" }, { comp::PEDAL, 1, LEVEL_ST[1][1] }, { comp::PEDAL, 2, R"({"style":"pedal","rate":"4n"})" }, { comp::PEDAL, 3, LEVEL_ST[7][1] },
+        { comp::STRUM, 0, R"({"style":"strum","rate":"16n"})" }, { comp::STRUM, 1, LEVEL_ST[2][1] }, { comp::STRUM, 2, R"({"style":"strum","rate":"4n"})" }, { comp::STRUM, 3, LEVEL_ST[6][1] },
+        { comp::EUCLID, 0, LEVEL_ST[8][1] }, { comp::EUCLID, 1, LEVEL_ST[3][1] }, { comp::EUCLID, 2, R"({"style":"euclid","rate":"4n"})" }, { comp::EUCLID, 3, R"({"style":"euclid","rate":"2n"})" },
+        { comp::SWELLS, 0, R"({"style":"swells","rate":"16n"})" }, { comp::SWELLS, 1, LEVEL_ST[4][1] }, { comp::SWELLS, 2, R"({"style":"swells","rate":"4n"})" }, { comp::SWELLS, 3, LEVEL_ST[9][1] }, { comp::SWELLS, 3, LEVEL_ST[10][1] } };
+    const std::string mel = std::string(R"({"role":"melody","lo":50,"hi":81}, )") + MOT;
+    for (int y = 0; y < 11; y++) {
+        const char *sy = LEVEL_SY[y]; const bool pl = !std::strcmp(sy, "pluck");
+        const double fr = level_db(sy, "", pl ? 61 : 41), secs = pl ? 31 : 9;
+        double sum[comp::NSTYLE][4] = {}; int n[comp::NSTYLE][4] = {};
+        for (auto &c : CELL) { sum[c.st][c.c] += level_db(sy, c.j, secs) - fr; n[c.st][c.c]++; }
+        for (int s = 1; s < comp::NSTYLE; s++) for (int c = 0; c < 4; c++) std::printf("LEVEL %d %d %d %.3f %.3f\n", y, s, c, sum[s][c] / n[s][c], LEVEL_FIX[y][s][c]);
+        std::printf("MELODY %d %.3f %.3f\n", y, level_db(sy, mel.c_str(), secs) - fr, LEVEL_FIX_MELODY[y]);
+        std::fflush(stdout);
+    }
+}
+
+/* Task 5 (Task 4's review): a memoised gain is the gain. A patch read after another, through the public path with the memo
+   warm, differing in one thing at a time, has the gains a fresh solve of it has */
+static void test_gain_memo() {
+    auto patch = [](const char *key, const char *prog, const char *mot, const char *dens, const char *env, const char *tempo, const char *harm) {
+        char b[4096]; std::snprintf(b, sizeof b, R"({"version":17,"tempo":%s,"key":%s,"prog":%s,"bed":{"on":false},"zones":{"on":false},
+            "voice":{"on":true,"synth":"fm","density":%s},"sect":{"on":true,"synth":"metal","harm":4.1,"index":1.2%s},"v3":{"on":true,"synth":"formant","harm":%s,"index":0.5},
+            "comp":{"bass":{"mode":"off"},"voice":{"role":"melody","lo":50,"hi":81},"sect":{"style":"arpeggio","rate":"16n"},"v3":{"style":"swells"},%s}})",
+            tempo, key, prog, dens, env, harm, mot);
+        return std::string(b);
+    };
+    const char *P0 = R"([{"r":0,"q":"m7"},{"r":5,"q":"maj7"},{"r":7,"q":"7"},{"r":0,"q":"m9"}])", *P1 = R"([{"r":0,"q":"m7"},{"r":3,"q":"maj7"},{"r":7,"q":"7"},{"r":0,"q":"m9"}])";
+    const char *M1 = R"("motif":{"basis":"chord","notes":[{"deg":0,"start":0,"len":4},{"deg":3,"start":4,"len":8},{"deg":1,"start":12,"len":4}]})";
+    const char *E0 = R"(,"env":[0.05,0.3,0.6,1.5])";   /* metal's own envelope set, so the variant changes its numbers, not whether it has one */
+    const std::string A = patch("50", P0, MOT, "0.5", E0, "96", "0.5");
+    const std::string B[] = { patch("53", P0, MOT, "0.5", E0, "96", "0.5"), patch("50", P1, MOT, "0.5", E0, "96", "0.5"), patch("50", P0, M1, "0.5", E0, "96", "0.5"),
+        patch("50", P0, MOT, "0.8", E0, "96", "0.5"), patch("50", P0, MOT, "0.5", R"(,"env":[0.2,0.3,0.6,1.5])", "96", "0.5"), patch("50", P0, MOT, "0.5", E0, "120", "0.5"),
+        patch("50", P0, MOT, "0.5", E0, "96", "0.9") };
+    const char *what[] = { "key", "progression", "motif", "density", "envelope", "tempo", "harm" };
+    fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128);
+    const int r = fs_piece_add_route(pc, A.c_str()); float a[3]; fs_piece_test_route_gains(pc, r, a);
+    int moved = 0;
+    for (int i = 0; i < 7; i++) {
+        fs_piece_set_route(pc, r, A.c_str());   /* A's gains in the memo */
+        fs_piece_set_route(pc, r, B[i].c_str());
+        float got[3], fresh[3]; fs_piece_test_route_gains(pc, r, got); fs_piece_test_gains(B[i].c_str(), 0, 0, 0, fresh);
+        for (int q = 0; q < 3; q++) { if (got[q] != fresh[q]) std::printf("C gain memo: %s voice %d %g, fresh %g\n", what[i], q + 1, got[q], fresh[q]); assert(got[q] == fresh[q]); }
+        if (got[0] != a[0] || got[1] != a[1] || got[2] != a[2]) moved++; else std::printf("C gain memo: %s left the gains\n", what[i]);
+    }
+    fs_destroy(pc);
+    std::printf("C gain memo: 7 patches read after another (key, progression, motif, density, envelope, tempo, formant harm) have a fresh solve's gains; %d of 7 moved them\n", moved);
+    assert(moved == 7);
+}
+
+/* Task 6 (Kerem 2026-10-20: voice 3's D3 sat 15 dB under its A3, even alone): the cause was the Freeverb room, not the voice.
+   Its eight combs are fixed, so a held pitch met them as one gain and phase - and at some pitches the room's tail cancelled the
+   dry note (a 20 dB scatter, D3 -43 dB beside -30 around it, on every voice). The comb delays now move slowly (tone.hpp).
+   Checks: (1) voice 3 alone holding each of MIDI 38-74 through fx3 with its echo off (the echo is a comb of its own, +-3 dB of the same kind), am and fm, the level
+   averaged over 10 s (the combs now sweep) - the pitches within 6 dB (+-3); (2) the room against the old one (its code below, as it was) on noise bursts: the wet level and the tail's decay
+   within 1 dB; (3) no discontinuity in the room's output (the highs, as the onset checks measure them); (4) the room's cost. */
+static double held_db(const char *syn, int m, bool delay_off) {
+    char p[4096];
+    std::snprintf(p, sizeof p, R"({"version":17,"tempo":96,"key":%d,"prog":[{"r":0,"q":"m7"}],"bed":{"on":false},"zones":{"on":false},"morph":{"on":false},
+        %s"voice":{"on":false},"sect":{"on":false},"v3":{"on":true,"synth":"%s"},
+        "comp":{"bass":{"mode":"off"},"v3":{"style":"swells","rate":"1n","tones":[0],"lo":%d,"hi":%d}}})", m, delay_off ? R"("fx3":{"delayWet":0},)" : "", syn, m - 6, m + 5);
+    unsigned seed = 11; fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128); fs_piece_test_hooks(pc, draw, &seed, nullptr, nullptr);
+    const int r = fs_piece_add_route(pc, p); double s = 0; long n = 0;
+    const double secs = std::getenv("HELD_SECS") ? std::atof(std::getenv("HELD_SECS")) : 10;
+    for (int k = 0; k < (int)(secs * 48000 / 128); k++) { fs_piece_walk(pc, r, 0, 0); fs_process(pc, 128);
+        if (k * 128 >= 0.9 * 48000) { const float *o = fs_out(pc, 0); for (int i = 0; i < 128; i++) s += (double)o[i] * o[i]; n += 128; } }
+    fs_destroy(pc); return 10 * std::log10(s / n + 1e-30);
+}
+/* the room as it was before: whole-sample combs at fixed delays */
+struct OldRoom {
+    tone::LowpassComb comb[8]; tone::Biquad ap[2][4]; tone::Ctl room, wet;
+    void init(double sr, double room_size, double damp) {
+        static const double tune[8] = { 1557, 1617, 1491, 1422, 1277, 1356, 1188, 1116 }, apf[4] = { 225, 556, 441, 341 };
+        for (int i = 0; i < 8; i++) comb[i].init(sr, tune[i] / 44100.0, room_size, damp);
+        for (int q = 0; q < 2; q++) for (int k = 0; k < 4; k++) { ap[q][k].type = tone::ALLPASS; ap[q][k].design(apf[k], 1, sr); }
+        room.init(room_size); wet.init(0);
+    }
+    void process(float *L, float *R, int n, double t_end) {
+        room.block(t_end); wet.block(t_end); for (auto &c : comb) c.block(t_end);
+        for (int i = 0; i < n; i++) {
+            float l = L[i], r = R[i], sl = 0, sr_ = 0, fb = room.at(i, n);
+            for (int k = 0; k < 4; k++) sl += comb[k].run(0, l, fb);
+            for (int k = 4; k < 8; k++) sr_ += comb[k].run(1, r, fb);
+            for (int k = 0; k < 4; k++) { sl = ap[0][k].run(0, sl); sr_ = ap[1][k].run(1, sr_); }
+            float d, w; tone::xfade(wet.at(i, n), d, w);
+            L[i] = l * d + sl * w; R[i] = r * d + sr_ * w;
+        }
+    }
+};
+template <class R> static std::vector<float> room_run(R &rv, const std::vector<float> &in, double wetv) {
+    rv.wet.init(wetv);
+    std::vector<float> out; float L[128], Rr[128];
+    for (size_t b = 0; b + 128 <= in.size(); b += 128) {
+        for (int i = 0; i < 128; i++) L[i] = Rr[i] = in[b + i];
+        rv.process(L, Rr, 128, (double)(b + 128) / 48000); out.insert(out.end(), L, L + 128);
+    }
+    return out;
+}
+static double e_db(const std::vector<float> &x, size_t a, size_t b) { double s = 0; for (size_t i = a; i < b && i < x.size(); i++) s += (double)x[i] * x[i]; return 10 * std::log10(s / (double)(b - a) + 1e-30); }
+static void test_room() {
+    double hi = -1e9; const char *sy[2] = { "am", "fm" };
+    const int step = std::getenv("ROOM_TABLE") ? 1 : 3;   /* every 3rd semitone (13 renders a synth); ROOM_TABLE=1: all 37, with the levels */
+    if (!std::getenv("ROOM_FAST"))   /* (a dev knob: skip the long renders) */
+    for (int q = 0; q < 2; q++) {
+        double a = 1e9, b = -1e9, ea = 1e9, eb = -1e9;
+        for (int m = 38; m <= 74; m += step) {
+            const double d = held_db(sy[q], m, true), e = held_db(sy[q], m, false);   /* echo off, then fx3 as it comes */
+            a = std::min(a, d); b = std::max(b, d); ea = std::min(ea, e); eb = std::max(eb, e);
+            if (std::getenv("ROOM_TABLE")) std::printf("%d:%.1f/%.1f ", m, d, e);
+        }
+        std::printf("C room: voice 3 holding MIDI 38-74 on %s, fx3 with its echo off: %.1f .. %.1f dB (spread %.1f); default fx3, echo on: spread %.1f (not asserted: the echo is a comb of its own)\n", sy[q], a, b, b - a, eb - ea);
+        hi = std::max(hi, b - a);
+    }
+    std::printf("C room: pitch spread %.1f dB at worst (was 19.6)\n", hi);
+    assert(hi <= 6.0 || std::getenv("ROOM_FAST"));
+    /* noise bursts: 0.4 s of seeded noise, then silence; wet 1 (the room alone) and the route's fx3 (0.26) */
+    unsigned sd = 5; std::vector<float> in(48000 * 6, 0.0f); for (int i = 0; i < 48000 * 4 / 10; i++) in[i] = (float)(draw(&sd) * 2 - 1) * 0.5f;
+    double dw = 0, dd = 0, hf = 0, hfold = 0;
+    for (double decay : { 5.0, 1.8, 3.4 }) for (double wv : { 1.0, 0.26 }) {
+        const double rs = std::min(0.95, std::max(0.0, 0.45 + decay * 0.062));
+        OldRoom o; o.init(48000, rs, 3000); tone::Freeverb nw; nw.init(48000, rs, 3000);
+        const std::vector<float> a = room_run(o, in, wv), b = room_run(nw, in, wv);
+        const double wl = e_db(b, 0, 48000 * 2) - e_db(a, 0, 48000 * 2);
+        const double tail = (e_db(b, 21600, 33600) - e_db(b, 33600, 45600)) - (e_db(a, 21600, 33600) - e_db(a, 33600, 45600));   /* the fall per 0.25 s, from 0.45 s in */
+        dw = std::max(dw, std::fabs(wl)); dd = std::max(dd, std::fabs(tail));
+        /* discontinuity: a 220 Hz sine through the room, against the old room */
+        std::vector<float> sn(48000 * 3); for (size_t i = 0; i < sn.size(); i++) sn[i] = 0.3f * (float)std::sin(2 * 3.141592653589793 * 220 * i / 48000);
+        OldRoom o2; o2.init(48000, rs, 3000); tone::Freeverb n2; n2.init(48000, rs, 3000);
+        const std::vector<float> a2 = room_run(o2, sn, wv), b2 = room_run(n2, sn, wv);
+        /* the largest second difference over the output's rms: a click is a spike of it, a smooth tone a steady ~(2 pi f / sr)^2 */
+        auto high = [&](const std::vector<float> &x) { double m = 0, e = 0; for (size_t i = 48001; i < x.size(); i++) { m = std::max(m, (double)std::fabs(x[i] - 2 * x[i - 1] + x[i - 2])); e += (double)x[i] * x[i]; } return m / std::sqrt(e / (x.size() - 48001) + 1e-30); };
+        hf = std::max(hf, high(b2)); hfold = std::max(hfold, high(a2));
+        std::printf("C room: decay %.1f wet %.2f - level %+.2f dB, tail fall %+.2f dB per 0.25 s against the old room\n", decay, wv, wl, tail);
+    }
+    std::printf("C room: wet level within %.2f dB, tail decay within %.2f dB per 0.25 s; largest second difference over rms %.5f (old %.5f)\n", dw, dd, hf, hfold);
+    assert(dw <= 1.0 && dd <= 1.0 && hf <= hfold * 3);
+    /* cost: 128-frame blocks, 7500 of them, the best of 3 */
+    auto cost = [&](auto &rv) { double best = 1e9; float L[128], R[128];
+        for (int rep = 0; rep < 3; rep++) {
+            const auto t0 = std::chrono::steady_clock::now();
+            for (int b = 0; b < 7500; b++) { for (int i = 0; i < 128; i++) L[i] = R[i] = 0.2f * (float)std::sin(i * 0.3); rv.process(L, R, 128, (b + 1) * 128.0 / 48000); }
+            best = std::min(best, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() / 7500); }
+        return best; };
+    OldRoom oc; oc.init(48000, 0.76, 3000); oc.wet.init(0.26); tone::Freeverb nc; nc.init(48000, 0.76, 3000); nc.wet.init(0.26);
+    const double co = cost(oc), cn = cost(nc);
+    std::printf("C room: cost per 128-frame block, old %.4f ms, new %.4f ms (x%.2f)\n", co, cn, cn / co);
+    assert(cn < 0.05);   /* a block is 2.67 ms; three rooms run per block */
+}
+
+
+/* composition 2, "bars": every voice's bar-0 pattern repeating (today's sound) is "repeat", bit for bit: a hash of every note's
+   (role, pitch, time, length, velocity) over two routes of 30 s that run all the styles and a melody with a cadence */
+static unsigned long long log_hash(const Log &l) {
+    unsigned long long h = 1469598103934665603ull;
+    auto mix = [&](double x) { unsigned long long b; std::memcpy(&b, &x, 8); for (int i = 0; i < 8; i++) { h ^= (b >> (8 * i)) & 255; h *= 1099511628211ull; } };
+    for (size_t i = 0; i < l.f.size(); i++) { mix(l.role[i]); mix(l.f[i]); mix(l.t[i]); mix(l.d[i]); mix(l.v[i]); }
+    return h;
+}
+static unsigned long long repeat_hash(const char *bars, size_t *nn) {
+    char a[2048], b[2048];
+    std::snprintf(a, sizeof a, R"(,"comp":{"seed":3,"voice":{"style":"arpeggio","rate":"16n","lo":50,"hi":74,"variation":0.4,"grid":[0,1,2,3,0,1,2,3,0,1,2,3,0,1,2,3]},"sect":{"style":"strum","rate":"2n","tones":[0,1,2,3],"spread":40,"dir":"alt","lo":50,"hi":74},"v3":{"style":"euclid","rate":"16n","pulses":5,"steps":8,"rot":1,"grid":[2,4,1],"lo":55,"hi":80}%s})", bars);
+    std::snprintf(b, sizeof b, R"(,"comp":{"seed":5,"voice":{"role":"melody","lo":50,"hi":81},"sect":{"style":"swells","rate":"1n","tones":[0,2,4],"len":1},"v3":{"style":"pedal","rate":"4n"},%s,"chain":[{"op":"seq","arg":1,"from":0,"to":0},{"op":"retro","from":1,"to":1},{"op":"cadence","cad":"full","from":2,"to":3}]%s})", MOT, bars);
+    const Log x = render(a, 30), y = render(b, 30);
+    *nn = x.f.size() + y.f.size();
+    return log_hash(x) * 31 + log_hash(y);
+}
+static void test_repeat_hash() {
+    size_t n; const unsigned long long h = repeat_hash(R"(,"bars":"repeat")", &n);
+    std::printf("C bars repeat: %zu notes, hash %llu\n", n, h);
+    assert(h == 7233712993534382426ull);   /* recorded on the build before "bars" existed */
+}
+
+/* composition 2, "bars": develop (the default) - a chord that lasts bars does not play its one bar again and again */
+typedef std::vector<std::pair<int, int>> Seq;   /* a bar's notes as (sixteenth in the bar, pitch) */
+static Seq bar_seq(const Log &l, int role, int b) {
+    Seq o; for (size_t i = 0; i < l.f.size(); i++) if (l.role[i] == role && l.t[i] >= b * 2.5 - 1e-6 && l.t[i] < (b + 1) * 2.5 - 1e-6)
+        o.push_back({ (int)std::lround((l.t[i] - b * 2.5) / 0.15625), (int)std::lround(midi(l.f[i])) });
+    return o;
+}
+static void test_develop() {
+    /* 40 s over 4 chords: chord 0 lasts 4 bars (0..3). Melody: four distinct bars, every one with a note */
+    char b[2048];
+    std::snprintf(b, sizeof b, R"(,"comp":{"voice":{"role":"melody","lo":50,"hi":81},"sect":{"role":"off"},"v3":{"role":"off"},"bass":{"mode":"off"},%s,"chain":[]})", MOT);
+    const Log m = render(b, 40);
+    int distinct = 0; Seq mb[4];
+    for (int i = 0; i < 4; i++) { mb[i] = bar_seq(m, 1, i); assert(!mb[i].empty()); }
+    for (int i = 0; i < 4; i++) for (int j = i + 1; j < 4; j++) { assert(mb[i] != mb[j]); distinct++; }
+    { const Log r = render(melody("[]"), 40); assert(bar_seq(r, 1, 0) == bar_seq(r, 1, 1) && bar_seq(r, 1, 1) == bar_seq(r, 1, 3)); }   /* repeat: as it was */
+    /* arpeggio: odd bars reversed, bar 2 rotated by 2 columns */
+    const Log a = render(R"(,"comp":{"voice":{"style":"arpeggio","rate":"16n","lo":50,"hi":74,"grid":[0,1,2,3,0,1,2,3,0,1,2,3,0,1,2,3]},"sect":{"role":"off"},"v3":{"role":"off"},"bass":{"mode":"off"}})", 40);
+    const Seq a0 = bar_seq(a, 1, 0), a1 = bar_seq(a, 1, 1), a2 = bar_seq(a, 1, 2);
+    assert(a0.size() == 16 && a1.size() == 16 && a0 != a1 && a2 != a0 && a2 != a1);
+    for (int i = 0; i < 16; i++) assert(a1[i].second == a0[15 - i].second && a2[i].second == a0[(i + 2) % 16].second);
+    /* euclid: the rotation advances a step a bar */
+    const Log e = render(R"(,"comp":{"voice":{"style":"euclid","rate":"8n","pulses":3,"steps":8,"rot":0,"grid":[0],"lo":50,"hi":74},"sect":{"role":"off"},"v3":{"role":"off"},"bass":{"mode":"off"}})", 40);
+    Seq e0 = bar_seq(e, 1, 0), e1 = bar_seq(e, 1, 1);
+    assert(e0.size() == 3 && e1.size() == 3 && e0 != e1);
+    /* strum: the direction alternates a bar, and a 4-tone chord drops its top tone on odd bars */
+    const Log s = render(R"(,"comp":{"voice":{"role":"off"},"sect":{"role":"off"},"v3":{"style":"strum","rate":"1n","tones":[0,1,2,3],"dir":"up","spread":40,"lo":50,"hi":74},"bass":{"mode":"off"}})", 40);
+    const Seq s0 = bar_seq(s, 3, 0), s1 = bar_seq(s, 3, 1), s2 = bar_seq(s, 3, 2);
+    assert(s0.size() == 4 && s1.size() == 3 && s2.size() == 4 && s0[0].second < s0[1].second && s1[0].second > s1[1].second && s2[0].second < s2[1].second);
+    /* swells: the voicing rotates, a tone fewer in turn */
+    const Log w = render(R"(,"comp":{"voice":{"role":"off"},"sect":{"style":"swells","rate":"1n","tones":[0,2,4],"len":1},"v3":{"role":"off"},"bass":{"mode":"off"}})", 40);
+    const Seq w0 = bar_seq(w, 2, 0), w1 = bar_seq(w, 2, 1), w2 = bar_seq(w, 2, 2);
+    assert(w0.size() == 3 && w1.size() == 2 && w2.size() == 2 && w0 != w1 && w1 != w2);
+    std::printf("C develop: melody bars 0-3 pairwise distinct (%d pairs), arpeggio bar 1 reversed and bar 2 rotated, euclid rotates, strum flips (4 -> 3 -> 4 tones), swells rotate\n", distinct);
+    /* the draw is the seed's: same seed, same notes; another seed, another variant somewhere */
+    auto mel_seed = [&](int sd) { char c[2048]; std::snprintf(c, sizeof c, R"(,"comp":{"seed":%d,"voice":{"role":"melody","lo":50,"hi":81},"sect":{"role":"off"},"v3":{"role":"off"},"bass":{"mode":"off"},%s,"chain":[]})", sd, MOT); return render(c, 40); };
+    const Log m1 = mel_seed(1); int differs = 0; assert(same(m1, mel_seed(1)));
+    for (int sd = 2; sd <= 7; sd++) if (!same(m1, mel_seed(sd))) differs++;
+    assert(differs > 0);
+    /* a cadence lands on its chord's first bar as it did, and the chord's later bars do not restart the motif: they rest */
+    std::snprintf(b, sizeof b, R"(,"comp":{"voice":{"role":"melody","lo":50,"hi":81},"sect":{"role":"off"},"v3":{"role":"off"},"bass":{"mode":"off"},%s,"chain":[{"op":"cadence","cad":"full","from":0,"to":0}]})", MOT);
+    const Log cd = render(b, 40), cr = render(melody(R"([{"op":"cadence","cad":"full","from":0,"to":0}])"), 40);
+    assert(bar_seq(cd, 1, 0) == bar_seq(cr, 1, 0) && !bar_seq(cd, 1, 0).empty());
+    for (int i = 1; i < 4; i++) assert(bar_seq(cd, 1, i).empty());
+    std::printf("C develop: %d of 6 other seeds change the melody; the cadence lands on bar 0 and its chord's later bars rest\n", differs);
+}
+
 int main(int argc, char **argv) {
+    if (argc > 1 && !std::strcmp(argv[1], "final")) { test_empty_motif(); test_melody_gain_chain(); return 0; }
+    if (argc > 1 && !std::strcmp(argv[1], "room")) { test_room(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "levels")) { test_levels(); return 0; }
+    if (argc > 1 && !std::strcmp(argv[1], "levels-table")) { levels_table(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "onsets")) { test_onsets(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "cost")) { test_cost(); return 0; }
+    if (argc > 1 && !std::strcmp(argv[1], "read")) { test_gain_memo(); test_gain_lengths(); test_patch_read_cost(); return 0; }
+    test_repeat_hash();
+    test_develop();
     test_parse();
     test_resolve();
+    test_motif_parse();
     test_kept();
     test_off();
     test_arpeggio();
+    test_melody();
+    test_cadence();
+    test_melody_change_at_bar();
+    test_swell_to_melody();
+    test_empty_motif();
     test_styles();
     test_bass();
     test_bass_switch();
@@ -527,10 +1000,16 @@ int main(int argc, char **argv) {
     test_enter_phrase();
     test_bass_off_heard();
     test_quiet();
+    test_chord_past_16();
+    test_patch_read_cost();
+    test_gain_memo();
+    test_gain_lengths();
     test_cost();
     test_engine_zone();
     test_onsets();
     test_levels();
+    test_melody_gain_chain();
+    test_room();
     std::printf("composer ok\n");
     return 0;
 }

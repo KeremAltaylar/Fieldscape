@@ -86,13 +86,62 @@ static void over_of(const Json *j, Over &o) {
     o.when = j->s("when", "inside") == std::string("enter") ? ENTER : INSIDE;
 }
 
+static void motif_of(const Json *m, Motif &o) {
+    o = Motif();
+    if (!m || m->kind != Json::OBJ) return;
+    o.basis = m->s("basis", "chord") == std::string("scale") ? SCALE_DEG : CHORD_DEG;
+    o.bars = clamp8(m->n("bars", 1), 1, 2);
+    const int span = o.bars * 16;
+    const Json *a = m->get("notes");
+    if (!a || a->kind != Json::ARR) return;
+    for (size_t i = 0; i < a->size() && o.n < MOTIF_MAX; i++) {
+        const Json *x = a->at(i);
+        if (!x || x->kind != Json::OBJ) continue;
+        const int start = (int)std::lround(x->n("start", 0));
+        if (start < 0 || start >= span) continue;
+        MNote &n = o.note[o.n++];
+        n.start = (uint8_t)start;
+        n.len = clamp8(std::min((double)(span - start), x->n("len", 4)), 1, 32);
+        n.deg = (int8_t)std::max(-7, std::min(13, (int)std::lround(x->n("deg", 0))));
+        n.oct = (int8_t)std::max(-2, std::min(2, (int)std::lround(x->n("oct", 0))));
+        n.acc = clamp8(x->n("acc", 70), 0, 100);
+    }
+}
+static void chain_of(const Json *a, ChainStep *o, int &n) {
+    static const char *const OPS[NOP] = { "repeat", "seq", "invert", "retro", "augment", "diminish", "fragment", "cadence" };
+    static const char *const CAD[3] = { "full", "half", "deceptive" }, *const OTH[3] = { "hold", "thin", "stop" };
+    n = 0;
+    if (!a || a->kind != Json::ARR) return;
+    for (size_t i = 0; i < a->size() && n < CHAIN_MAX; i++) {
+        const Json *x = a->at(i);
+        if (!x || x->kind != Json::OBJ) continue;
+        const int op = pick(x->s("op", ""), OPS, NOP, NOP);
+        const double fd = x->n("from", 0), td = x->n("to", 0);
+        const long f = std::isfinite(fd) ? std::lround(fd) : -1, t = std::isfinite(td) ? std::lround(td) : -1;   /* round, then validate */
+        if (op == NOP || f < 0 || t < f || t >= NCHORD) continue;
+        ChainStep &s = o[n++];
+        s = ChainStep();
+        s.op = (uint8_t)op;
+        s.from = (uint8_t)f; s.to = (uint8_t)t;
+        const int arg = (int)std::lround(x->n("arg", 0));
+        s.arg = (int8_t)(op == OP_FRAGMENT ? std::max(1, std::min(8, arg)) : std::max(-7, std::min(7, arg)));
+        s.cad = (uint8_t)pick(x->s("cad", "full"), CAD, 3, CAD_FULL);
+        s.others = (uint8_t)pick(x->s("others", "thin"), OTH, 3, OTH_THIN);
+        s.strength = clampf(x->n("strength", 1), 0, 1);
+    }
+}
+
 void comp_of(const Json *j, Cfg &c) {
-    c = Cfg();
+    static const Cfg kDefault;   /* static, not a ~25 KB temporary on the wasm stack */
+    c = kDefault;
     if (!j || j->kind != Json::OBJ) return;
     c.on = true;
     c.seed = (uint32_t)std::max(0.0, j->n("seed", 1));
+    c.develop = j->s("bars", "develop") == std::string("repeat") ? 0 : 1;
     for (int q = 0; q < NVOICE; q++) voice_of(j->get(VKEYS[q]), c.v[q], true);
     bass_of(j->get("bass"), c.bass, true);
+    motif_of(j->get("motif"), c.motif);
+    chain_of(j->get("chain"), c.chain, c.nchain);
     const Json *ov = j->get("over");
     if (!ov || ov->kind != Json::OBJ) return;
     if (const Json *ch = ov->get("chord")) if (ch->kind == Json::OBJ)
@@ -156,5 +205,44 @@ void glide(Voice &cur, const Voice &t, int blend) {
     cur.len = len; cur.variation = var; cur.spread_ms = sp; cur.attack = at; cur.release = re; cur.peak = pk;
     toward(cur.len, t.len); toward(cur.variation, t.variation); toward(cur.spread_ms, t.spread_ms);
     toward(cur.attack, t.attack); toward(cur.release, t.release); toward(cur.peak, t.peak);
+}
+void motif_step(const Cfg &c, int chord, Phrase &o) {
+    o = Phrase();
+    const Motif &m = c.motif; const int L = m.bars * 16;
+    ChainStep st; bool found = false;
+    for (int i = c.nchain - 1; i >= 0 && !found; i--) if (chord >= c.chain[i].from && chord <= c.chain[i].to) { st = c.chain[i]; found = true; o.step = i; }
+    o.len16 = (uint8_t)L; o.n = m.n;
+    for (int i = 0; i < m.n; i++) o.note[i] = m.note[i];
+    switch (st.op) {
+    case OP_SEQ: for (int i = 0; i < o.n; i++) o.note[i].deg = (int8_t)(o.note[i].deg + st.arg); break;
+    case OP_INVERT: for (int i = 0; i < o.n; i++) o.note[i].deg = (int8_t)(2 * m.note[0].deg - o.note[i].deg); break;
+    case OP_RETRO:
+        for (int i = 0; i < o.n; i++) { o.note[i] = m.note[o.n - 1 - i]; o.note[i].start = (uint8_t)std::max(0, L - (o.note[i].start + o.note[i].len)); }
+        break;
+    case OP_AUGMENT:
+        o.len16 = (uint8_t)std::min(2 * L, 32);
+        for (int i = 0; i < o.n; i++) { o.note[i].start = (uint8_t)(o.note[i].start * 2); o.note[i].len = (uint8_t)(o.note[i].len * 2); }
+        break;
+    case OP_DIMINISH:
+        for (int i = 0; i < o.n; i++) { MNote &x = o.note[i]; x.start = (uint8_t)(x.start / 2); x.len = (uint8_t)std::max(1, x.len / 2);
+            o.note[o.n + i] = x; o.note[o.n + i].start = (uint8_t)(x.start + L / 2); }
+        o.n *= 2;
+        break;
+    case OP_FRAGMENT: o.n = std::min(o.n, (int)st.arg); break;
+    default: break;
+    }
+    o.last = found && chord == st.to;
+    o.cadence = st.op == OP_CADENCE; o.cad = st.cad; o.others = st.others; o.strength = st.strength;
+    int k = 0;   /* clip to the phrase: past its end dropped, a note held to its end at most */
+    for (int i = 0; i < o.n; i++) if (o.note[i].start < o.len16) { o.note[k] = o.note[i]; o.note[k].len = (uint8_t)std::min((int)o.note[k].len, o.len16 - o.note[k].start); k++; }
+    o.n = k;
+    k = 0;       /* one note per start - a mono voice's second note would cut the first (diminish lands two on one): the later kept */
+    for (int i = 0; i < o.n; i++) { bool dup = false; for (int j = i + 1; j < o.n && !dup; j++) dup = o.note[j].start == o.note[i].start; if (!dup) o.note[k++] = o.note[i]; }
+    o.n = k;
+    if (o.cadence && o.last && o.n) {   /* the cadence note - the latest - held to the phrase's end and put last (its pitch: the player's) */
+        int j = 0; for (int i = 1; i < o.n; i++) if (o.note[i].start >= o.note[j].start) j = i;
+        std::swap(o.note[j], o.note[o.n - 1]);
+        o.note[o.n - 1].len = (uint8_t)(o.len16 - o.note[o.n - 1].start);
+    }
 }
 }

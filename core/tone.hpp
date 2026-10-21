@@ -311,6 +311,16 @@ struct FeedbackComb {
         buf[ch][w[ch]] = std::fabs(v) < 1e-25f ? 0.0f : v;
         return y;
     }
+    /* the same, the delay fractional (linear interpolation between the two samples around it): a delay that moves smoothly */
+    float run_frac(int ch, float x, double D, float fb) {
+        double p = w[ch] - D; if (p < 0) p += size;
+        const int i = (int)p, j = i + 1 >= size ? 0 : i + 1; const float f = (float)(p - i);
+        float y = buf[ch][i] + (buf[ch][j] - buf[ch][i]) * f;
+        if (++w[ch] >= size) w[ch] = 0;
+        float v = x + y * fb;
+        buf[ch][w[ch]] = std::fabs(v) < 1e-25f ? 0.0f : v;
+        return y;
+    }
 };
 
 struct LowpassComb {
@@ -357,26 +367,41 @@ inline void xfade(float fade, float &dry, float &wet) {
 }
 
 /* ---- Freeverb.ts: per side, four lowpass-combs summed into four allpass biquads ---- */
+/* Task 6 (Kerem 2026-10-20): the combs' delays move. Fixed, eight combs are one fixed gain and phase to a held pitch, and at
+   some pitches (D3 at 147 Hz, one in three of them) the tail cancelled the dry note by up to 15 dB, on every voice. Each comb's
+   delay now swings by +-MOD_DEPTH samples on its own slow sine (MOD_RATE, Hz, none a multiple of another; fixed start phases:
+   deterministic), so a held pitch passes through the room's peaks and holes instead of stopping in one. The depth and rates
+   were chosen by measurement (composer_test room: the pitch spread 19.6 -> under 6 dB, the wet level and decay within 1 dB). */
 struct Freeverb {
+    static constexpr double MOD_DEPTH = 100;
     LowpassComb comb[8];
     Biquad ap[2][4];
     Ctl room, wet;
-    void init(double sr, double room_size, double damp) {
+    double ph[8], inc[8], sr = 48000;
+    void init(double s, double room_size, double damp) {
         static const double tune[8] = { 1557, 1617, 1491, 1422, 1277, 1356, 1188, 1116 };
         static const double apf[4] = { 225, 556, 441, 341 };
-        for (int i = 0; i < 8; i++) comb[i].init(sr, tune[i] / 44100.0, room_size, damp);
-        for (int s = 0; s < 2; s++) for (int k = 0; k < 4; k++) { ap[s][k].type = ALLPASS; ap[s][k].design(apf[k], 1, sr); }
+        static const double MOD_RATE[8] = { 0.13, 0.19, 0.23, 0.29, 0.17, 0.31, 0.37, 0.41 };
+        sr = s;
+        for (int i = 0; i < 8; i++) { comb[i].init(sr, tune[i] / 44100.0, room_size, damp); ph[i] = i * 0.9; inc[i] = 2 * PI * MOD_RATE[i] / sr; }
+        for (int q = 0; q < 2; q++) for (int k = 0; k < 4; k++) { ap[q][k].type = ALLPASS; ap[q][k].design(apf[k], 1, sr); }
         room.init(room_size); wet.init(0);
     }
     void set_damp(double damp, double sr) { for (auto &c : comb) c.lp.set(damp, sr); }
     /* in-place on L/R */
     void process(float *L, float *R, int n, double t_end) {
         room.block(t_end); wet.block(t_end);
-        for (auto &c : comb) c.block(t_end);
+        double d0[8], dd[8];     /* each comb's delay at the block's start, and its step per frame: a straight line through the block */
+        for (int k = 0; k < 8; k++) {
+            comb[k].block(t_end);
+            const double a = MOD_DEPTH * std::sin(ph[k]); ph[k] += inc[k] * n; if (ph[k] > 2 * PI) ph[k] -= 2 * PI;
+            d0[k] = comb[k].D + a; dd[k] = (MOD_DEPTH * std::sin(ph[k]) - a) / n;
+        }
         for (int i = 0; i < n; i++) {
             float l = L[i], r = R[i], sl = 0, sr_ = 0, fb = room.at(i, n);
-            for (int k = 0; k < 4; k++) sl += comb[k].run(0, l, fb);
-            for (int k = 4; k < 8; k++) sr_ += comb[k].run(1, r, fb);
+            if (fb > 0.9999f) fb = 0.9999f; if (fb < 0) fb = 0;
+            for (int k = 0; k < 4; k++) sl += comb[k].comb.run_frac(0, comb[k].lp.run(0, l), d0[k] + dd[k] * i, fb);
+            for (int k = 4; k < 8; k++) sr_ += comb[k].comb.run_frac(1, comb[k].lp.run(1, r), d0[k] + dd[k] * i, fb);
             for (int k = 0; k < 4; k++) { sl = ap[0][k].run(0, sl); sr_ = ap[1][k].run(1, sr_); }
             float d, w; xfade(wet.at(i, n), d, w);
             L[i] = l * d + sl * w; R[i] = r * d + sr_ * w;

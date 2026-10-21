@@ -15,7 +15,7 @@ enum Field : uint32_t { F_STYLE = 1u, F_ROLE = 2u, F_RATE = 4u, F_LO = 8u, F_HI 
     F_PNOTE = 1u << 14, F_FOLLOW = 1u << 15, F_PULSES = 1u << 16, F_STEPS = 1u << 17, F_ROT = 1u << 18,
     F_ATTACK = 1u << 19, F_RELEASE = 1u << 20, F_PEAK = 1u << 21, F_ALL = 0x3FFFFFu };   /* one bit per key: a layer holds only what it sets */
 enum BassField : uint32_t { B_MODE = 1u, B_PEDAL = 2u, B_NOTE = 4u, B_ALL = 7u };
-static const int MAX_COLS = 16, NCHORD = 16, NSECTION = 16, NZONE = 12, PHRASE_BARS = 2, NVOICE = 3;
+static const int MAX_COLS = 16, NCHORD = 64, NSECTION = 16, NZONE = 12, PHRASE_BARS = 2, NVOICE = 3;
 
 struct Voice {
     uint32_t mask = 0;                                /* which fields this layer sets (the route sets all) */
@@ -33,9 +33,23 @@ struct Voice {
 };
 struct Bass { uint32_t mask = 0; uint8_t mode = HOLD, pedal = 0, note = 38; };   /* pedal: 0 key root, 1 key fifth, 2 note */
 struct Over { bool used = false; Voice v[NVOICE]; Bass bass; uint8_t blend = 0, when = INSIDE; uint64_t zone = 0; };
+static const int MOTIF_MAX = 8, CHAIN_MAX = 16;
+enum Basis { CHORD_DEG, SCALE_DEG };
+enum Op { OP_REPEAT, OP_SEQ, OP_INVERT, OP_RETRO, OP_AUGMENT, OP_DIMINISH, OP_FRAGMENT, OP_CADENCE, NOP };
+enum Cadence { CAD_FULL, CAD_HALF, CAD_DECEPTIVE };
+enum Others { OTH_HOLD, OTH_THIN, OTH_STOP };            /* what the other voices do on a cadence's last chord */
+struct MNote { int8_t deg = 0, oct = 0; uint8_t start = 0, len = 4; uint8_t acc = 70; };   /* start/len in sixteenths */
+struct Motif { uint8_t basis = CHORD_DEG, bars = 1, n = 0; MNote note[MOTIF_MAX]; };
+struct ChainStep { uint8_t op = OP_REPEAT; int8_t arg = 0; uint8_t from = 0, to = 0;      /* chord steps, inclusive */
+                   uint8_t cad = CAD_FULL, others = OTH_THIN; float strength = 1; };
 struct Cfg { bool on = false; uint32_t seed = 1; Voice v[NVOICE]; Bass bass;
-             Over chord[NCHORD], section[NSECTION], zone[NZONE]; int nzone = 0; };
+             Over chord[NCHORD], section[NSECTION], zone[NZONE]; int nzone = 0;
+             Motif motif; ChainStep chain[CHAIN_MAX]; int nchain = 0;
+             uint8_t develop = 1; };   /* "bars": 1 develop - a chord's later bars vary its first (Piece::comp_bar); 0 repeat */
 struct Resolved { Voice v[NVOICE]; Bass bass; int blend = 0; };
+/* the motif as developed for one chord step: its notes (times in sixteenths from the phrase's start), the phrase's length */
+struct Phrase { int n = 0; MNote note[MOTIF_MAX * 2]; uint8_t len16 = 16; bool cadence = false; uint8_t cad = CAD_FULL, others = OTH_THIN; float strength = 1; bool last = false;
+                int step = -1; };   /* the chain step covering the chord (-1: none, repeat) */
 
 uint64_t id_hash(const char *s);                      /* FNV-1a 64: a zone's point id */
 void comp_of(const Json *j, Cfg &c);                  /* the route patch's "comp"; absent: c.on = false */
@@ -46,4 +60,7 @@ void resolve(const Cfg &c, int chord, int nchord, int section, int nsection, con
              const uint64_t *entered, int nentered, Resolved &out);
 /* once a bar: the discrete settings taken at once, the continuous ones (len, variation, spread, swell) a 1/blend step closer */
 void glide(Voice &cur, const Voice &target, int blend);
+/* the motif as developed for chord step `chord` (the chain step covering it, a later step winning; else repeat);
+   `last`: chord is that step's last (a cadence's: its note is the phrase's last). Plain data, no heap: the audio thread calls it once a bar */
+void motif_step(const Cfg &c, int chord, Phrase &out);
 }

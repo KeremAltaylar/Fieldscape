@@ -5,6 +5,11 @@
 (function () {
   var M = window.FsCompose, ctx = null, comp = null, hist = null, sel = { kind: "route" }, voice = "voice", grown = false, saveErr = null, nowTimer = null, statsTimer = null, audio = [], polls = 0;
   var gen = false, genForm = "AABA", genContrast = 0.6;   /* the Generate form panel: open, its form and contrast */
+  /* composition 2: the selected chain step and motif note (sel.kind "sent" puts them in the inspector), the roll's cursor, the
+     lane whose layers are shown, the motif generator's seed */
+  var si = -1, ni = -1, cur = { row: 0, col: 0 }, lay = null, mseed = 0;
+  /* want: where focus goes after the next render when its control is gone (selectors, the first found); capped: the 8-note cap was hit */
+  var want = null, capped = false, CURSOR = "#cd-motif .cd-mcell.cur";
   var VS = ["voice", "sect", "v3", "bass"];
   var NAME = { voice: "voice 1", sect: "voice 2", v3: "voice 3", bass: "voice 1 bass" };
   var TAB = { voice: "voice 1", sect: "voice 2", v3: "voice 3", bass: "bass" };
@@ -23,7 +28,11 @@
     off: '<line x1="40" y1="11" x2="60" y2="11" stroke="currentColor" stroke-width="1.5" opacity=".6"/>',
     hold: '<line x1="2" y1="5" x2="98" y2="5" stroke="currentColor" stroke-width="2"/>',
     bpedal: '<line x1="2" y1="5" x2="98" y2="5" stroke="currentColor" stroke-width="2"/><circle cx="3" cy="5" r="2.6" fill="currentColor"/>',
-    boff: '<line x1="40" y1="5" x2="60" y2="5" stroke="currentColor" stroke-width="1.5" opacity=".6"/>'
+    boff: '<line x1="40" y1="5" x2="60" y2="5" stroke="currentColor" stroke-width="1.5" opacity=".6"/>',
+    /* composition 2 (design/compose/sentence-mock.html): the motif's line, and a cadence settling on its long last note */
+    mel: '<polyline points="2,18 22,8 46,13 70,4 98,10" fill="none" stroke="currentColor" stroke-width="1.6"/>' +
+      [[2, 18], [22, 8], [46, 13], [70, 4]].map(function (p) { return '<rect x="' + p[0] + '" y="' + (p[1] - 2) + '" width="16" height="4" rx="1" fill="currentColor"/>'; }).join(""),
+    cad: '<polyline points="2,6 30,10 60,14 98,18" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="60" y="16" width="38" height="4" rx="1" fill="currentColor"/>'
   };
   var ICON = {
     undo: '<path d="M5 4 L2 7 L5 10 M2 7 H10 A4 4 0 0 1 10 15 H7" fill="none" stroke="currentColor" stroke-width="1.5"/>',
@@ -38,7 +47,10 @@
   function el(tag, cls, text) { var e = document.createElement(tag); if (cls) { e.className = cls; } if (text != null) { e.textContent = text; } return e; }
   function svg(vb, inner) { return '<svg viewBox="0 0 ' + vb + '" preserveAspectRatio="none" aria-hidden="true">' + inner + "</svg>"; }
   function noteName(m) { return ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"][((m % 12) + 12) % 12] + (Math.floor(m / 12) - 1); }
-  function fmt(f, v) { return f.fmt === "note" ? noteName(v) : f.fmt === "pct" ? Math.round(v * 100) + " %" : f.fmt === "ms" ? Math.round(v) + " ms" : String(v); }
+  /* sixteenths as a note value, and a start as beat.sixteenth (bar 2's beats go on: 5.1 ...) */
+  var DUR = { 1: "1/16", 2: "1/8", 3: "1/8 .", 4: "1/4", 6: "1/4 .", 8: "1/2", 12: "1/2 .", 16: "1 bar", 32: "2 bars" };
+  function fmt(f, v) { return f.fmt === "note" ? noteName(v) : f.fmt === "pct" ? Math.round(v * 100) + " %" : f.fmt === "ms" ? Math.round(v) + " ms" :
+    f.fmt === "sgn" ? (v > 0 ? "+" + v : v < 0 ? "−" + -v : "0") : f.fmt === "dur" ? DUR[v] || v + "/16" : f.fmt === "beat" ? (Math.floor(v / 4) + 1) + "." + (v % 4 + 1) : String(v); }
   function scopeName(s) { return s.kind === "route" ? "the route" : s.kind === "chord" ? "chord " + (s.i + 1) : s.kind === "section" ? "section " + (s.i + 1) : s.name; }
   function same(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
   /* ctx.save says true, or why it could not store (shown with Retry until a save goes through) */
@@ -46,19 +58,55 @@
   /* a hand edit to the route or a chord after Generate: the form row says "edited" (a section's or zone's edit is not the form's) */
   function commit(fresh) {
     if (comp.form && !fresh && sel.kind !== "section" && sel.kind !== "zone") { comp.form.edited = true; }
-    store(); hist.push(comp); render();
+    capped = false; store(); hist.push(comp); render();
   }
+  /* composition 2: the motif (none yet: an empty one, written by the first edit) and the chain, each edit one undo step */
+  function motif() { return comp.motif || { basis: "chord", bars: 1, notes: [] }; }
+  function editMotif(fn) { var m = M.clone(motif()); fn(m); M.setMotif(comp, m); capped = false; commit(); }
+  function editChain(fn) { var c = M.clone(comp.chain || []); fn(c); M.setChain(comp, c); commit(); }
+  function rowsOf(m) { return m.basis === "scale" ? ["1", "2", "3", "4", "5", "6", "7"] : ["root", "3", "5", "7", "9"]; }
+  function mod(a, n) { return ((a % n) + n) % n; }
+  var DEG = ["root", "3rd", "5th", "7th", "9th"];
+  /* a motif note's name over chord i: the chord's tone (or the key's scale degree) as the core takes it, ′ an octave up */
+  function pitchName(i, x, basis) {
+    var t = basis === "scale" ? ctx.scale || [] : (ctx.chords[i] || {}).tones || [];
+    if (!t.length) { return "?"; }
+    var o = Math.floor(x.deg / t.length), up = o + (x.oct || 0);
+    return noteName(t[x.deg - o * t.length]).replace(/-?\d+$/, "") + (up > 0 ? "′" : up < 0 ? "‚" : "");
+  }
+  function stepWord(s) {
+    if (!s) { return "repeat"; }
+    var a = Math.round(s.arg || 0), o = M.OPS.filter(function (x) { return x.id === s.op; })[0];
+    return s.op === "cadence" ? "cadence · " + (s.cad || "full") : s.op === "seq" ? "sequence " + fmt({ fmt: "sgn" }, a) : s.op === "fragment" ? "fragment " + a : o ? o.label + (s.op === "augment" && motif().bars === 2 ? " · bar 1" : "") : s.op;
+  }
+  function shortWord(s) {
+    var a = Math.round(s.arg || 0);
+    return { repeat: "rep", seq: "seq " + fmt({ fmt: "sgn" }, a), invert: "inv", retro: "retro", augment: "aug", diminish: "dim", fragment: "frag " + a, cadence: "cad. " + (s.cad || "full") }[s.op] || s.op;
+  }
+  /* the letter of the form over a chord (a generated piece's), its span's index */
+  function letterAt(i, n) {
+    if (!comp.form) { return null; }
+    var sp = M.formSpans(comp.form.type, Math.min(n, M.NCHORD));
+    for (var k = 0; k < sp.length; k++) { if (i >= sp[k].a && i < sp[k].b) { return { letter: sp[k].letter, k: k }; } }
+    return null;
+  }
+  /* the motif as it plays over chord i; a cadence's last chord ends on the key's tonic, 5th or 6th (the core's play_melody) */
+  function plays(i) { var st = M.motifStep(comp, i), b = motif().basis;
+    var out = st.notes.slice().sort(function (a, c) { return a.start - c.start; }).map(function (x) { return pitchName(i, x, b); });
+    if (st.op === "cadence" && st.last && out.length && (ctx.scale || []).length) { out[out.length - 1] = pitchName(i, { deg: { full: 0, half: 4, deceptive: 5 }[st.cad] || 0 }, "scale"); }
+    return out; }
+  function hasMelody() { return /"role":"melody"/.test(JSON.stringify(comp)); }
   function resize() { if (window.__fa && __fa.map) { setTimeout(function () { __fa.map.resize(); }, 0); } }
 
   function open(c) {
-    ctx = c; comp = M.clone(ctx.comp()); hist = M.history(100); hist.push(comp); sel = { kind: "route" }; voice = "voice"; saveErr = null; gen = false;
+    ctx = c; comp = M.clone(ctx.comp()); hist = M.history(100); hist.push(comp); sel = { kind: "route" }; voice = "voice"; saveErr = null; gen = false; si = ni = -1; lay = null; capped = false;
     var d = document.getElementById("compose-dock");
     if (!d) { d = el("section", "cd"); d.id = "compose-dock"; d.setAttribute("aria-label", "Compose"); document.body.appendChild(d); }
     document.body.classList.add("composing"); d.hidden = false; resize();
     render();
     if (ctx.show) { setTimeout(function () { if (ctx) { ctx.show(null); } }, 60); }   /* the route in view, in the map's new half */
     clearInterval(nowTimer); nowTimer = setInterval(markNow, 500);
-    audio = []; clearInterval(statsTimer); statsTimer = setInterval(pollAudio, 1000); pollAudio();
+    audio = []; gapLog = []; clearInterval(statsTimer); statsTimer = setInterval(pollAudio, 1000); pollAudio();
   }
   function close() {
     var d = document.getElementById("compose-dock"); if (d) { d.hidden = true; }
@@ -79,7 +127,11 @@
   }
   function render() {
     var d = document.getElementById("compose-dock"), was = focusAt(d); d.textContent = "";
+    if (si >= (comp.chain || []).length) { si = -1; }            /* an undo can take the selected step or note away */
+    if (ni >= motif().notes.length) { ni = -1; }
+    if (sel.kind === "sent" && si < 0 && ni < 0) { sel = { kind: "route" }; }
     draw(d); refocus(d, was);
+    if (want) { var q = want.map(function (x) { return d.querySelector(x); }).filter(Boolean)[0]; want = null; if (q) { q.focus({ preventScroll: true }); } }
   }
   function back() { var c = ctx; close(); if (c && c.back) { c.back(); } }
   function draw(d) {
@@ -92,13 +144,21 @@
     }
     var main = el("div", "cd-main"), insp = el("aside", "cd-insp"); insp.id = "cd-insp";
     var secs = ctx.sections(), zs = ctx.zones(), bs = M.bands(ctx.coords, secs || [], zs);
-    main.appendChild(header()); if (comp.form) { main.appendChild(formRow(n)); } main.appendChild(strip(n));
-    bandRows(main, bs, secs === null, zs); main.appendChild(el("div", "cd-sep"));
-    main.appendChild(lanes(n, bs)); main.appendChild(foot());
+    /* composition 2: the form · chain row under the chords (step 1's form row folded into it); grown, the sentence's editors
+       take the bands' place (the mock's) */
+    main.appendChild(header()); main.appendChild(strip(n));
+    if (comp.form || (comp.chain || []).length || hasMelody()) { main.appendChild(chainRow(n)); }
+    if (!grown) { bandRows(main, bs, secs === null, zs); }
+    main.appendChild(el("div", "cd-sep"));
+    main.appendChild(lanes(n, bs)); if (grown) { main.appendChild(editor(n)); } main.appendChild(foot());
     d.appendChild(main); inspector(insp, bs, n); d.appendChild(insp);
     /* C-8, one screen: a style with many settings, in a zone, is taller than the dock - the rows close up, in two steps, rather
        than anything scrolling or being cut off */
-    ["tight", "tighter"].forEach(function (k) { if (insp.scrollHeight > insp.clientHeight + 1) { insp.classList.add(k); } });
+    ["tight", "tighter", "tightest"].forEach(function (k) { if (insp.scrollHeight > insp.clientHeight + 1) { insp.classList.add(k); } });   /* tightest: the role's helper line goes */
+    /* the lanes too: the form · chain row (and a lane's layers) cost height - the cells close up, in two steps */
+    ["tight", "tighter"].forEach(function (k) { if (main.scrollHeight > main.clientHeight + 1) { main.classList.add(k); } });
+    var run = main.querySelector(".cd-chiprun");   /* the chips give way in steps rather than being cut off */
+    ["short", "shorter", "squeeze"].forEach(function (k) { if (run && run.scrollWidth > run.clientWidth + 1) { run.classList.add(k); } });
     markNow();
   }
   function header() {
@@ -116,7 +176,7 @@
     M.TEMPLATES.forEach(function (x) { s.appendChild(new Option(x.label, x.id)); });
     s.value = cur ? cur.id : "";
     s.addEventListener("change", function () { var x = M.TEMPLATES.filter(function (y) { return y.id === s.value; })[0];
-      if (x) { var nc = x.comp(); nc.seed = comp.seed;
+      if (x) { var nc = x.comp(); nc.seed = comp.seed; nc.bars = comp.bars || "develop";
         nc.over = comp.form ? { chord: {}, section: comp.over.section, zone: comp.over.zone } : comp.over;   /* a generated piece's chords go with its form */
         comp = nc; commit(); } });
     tl.appendChild(s); h.appendChild(tl);
@@ -125,31 +185,49 @@
     si.addEventListener("change", function () { var v = Math.max(0, Math.min(99999, +si.value | 0));
       if (gen) { generate(v); } else { comp.seed = v; commit(); } });   /* the panel open: that seed's piece */
     sd.appendChild(si); h.appendChild(sd);
+    /* composition 2: a chord of several bars develops its bar (variants) or repeats it as step 1 did */
+    var bb = seg([["develop", "develop"], ["repeat", "repeat"]], comp.bars === "repeat" ? "repeat" : "develop", function (v) { comp.bars = v; commit(true); }, "Bars within a chord");
+    [].forEach.call(bb.children, function (b, i) { b.textContent = ""; b.appendChild(el("span", "cd-w", i ? "repeat" : "develop")); b.appendChild(el("span", "cd-n", i ? "rep" : "dev")); });   /* the narrow desk reads dev | rep */
+    bb.classList.add("cd-bars"); bb.title = "A chord that lasts several bars: develop varies each bar (answer, sequence, held ending, inversion; the arpeggio reverses, the euclid turns), repeat plays the first bar again";
+    h.appendChild(bb);
     var gb = el("button", "cd-gen", "Generate"); gb.appendChild(el("span", "cd-lbl", " form")); gb.type = "button"; gb.setAttribute("aria-pressed", String(gen));
     gb.title = "Write a whole piece in a form: its sections' voices, styles and settings (one Ctrl+Z takes it back)";
     gb.addEventListener("click", function () { gen = !gen;
       if (gen && comp.form) { genForm = comp.form.type; genContrast = comp.form.contrast; } render(); });
     h.appendChild(gb);
     [[ICON.undo, "Undo (Ctrl+Z)", undo, hist.canUndo()], [ICON.redo, "Redo (Ctrl+Shift+Z)", redo, hist.canRedo()],
-     [grown ? ICON.shrink : ICON.grow, grown ? "Show the map" : "Grow the dock", function () { grown = !grown; document.body.classList.toggle("composing-grown", grown); resize(); render(); }, true],
+     [grown ? ICON.shrink : ICON.grow, grown ? "Show the map" : "Grow the dock", growDock, true],
      [ICON.close, "Close", close, true]].forEach(function (x) {
       var b = el("button", "cd-icon"); b.type = "button"; b.innerHTML = '<svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">' + x[0] + "</svg>";
       b.title = x[1]; b.setAttribute("aria-label", x[1]); b.disabled = !x[3]; b.addEventListener("click", x[2]); h.appendChild(b); });
     return h;
   }
-  /* the form's letters over their chords (a generated piece's), a repeat dashed */
-  function formRow(n) {
-    var ed = !!comp.form.edited, r = el("div", "cd-row cd-formrow" + (ed ? " edited" : ""));
-    r.appendChild(el("span", "cd-name", ed ? "form · edited" : "form"));
-    var t = el("div", "cd-track cd-form"), seen = {};
-    t.title = (ed ? "generated · edited: " : "generated: ") + M.FORMS.filter(function (f) { return f.id === comp.form.type; })[0].label + " · seed " + comp.form.seed +
-      " · contrast " + Math.round(comp.form.contrast * 100) + " %" + (n > M.NCHORD ? " · over chords 1–" + M.NCHORD + " of " + n : "");
-    r.title = t.title;
-    M.formSpans(comp.form.type, Math.min(n, M.NCHORD)).forEach(function (x) {
-      var b = el("span", "cd-band form" + (seen[x.letter] ? " rep" : ""), x.letter); seen[x.letter] = true;
-      b.style.left = (x.a / n * 100) + "%"; b.style.width = "calc(" + ((x.b - x.a) / n * 100) + "% - 3px)";   /* the strip's gap */ t.appendChild(b); });
+  /* the form · chain row: the chain's steps over their chords, each with its form letter (a generated piece's; dimmed once
+     edited by hand); a form with no chain (step 1's pieces) its letters, a repeat dashed; a melody with no chain says so */
+  function chainRow(n) {
+    var f = comp.form, ed = !!(f && f.edited), ch = comp.chain || [], r = el("div", "cd-row cd-formrow" + (ed ? " edited" : ""));
+    r.appendChild(el("span", "cd-name", f ? (ed ? "form · edited" : "form · chain") : "chain"));
+    var t = el("div", "cd-track cd-form"), seen = {}; t.id = "cd-chain";
+    if (f) { t.title = (ed ? "generated · edited: " : "generated: ") + M.FORMS.filter(function (x) { return x.id === f.type; })[0].label + " · seed " + f.seed +
+      " · contrast " + Math.round(f.contrast * 100) + " %" + (n > M.NCHORD ? " · over chords 1–" + M.NCHORD + " of " + n : ""); r.title = t.title; }
+    var place = function (b, a, z) { b.style.left = (a / n * 100) + "%"; b.style.width = "calc(" + ((z - a) / n * 100) + "% - 3px)"; };   /* the strip's gap */
+    if (!ch.length && f) {
+      M.formSpans(f.type, Math.min(n, M.NCHORD)).forEach(function (x) {
+        var b = el("span", "cd-band form" + (seen[x.letter] ? " rep" : ""), x.letter); seen[x.letter] = true; place(b, x.a, x.b); t.appendChild(b); });
+    } else if (!ch.length) { t.appendChild(el("span", "cd-hint", "the motif repeats on every chord · grow the dock to develop it")); }
+    ch.forEach(function (s, k) {
+      var L = letterAt(s.from, n), b = el("button", "cd-step" + (s.op === "cadence" ? " cad" : "") + (sel.kind === "sent" && si === k ? " on" : ""));
+      b.type = "button"; b.dataset.i = k; b.dataset.fk = "step:" + k;
+      if (L) { b.dataset.letter = L.letter; b.dataset.span = L.k;
+        if (s.op !== "cadence") { b.appendChild(el("em", null, L.letter)); b.appendChild(document.createTextNode(" · ")); } }   /* a cadence's chord is narrow: "cad." */
+      b.appendChild(document.createTextNode(s.op === "cadence" ? "cad." : stepWord(s)));
+      b.title = "step " + (k + 1) + " · " + stepWord(s) + " · chords " + (s.from + 1) + (s.to > s.from ? "–" + (s.to + 1) : "");
+      b.setAttribute("aria-label", "chain step " + (k + 1) + ", " + stepWord(s) + ", chord " + (s.from + 1) + (s.to > s.from ? " to " + (s.to + 1) : ""));
+      place(b, s.from, s.to + 1); b.addEventListener("click", function () { pickStep(k); }); t.appendChild(b); });
     r.appendChild(t); return r;
   }
+  function pickStep(k) { si = k; sel = { kind: "sent" }; gen = false; var s = (comp.chain || [])[k]; ctx.light(s ? { chord: s.from } : null); render(); }
+  function pickNote(i) { ni = i; sel = { kind: "sent" }; gen = false; render(); }
   /* the bands over each chord (as the lanes take them): a section's keys are written on its chords, so the form plays over it */
   function generate(seed) {
     var n = ctx.chords.length, bs = M.bands(ctx.coords, ctx.sections() || [], ctx.zones()), at = [];
@@ -201,34 +279,216 @@
   function laneSub(v) {
     if (v === "bass") { var o = M.BASS[0].options.filter(function (x) { return x.id === (comp.bass.mode || "hold"); })[0]; return o ? o.label : ""; }
     var c = comp[v]; if (c.role === "off") { return "off"; }
+    if (c.role === "melody") { return "Melody · motif"; }
     return M.label(c.style) + (c.style === "pedal" && c.pedal && c.pedal !== "root" ? " · " + (c.pedal === "fifth" ? "5th" : "fixed") : "");
   }
   function lanes(n, bs) {
     var w = el("div", "cd-lanes"); w.id = "cd-lanes";
     var cells = [];
     for (var i = 0; i < n; i++) { (function (i) { var at = bs.filter(function (b) { return b.t0 < (i + 1) / n && b.t1 > i / n; });
-      var c = M.cell(comp, i, at); c.push(bassAt(i, at)); c.at = at; cells.push(c); })(i); }
+      var c = M.cell(comp, i, at, n); c.push(bassAt(i, at)); c.at = at; cells.push(c); })(i); }
+    var empty = !motif().notes.length;
+    if (lay && !grown) { w.classList.add("layered"); }
     VS.forEach(function (v, vi) {
       var r = el("div", "cd-row cd-lane" + (v === "bass" ? " bass" : "")); r.dataset.voice = v;
-      var nm = el("span", "cd-name", NAME[v]); nm.appendChild(el("small", null, laneSub(v))); r.appendChild(nm);
+      var nm = el("span", "cd-name"), nl = el("span", "cd-nl", NAME[v]), sub = laneSub(v); nm.appendChild(nl);
+      nm.appendChild(el("small", sub === "Melody · motif" ? "mel" : null, sub)); r.appendChild(nm);
+      if (v !== "bass" && !grown) {   /* Show layers: what each layer says for this voice, chord by chord (on the name's line: the lane keeps its height) */
+        var lb = el("button", "cd-layers", "layers"); lb.type = "button"; lb.dataset.fk = "layers:" + v; lb.setAttribute("aria-pressed", String(lay === v));
+        lb.title = "Show what the zone, chord, section and route each say for " + NAME[v] + ", the one that plays lit";
+        lb.addEventListener("click", function () { lay = lay === v ? null : v; render(); }); nl.appendChild(lb);
+      }
       var g = el("div", "cd-cells"); g.style.gridTemplateColumns = "repeat(" + n + ", minmax(0, 1fr))";
       for (var i = 0; i < n; i++) {
-        var c = cells[i][vi], prev = i ? cells[i - 1][vi] : null, st = c.style === "off" && v === "bass" ? "boff" : c.style;
-        var b = el("button", "cd-cell src-" + c.source + (c.style === "off" || st === "boff" ? " off" : ""));
+        var c = cells[i][vi], prev = i ? cells[i - 1][vi] : null, mel = c.style === "melody";
+        var st = mel ? (c.label === "cad." ? "cad" : "mel") : c.style === "off" && v === "bass" ? "boff" : c.style, word = mel ? c.label : WORD[st] || st;
+        var long = mel ? "melody, " + stepWord(M.chainAt(comp, i)) + (empty ? " (no motif yet: plays as Free)" : "") : LONG[st] || st;
+        var chained = mel && M.chainAt(comp, i) && M.chainAt(comp, i).op !== "repeat";
+        var b = el("button", "cd-cell src-" + c.source + (c.style === "off" || st === "boff" ? " off" : "") + (mel ? " mel" : "") + (chained ? " src-chain" : ""));
         var on = sel.kind === "chord" && sel.i === i && voice === v;
         if (on) { b.classList.add("on"); }
-        else if (prev && prev.style === c.style && prev.source === c.source && c.source !== "chord") { b.classList.add("cont"); }   /* the selected cell keeps its word */
+        else if (prev && prev.style === c.style && prev.label === c.label && prev.source === c.source && c.source !== "chord") { b.classList.add("cont"); }   /* the selected cell keeps its word */
         if ((sel.kind === "zone" || sel.kind === "section") && c.source === sel.kind && cells[i].at.some(function (x) { return x.kind === sel.kind && isSel(x.kind, x.id); })) { b.classList.add("lit"); }
-        b.innerHTML = "<span>" + (WORD[st] || st) + "</span>" + svg(v === "bass" ? "100 10" : "100 22", GLYPH[st] || GLYPH.free);
+        b.innerHTML = "<span></span>" + svg(v === "bass" ? "100 10" : "100 22", GLYPH[st] || GLYPH.free); b.firstChild.textContent = word;
         b.type = "button"; b.dataset.i = i; b.dataset.fk = "cell:" + v + ":" + i;
-        b.title = (i + 1) + " · " + ctx.chords[i].label + " · " + (LONG[st] || st) + " (" + c.source + ")";
-        b.setAttribute("aria-label", NAME[v] + ", chord " + (i + 1) + ": " + (LONG[st] || st) + (c.source !== "route" ? ", set by the " + c.source : ""));
+        b.title = (i + 1) + " · " + ctx.chords[i].label + " · " + long + " (" + c.source + ")";
+        b.setAttribute("aria-label", NAME[v] + ", chord " + (i + 1) + ": " + long + (c.source !== "route" ? ", set by the " + c.source : ""));
         (function (i, v) { b.addEventListener("click", function () { voice = v; pick({ kind: "chord", i: i }); });
           b.addEventListener("dblclick", function () { listen((i + 0.5) / n); }); })(i, v);
         g.appendChild(b);
       }
-      r.appendChild(g); w.appendChild(r); });
+      if (lay === v && !grown) { r.classList.add("layers"); var wr = el("div", "cd-lanewrap"); wr.appendChild(g); layerRows(wr, v, vi, n, cells); r.appendChild(wr); }
+      else { r.appendChild(g); }
+      w.appendChild(r); });
     return w;
+  }
+  /* a lane's layers, zone over chord over section over route: what each says for the voice at each chord (its role, else its
+     style), the one the cell takes (the model's resolve, M.cell's source) lit */
+  function sayOf(o) { if (!o) { return ""; } return o.role === "melody" ? "melody" : o.role === "off" ? "off" : o.style ? WORD[o.style] || o.style : o.role === "accomp" ? "on" : ""; }
+  function layerRows(wr, v, vi, n, cells) {
+    ["zone", "chord", "section", "route"].forEach(function (k) {
+      var row = el("div", "cd-layer"); row.dataset.k = k; row.style.gridTemplateColumns = "repeat(" + n + ", minmax(0, 1fr))";
+      row.appendChild(el("span", "cd-lk", k));
+      for (var i = 0; i < n; i++) {
+        var at = cells[i].at, say = "";
+        if (k === "route") { say = sayOf(comp[v]) || WORD[comp[v].style]; }
+        else if (k === "chord") { say = sayOf((comp.over.chord[String(i)] || {})[v]); }
+        else { at.filter(function (b) { return b.kind === k; }).forEach(function (b) { say = sayOf((comp.over[k][String(b.id)] || {})[v]) || say; }); }
+        var x = el("i", say ? (cells[i][vi].source === k ? "win" : null) : "none", say || "·"); x.dataset.i = i;
+        x.title = "chord " + (i + 1) + " · " + k + ": " + (say || "says nothing") + (say && cells[i][vi].source === k ? " · plays" : "");
+        row.appendChild(x);
+      }
+      wr.appendChild(row); });
+  }
+  /* the grown dock's sentence editor (the mock's frame 1): the motif on its roll - rows the chord's tones (or the key's scale),
+     columns sixteenths, a note a bar sized by its length, accented brighter, its end dragged to lengthen it - its accents, how
+     it fits the first chords, and the development chain as chips (drag to reorder: a later step wins where two cover a chord) */
+  function editor(n) {
+    var m = motif(), names = rowsOf(m), R = names.length, L = (m.bars || 1) * 16, w = el("div", "cd-ed"), scale = m.basis === "scale";
+    /* the scale roll's guide: the chord's own tones lit on the key's scale (the selected step's chord, the selected chord, or the first) */
+    var gi = (comp.chain || [])[si] ? comp.chain[si].from : sel.kind === "chord" ? sel.i : 0, tones = ((ctx.chords[gi] || {}).tones || []).map(function (x) { return mod(x, 12); });
+    var lit = function (d) { return scale && ctx.scale && ctx.scale.length && tones.indexOf(mod(ctx.scale[d], 12)) >= 0; };
+    var h = el("div", "cd-edh"); h.dataset.fk = "edh";
+    var t = el("h3", null, "Motif");
+    t.appendChild(el("i", null, m.notes.length + (m.notes.length === 1 ? " note" : " notes") + " · " + (L / 16) + (L > 16 ? " bars" : " bar") + " · " +
+      (scale ? "scale degrees of " + modeName() + " · lit: " + ((ctx.chords[gi] || {}).label || "") + "’s tones" : "chord degrees")));
+    h.appendChild(t);
+    if (capped) { var cp = el("span", "cd-mcap", "8 notes at most · remove one to add another"); cp.setAttribute("role", "status"); h.appendChild(cp); }
+    var bs = seg([["chord", "chord"], ["scale", "scale"]], m.basis || "chord", function (v) { editMotif(function (x) { x.basis = v; var R = rowsOf(x).length;   /* fold each degree into the new rows, its octaves carried (the core wraps by the new count) */
+  x.notes.forEach(function (y) { var o = Math.floor(y.deg / R); y.deg -= o * R; y.oct = Math.max(-2, Math.min(2, (y.oct || 0) + o)); if (!y.oct) { delete y.oct; } }); }); }, "Degrees of"); bs.id = "cd-basis";
+    bs.title = "Rows: the chord's own tones, or the key's scale"; h.appendChild(bs);
+    h.appendChild(seg([[1, "1 bar"], [2, "2 bars"]], L / 16, function (v) { editMotif(function (x) { x.bars = +v;
+      x.notes = x.notes.filter(function (y) { return y.start < 16 * v; }).map(function (y) { y.len = Math.min(y.len, 16 * v - y.start); return y; }); }); }, "Length"));
+    var gb = el("button", null, "generate"); gb.type = "button"; gb.title = "Draw a new motif (Ctrl+Z takes it back)"; gb.addEventListener("click", function () { newMotif(n); }); h.appendChild(gb);
+    var cb = el("button", null, "clear"); cb.type = "button"; cb.title = "Clear the motif's notes"; cb.disabled = !m.notes.length;
+    cb.addEventListener("click", function () { ni = -1; want = [CURSOR]; editMotif(function (x) { x.notes = []; }); }); h.appendChild(cb);
+    w.appendChild(h);
+    var roll = el("div", "cd-roll"); roll.id = "cd-motif"; roll.dataset.fk = "roll"; roll.style.setProperty("--rows", R);
+    var keys = el("div", "cd-mkeys"); for (var r = R - 1; r >= 0; r--) { keys.appendChild(el("span", "cd-mrk" + (lit(r) ? " tone" : ""), names[r])); } roll.appendChild(keys);
+    var g = el("div", "cd-mgrid"); g.dataset.cols = L; g.style.gridTemplateColumns = "repeat(" + L + ", minmax(0, 1fr))"; g.style.gridTemplateRows = "repeat(" + R + ", minmax(0, 1fr))";
+    cur.row = Math.min(cur.row, R - 1); cur.col = Math.min(cur.col, L - 1);
+    var full = m.notes.length >= 8;
+    for (var vr = 0; vr < R; vr++) { for (var c = 0; c < L; c++) { (function (d, c) {
+      var b = el("button", "cd-mcell" + (c % 4 === 0 ? " beat" : "") + (lit(d) ? " tone" : "") + (cur.row === d && cur.col === c ? " cur" : "")); b.type = "button";
+      b.dataset.row = d; b.dataset.col = c; b.dataset.fk = "mc:" + d + ":" + c; b.tabIndex = cur.row === d && cur.col === c ? 0 : -1;   /* the roll: one tab stop, its cursor */
+      b.setAttribute("aria-label", names[d] + ", " + fmt({ fmt: "beat" }, c)); if (full) { b.title = "The motif holds 8 notes at most"; }
+      b.addEventListener("click", function () { toggleNote(d, c); });
+      b.addEventListener("focus", function () { cur = { row: d, col: c }; });
+      g.appendChild(b); })(R - 1 - vr, c); } }
+    var pitch = "(100% + 2px)";   /* a column's pitch: the grid's width and one gap, over the columns */
+    m.notes.forEach(function (x, i) {
+      if (x.start >= L) { return; }
+      var row = mod(x.deg, R), up = Math.floor(x.deg / R) + (x.oct || 0), acc = x.acc === undefined ? 70 : x.acc;
+      var b = el("button", "cd-mnote" + (acc >= 85 ? " acc" : "") + (sel.kind === "sent" && ni === i ? " sel" : ""), names[row] + (up > 0 ? "′" : up < 0 ? "‚" : ""));
+      b.type = "button"; b.dataset.i = i; b.tabIndex = -1;   /* reached by the cursor: Enter on its first cell removes it, Delete too */
+      b.style.left = "calc(" + pitch + " * " + (x.start / L) + ")"; b.style.width = "calc(" + pitch + " * " + (Math.min(x.len, L - x.start) / L) + " - 2px)";
+      b.style.top = "calc(" + pitch + " * " + ((R - 1 - row) / R) + ")"; b.style.height = "calc(" + pitch + " / " + R + " - 2px)";
+      b.setAttribute("aria-label", "note " + (i + 1) + ", " + names[row] + ", " + fmt({ fmt: "beat" }, x.start) + ", " + fmt({ fmt: "dur" }, x.len));
+      b.title = names[row] + " · " + fmt({ fmt: "beat" }, x.start) + " · " + fmt({ fmt: "dur" }, x.len) + " · drag its end to lengthen it";
+      b.addEventListener("click", function () { if (!dragged) { cur = { row: row, col: x.start }; pickNote(i); } });
+      g.appendChild(b); });
+    g.addEventListener("pointerdown", function (e) { lengthen(e, g, m, L); });
+    if (!m.notes.length) {   /* C-5: no motif yet - a melody voice plays as Free until it has notes */
+      var em = el("div", "cd-mempty"); em.appendChild(el("p", "cd-mempty-t", "Draw a motif, or generate one."));
+      em.appendChild(el("p", "hint", "A melody voice plays the motif along the chain. Until it has notes it plays as Free."));
+      var eb = el("div", "cd-mempty-b"); eb.dataset.fk = "mempty";
+      [["Generate", function () { want = [CURSOR]; newMotif(n); }], ["Use a starter", function () { want = [CURSOR]; editMotif(function (x) { x.notes = M.motifDefault().notes; }); }]].forEach(function (k) {
+        var b = el("button", null, k[0]); b.type = "button"; b.addEventListener("click", k[1]); eb.appendChild(b); });
+      em.appendChild(eb); g.appendChild(em);
+    }
+    roll.appendChild(g); w.appendChild(roll);
+    var ac = el("div", "cd-macc"); ac.dataset.fk = "macc"; ac.appendChild(el("span", "cd-mrk", "accent"));
+    var ag = el("div", "cd-maccs"); ag.style.gridTemplateColumns = "repeat(" + L + ", minmax(0, 1fr))";
+    for (var k = 0; k < L; k++) { (function (k) {
+      var i = -1; m.notes.forEach(function (x, j) { if (x.start === k) { i = j; } });
+      var a = i < 0 ? 0 : m.notes[i].acc === undefined ? 70 : m.notes[i].acc, b = el(i < 0 ? "i" : "button", i < 0 ? null : "cd-mab" + (a >= 85 ? " acc" : ""));
+      if (i >= 0) { b.type = "button"; b.style.setProperty("--h", a + "%"); b.setAttribute("aria-label", "accent, note " + (i + 1) + ", " + a); b.title = "accent " + a + " · click to set, ↑ ↓ by 10";
+        var setA = function (v) { ni = i; sel = { kind: "sent" }; editMotif(function (x) { x.notes[i].acc = Math.max(0, Math.min(100, v)); }); };
+        b.addEventListener("click", function (ev) { if (!ev.detail) { return; }   /* Enter or Space: a keyboard click has no height to read */
+          var r = b.getBoundingClientRect(); setA(Math.round(Math.max(0, Math.min(1, 1 - (ev.clientY - r.top) / r.height)) * 100)); });
+        b.addEventListener("keydown", function (ev) { if (ev.key === "ArrowUp" || ev.key === "ArrowDown") { ev.preventDefault(); setA(a + (ev.key === "ArrowUp" ? 10 : -10)); } }); }
+      ag.appendChild(b); })(k); }
+    ac.appendChild(ag); w.appendChild(ac);
+    /* how it fits: the developed motif over the first two chords and the selected step's */
+    var fit = el("p", "cd-fit"), at = [0, 1], s = (comp.chain || [])[si];
+    if (s && at.indexOf(s.from) < 0) { at.push(s.from); }
+    at.filter(function (i) { return i < n; }).forEach(function (i, k) {
+      if (k) { fit.appendChild(document.createTextNode("  ·  ")); }
+      var st = M.chainAt(comp, i); if (st && st.op !== "repeat") { fit.appendChild(document.createTextNode(stepWord(st) + " ")); }
+      fit.appendChild(document.createTextNode("over ")); fit.appendChild(el("b", null, ctx.chords[i].label)); fit.appendChild(document.createTextNode(" " + (plays(i).join(" ") || "—"))); });
+    fit.title = fit.textContent; w.appendChild(fit);
+    var ch = comp.chain || [], chh = el("div", "cd-edh");
+    var t2 = el("h3", "cd-edh2", "Development chain"); t2.appendChild(el("i", null, ch.length ? "drag or Alt+← → to reorder · each step covers its chords · a later one wins" : "no steps: the motif repeats")); chh.appendChild(t2); w.appendChild(chh);
+    /* the chips in a run that gives way (the ranges go, then the long words, then they shrink with an ellipsis: draw measures);
+       + step stays at the row's end */
+    var bar = el("div", "cd-chips"), cl = el("div", "cd-chiprun");
+    ch.forEach(function (x, k) {
+      if (k) { cl.appendChild(el("span", "cd-arw", "→")); }
+      var L2 = letterAt(x.from, n), pre = L2 ? L2.letter + " · " : "", b = el("button", "cd-chip" + (sel.kind === "sent" && si === k ? " on" : "")); b.type = "button"; b.draggable = true; b.dataset.i = k; b.dataset.fk = "chip:" + k;
+      var rng = (x.from + 1) + (x.to > x.from ? "–" + (x.to + 1) : "");
+      b.title = pre + stepWord(x) + " · chords " + rng + " · drag, or Alt+← →, to move it";
+      b.appendChild(el("span", "cd-grip", "⋮⋮")); b.appendChild(el("b", "cd-wl", pre + stepWord(x))); b.appendChild(el("b", "cd-ws", (x.op === "cadence" ? "" : pre) + shortWord(x)));
+      b.appendChild(el("small", null, rng));
+      b.addEventListener("click", function () { pickStep(k); });
+      b.addEventListener("keydown", function (e) { if (!e.altKey || (e.key !== "ArrowLeft" && e.key !== "ArrowRight")) { return; }
+        e.preventDefault(); var j = k + (e.key === "ArrowLeft" ? -1 : 1); if (j < 0 || j >= ch.length) { return; } moveStep(k, j); });
+      b.addEventListener("dragstart", function (e) { e.dataTransfer.setData("text/plain", String(k)); e.dataTransfer.effectAllowed = "move"; });
+      b.addEventListener("dragover", function (e) { e.preventDefault(); });
+      b.addEventListener("drop", function (e) { e.preventDefault(); var f = +e.dataTransfer.getData("text/plain"); if (f === k || isNaN(f)) { return; } moveStep(f, k); });
+      cl.appendChild(b); });
+    bar.appendChild(cl);
+    var add = el("select", "cd-addstep"); add.id = "cd-addstep"; add.dataset.fk = "addstep"; add.setAttribute("aria-label", "Add a chain step"); add.disabled = ch.length >= 16;
+    add.title = ch.length >= 16 ? "The chain holds 16 steps" : "Add a step: an operation on the motif over a chord or more";
+    add.appendChild(new Option("+ step", "")); M.OPS.forEach(function (o) { add.appendChild(new Option(o.label, o.id)); });
+    add.addEventListener("change", function () { if (add.value) { addStep(add.value, n); } }); bar.appendChild(add);
+    w.appendChild(bar);
+    var hint = el("p", "cd-edhint"); hint.innerHTML = "Click an empty cell to add a note, drag its end to lengthen it, <kbd>Del</kbd> removes it; arrows move in the roll, <kbd>Enter</kbd> adds or removes."; w.appendChild(hint);
+    return w;
+  }
+  /* a chain step moved (a later step wins where two cover a chord): its chords go with it, the selection and focus follow */
+  function moveStep(f, k) { si = k; sel = { kind: "sent" }; want = ['[data-fk="chip:' + k + '"]']; editChain(function (c) { var y = c.splice(f, 1)[0]; c.splice(k, 0, y); }); }
+  function modeName() { var sc = ctx.scale || []; return sc.length ? noteName(sc[0]).replace(/-?\d+$/, "") + " " + (mod(sc[2] - sc[0], 12) === 3 ? "aeolian" : "ionian") : "the key"; }
+  function newMotif(n) { mseed = M.roll(mseed || comp.seed || 1); var g = M.generate(comp, { form: "AABA", contrast: 0, seed: mseed, nchords: Math.min(n, M.NCHORD) });
+    ni = -1; editMotif(function (x) { x.notes = g.motif.notes; x.bars = g.motif.bars; }); }
+  function addStep(op, n) {
+    var ch = comp.chain || [], m = Math.min(n, M.NCHORD), last = ch[ch.length - 1];
+    var at = sel.kind === "chord" ? Math.min(sel.i, m - 1) : last ? Math.min(last.to + 1, m - 1) : 0, o = M.OPS.filter(function (x) { return x.id === op; })[0];
+    var s = { op: op, from: at, to: at }; if (o.arg) { s.arg = o.arg.def; } if (op === "cadence") { s.cad = "full"; s.others = "thin"; }
+    si = ch.length; sel = { kind: "sent" }; editChain(function (c) { c.push(s); });
+  }
+  /* a step removed: focus on the step now in its place, the one before, + step, or the chords */
+  function removeStep(k) { si = -1; want = ['#cd-chain .cd-step[data-i="' + k + '"]', '#cd-chain .cd-step[data-i="' + (k - 1) + '"]', "#cd-addstep", "#cd-strip .cd-chord"];
+    editChain(function (c) { c.splice(k, 1); }); }
+  /* a note added where the roll is empty (one note a start: the note there goes; a note sounding on is cut short), or removed */
+  function toggleNote(d, c) {
+    var m = motif(), R = rowsOf(m).length, L = (m.bars || 1) * 16, hit = -1;
+    m.notes.forEach(function (x, i) { if (x.start === c && mod(x.deg, R) === d) { hit = i; } });
+    cur = { row: d, col: c };
+    if (hit >= 0) { ni = -1; editMotif(function (x) { x.notes.splice(hit, 1); }); return; }
+    var keep = m.notes.filter(function (x) { return x.start !== c; });
+    if (keep.length >= 8) { capped = true; render(); return; }   /* the core plays 8 notes at most (MOTIF_MAX): C-5, say so */
+    editMotif(function (x) {
+      x.notes = keep.map(function (y) { y = M.clone(y); if (y.start < c && y.start + y.len > c) { y.len = c - y.start; } return y; });
+      var next = L; x.notes.forEach(function (y) { if (y.start > c) { next = Math.min(next, y.start); } });
+      x.notes.push({ deg: d, start: c, len: Math.max(1, Math.min(4, next - c)) }); ni = x.notes.length - 1;
+    });
+  }
+  /* a note's end dragged (its last 8 px): its length follows to the nearest sixteenth, up to the next note (as adding one cuts
+     the note before), stored once on release (one undo step) */
+  var dragged = false;
+  function lengthen(e, g, m, L) {
+    var nb = e.target.closest && e.target.closest(".cd-mnote"); if (!nb || e.button) { return; }
+    var r = nb.getBoundingClientRect(); if (e.clientX < r.right - 8) { return; }
+    e.preventDefault(); dragged = true;
+    var i = +nb.dataset.i, x = m.notes[i], gr = g.getBoundingClientRect(), pc = (gr.width + 2) / L, len = x.len, end = L;
+    m.notes.forEach(function (y) { if (y.start > x.start) { end = Math.min(end, y.start); } });
+    var mv = function (ev) { len = Math.max(1, Math.min(end - x.start, Math.round((ev.clientX - gr.left + 1) / pc) - x.start));
+      nb.style.width = "calc((100% + 2px) * " + (len / L) + " - 2px)"; };
+    try { nb.setPointerCapture(e.pointerId); } catch (_) { /* no live pointer (a synthetic event): the handle still hears its own */ }
+    var up = function () { ["pointermove", "pointerup", "pointercancel"].forEach(function (t) { nb.removeEventListener(t, t === "pointermove" ? mv : up); });
+      setTimeout(function () { dragged = false; }, 0); ni = i; sel = { kind: "sent" };
+      if (len !== x.len) { editMotif(function (y) { y.notes[i].len = len; }); } else { render(); } };
+    nb.addEventListener("pointermove", mv); nb.addEventListener("pointerup", up); nb.addEventListener("pointercancel", up);
   }
   /* the walker's chord: a dot on voice 1's cell it plays, kept current while the dock is open */
   function markNow() {
@@ -238,7 +498,7 @@
   }
   /* the foot's dropout readout: the engine's slow blocks (web/core-worklet.js), asked once a second while the dock is open;
      "audio ok", or how many in the last minute (warn), the slowest block in its title. Tests read __fa.dropouts */
-  var gaps0 = null;
+  var gapLog = [];   /* the device's gap count, stamped: the last minute's are the ones shown */
   function pollAudio() {
     polls++;
     if (!ctx || !ctx.stats || !ctx.stats(function (m) {
@@ -256,8 +516,14 @@
     var e = document.getElementById("cd-audio"); if (!e) { return; }
     /* slow blocks are the engine running late; the device's own gap count (Chrome's playbackStats) says whether it was heard */
     var as = window.__fa.audioStats, gaps = as && typeof as.underruns === "number" ? as.underruns : null;
-    if (gaps != null && gaps0 == null) { gaps0 = gaps; }
-    var heard = gaps != null ? gaps - gaps0 : null;
+    var heard = null;
+    if (gaps != null) {
+      var nowT = Date.now(), lastG = gapLog[gapLog.length - 1];
+      if (lastG && gaps < lastG.g) { gapLog = []; }   /* a new engine: its count starts again */
+      gapLog.push({ at: nowT, g: gaps });
+      while (gapLog.length > 1 && nowT - gapLog[1].at >= 60000) { gapLog.shift(); }
+      heard = gaps - gapLog[0].g;
+    }
     e.classList.toggle("warn", n > 0 || heard > 0);
     e.lastChild.textContent = heard > 0 ? heard + (heard === 1 ? " gap heard" : " gaps heard") + " · " + n + " slow" :
       n ? n + (n === 1 ? " slow block" : " slow blocks") + " in the last minute" : "audio ok";
@@ -265,7 +531,7 @@
   }
   function foot() {
     var f = el("div", "cd-foot"), lg = el("div", "cd-legend");
-    [["route", ""], ["by a section", " by-section"], ["by a zone", " by-zone"], ["by a chord", " by-chord"]].forEach(function (x) {
+    [["route", ""], ["by a section", " by-section"], ["by a zone", " by-zone"], ["by a chord", " by-chord"]].concat(hasMelody() || (comp.chain || []).length ? [["by the chain", " by-chain"]] : []).forEach(function (x) {
       var s = el("span"); s.appendChild(el("i", x[1].trim() || null)); s.appendChild(document.createTextNode(x[0])); lg.appendChild(s); });
     f.appendChild(lg);
     var k = el("span", "cd-keys");
@@ -293,6 +559,7 @@
 
   function inspector(w, bs, n) {
     if (gen) { genPanel(w, n); return; }
+    if (sel.kind === "sent") { sentPanel(w, n); return; }
     var ih = el("div", "cd-ih"), title; ih.dataset.fk = "ih";
     var cap = TAB[voice].charAt(0).toUpperCase() + TAB[voice].slice(1);
     if (sel.kind === "chord") { title = cap + " · chord " + (sel.i + 1); }
@@ -315,20 +582,96 @@
       b.addEventListener("click", function () { voice = v; render(); }); tabs.appendChild(b); });
     w.appendChild(tabs);
     var e = M.effective(comp, sel, voice, sel.kind === "chord" ? bs.filter(function (b) { return b.t0 < (sel.i + 1) / n && b.t1 > sel.i / n; }) : null);
-    var style = voice === "bass" ? null : e.style;
-    var fields = voice === "bass" ? M.BASS : M.FIELDS.common.concat(M.FIELDS[style] || []);
-    fields.filter(function (f) { return f.kind !== "grid" && f.kind !== "accents"; }).forEach(function (f) { w.appendChild(row(f, e.values[f.k], e.source[f.k])); });
+    var style = voice === "bass" ? null : e.style, mel = voice !== "bass" && e.values.role === "melody";
+    /* a melody plays the motif: its style and rate are not what it plays (the chain is) */
+    var fields = voice === "bass" ? M.BASS : mel ? M.FIELDS.common.filter(function (f) { return f.k !== "style" && f.k !== "rate"; }) : M.FIELDS.common.concat(M.FIELDS[style] || []);
+    fields.filter(function (f) { return f.kind !== "grid" && f.kind !== "accents"; }).forEach(function (f) { w.appendChild(row(f, e.values[f.k], e.source[f.k]));
+      if (f.k === "role") { w.appendChild(el("p", "cd-isub wrap cd-rolehint", "“melody” plays the motif; “on” plays the style; “off” is silent.")); } });
     var grid = fields.filter(function (f) { return f.kind === "grid"; })[0];
     if (grid) { patternBlock(w, grid, fields.filter(function (f) { return f.kind === "accents"; })[0], e); }
+    if (mel && sel.kind === "chord") {   /* what it plays here */
+      w.appendChild(el("p", "cd-ieb", "plays here"));
+      var st = M.chainAt(comp, sel.i), pl = plays(sel.i);
+      w.appendChild(el("p", "cd-isub", (motif().notes.length ? "motif · " + stepWord(st) + " → " + pl.join(" · ") : "no motif yet · plays as Free")));
+      var at = bs.filter(function (b) { return b.t0 < (sel.i + 1) / n && b.t1 > sel.i / n; }), say = function (k) { var x = "";
+        if (k === "route") { return sayOf(comp[voice]) || "—"; }
+        if (k === "chord") { return sayOf((comp.over.chord[String(sel.i)] || {})[voice]) || "—"; }
+        at.filter(function (b) { return b.kind === k; }).forEach(function (b) { x = sayOf((comp.over[k][String(b.id)] || {})[voice]) || x; }); return x || "—"; };
+      w.appendChild(el("p", "cd-ieb", "layers"));
+      w.appendChild(el("p", "cd-isub", ["zone", "chord", "section", "route"].map(function (k) { return k + " " + say(k); }).join(" · ")));
+    }
     var tools = el("div", "cd-itools"); tools.dataset.fk = "tools";
     var li = el("button", "cd-listen", "Listen here"); li.type = "button"; li.title = "Put the walker on this stretch of the route";
     li.addEventListener("click", function () {
       var b = sel.kind === "zone" || sel.kind === "section" ? bs.filter(function (x) { return x.kind === sel.kind && isSel(x.kind, x.id); })[0] : null;
       listen(sel.kind === "chord" ? (sel.i + 0.5) / n : b ? (b.t0 + b.t1) / 2 : 0.02); });
     tools.appendChild(li);
-    var sm = el("button", null, "Show on map"); sm.type = "button"; sm.title = "Bring the selection into view on the map";
-    sm.addEventListener("click", function () { ctx.show(sel.kind === "chord" ? { chord: sel.i } : sel.kind === "zone" ? { zone: sel.id } : null); });
-    tools.appendChild(sm);
+    if (mel && !grown) {
+      var emb = el("button", null, "Edit motif ▴"); emb.type = "button"; emb.title = "Grow the dock: the motif's roll and the chain";
+      emb.addEventListener("click", growDock); tools.appendChild(emb);
+    } else {
+      var sm = el("button", null, "Show on map"); sm.type = "button"; sm.title = "Bring the selection into view on the map";
+      sm.addEventListener("click", function () { ctx.show(sel.kind === "chord" ? { chord: sel.i } : sel.kind === "zone" ? { zone: sel.id } : null); });
+      tools.appendChild(sm);
+    }
+    w.appendChild(tools);
+  }
+  function growDock() { grown = !grown; document.body.classList.toggle("composing-grown", grown); resize(); render(); }
+  /* the sentence's inspector: the selected chain step (operation, by, from, to; a cadence's type, the others, its strength) and
+     the selected motif note (degree, octave, start, length, accent) */
+  function sentPanel(w, n) {
+    var ch = comp.chain || [], s = ch[si], m = motif(), x = m.notes[ni], names = rowsOf(m), L = (m.bars || 1) * 16, nc = Math.min(n, M.NCHORD);
+    var ih = el("div", "cd-ih"); ih.dataset.fk = "ih";
+    var lt = s ? letterAt(s.from, n) : null;
+    var h = el("h3", null, s ? "Chain step " + (si + 1) + (lt ? " · " + lt.letter : "") : "Motif · note " + (ni + 1)); h.id = "cd-insp-title"; ih.appendChild(h);
+    var rm = el("button", "ghost cd-clear", "remove"); rm.type = "button"; rm.title = s ? "Remove this chain step" : "Remove this note";
+    var dropNote = function () { var j = ni; ni = -1; want = [CURSOR, "#cd-insp-title"]; editMotif(function (y) { y.notes.splice(j, 1); }); };
+    rm.addEventListener("click", function () { if (s) { removeStep(si); } else { dropNote(); } });
+    ih.appendChild(rm); w.appendChild(ih);
+    if (s) {
+      w.appendChild(el("p", "cd-isub", (s.to > s.from ? "chords " + (s.from + 1) + "–" + (s.to + 1) : "chord " + (s.from + 1)) + (s.op === "cadence" ? " · the phrase closes" : " · the motif, developed")));
+      var setS = function (k) { return function (v) { var j = si; editChain(function (c) { var y = c[j]; y[k] = v;
+        if (k === "op") { var o = M.OPS.filter(function (z) { return z.id === v; })[0]; if (o.arg && (y.arg === undefined || y.arg < o.arg.min || y.arg > o.arg.max)) { y.arg = o.arg.def; }
+          if (v === "cadence") { y.cad = y.cad || "full"; y.others = y.others || "thin"; } }
+        if (k === "from" && y.to < v) { y.to = v; } }); }; };
+      var opd = M.OPS.filter(function (z) { return z.id === s.op; })[0] || {};
+      var HERE = { src: "here" }, own = function (set, k, def) { return set ? { src: "here", reset: function () { setS(k)(def); } } : { src: "default" }; };
+      w.appendChild(row({ k: "op", label: "operation", kind: "menu", options: M.OPS }, s.op, "", setS("op"), HERE));
+      if (opd.arg) { w.appendChild(row({ k: "arg", label: s.op === "seq" ? "by" : "notes", kind: "knob", min: opd.arg.min, max: opd.arg.max, step: 1, def: opd.arg.def, fmt: s.op === "seq" ? "sgn" : null }, Math.round(s.arg || 0), "",
+        function (v) { setS("arg")(+v); }, own(Math.round(s.arg || 0) !== opd.arg.def, "arg", opd.arg.def))); }
+      var chords = []; for (var i = 0; i < nc; i++) { chords.push({ id: i, label: "chord " + (i + 1) }); }
+      w.appendChild(row({ k: "from", label: "from", kind: "menu", options: chords }, s.from, "", function (v) { setS("from")(+v); }, HERE));
+      w.appendChild(row({ k: "to", label: "to", kind: "menu", options: chords.slice(s.from) }, s.to, "", function (v) { setS("to")(+v); }, HERE));
+      if (s.op === "cadence") {
+        [["cad", "type", ["full", "half", "deceptive"], s.cad || "full"], ["others", "others", ["hold", "thin", "stop"], s.others || "thin"]].forEach(function (k) {
+          var r = el("div", "cd-row2 wide mine"); r.dataset.k = k[0]; r.dataset.fk = "row:" + k[0]; r.appendChild(el("span", "cd-k", k[1]));
+          var c = el("span", "cd-ctl"); c.appendChild(seg(k[2].map(function (v) { return [v, v]; }), k[3], setS(k[0]), k[1])); r.appendChild(c); w.appendChild(r); });
+        w.appendChild(row({ k: "strength", label: "strength", kind: "knob", min: 0, max: 1, step: 0.05, def: 1, fmt: "pct" }, s.strength === undefined ? 1 : s.strength, "", function (v) { setS("strength")(+v); },
+          own(s.strength !== undefined && s.strength !== 1, "strength", 1)));
+        w.appendChild(el("p", "cd-isub wrap", "full ends on the tonic, half on the 5th, deceptive on the 6th"));
+      }
+    }
+    if (x) {
+      var R = names.length, row0 = mod(x.deg, R), lab = m.basis === "scale" ? names[row0] : DEG[row0];
+      var eb = el("p", "cd-ieb", "selected note · " + lab); eb.dataset.fk = "ieb"; w.appendChild(eb);
+      if (s) { var rn = el("button", "cd-reset", "remove"); rn.type = "button"; rn.title = "Remove this note"; rn.addEventListener("click", dropNote); eb.appendChild(rn); }   /* the head's remove is the step's */
+      var setN = function (k) { return function (v) { var j = ni; editMotif(function (y) { var z = y.notes[j]; z[k] = +v;
+        if (k === "start") { z.len = Math.min(z.len, L - z.start); } }); }; };
+      var NH = { src: "here" }, oc = Math.floor(x.deg / R) + (x.oct || 0);
+      var unset = function (k) { var j = ni; return function () { editMotif(function (y) { var z = y.notes[j]; if (k === "oct") { z.deg = mod(z.deg, R); } delete z[k]; }); }; };
+      w.appendChild(row({ k: "deg", label: "degree", kind: "menu", options: names.map(function (q, d) { return { id: d, label: m.basis === "scale" ? q : DEG[d] }; }) }, row0, "",
+        function (v) { var j = ni; editMotif(function (y) { var z = y.notes[j]; z.oct = Math.max(-2, Math.min(2, Math.floor(z.deg / R) + (z.oct || 0))); z.deg = +v; if (!z.oct) { delete z.oct; } }); }, NH));
+      w.appendChild(row({ k: "oct", label: "octave", kind: "knob", min: -2, max: 2, step: 1, def: 0, fmt: "sgn" }, oc, "",
+        function (v) { var j = ni; editMotif(function (y) { var z = y.notes[j]; z.oct = +v - Math.floor(z.deg / R); }); }, oc ? { src: "here", reset: unset("oct") } : { src: "motif" }));
+      w.appendChild(row({ k: "start", label: "start", kind: "knob", min: 0, max: L - 1, step: 1, def: 0, fmt: "beat" }, x.start, "", setN("start"), NH));
+      w.appendChild(row({ k: "len", label: "length", kind: "knob", min: 1, max: L - x.start, step: 1, def: 4, fmt: "dur" }, x.len, "", setN("len"), NH));
+      w.appendChild(row({ k: "acc", label: "accent", kind: "knob", min: 0, max: 100, step: 5, def: 70 }, x.acc === undefined ? 70 : x.acc, "", setN("acc"), x.acc !== undefined ? { src: "here", reset: unset("acc") } : { src: "motif" }));
+    }
+    var tools = el("div", "cd-itools"); tools.dataset.fk = "tools";
+    var li = el("button", "cd-listen", "Listen here"); li.type = "button"; li.title = "Put the walker on this step's chords";
+    li.addEventListener("click", function () { listen(((s ? s.from : 0) + 0.5) / n); }); tools.appendChild(li);
+    var sm = el("button", null, grown ? "Show on map" : "Edit motif ▴"); sm.type = "button";
+    sm.addEventListener("click", function () { if (grown) { ctx.show(s ? { chord: s.from } : null); } else { growDock(); } }); tools.appendChild(sm);
     w.appendChild(tools);
   }
   /* the Generate form panel (in the inspector's place): the form, how far B and C move from A, Generate - each press a new seed */
@@ -381,15 +724,24 @@
     x.addEventListener("click", function () { keys.forEach(function (k) { M.clearValue(comp, sel, voice, k); }); commit(); }); s.appendChild(x);
     return s;
   }
-  function row(f, v, src) {
-    var mine = sel.kind === "route" || src === "here";
+  /* the sentence's source column: "here x" (x back to the default), else where it comes from (the motif's, the default) */
+  function ownSrc(f, so) {
+    var s = el("span", "cd-src", so.src);
+    if (so.reset) { var x = el("button", "cd-reset", "×"); x.type = "button"; x.title = "Back to the " + (so.src === "here" ? "default" : so.src); x.setAttribute("aria-label", "Reset " + f.label);
+      x.addEventListener("click", so.reset); s.appendChild(x); }
+    return s;
+  }
+  function row(f, v, src, own, so) {   /* own: the sentence's setter (a chain step's, a note's); so: its source, { src, reset } */
+    var mine = own ? so.src === "here" : sel.kind === "route" || src === "here";
     var r = el("div", "cd-row2 " + (mine ? "mine" : "inh")); r.dataset.k = f.k; r.dataset.fk = "row:" + f.k;
     r.appendChild(el("span", "cd-k", f.label));
-    var set = function (val) { M.setValue(comp, sel, voice, f.k, val); commit(); };
+    /* a voice made the melody gets a motif to play (the starter) in the same undo step */
+    var set = own || function (val) { M.setValue(comp, sel, voice, f.k, val); if (f.k === "role" && val === "melody" && !comp.motif) { M.setMotif(comp, M.motifDefault()); } commit(); };
     var ctl = el("span", "cd-ctl"), out = el("span", "cd-v", "");
     if (f.kind === "menu") {
       var m = el("select"); m.setAttribute("aria-label", f.label);
-      f.options.forEach(function (o) { m.appendChild(new Option(f.k === "rate" ? RATE[o.id] || o.label : o.label, o.id)); }); m.value = v;
+      var opts = f.k === "role" ? ["melody", "accomp", "off"].map(function (id) { return f.options.filter(function (o) { return o.id === id; })[0]; }) : f.options;   /* the mock's order */
+      opts.forEach(function (o) { m.appendChild(new Option(f.k === "rate" ? RATE[o.id] || o.label : o.label, o.id)); }); m.value = v;
       m.addEventListener("change", function () { set(m.value); }); ctl.appendChild(m);
     } else if (f.kind === "toggle") {
       ctl.appendChild(seg([[true, "on"], [false, "off"]], !!v, function (x) { set(x); }, f.label));
@@ -407,7 +759,7 @@
         b.addEventListener("click", function () { var a = (v || []).slice(), i = a.indexOf(d); if (i >= 0) { a.splice(i, 1); } else { a.push(d); } a.sort(); set(a.length ? a : [0]); }); t.appendChild(b); });
       ctl.appendChild(t);
     }
-    r.appendChild(ctl); r.appendChild(out); r.appendChild(srcCell(src, f, [f.k]));
+    r.appendChild(ctl); r.appendChild(out); r.appendChild(own ? ownSrc(f, so) : srcCell(src, f, [f.k]));
     return r;
   }
   /* the pattern grid: rows chord degrees (9 7 5 3 root), columns steps; one degree per column, click again to rest. Arpeggio adds
@@ -442,8 +794,8 @@
       w.appendChild(a);
     }
   }
-  function undo() { var c = hist.undo(); if (c) { comp = c; store(); render(); } }
-  function redo() { var c = hist.redo(); if (c) { comp = c; store(); render(); } }
+  function undo() { var c = hist.undo(); if (c) { comp = c; capped = false; store(); render(); } }
+  function redo() { var c = hist.redo(); if (c) { comp = c; capped = false; store(); render(); } }
   /* the keyboard (the dock's own keys only where they mean something; a focused button, select, range or field keeps its
      native keys): arrows move between cells, Enter opens the inspector and Delete clears from a cell, chord or band, Space is
      the sound from the page or a cell or chord, Ctrl+Z / Ctrl+Shift+Z outside a field, Esc back to the patch */
@@ -452,6 +804,7 @@
     if (!ctx) { return; }
     var t = e.target, field = /INPUT|SELECT|TEXTAREA/.test((t && t.tagName) || "") || (t && t.isContentEditable);
     var grid = on(t, "#compose-dock .cd-cell, #compose-dock .cd-chord, #compose-dock .cd-band");
+    var roll = on(t, "#cd-motif .cd-mcell, #cd-motif .cd-mnote"), step = on(t, "#compose-dock .cd-step");
     var page = !t || t === document || t === document.body || t === document.documentElement;
     if (e.key === "Escape") { if (field && !on(t, "#compose-dock")) { return; } e.preventDefault(); e.stopPropagation(); back(); return; }
     if (field) { return; }
@@ -459,11 +812,35 @@
     if (e.ctrlKey || e.metaKey || e.altKey || !ctx.chords.length) { return; }
     var n = ctx.chords.length;
     if (e.key === " ") {
-      if (!page && !on(t, "#compose-dock .cd-cell, #compose-dock .cd-chord")) { return; }
+      if (!page && !roll && !step && !on(t, "#compose-dock .cd-cell, #compose-dock .cd-chord")) { return; }
       var pb = document.getElementById("patch-play"); if (pb) { pb.click(); } e.preventDefault(); return;
     }
+    /* the roll: arrows move its cursor, Enter adds or removes the note there, Delete removes the selected note */
+    if (roll) {
+      var m = motif(), R = rowsOf(m).length, L = (m.bars || 1) * 16, nb = t.closest(".cd-mnote"), x = nb ? m.notes[+nb.dataset.i] : null;
+      var rr = x ? mod(x.deg, R) : +t.dataset.row, cc = x ? x.start : +t.dataset.col;
+      var go = function (r, c) { var q = document.querySelector('#cd-motif .cd-mcell[data-row="' + r + '"][data-col="' + c + '"]'); if (q) { q.focus({ preventScroll: true }); } };
+      if (e.key === "Enter") { e.preventDefault(); toggleNote(rr, cc); go(rr, cc); return; }
+      if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); var j = nb ? +nb.dataset.i : ni;
+        m.notes.forEach(function (y, q) { if (!nb && y.start === cc && mod(y.deg, R) === rr) { j = q; } });
+        if (j >= 0) { ni = -1; editMotif(function (y) { y.notes.splice(j, 1); }); go(rr, cc); } return; }
+      if (/^Arrow/.test(e.key)) { e.preventDefault();
+        if (e.key === "ArrowRight") { cc = Math.min(L - 1, cc + 1); } else if (e.key === "ArrowLeft") { cc = Math.max(0, cc - 1); }
+        else if (e.key === "ArrowUp") { rr = Math.min(R - 1, rr + 1); } else { rr = Math.max(0, rr - 1); }
+        [].forEach.call(document.querySelectorAll("#cd-motif .cd-mcell.cur"), function (q) { q.classList.remove("cur"); q.tabIndex = -1; });
+        var q = document.querySelector('#cd-motif .cd-mcell[data-row="' + rr + '"][data-col="' + cc + '"]'); if (q) { q.classList.add("cur"); q.tabIndex = 0; }
+        cur = { row: rr, col: cc }; go(rr, cc); return; }
+      return;
+    }
+    /* a chain step: Enter its inspector, Delete removes it */
+    if (step) {
+      var k = +t.closest(".cd-step").dataset.i;
+      if (e.key === "Enter") { e.preventDefault(); pickStep(k); var f0 = document.querySelector("#cd-insp select, #cd-insp input"); if (f0) { f0.focus(); } return; }
+      if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); removeStep(k); return; }
+      return;
+    }
     if (e.key === "Enter") { if (!grid) { return; } var f = document.querySelector("#cd-insp select, #cd-insp input, #cd-insp .cd-row2 button"); if (f) { f.focus(); } e.preventDefault(); return; }
-    if (e.key === "Delete" || e.key === "Backspace") { if (!grid || sel.kind === "route") { return; } M.clearScope(comp, sel); commit(); e.preventDefault(); return; }
+    if (e.key === "Delete" || e.key === "Backspace") { if (!grid || sel.kind === "route" || sel.kind === "sent") { return; } M.clearScope(comp, sel); commit(); e.preventDefault(); return; }
     if (!/^Arrow/.test(e.key) || !(page || on(t, "#compose-dock"))) { return; }
     if (on(t, "#compose-dock") && !grid) { return; }      /* arrows on the dock's other buttons: nothing of ours */
     e.preventDefault();

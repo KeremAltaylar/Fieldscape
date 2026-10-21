@@ -12532,7 +12532,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         $("#patchpanel").hidden = false; renderPatchPanel();
         var cb = $("#pp-compose"); if (cb) { cb.focus(); }
       },
-      chords: (patch.prog || []).map(function (c, i) { return { colour: rootColour(chordRoot(patch, i)), label: chordLabel(patch, i) }; }),
+      chords: (patch.prog || []).map(function (c, i) { return { colour: rootColour(chordRoot(patch, i)), label: chordLabel(patch, i), tones: chordTones(patch, i) }; }),
+      /* composition 2: the key's scale as the core takes scale degrees (core/piece.cpp scale_midi) - aeolian on a first chord with a minor 3rd, else ionian */
+      scale: (patch.prog || []).length ? ((CHORDS[chordQuality(patch, 0)] || CHORDS.m7)[1] === 3 ? MODES.aeolian : [0, 2, 4, 5, 7, 9, 11]).map(function (x) { return patch.key + x; }) : [],
       coords: f.geometry.coordinates,
       sections: function () {     /* null: walk onto the route to see them */
         if (!here() || !sect.seeds || !pacer.patch) { return null; }

@@ -8,13 +8,14 @@ import Foundation
 
 let MEDIA_URL = "https://fieldscape-media.keremaltaylar.workers.dev"
 
-/* web/compose-model.js summary(): per voice "Off" or its style's label; no comp, no line */
+/* web/compose-model.js summary(): per voice "Off", "Motif" (melody) or its style's label; no comp, no line */
 func compSummary(_ comp: [String: Any]?) -> String {
     guard let comp else { return "" }
     let labels = ["free": "Free", "arpeggio": "Arpeggio", "pedal": "Pedal", "strum": "Strum", "euclid": "Euclidean", "swells": "Swells"]
     return ["voice", "sect", "v3"].map { k in
         let v = comp[k] as? [String: Any]
-        return v?["role"] as? String == "off" ? "Off" : labels[v?["style"] as? String ?? ""] ?? "Free"
+        let r = v?["role"] as? String
+        return r == "off" ? "Off" : r == "melody" ? "Motif" : labels[v?["style"] as? String ?? ""] ?? "Free"
     }.joined(separator: " · ")
 }
 
