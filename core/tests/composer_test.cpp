@@ -610,6 +610,9 @@ static void test_relations_parse() {
     n = comp::relations_in_force(c, 0, &zA, 1, out); assert(n == 6 && out[0] == 1);   /* chord 0: before rel 0's span */
     n = comp::relations_in_force(c, 63, nullptr, 0, out); assert(n == 7 && out[6] == 7);
     Json q = Json::parse(R"({"comp":{}})"); comp::Cfg z; comp::comp_of(q.get("comp"), z); assert(z.nrel == 0);
+    { Json v = Json::parse(R"({"comp":{"relations":[{"type":"canon","a":5,"b":0},{"type":"canon","a":0,"b":-1},{"type":"hocket","a":0,"b":1,"c":1},{"type":"hocket","a":0,"b":1,"c":7}]}})");
+      comp::Cfg y; comp::comp_of(v.get("comp"), y);
+      assert(y.nrel == 2 && y.rel[0].c == 255 && y.rel[1].c == 255); }   /* a voice past 0..2 drops the relation; a bad or repeated c is ignored */
     std::string many = R"({"comp":{"relations":[)";
     for (int i = 0; i < 13; i++) many += std::string(i ? "," : "") + R"({"type":"unison","a":0,"b":1,"cap":)" + std::to_string(i + 1) + "}";
     Json mj = Json::parse((many + "]}}").c_str()); comp::Cfg w; comp::comp_of(mj.get("comp"), w);

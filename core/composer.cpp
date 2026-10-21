@@ -143,12 +143,13 @@ static void rel_of(const Json *a, Relation *o, int &n) {
         if (!x || x->kind != Json::OBJ) continue;
         const int type = pick(x->s("type", ""), TYPES, NREL, NREL);
         const long f = rnd(x->n("from", 0)), t = rnd(x->n("to", NCHORD - 1));   /* round, then validate */
-        const uint8_t va = clamp8(x->n("a", 0), 0, 2), vb = clamp8(x->n("b", 1), 0, 2);
-        if (type == NREL || f < 0 || t < f || t >= NCHORD || va == vb) continue;
+        const long la = rnd(x->n("a", 0)), lb = rnd(x->n("b", 1));   /* a voice past 0..2 drops the relation, not clamps it */
+        if (type == NREL || f < 0 || t < f || t >= NCHORD || la < 0 || la > 2 || lb < 0 || lb > 2 || la == lb) continue;
+        const uint8_t va = (uint8_t)la, vb = (uint8_t)lb;
         Relation &r = o[n++];
         r = Relation();
         r.type = (uint8_t)type; r.a = va; r.b = vb;
-        if (x->get("c")) r.c = clamp8(x->n("c", 0), 0, 2);
+        if (x->get("c")) { const long lc = rnd(x->n("c", -1)); if (lc >= 0 && lc <= 2 && lc != la && lc != lb) r.c = (uint8_t)lc; }
         r.from = (uint8_t)f; r.to = (uint8_t)t;
         if (const Json *z = x->get("zone")) if (z->kind == Json::STR) r.zone = id_hash(z->str.c_str());
         r.delay16 = clamp8(x->n("delay", 8), 1, 32);
