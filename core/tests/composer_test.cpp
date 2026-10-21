@@ -569,6 +569,54 @@ static void test_motif_parse() {
     std::printf("C motif parse: 4 notes (one clipped to the bar), 3 of 6 chain steps kept, melody role\n");
 }
 
+static void test_relations_parse() {
+    const char *J = R"({"comp":{"relations":[
+      {"type":"canon","a":0,"b":2,"from":1,"to":5,"zone":"zA","delay":12,"trans":-3,"transform":"retro"},
+      {"type":"call","a":2,"b":1,"source":"mirror","gap":4,"trigger":"enter"},
+      {"type":"hocket","a":0,"b":1,"c":2,"split":"mask","every":9,"mask":"x..x.x..x......xx"},
+      {"type":"hetero","a":1,"b":0,"offset":200,"ornament":0.4},
+      {"type":"motion","a":0,"b":1,"motion":"par6","strength":0.5},
+      {"type":"unison","a":0,"b":2,"meet":"never","octave":"octave"},
+      {"type":"density","a":0,"b":1,"c":2,"cap":99,"weight":[4,0,9]},
+      {"type":"canon","a":1,"b":1},
+      {"type":"bogus","a":0,"b":1},
+      {"type":"canon","a":0,"b":1,"from":9,"to":2},
+      {"type":"canon","a":0,"b":1,"from":63.6,"to":63.7},
+      {"type":"canon","a":0,"b":1,"from":62.6,"to":62.7,"delay":0}]}})";
+    Json j = Json::parse(J); comp::Cfg c; comp::comp_of(j.get("comp"), c);
+    assert(c.nrel == 8);                    /* a == b, unknown type, from > to, 63.6 -> 64 out of range: dropped */
+    const comp::Relation &k = c.rel[0];
+    assert(k.type == comp::R_CANON && k.a == 0 && k.b == 2 && k.c == 255 && k.from == 1 && k.to == 5 && k.zone == comp::id_hash("zA"));
+    assert(k.delay16 == 12 && k.trans == -3 && k.transform == comp::T_RETRO);
+    const comp::Relation &l = c.rel[1];
+    assert(l.type == comp::R_CALL && l.source == comp::A_MIRROR && l.gap16 == 4 && l.on_enter == 1 && l.zone == 0 && l.from == 0 && l.to == comp::NCHORD - 1);
+    const comp::Relation &h = c.rel[2];
+    assert(h.type == comp::R_HOCKET && h.c == 2 && h.split == comp::S_MASK && h.every == 4 && h.mask == (1u | 8u | 32u | 256u | 0x8000u));
+    const comp::Relation &e = c.rel[3];
+    assert(e.type == comp::R_HETERO && e.a == 1 && e.b == 0 && e.offset_ms == 120 && std::fabs(e.ornament - 0.4f) < 1e-6f);
+    const comp::Relation &m = c.rel[4];
+    assert(m.type == comp::R_MOTION && m.motion == comp::M_PAR6 && m.strength == 0.5f);
+    const comp::Relation &u = c.rel[5];
+    assert(u.type == comp::R_UNISON && u.meet == comp::U_NEVER && u.octave == 1);
+    const comp::Relation &d = c.rel[6];
+    assert(d.type == comp::R_DENSITY && d.c == 2 && d.cap == 32 && d.weight[0] == 4 && d.weight[1] == 0 && d.weight[2] == 4);
+    assert(c.rel[7].from == 63 && c.rel[7].to == 63 && c.rel[7].delay16 == 1);
+    /* in force: span and zone */
+    int out[comp::REL_MAX]; const uint64_t zA = comp::id_hash("zA"), zB = comp::id_hash("zB");
+    int n = comp::relations_in_force(c, 3, nullptr, 0, out);
+    assert(n == 6 && out[0] == 1 && out[1] == 2 && out[5] == 6);       /* not 0 (zone zA), not 7 (chord 63) */
+    n = comp::relations_in_force(c, 3, &zB, 1, out); assert(n == 6);
+    n = comp::relations_in_force(c, 3, &zA, 1, out); assert(n == 7 && out[0] == 0);
+    n = comp::relations_in_force(c, 0, &zA, 1, out); assert(n == 6 && out[0] == 1);   /* chord 0: before rel 0's span */
+    n = comp::relations_in_force(c, 63, nullptr, 0, out); assert(n == 7 && out[6] == 7);
+    Json q = Json::parse(R"({"comp":{}})"); comp::Cfg z; comp::comp_of(q.get("comp"), z); assert(z.nrel == 0);
+    std::string many = R"({"comp":{"relations":[)";
+    for (int i = 0; i < 13; i++) many += std::string(i ? "," : "") + R"({"type":"unison","a":0,"b":1,"cap":)" + std::to_string(i + 1) + "}";
+    Json mj = Json::parse((many + "]}}").c_str()); comp::Cfg w; comp::comp_of(mj.get("comp"), w);
+    assert(w.nrel == comp::REL_MAX);                                    /* the 13th valid entry dropped */
+    std::printf("C relations parse: 8 of 12 entries kept in order, fields clamped, span/zone filter, cap %d\n", comp::REL_MAX);
+}
+
 /* D minor 7 (key 50), the walk's first chord for >= 2 bars: a 4-note chord-degree motif root-5th-3rd-9th, each a quarter */
 static std::string melody(const char *chain, const char *extra = "") {
     char b[2048]; std::snprintf(b, sizeof b, R"(,"comp":{"voice":{"role":"melody","lo":50,"hi":81},"sect":{"role":"off"},"v3":{"role":"off"},"bass":{"mode":"off"},%s,"chain":%s,"bars":"repeat"%s})", MOT, chain, extra);
@@ -984,6 +1032,7 @@ int main(int argc, char **argv) {
     test_parse();
     test_resolve();
     test_motif_parse();
+    test_relations_parse();
     test_kept();
     test_off();
     test_arpeggio();

@@ -42,9 +42,28 @@ struct MNote { int8_t deg = 0, oct = 0; uint8_t start = 0, len = 4; uint8_t acc 
 struct Motif { uint8_t basis = CHORD_DEG, bars = 1, n = 0; MNote note[MOTIF_MAX]; };
 struct ChainStep { uint8_t op = OP_REPEAT; int8_t arg = 0; uint8_t from = 0, to = 0;      /* chord steps, inclusive */
                    uint8_t cad = CAD_FULL, others = OTH_THIN; float strength = 1; };
+static const int REL_MAX = 12;
+enum RelType { R_CANON, R_CALL, R_HOCKET, R_HETERO, R_MOTION, R_UNISON, R_DENSITY, NREL };
+enum Transform { T_NONE, T_INVERT, T_RETRO };
+enum AnswerSrc { A_OWN, A_HALF, A_MIRROR };
+enum Split { S_ALT, S_EVERY, S_MASK };
+enum Motion { M_CONTRARY, M_PAR3, M_PAR6, M_FREE };
+enum Meet { U_CADENCE, U_CHANGE, U_NEVER };
+struct Relation {
+    uint8_t type = R_CANON, a = 0, b = 1, c = 255;   /* voices: a leader/caller/first, b follower/answerer/second, c third (hocket, density: 255 = none) */
+    uint8_t from = 0, to = NCHORD - 1; uint64_t zone = 0;   /* chord span; zone (id hash) or 0 = everywhere */
+    uint8_t delay16 = 8; int8_t trans = 0; uint8_t transform = T_NONE;   /* canon: delay in sixteenths, transposition in chord degrees */
+    uint8_t source = A_OWN, gap16 = 2, on_enter = 0;                     /* call & response */
+    uint8_t split = S_ALT, every = 2; uint16_t mask = 0x5555;            /* hocket */
+    float offset_ms = 30, ornament = 0;                                  /* heterophony */
+    uint8_t motion = M_CONTRARY; float strength = 1;                      /* motion rule (strength: chance, 1 = strict) */
+    uint8_t meet = U_CADENCE, octave = 0;                                /* unison: 0 unison, 1 octaves */
+    uint8_t cap = 8; uint8_t weight[3] = { 1, 1, 1 };                     /* shared density: notes per bar, voice weights */
+};
 struct Cfg { bool on = false; uint32_t seed = 1; Voice v[NVOICE]; Bass bass;
              Over chord[NCHORD], section[NSECTION], zone[NZONE]; int nzone = 0;
              Motif motif; ChainStep chain[CHAIN_MAX]; int nchain = 0;
+             Relation rel[REL_MAX]; int nrel = 0;
              uint8_t develop = 1; };   /* "bars": 1 develop - a chord's later bars vary its first (Piece::comp_bar); 0 repeat */
 struct Resolved { Voice v[NVOICE]; Bass bass; int blend = 0; };
 /* the motif as developed for one chord step: its notes (times in sixteenths from the phrase's start), the phrase's length */
@@ -63,4 +82,6 @@ void glide(Voice &cur, const Voice &target, int blend);
 /* the motif as developed for chord step `chord` (the chain step covering it, a later step winning; else repeat);
    `last`: chord is that step's last (a cadence's: its note is the phrase's last). Plain data, no heap: the audio thread calls it once a bar */
 void motif_step(const Cfg &c, int chord, Phrase &out);
+/* the relations acting at chord `chord` with the walker inside `inside` zones: indices into c.rel, at most REL_MAX */
+int relations_in_force(const Cfg &c, int chord, const uint64_t *inside, int ninside, int *out);
 }
