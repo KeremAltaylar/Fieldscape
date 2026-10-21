@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -1022,6 +1023,73 @@ static void test_develop() {
     std::printf("C develop: %d of 6 other seeds change the melody; the cadence lands on bar 0 and its chord's later bars rest\n", differs);
 }
 
+/* composition 3: canon and heterophony replay a voice's own notes */
+static std::string rel_route(const char *rels, const char *v3 = R"("v3":{"style":"arpeggio","rate":"16n","lo":55,"hi":70,"grid":[0,1,2,3,0,1,2,3,0,1,2,3,0,1,2,3]})") {
+    char b[4096]; std::snprintf(b, sizeof b, R"(,"comp":{"voice":{"role":"melody","lo":50,"hi":81},"sect":{"role":"off"},%s,"bass":{"mode":"off"},%s,"chain":[],"bars":"repeat","relations":%s})", v3, MOT, rels);
+    return b;
+}
+static int tick_of(double t) { return (int)std::lround(t / 0.15625); }
+static const int SPAN = 96;   /* chord 0 of the 40 s walk, in sixteenths (measured) */
+static void test_canon() {
+    /* chord 0 (D m7: 50 53 57 60) lasts 6 bars of this 40 s walk = ticks 0..95; the relations span chord 0 only */
+    const Log l = render(rel_route(R"([{"type":"canon","a":0,"b":2,"delay":8,"trans":2,"from":0,"to":0}])"), 40);
+    const int tones[4] = { 50, 53, 57, 60 };
+    int lead = 0, fol_in = 0, fol_after = 0, fol_arp_after = 0;
+    std::set<int> want;
+    for (size_t i = 0; i < l.f.size(); i++) if (l.role[i] == 1 && tick_of(l.t[i]) < SPAN) {
+        const int m = (int)std::lround(midi(l.f[i])), k = tick_of(l.t[i]);
+        int d = 0; for (int u = 0; u < 4; u++) if (tones[u] % 12 == m % 12) d = u;
+        int e = tones[(d + 2) % 4]; while (e < 55) e += 12; while (e > 70 && e - 12 >= 55) e -= 12;
+        bool found = false;
+        for (size_t j = 0; j < l.f.size(); j++) if (l.role[j] == 3 && tick_of(l.t[j]) == k + 8 && (k + 8 >= SPAN || (int)std::lround(midi(l.f[j])) == e)) found = true;   /* the tail sounds on the new chord */
+        assert(found); lead++;
+    }
+    for (size_t j = 0; j < l.f.size(); j++) if (l.role[j] == 3) {
+        const int k = tick_of(l.t[j]);
+        if (k < SPAN + 8) { fol_in++; bool from_lead = false;   /* every note in the span (and its delay's tail) is a replay of a leader note */
+            for (size_t i = 0; i < l.f.size(); i++) if (l.role[i] == 1 && tick_of(l.t[i]) == k - 8 && tick_of(l.t[i]) < SPAN) from_lead = true;
+            assert(from_lead); }
+        else fol_after++;
+    }
+    (void)fol_arp_after;
+    assert(lead >= 12 && fol_in == lead && fol_after > 30);   /* outside the span the arpeggio plays again */
+    for (const char *tr : { "invert", "retro" }) {   /* the transforms: notes, in v3's register, none before the span */
+        char r[256]; std::snprintf(r, sizeof r, R"([{"type":"canon","a":0,"b":2,"delay":8,"transform":"%s","from":0,"to":0}])", tr);
+        const Log x = render(rel_route(r), 40); int n = 0;
+        for (size_t j = 0; j < x.f.size(); j++) if (x.role[j] == 3 && tick_of(x.t[j]) < SPAN) { const int m = (int)std::lround(midi(x.f[j])); assert(m >= 55 && m <= 70 && tick_of(x.t[j]) >= 8); n++; }
+        assert(n >= 8);
+    }
+    std::printf("C canon: %d leader notes in the span, %d follower notes = each +8 sixteenths, two degrees up, in 55..70; %d arpeggio notes after\n", lead, fol_in, fol_after);
+}
+static void test_canon_no_feedback() {
+    const Log l = render(rel_route(R"([{"type":"canon","a":0,"b":2,"delay":8,"from":0,"to":0},{"type":"canon","a":2,"b":0,"delay":8,"from":0,"to":0}])"), 40);
+    std::map<std::pair<int, int>, int> cnt; int v3 = 0;
+    for (size_t i = 0; i < l.f.size(); i++) if (tick_of(l.t[i]) < SPAN) { cnt[{ tick_of(l.t[i]), (int)std::lround(midi(l.f[i])) }]++; if (l.role[i] == 3) v3++; }
+    int worst = 0; for (auto &c : cnt) worst = std::max(worst, c.second);
+    assert(v3 > 0 && worst <= 2);
+    std::printf("C canon no feedback: a->b and b->a, %d follower notes, no (tick, pitch) more than %d times\n", v3, worst);
+}
+static void test_hetero() {
+    const char *v3 = R"("v3":{"role":"off"})";
+    const Log l0 = render(rel_route(R"([{"type":"hetero","a":0,"b":2,"offset":30,"ornament":0,"from":0,"to":0}])", v3), 40);
+    int na = 0, nb = 0;
+    for (size_t i = 0; i < l0.f.size(); i++) if (l0.role[i] == 1 && tick_of(l0.t[i]) < SPAN) {
+        na++; bool found = false;
+        for (size_t j = 0; j < l0.f.size(); j++) if (l0.role[j] == 3 && std::fabs(l0.t[j] - (l0.t[i] + 0.03)) <= 1.0 / 48000 + 1e-9 && l0.f[j] == l0.f[i]) found = true;
+        assert(found);
+    }
+    for (size_t j = 0; j < l0.f.size(); j++) if (l0.role[j] == 3) nb++;
+    assert(na >= 12 && nb == na);                         /* ornament 0: no grace notes */
+    const Log l1 = render(rel_route(R"([{"type":"hetero","a":0,"b":2,"offset":30,"ornament":1,"from":0,"to":0}])", v3), 40);
+    int nb1 = 0; for (int r : l1.role) if (r == 3) nb1++;
+    assert(nb1 == 2 * na);                                /* one grace per a-note */
+    assert(same(l1, render(rel_route(R"([{"type":"hetero","a":0,"b":2,"offset":30,"ornament":1,"from":0,"to":0}])", v3), 40)));
+    const Log l5 = render(rel_route(R"([{"type":"hetero","a":0,"b":2,"offset":30,"ornament":0.5,"from":0,"to":0}])", v3), 40);
+    int nb5 = 0; for (int r : l5.role) if (r == 3) nb5++;
+    assert(nb5 > na && nb5 < 2 * na);
+    std::printf("C hetero: %d notes doubled at +30 ms; ornament 0 -> %d, 1 -> %d, 0.5 -> %d notes on b\n", na, nb, nb1, nb5);
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && !std::strcmp(argv[1], "final")) { test_empty_motif(); test_melody_gain_chain(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "room")) { test_room(); return 0; }
@@ -1032,6 +1100,9 @@ int main(int argc, char **argv) {
     if (argc > 1 && !std::strcmp(argv[1], "read")) { test_gain_memo(); test_gain_lengths(); test_patch_read_cost(); return 0; }
     test_repeat_hash();
     test_develop();
+    test_canon();
+    test_canon_no_feedback();
+    test_hetero();
     test_parse();
     test_resolve();
     test_motif_parse();

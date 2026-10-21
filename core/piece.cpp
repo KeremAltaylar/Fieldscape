@@ -673,6 +673,13 @@ static int scale_midi(const Patch &P, int d, int oct, int lo, int hi) {
     const int o = floor_div(d, md.n);
     return fold(P.key + md.iv[d - o * md.n] + 12 * (o + oct), lo, hi);
 }
+/* the key's scale tone above MIDI note m */
+static int scale_above(const Patch &P, int m) {
+    int q = quality_of(P, 0); if (q < 0) q = Q_M7;
+    const auto &md = MODES[CHORDS[q].iv[1] == 3 ? MODE_AEOLIAN : MODE_IONIAN];
+    for (int d = m + 1; d <= m + 12; d++) for (int i = 0; i < md.n; i++) if (((d - P.key) % 12 + 12) % 12 == md.iv[i]) return d;
+    return m + 2;
+}
 /* ------------------------------------------------------------------ composition: each style at Free's level
    Kerem 2026-10-19 (Pedal and Strum crackle: the limiter pinned). Free plays a sparse line, one note at a time; a style
    strikes every step, chords strike 3-5 notes at once, Swells hold at full sustain. Each style's velocities are scaled so
@@ -927,6 +934,12 @@ struct Piece : Device {
     int cchord = -2; long long cbar0 = 0, cj = 0;
     struct MBar { int n = 0; comp::MNote note[comp::MOTIF_MAX * 2]; };
     MBar mvar, mhist[4]; bool mvar_on = false; int nhist = 0;
+    /* composition 3: each voice's last 64 own notes (not a relation's), the relations in force this step, and per relation the first
+       and last step it was in force (-1: never) - a canon's leader ticks are the ones between them */
+    struct NR { long long tick = -1; int midi = 0; float len16 = 0, vel = 0; };
+    NR ring[comp::NVOICE][64]; int rhead[comp::NVOICE] = {};
+    struct Span { long long a = -1, b = -1; } sp[comp::REL_MAX]; long long ck = -1; bool relmade = false;
+    int ract[comp::REL_MAX], nract = 0, hn = 0;
     int dj() const { return patch.comp.develop ? (int)std::min<long long>(cj, 1 << 20) : 0; }
     int mel_step = -2; long long mel_bar0 = 0;   /* the chain step in force, and the bar it began on: the phrase counts from there */
     bool bare(int q) const { return ccur[q].role == comp::MELODY && patch.comp.motif.n == 0; }   /* a melody with no motif plays as Free, whatever style it holds */
@@ -1244,9 +1257,29 @@ struct Piece : Device {
             }
         }
     }
+    /* a voice's own note: into its ring (velocity as at unit gain), and doubled by each heterophony in force */
+    void own_note(int q, double f, double dur, double t, double vel) {
+        const double s16 = 60.0 / patch.tempo / 4;
+        NR &r = ring[q][rhead[q]++ & 63];
+        r.tick = ck; r.midi = (int)std::lround(69 + 12 * std::log2(f / 440)); r.len16 = (float)(dur / s16); r.vel = (float)(vel / std::max(1e-6, cg[q]));
+        for (int i = 0; i < nract; i++) {
+            const comp::Relation &c = patch.comp.rel[ract[i]];
+            if (c.type != comp::R_HETERO || c.a != q) continue;
+            const int b = c.b; Role &rl2 = b == 0 ? top : b == 1 ? sectr : v3r; Synth *sy = rl2.sy();
+            const double to = t + c.offset_ms / 1000.0, v = r.vel * cg[b];
+            relmade = true;
+            if (c.ornament > 0 && comp::rand01(patch.comp.seed ^ 0x4E7E, ck, b, hn++) < c.ornament) {   /* a grace: the scale tone above, 1/32 long, just before */
+                const double g = s16 / 2;
+                note(b + 1, sy, note_hz(scale_above(patch, r.midi)), g, std::max(t, to - g), v, true);
+            }
+            note(b + 1, sy, f, dur, to, v, true);
+            relmade = false;
+        }
+    }
     void note(int role, Synth *sy, double f, double dur, double t, double vel, bool composed = false) {
         Role *rr = role == 0 ? &bass : role == 1 ? &top : role == 2 ? &sectr : role == 3 ? &v3r : nullptr;
         if (role >= 1 && role <= 3) nbar[role - 1]++;
+        if (composed && ck >= 0 && !relmade && role >= 1 && role <= 3) own_note(role - 1, f, dur, t, vel);
         if (composed && !(rr && rr->cur == PLUCK)) vel = std::min(vel, 1.0);   /* an envelope's level; pluck's is a gain on its burst */
         if (on_note) on_note(note_ctx, role, f, dur, t, vel);
         if (!sy) return;
@@ -1472,11 +1505,57 @@ struct Piece : Device {
     void compose_step(double time) {
         if (!patch.comp.on || !comp_live || H.ntones <= 0) return;
         const long long k = ticks - 1, bar = k / 16;
+        ck = k; hn = 0;
+        nract = comp::relations_in_force(patch.comp, H.chord, zin, nzin, ract);
+        int fol[comp::NVOICE] = { -1, -1, -1 };   /* the canon (rel index) each voice follows: the first listed; a follower's own notes are not led */
+        for (int i = 0; i < nract; i++) {
+            const int r = ract[i]; if (sp[r].a < 0 || sp[r].b < k - 1) sp[r].a = k;
+            sp[r].b = k;
+        }
+        for (int r = 0; r < patch.comp.nrel; r++) {
+            const comp::Relation &c = patch.comp.rel[r];
+            if (c.type == comp::R_CANON && sp[r].b >= 0 && sp[r].b >= k - c.delay16 && fol[c.b] < 0 && fol[c.a] < 0) fol[c.b] = r;
+        }
         for (int q = 0; q < comp::NVOICE; q++) {
             const comp::Voice &v = ccur[q];
+            if (fol[q] >= 0) { play_canon(q, patch.comp.rel[fol[q]], sp[fol[q]].a, sp[fol[q]].b, k, time); continue; }
             if (melodic(q)) { play_melody(q, v, k, bar, time); continue; }
             if (v.style == comp::FREE || bare(q) || v.role == comp::OFF || v.rate == 0 || k % v.rate || cad_rest(q, v.rate < 4)) continue;
             play_style(q, v, k, bar, time);
+        }
+        ck = -1;
+    }
+    /* chord degree (0..ntones-1) of the chord tone nearest m's pitch class */
+    int deg_of(int m) const {
+        int best = 0, bd = 99;
+        for (int d = 0; d < H.ntones; d++) { int x = std::abs(((H.tones[d] - m) % 12 + 12) % 12); x = std::min(x, 12 - x); if (x < bd) { bd = x; best = d; } }
+        return best;
+    }
+    /* canon: voice q plays the leader's own notes, `delay16` sixteenths late (whose leader tick lies in the relation's span:
+       first..last step in force), moved `trans` chord degrees, fitted to q's register on the chord now playing, at q's level.
+       Invert: about the leader's first note of that bar; retro: the leader's previous bar, mirrored in time. */
+    void play_canon(int q, const comp::Relation &c, long long first, long long last, long long k, double time) {
+        const comp::Voice &v = ccur[q];
+        const double s16 = 60.0 / patch.tempo / 4;
+        Synth *sy = (q == 0 ? top : q == 1 ? sectr : v3r).sy();
+        const NR *lead = ring[c.a];
+        const long long lt = k - c.delay16;
+        for (int i = 0; i < 64; i++) {
+            const NR &n = lead[i]; if (n.tick < 0) continue;
+            int m = n.midi;
+            if (c.transform == comp::T_RETRO) {
+                if (n.tick / 16 != k / 16 - 1 || std::max(0, 16 - (int)(n.tick % 16) - (int)std::lround(n.len16)) != k % 16 || k - 16 < first) continue;
+            } else {
+                if (n.tick != lt || lt < first || lt > last) continue;
+                if (c.transform == comp::T_INVERT) {
+                    int m0 = m; long long best = 1 << 30;
+                    for (int j = 0; j < 64; j++) if (lead[j].tick >= 0 && lead[j].tick / 16 == n.tick / 16 && lead[j].tick < best) { best = lead[j].tick; m0 = lead[j].midi; }
+                    m = 2 * m0 - m;
+                }
+            }
+            relmade = true;
+            note(q + 1, sy, note_hz(deg_midi(deg_of(m) + c.trans, v.lo, v.hi, 0)), std::max(0.03, n.len16 * s16), time, n.vel * cg[q], true);
+            relmade = false;
         }
     }
     /* a chord degree (0 root .. 4 ninth) as a MIDI note, folded into [lo, hi]; degrees past the chord's tones go up an octave */
@@ -1935,7 +2014,7 @@ struct Piece : Device {
         patch = routes[near];
         apply_patch(now);
         H.idx = -1; H.chord = -1; H.ntones = -1;
-        sector = -1; comp_live = false; nzent = 0; cad_oth = comp::OTH_HOLD; mel_step = -2; cchord = -2; mvar_on = false; nhist = 0; for (int q = 0; q < comp::NVOICE; q++) { cped_root[q] = -1; cpulse[q] = 0; calt[q] = 0; }
+        sector = -1; comp_live = false; for (auto &x : sp) x = Span(); for (int q = 0; q < comp::NVOICE; q++) { rhead[q] = 0; for (auto &n : ring[q]) n.tick = -1; } nzent = 0; cad_oth = comp::OTH_HOLD; mel_step = -2; cchord = -2; mvar_on = false; nhist = 0; for (int q = 0; q < comp::NVOICE; q++) { cped_root[q] = -1; cpulse[q] = 0; calt[q] = 0; }
         synth_to(walk_level(route_dist), now);
     }
     void walk(int r, double t, double dist, double now) {
