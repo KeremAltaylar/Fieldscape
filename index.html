@@ -50,6 +50,9 @@ if (location.search.indexOf("rafshim") !== -1) {
   /* the two layers a composing cell can be tinted by (Tokens.md, composition step 1) */
   --by-section: color-mix(in oklch, var(--lamp) 26%, var(--raised));
   --by-zone:    color-mix(in oklch, var(--ink) 17%, var(--raised));
+  /* composition 3: one colour per relation, cycled in this order (Tokens.md) */
+  --rel-1: oklch(80% 0.09 60);  --rel-2: oklch(80% 0.08 230); --rel-3: oklch(82% 0.08 320);
+  --rel-4: oklch(85% 0.06 140); --rel-5: oklch(84% 0.08 95);  --rel-6: oklch(78% 0.08 285);
 
   --font-display: "Cormorant Garamond", Georgia, serif;
   --font-body:    "Newsreader", Georgia, serif;

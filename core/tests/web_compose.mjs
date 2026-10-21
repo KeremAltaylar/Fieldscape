@@ -22,7 +22,7 @@ try {
   await sleep(2000); await ev("fsListen._gate(true), 0"); await sleep(600);
   const rid = await ev("(__fa.features().filter(function (f) { return f.properties.kind === 'route' && (f.properties.patch || {}).prog; })[0] || {properties:{}}).properties.id");
   const R = JSON.stringify(rid);
-  const VK = { " ": 32, Delete: 46, Escape: 27, z: 90, Enter: 13, ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40 };
+  const VK = { Tab: 9, " ": 32, Delete: 46, Escape: 27, z: 90, Enter: 13, ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40 };
   const key = async (k, code, mods = 0) => { await s.send("Input.dispatchKeyEvent", { type: "keyDown", key: k, code, windowsVirtualKeyCode: VK[k], modifiers: mods, text: k === " " ? " " : k === "Enter" ? "\r" : undefined });
     await s.send("Input.dispatchKeyEvent", { type: "keyUp", key: k, code, windowsVirtualKeyCode: VK[k], modifiers: mods }); await sleep(300); };
   const spillOf = () => ev(`(function(){ var out = [];
@@ -354,6 +354,136 @@ try {
   const zspill = await spillOf();
   check("a zone with euclid fits one screen", zspill.length === 0, zspill.slice(0, 5));
   await shot("3-zone");
+  /* composition 3, the relations (design/compose/relations-mock.html): the relations row, links on the lanes, "+ relation", the inspector */
+  await ev(`FsComposeDock.close(), 0`); await sleep(300);
+  await ev(`fsListen.select(${R}), __fa.openPatchPanel(), document.getElementById('pp-compose').click(), 0`); await sleep(800);
+  const rels = async () => JSON.parse(await ev(`JSON.stringify(__fa.routePatch(${R}).comp.relations || [])`));
+  const addRel = async (label) => { await ev("document.getElementById('cd-addrel').click(), 0"); await sleep(200);
+    await ev(`${btn("#cd-relmenu button b", label)}.click(), 0`); await sleep(350); };
+  const chip = (i) => `document.querySelector('#cd-relrow .cd-rchip[data-i="${i}"]')`;
+  const rmBtn = () => `${btn("#cd-insp .cd-ih button", "remove")}`;
+  const TYPES = [["canon", "canon"], ["call", "call & response"], ["hocket", "hocket"], ["hetero", "heterophony"], ["motion", "motion rule"], ["unison", "unison"], ["density", "shared density"]];
+  check("no relations yet: the row says so and offers + relation", await ev("(function(){ var r = document.getElementById('cd-relrow'); return !!r && !!document.getElementById('cd-addrel') && /relations/.test(r.textContent) && document.querySelectorAll('#cd-relrow .cd-rchip').length === 0; })()"), await ev("(document.getElementById('cd-relrow') || {}).textContent"));
+  await ev("document.getElementById('cd-addrel').click(), 0"); await sleep(200);
+  const menuTxt = await ev("[].map.call(document.querySelectorAll('#cd-relmenu button'), function (b) { return b.textContent; })");
+  check("+ relation lists the seven types, a name and a line each", menuTxt.length === 7 && TYPES.every((t, i) => menuTxt[i].indexOf(t[1]) === 0 && menuTxt[i].length > t[1].length + 8), menuTxt);
+  await ev("document.getElementById('cd-addrel').click(), 0"); await sleep(200);
+  let allDefaults = true, linkOk = true, chipOk = true;
+  for (let k = 0; k < 7; k++) {
+    await addRel(TYPES[k][1]);
+    const rs = await rels(), r = rs[k] || {};
+    const want = await ev(`(function(){ var o = { type: '${TYPES[k][0]}', a: 0, b: 1, from: 0, to: 63 }; FsCompose.RELATIONS['${TYPES[k][0]}'].fields.forEach(function (f) { o[f.k] = f.def; }); return o; })()`);
+    if (rs.length !== k + 1 || JSON.stringify(Object.keys(want).sort().map((x) => [x, r[x]])) !== JSON.stringify(Object.keys(want).sort().map((x) => [x, want[x]]))) { allDefaults = false; console.log("  defaults differ", TYPES[k][0], JSON.stringify(r), JSON.stringify(want)); }
+    if (await ev(`document.querySelectorAll('#cd-relrow .cd-rchip').length`) !== k + 1) { chipOk = false; }
+    const hasLink = await ev(`!!document.querySelector('#cd-rels .cd-link[data-i="${k}"]')`);
+    if (hasLink !== (TYPES[k][0] !== "density")) { linkOk = false; }
+  }
+  check("each of the seven types, added from the menu: patch.comp.relations holds it with its defaults", allDefaults, await rels());
+  check("each has its chip, and a link on the lanes (density: the chip only)", chipOk && linkOk, [chipOk, linkOk]);
+  check("a new relation is selected: its inspector opens", await ev("/Shared density/.test(document.getElementById('cd-insp-title').textContent) && !!document.querySelector('#cd-insp .cd-row2[data-k=\"cap\"]')"), await ev("document.getElementById('cd-insp-title').textContent"));
+  const sp7 = await spillOf();
+  check("seven relations at 1440x900: one screen", sp7.length === 0, sp7.slice(0, 5));
+  /* the first chip (canon): inspector, span, link geometry */
+  await ev(`${chip(0)}.click(), 0`); await sleep(300);
+  check("selecting a chip opens its inspector (canon: leader, follower, delay, move by, transform, from, to, zone)", await ev("/Canon/.test(document.getElementById('cd-insp-title').textContent) && ['a','b','delay','trans','transform','from','to','zone'].every(function (k) { return !!document.querySelector('#cd-insp .cd-row2[data-k=\"' + k + '\"]'); }) && document.querySelector('#cd-relrow .cd-rchip.on').dataset.i === '0'"), await ev("[].map.call(document.querySelectorAll('#cd-insp .cd-row2'), function (r) { return r.dataset.k; })"));
+  await pick("from", "2"); await sleep(300); await pick("to", "5"); await sleep(300);
+  const c0 = (await rels())[0];
+  check("from / to write the span (chords 3-6 are 2..5)", c0.from === 2 && c0.to === 5, c0);
+  const geo = await ev(`(function(){ var g = document.querySelector('#cd-rels .cd-link[data-i="0"]').getBoundingClientRect(), L = function (v, i) { return document.querySelector('#cd-lanes .cd-lane[data-voice="' + v + '"] .cd-cell[data-i="' + i + '"]').getBoundingClientRect(); };
+    var a0 = L('voice', 2), a1 = L('voice', 5), b0 = L('sect', 2);
+    return { left: g.left - a0.left, right: a1.right - g.right, top: g.top - a0.bottom, bottom: b0.top - g.bottom }; })()`);
+  check("the canon's link runs from voice 1's cells to voice 2's over chords 3-6", Math.abs(geo.left) < 8 && geo.right > -2 && geo.right < 14 && geo.top > -6 && geo.bottom > -10, geo);
+  await ev("document.querySelector('#cd-rels .cd-link[data-i=\"2\"]').dispatchEvent(new MouseEvent('click', { bubbles: true })), 0"); await sleep(300);
+  check("selecting a link opens its inspector (hocket: split)", await ev("/Hocket/.test(document.getElementById('cd-insp-title').textContent) && !!document.querySelector('#cd-insp .cd-row2[data-k=\"split\"]') && document.querySelector('#cd-relrow .cd-rchip.on').dataset.i === '2'"), await ev("document.getElementById('cd-insp-title').textContent"));
+  check("a hocket is a dashed outline around both lanes", await ev("(function(){ var p = document.querySelector('#cd-rels .cd-link[data-i=\"2\"] .vis'); return !!p && !!p.getAttribute('stroke-dasharray'); })()"), null);
+  /* editing writes the field */
+  await ev(`${btn('#cd-insp .cd-row2[data-k="split"] button', "every 2")}.click(), 0`); await sleep(300);
+  check("hocket split: every 2 writes split 'every'", (await rels())[2].split === "every", (await rels())[2]);
+  await ev(`${btn('#cd-insp .cd-row2[data-k="split"] button', "pattern")}.click(), 0`); await sleep(300);
+  const mk0 = (await rels())[2];
+  await ev("document.querySelector('#cd-insp .cd-xm[data-i=\"1\"]').click(), 0"); await sleep(300);
+  check("hocket split: pattern shows 16 steps; a click writes the mask", mk0.split === "mask" && (await ev("document.querySelectorAll('#cd-insp .cd-xm').length")) === 16 && (await rels())[2].mask === "xxx.x.x.x.x.x.x.", (await rels())[2].mask);
+  const setRange = (k, v) => ev(`(function(){ var m = document.querySelector('#cd-insp .cd-row2[data-k="${k}"] input'); m.value = ${v}; m.dispatchEvent(new Event('change', { bubbles: true })); })(), 0`);
+  await ev(`${chip(0)}.click(), 0`); await sleep(300);
+  await setRange("delay", 4); await sleep(300); await setRange("trans", 2); await sleep(300); await pick("transform", "invert"); await sleep(300);
+  const ce = (await rels())[0];
+  check("canon: delay, move by and transform write their fields", ce.delay === 4 && ce.trans === 2 && ce.transform === "invert", ce);
+  check("the chip reads it (canon · v1 → v2 · ¼ bar · +2 · invert)", await ev(`/canon · v1 → v2 · ¼ bar · \\+2 · invert/.test(${chip(0)}.textContent)`), await ev(`${chip(0)}.textContent`));
+  await pick("b", "2"); await sleep(300);
+  const bOk = (await rels())[0].b === 2;
+  await pick("a", "2"); await sleep(300);
+  check("follower menu writes b; a leader the same voice is refused", bOk && (await rels())[0].a === 0 && (await ev("document.querySelector('#cd-insp .cd-row2[data-k=\"a\"] select').value")) === "0", (await rels())[0]);
+  await ev(`${chip(6)}.click(), 0`); await sleep(300);
+  await setRange("cap", 12); await sleep(300); await setRange("w0", 3); await sleep(300);
+  const cd = (await rels())[6];
+  check("density: cap and a voice's weight write their fields; the share line reads", cd.cap === 12 && JSON.stringify(cd.weight) === "[3,1,1]" && /v1 7/.test(await insp()), [cd, await insp()]);
+  /* zone-limited: its band lights */
+  await ev(`${chip(0)}.click(), 0`); await sleep(300);
+  await pick("zone", zid); await sleep(300);
+  check("a zone-limited relation: its zone written, its zone band lit, the chip names the zone", (await rels())[0].zone === zid && await ev(`[].some.call(document.querySelectorAll('.cd-band.zone.on'), function (b) { return b.textContent === 'Compose test zone'; }) && /Compose test zone/.test(${chip(0)}.textContent)`), (await rels())[0]);
+  /* a voice that is off: the relation says so */
+  await pick("zone", ""); await sleep(300);
+  await ev(`document.querySelector('#cd-lanes .cd-lane[data-voice="v3"] .cd-cell[data-i="3"]').click(), 0`); await sleep(300);
+  await setIn("role", "off"); await sleep(300);
+  await ev(`${chip(0)}.click(), 0`); await sleep(300);
+  check("a voice that is off on the relation's chords: the inspector says so", /voice 3 is off/.test(await insp()), await insp());
+  await ev("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true })), 0"); await sleep(300);
+  /* remove: one undo step */
+  await ev(`${chip(0)}.click(), 0`); await sleep(300);
+  const before7 = await ev(`JSON.stringify(__fa.routePatch(${R}).comp)`);
+  await ev(`${rmBtn()}.click(), 0`); await sleep(300);
+  const after6 = await rels();
+  await ev("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true })), 0"); await sleep(300);
+  check("remove: the relation goes; one Ctrl+Z brings it back, exactly", after6.length === 6 && (await ev(`JSON.stringify(__fa.routePatch(${R}).comp)`)) === before7, after6.length);
+  /* down to three links: 1440x900 and its screenshot */
+  for (let k = 0; k < 4; k++) { await ev(`(function(){ var c = document.querySelectorAll('#cd-relrow .cd-rchip'); c[c.length - 1].click(); })(), 0`); await sleep(200);
+    await ev(`${rmBtn()}.click(), 0`); await sleep(250); }
+  await ev(`${chip(0)}.click(), 0`); await sleep(300);
+  check("three relations left, three chips, three links", (await rels()).length === 3 && (await ev("document.querySelectorAll('#cd-relrow .cd-rchip').length")) === 3 && (await ev("document.querySelectorAll('#cd-rels .cd-link').length")) === 3, (await rels()).length);
+  check("the driven voice's cells read canon over the span and no further", await ev("(function(){ var w = function (i) { return document.querySelector('#cd-lanes .cd-lane[data-voice=\"v3\"] .cd-cell[data-i=\"' + i + '\"]'); }; return [2,3,4,5].every(function (i) { return w(i).classList.contains('relx') && /canon/i.test(w(i).textContent); }) && !w(1).classList.contains('relx') && !w(6).classList.contains('relx'); })()"), null);
+  const sp3 = await spillOf();
+  check("three links at 1440x900: no scroll, no spill", sp3.length === 0, sp3.slice(0, 5));
+  check("1440: the foot's keys read in full", await ev("(function(){ var k = document.querySelector('#compose-dock .cd-keys'); return !!k && k.scrollWidth <= k.clientWidth + 1; })()"), await ev("(function(){ var k = document.querySelector('#compose-dock .cd-keys'); return [k.scrollWidth, k.clientWidth]; })()"));
+  await shot("14-relations");
+  /* the keyboard: Tab reaches the chips, Enter opens, Delete removes - only on chips and links */
+  await ev("document.querySelector('#cd-strip .cd-chord').focus(), 0");
+  let tabbed = false;
+  for (let i = 0; i < 40 && !tabbed; i++) { await key("Tab", "Tab"); tabbed = await ev("!!document.activeElement.closest('.cd-rchip')"); }
+  check("Tab reaches a relation chip", tabbed, await active());
+  await ev("document.body.focus(), 0");
+  const n3 = (await rels()).length;
+  await ev("document.getElementById('cd-addrel').focus(), 0"); await key("Delete", "Delete");
+  await ev("document.querySelector('#cd-insp select, #cd-insp input').focus(), 0"); await key("Delete", "Delete");
+  check("Delete on + relation and on an inspector control removes nothing", (await rels()).length === n3, (await rels()).length);
+  await ev(`${chip(1)}.focus(), 0`); await key("Enter", "Enter");
+  check("Enter on a chip opens its inspector, focus goes into it", await ev("/Call/.test(document.getElementById('cd-insp-title').textContent) && !!document.activeElement.closest('#cd-insp')"), await ev("document.getElementById('cd-insp-title').textContent"));
+  await ev("document.querySelector('#cd-rels .cd-link[data-i=\"0\"]').focus(), 0"); await key("Enter", "Enter");
+  check("Enter on a link opens its inspector", await ev("/Canon/.test(document.getElementById('cd-insp-title').textContent)"), await ev("document.getElementById('cd-insp-title').textContent"));
+  await ev("document.querySelector('#cd-rels .cd-link[data-i=\"0\"]').focus(), 0"); await key("Delete", "Delete");
+  check("Delete on a link removes its relation, focus stays on the row", (await rels()).length === n3 - 1 && await ev("!!document.activeElement.closest('#cd-relrow, #cd-rels')"), await active());
+  await ev("document.querySelector('#cd-relrow .cd-rchip').focus(), 0"); await key("Delete", "Delete");
+  check("Delete on a chip removes its relation", (await rels()).length === n3 - 2, (await rels()).length);
+  await ev(`FsComposeDock.close(), 0`);
+  /* 1024x700 with three links, one selected */
+  await s.send("Emulation.setDeviceMetricsOverride", { width: 1024, height: 700, deviceScaleFactor: 1, mobile: false }); await sleep(600);
+  await ev(`fsListen.select(${R}), __fa.openPatchPanel(), document.getElementById('pp-compose').click(), 0`); await sleep(800);
+  for (const l of ["canon", "hocket", "call & response"]) { await addRel(l); }
+  check("1024x700: the relations are there with their links", (await rels()).length === 4 && (await ev("document.querySelectorAll('#cd-rels .cd-link').length")) === 4, (await rels()).length);
+  const sp1024 = await spillOf();
+  check("three links at 1024x700: no scroll, no spill", sp1024.length === 0, sp1024.slice(0, 5));
+  await ev(`${chip(0)}.click(), 0`); await sleep(300);
+  const sp1024b = await spillOf();
+  check("1024x700 a relation selected: one screen", sp1024b.length === 0, sp1024b.slice(0, 5));
+  await shot("15-relations-1024");
+  await ev("document.getElementById('cd-addrel').click(), 0"); await sleep(200);
+  check("the + relation menu stays inside the dock", await ev("(function(){ var m = document.getElementById('cd-relmenu').getBoundingClientRect(), d = document.querySelector('.cd-main').getBoundingClientRect(); return m.bottom <= d.bottom + 1 && m.right <= d.right + 1 && m.left >= d.left; })()"), await ev("(function(){ var m = document.getElementById('cd-relmenu').getBoundingClientRect(), d = document.querySelector('.cd-main').getBoundingClientRect(); return [m.bottom, d.bottom, m.right, d.right]; })()"));
+  await key("Escape", "Escape");
+  check("Esc closes the menu first, the dock stays", await ev("!document.getElementById('cd-relmenu') && FsComposeDock.isOpen()"), null);
+  for (let k = 0; k < 4; k++) { await ev(`(function(){ var c = document.querySelectorAll('#cd-relrow .cd-rchip'); c[c.length - 1].click(); })(), 0`); await sleep(200); await ev(`${rmBtn()}.click(), 0`); await sleep(250); }
+  check("all removed: the row says no relations yet", (await rels()).length === 0 && await ev("document.querySelectorAll('#cd-relrow .cd-rchip').length === 0"), null);
+  await ev(`FsComposeDock.close(), 0`); await sleep(300);
+  await s.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false }); await sleep(600);
+  await ev(`fsListen.select(${R}), __fa.openPatchPanel(), document.getElementById('pp-compose').click(), 0`); await sleep(800);
   /* a point's own panel: Compose is there, disabled, saying why */
   await ev("FsComposeDock.close(), 0");
   await ev("document.querySelector('#f-rhythm').click(), 0"); await sleep(800);

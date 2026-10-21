@@ -138,6 +138,66 @@ body.composing-grown #ls-panel { display: none; }   /* the listener's sheet: the
 .cd-main.tighter .cd-lanes:not(.layered) .cd-cell svg { height: 12px; }
 .cd-main.tighter .cd-lanes:not(.layered) .cd-lane.bass .cd-cell { height: 26px; }
 .cd-main.tighter .cd-lanes:not(.layered) .cd-lane.bass .cd-cell svg { height: 8px; }
+.cd-main.tightest .cd-lanes:not(.layered) .cd-cell { height: 34px; padding: 3px 6px 2px; }
+.cd-main.tightest .cd-lanes:not(.layered) .cd-cell svg { height: 8px; }
+.cd-main.tightest .cd-lanes:not(.layered) .cd-lane.bass .cd-cell { height: 22px; }
+.cd-main.tightest .cd-lanes:not(.layered) .cd-lane.bass .cd-cell svg { height: 6px; }
+/* a lane's layers open and a relations row (composition 3): its cells close up too */
+.cd-main.tight .cd-lanes.layered .cd-lane:not(.layers):not(.bass) .cd-cell { height: 24px; padding: 2px 6px 1px; }
+.cd-main.tight .cd-lanes.layered .cd-lane.layers .cd-cell { height: 32px; padding: 3px 6px 2px; }
+.cd-main.tight .cd-lanes.layered .cd-lane.layers .cd-cell svg { height: 10px; }
+.cd-main.tight .cd-lanes.layered .cd-lane.bass .cd-cell { height: 20px; padding: 2px 6px 1px; }
+.cd-main.tight .cd-lanes.layered .cd-lane.bass .cd-cell svg { height: 4px; }
+.cd-main.tighter .cd-lanes.layered .cd-lane:not(.layers):not(.bass) .cd-cell { height: 20px; }
+.cd-main.tighter .cd-lanes.layered .cd-lane:not(.layers):not(.bass) .cd-cell svg { height: 4px; }
+.cd-main.tighter .cd-lanes.layered .cd-lane.layers .cd-cell { height: 26px; }
+.cd-main.tighter .cd-lanes.layered .cd-lane.layers .cd-cell svg { height: 6px; }
+.cd-main.tighter .cd-lanes.layered .cd-lane.bass .cd-cell { height: 18px; }
+.cd-main.tighter .cd-lanes.layered .cd-lane.bass .cd-cell svg { height: 2px; }
+
+/* composition 3: relations (design/compose/relations-mock.html). A chip a relation, its colour a --rel token; its link drawn over the lanes
+   (compose.js measures the cells), the cells it drives outlined in its colour and reading its word */
+.cd-lanes { position: relative; }
+.cd-relw { position: relative; display: flex; align-items: center; gap: var(--s-2); min-width: 0; }
+.cd-relrun { display: flex; align-items: center; gap: var(--s-2); flex: 0 1 auto; min-width: 0; overflow: hidden; padding: 1px; }
+.cd-rchip { display: flex; align-items: center; gap: var(--s-2); flex: none; min-width: 0; padding: 3px var(--s-2); background: var(--sunk); color: var(--dim); letter-spacing: .02em; text-transform: none; white-space: nowrap; }
+.cd-rchip i { width: 8px; height: 8px; border-radius: 50%; background: var(--rc, var(--accent)); flex: none; }
+.cd-rchip b { color: var(--ink); font-weight: 400; overflow: hidden; text-overflow: ellipsis; }
+.cd-rchip small { color: var(--faint); font-size: var(--t-xs); }
+.cd-rchip .cd-ws, .cd-rchip .cd-wt, .cd-relrun.shorter .cd-rchip .cd-wl, .cd-relrun.short .cd-rchip small { display: none; }
+.cd-relrun.shorter .cd-rchip .cd-ws, .cd-relrun.tiny .cd-rchip .cd-wt { display: inline; }
+.cd-relrun.tiny .cd-rchip .cd-ws { display: none; }
+.cd-relrun.squeeze { gap: var(--s-1); }
+.cd-relrun.squeeze .cd-rchip { flex: 0 1 auto; gap: var(--s-1); padding: 3px var(--s-1); }
+.cd-rchip.on { border-color: var(--lamp); color: var(--ink); box-shadow: 0 0 0 1px var(--lamp); }
+.cd-rchip.dim { opacity: .55; }
+.cd-rhint { font: italic var(--t-xs) var(--font-body); color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cd .cd-addrel { flex: none; margin-left: auto; padding: 3px var(--s-3); }
+.cd-relmenu { position: absolute; z-index: 5; right: 0; top: calc(100% + 2px); width: 14rem; background: var(--panel); border: 1px solid var(--bdr); border-radius: 3px; padding: var(--s-1);
+  box-shadow: 0 8px 24px color-mix(in oklch, var(--sunk) 60%, transparent); display: flex; flex-direction: column; gap: 1px; }
+.cd-relmenu button { text-align: left; text-transform: none; letter-spacing: .02em; background: transparent; border: 0; padding: 3px var(--s-2); display: flex; flex-direction: column; gap: 0; line-height: 1.25; }
+.cd-relmenu button b { color: var(--ink); font-weight: 400; }
+.cd-relmenu button small { color: var(--faint); font-size: var(--t-xs); }
+.cd-relmenu button:hover, .cd-relmenu button:focus-visible { background: var(--raised); }
+#cd-rels { position: absolute; left: 0; top: 0; pointer-events: none; overflow: visible; }
+.cd-link { outline: none; }
+.cd-link .hit { fill: none; stroke: transparent; stroke-width: 8; pointer-events: stroke; cursor: pointer; }
+.cd-link .vis { fill: none; stroke: var(--rc); stroke-width: 1.5; opacity: .6; }
+.cd-link .arw { fill: var(--rc); opacity: .6; }
+.cd-link.on .vis { stroke-width: 2.5; opacity: 1; }
+.cd-link.on .arw, .cd-link:hover .vis, .cd-link:hover .arw { opacity: 1; }
+.cd-link:focus-visible .hit { stroke: var(--lamp); stroke-opacity: .45; }
+.cd-link.dim { opacity: .45; }
+.cd-cell.relx { box-shadow: inset 0 0 0 1px var(--rc, var(--lamp)); }
+.cd-cell.relx span { color: var(--ink); }
+.cd-cell.relx.relsel { box-shadow: inset 0 0 0 2px var(--rc, var(--lamp)); }
+.cd-cell.relx.src-chain { box-shadow: inset 0 0 0 1px var(--rc, var(--lamp)), inset 0 -2px 0 var(--accent); }
+.cd-xmask { display: grid; grid-template-columns: 2.2rem repeat(16, minmax(0, 1fr)); gap: 2px; align-items: center; flex: none; }
+.cd-xm { height: 18px; padding: 0; border: 0; border-radius: 1px; background: var(--sunk); color: var(--faint); font: var(--t-xs)/1 var(--font-mono); letter-spacing: 0; text-transform: none; }
+.cd-xm.beat { background: color-mix(in oklch, var(--ink) 7%, var(--sunk)); }
+.cd-xm.on { background: var(--accent); color: var(--sunk); }
+.cd-xm:hover { background: var(--raised); color: var(--ink); }
+.cd-xm:focus-visible { outline-offset: 0; }
 
 /* the sentence editor (grown): the motif's roll, its accents, how it fits, the chain */
 .cd-ed { flex: 0 1 auto; min-height: 0; display: flex; flex-direction: column; gap: var(--s-2); background: var(--panel); border: 1px solid var(--bdr); border-radius: 3px; padding: var(--s-3); overflow: hidden; }
