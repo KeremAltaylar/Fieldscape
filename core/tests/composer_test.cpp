@@ -1179,6 +1179,76 @@ static void test_canon_swap() {
     assert(last_lead > 1 && last_fol <= last_lead + 8 * 0.15625 + 1e-6);
 }
 
+/* composition 3: hocket and call & response gate a line between voices */
+static const char *ARPV1 = R"({"style":"arpeggio","rate":"16n","lo":50,"hi":74,"grid":[0,1,2,3,0,1,2,3,0,1,2,3,0,1,2,3]})";
+typedef std::pair<int, int> TP;   /* (tick, pitch) */
+static std::vector<TP> notes_of(const Log &l, int role, int to) { std::vector<TP> o; for (size_t i = 0; i < l.f.size(); i++) if (l.role[i] == role && tick_of(l.t[i]) < to) o.push_back({ tick_of(l.t[i]), pitch(l, i) }); return o; }
+static std::string hk_route(const char *rels) { return rel_comp(ARPV1, R"({"role":"off"})", MOT, rels); }
+static void test_hocket() {
+    const int SPAN = span_ticks();
+    const std::vector<TP> line = notes_of(render(hk_route("[]"), 40), 1, SPAN);
+    const Log l = render(hk_route(R"([{"type":"hocket","a":0,"b":2,"split":"alt","from":0,"to":0}])"), 40);
+    const std::vector<TP> a = notes_of(l, 1, SPAN), b = notes_of(l, 3, SPAN);
+    assert(line.size() >= 40 && a.size() + b.size() == line.size());
+    std::vector<TP> u = a; u.insert(u.end(), b.begin(), b.end()); std::sort(u.begin(), u.end());
+    assert(u == line);                                                       /* the union is the line, no note on both */
+    for (size_t i = 0; i < line.size(); i++) {                               /* in turn: even notes on a, odd on b */
+        const std::vector<TP> &who = i % 2 ? b : a; assert(std::find(who.begin(), who.end(), line[i]) != who.end()); }
+    /* Review Focus 3: no bar of the line that had notes goes silent, whatever the split */
+    const char *splits[] = { R"("split":"alt")", R"("split":"every","every":3)", R"("split":"mask","mask":"................")", R"("split":"mask","mask":"xxxxxxxxxxxxxxxx")" };
+    int bars = 0;
+    for (const char *sp : splits) {
+        char r[256]; std::snprintf(r, sizeof r, R"([{"type":"hocket","a":0,"b":2,%s,"from":0,"to":0}])", sp);
+        const Log x = render(hk_route(r), 40);
+        for (int bar = 0; bar < SPAN / 16; bar++) { int nl = 0, nx = 0;
+            for (const TP &t : line) if (t.first / 16 == bar) nl++;
+            for (int role : { 1, 2, 3 }) for (const TP &t : notes_of(x, role, SPAN)) if (t.first / 16 == bar) nx++;
+            assert(nl > 0 && nx == nl); bars++; }
+    }
+    std::printf("C hocket: alt over %zu line notes, %zu on a and %zu on b in turn, union = the line; %d bars x 4 splits never silent\n", line.size(), a.size(), b.size(), bars);
+}
+static void test_hocket_mask() {
+    const int SPAN = span_ticks();
+    const std::vector<TP> line = notes_of(render(hk_route("[]"), 40), 1, SPAN);
+    const Log l = render(hk_route(R"([{"type":"hocket","a":0,"b":2,"split":"mask","mask":"x..x.xx.x...xx..","from":0,"to":0}])"), 40);
+    const char *m = "x..x.xx.x...xx.."; int na = 0, nb = 0;
+    for (const TP &t : line) { const bool on_a = m[t.first % 16] == 'x';
+        assert(has_note(l, on_a ? 1 : 3, t.first, t.second) && !has_note(l, on_a ? 3 : 1, t.first)); on_a ? na++ : nb++; }
+    /* every 2 over three members: a a b b c c; the third voice (sect) is silent of its own */
+    const Log e = render(rel_comp(ARPV1, R"({"role":"off"})", MOT, R"([{"type":"hocket","a":0,"b":2,"c":1,"split":"every","every":2,"from":0,"to":0}])"), 40);
+    for (size_t i = 0; i < line.size(); i++) { const int role = ((int)(i / 2) % 3) == 0 ? 1 : ((int)(i / 2) % 3) == 1 ? 3 : 2; assert(has_note(e, role, line[i].first, line[i].second)); }
+    std::printf("C hocket mask: x..x.xx.x...xx.. puts %d notes on a and %d on b exactly; every 2 over three voices cycles a a b b c c\n", na, nb);
+}
+static const char *MOT2 = R"("motif":{"basis":"chord","bars":2,"notes":[{"deg":0,"start":0,"len":4},{"deg":2,"start":4,"len":4},{"deg":1,"start":8,"len":4},{"deg":4,"start":12,"len":4},{"deg":4,"start":24,"len":4},{"deg":3,"start":28,"len":2}]})";
+static const char *MOT1 = R"("motif":{"basis":"chord","bars":2,"notes":[{"deg":0,"start":0,"len":4},{"deg":2,"start":4,"len":4},{"deg":1,"start":8,"len":4},{"deg":4,"start":12,"len":4}]})";
+static void test_call() {
+    const int SPAN = span_ticks();
+    /* own: a plays bar 1 of a 2-bar phrase; b's arpeggio fills the empty bar 2 (ticks 18..31: 2 sixteenths after a's last note ends), never over a */
+    const Log l = render(rel_comp(MELV, ARPV3, MOT1, R"([{"type":"call","a":0,"b":2,"gap":2,"from":0,"to":0}])"), 40);
+    int nb = 0;
+    for (size_t j = 0; j < l.f.size(); j++) if (l.role[j] == 3 && tick_of(l.t[j]) < SPAN) {
+        nb++; const int k = tick_of(l.t[j]); assert(k % 32 >= 18);
+        for (size_t i = 0; i < l.f.size(); i++) if (l.role[i] == 1) assert(l.t[j] + l.d[j] <= l.t[i] + 1e-9 || l.t[i] + l.d[i] <= l.t[j] + 1e-9); }
+    for (int k = 18; k < 32; k++) assert(has_note(l, 3, k));
+    assert(nb == (SPAN / 32) * 14 && !notes_of(l, 1, 40).empty());
+    /* half: b plays the motif's second half (degrees 4 and 3, fitted to its register), starting where the answer does (tick 18) */
+    const Log h = render(rel_comp(MELV, ARPV3, MOT2, R"([{"type":"call","a":0,"b":2,"source":"half","gap":2,"from":0,"to":0}])"), 40);
+    const std::vector<TP> hb = notes_of(h, 3, SPAN);
+    for (int c = 0; c < 2; c++) { assert(has_note(h, 3, 32 * c + 18, dm(4, 55, 70)) && has_note(h, 3, 32 * c + 22, dm(3, 55, 70))); }
+    assert((int)hb.size() == 2 * (SPAN / 32));
+    /* mirror: a's phrase inverted about its first note: degrees 0 -2 -1 -4 */
+    const Log m = render(rel_comp(MELV, ARPV3, MOT1, R"([{"type":"call","a":0,"b":2,"source":"mirror","gap":2,"from":0,"to":0}])"), 40);
+    const int want[4] = { dm(0, 55, 70), dm(-2, 55, 70), dm(-1, 55, 70), dm(-4, 55, 70) };
+    for (int c = 0; c < 2; c++) for (int i = 0; i < 4; i++) assert(has_note(m, 3, 32 * c + 18 + 4 * i, want[i]));
+    assert((int)notes_of(m, 3, SPAN).size() == 4 * (SPAN / 32));
+    /* trigger enter: nothing before the zone is entered (20 s = bar 8), the answer in the 2 bars after, nothing later */
+    const Log z = render(rel_comp(MELV, R"({"role":"off"})", MOT2, R"([{"type":"call","a":0,"b":2,"source":"half","gap":2,"zone":"zA","trigger":"enter"}])"), 40, "zA", "zA", 0.5);
+    const std::vector<TP> zb = notes_of(z, 3, 1000);
+    assert(!zb.empty()); for (const TP &t : zb) assert(t.first >= 128 && t.first < 160);
+    assert(has_note(z, 3, 146) && has_note(z, 3, 150));
+    std::printf("C call: own fills bar 2 (%d notes, none over a), half plays degrees 4 3 at the answer's start, mirror inverts 0 -2 -1 -4, enter answers only in bars 8-9 (%zu notes)\n", nb, zb.size());
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && !std::strcmp(argv[1], "final")) { test_empty_motif(); test_melody_gain_chain(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "room")) { test_room(); return 0; }
@@ -1194,6 +1264,9 @@ int main(int argc, char **argv) {
     test_hetero();
     test_canon_strum();
     test_canon_swap();
+    test_hocket();
+    test_hocket_mask();
+    test_call();
     test_parse();
     test_resolve();
     test_motif_parse();
