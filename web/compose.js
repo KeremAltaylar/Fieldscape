@@ -909,6 +909,7 @@
         if (gone.length) { x.off.push(i); gone.forEach(function (v) { if (x.voices.indexOf(v) < 0) { x.voices.push(v); } }); }
         /* a Free voice's notes never enter the ring the relations read, so a relation that needs its line does nothing there */
         var fr = need.filter(function (v) { return c[v].style === "free"; });
+        if (r.type === "density" && fr.length < need.length) { fr = []; }   /* a density caps the composed voices; it is idle only when every voice is Free */
         if (fr.length) { x.free.push(i); fr.forEach(function (v) { if (x.fv.indexOf(v) < 0) { x.fv.push(v); } }); }
         if (gone.length || fr.length) { bad++; }
       }
