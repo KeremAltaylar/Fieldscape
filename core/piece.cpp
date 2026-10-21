@@ -934,10 +934,13 @@ struct Piece : Device {
     int cchord = -2; long long cbar0 = 0, cj = 0;
     struct MBar { int n = 0; comp::MNote note[comp::MOTIF_MAX * 2]; };
     MBar mvar, mhist[4]; bool mvar_on = false; int nhist = 0;
-    /* composition 3: each voice's last 64 own notes (not a relation's), the relations in force this step, and per relation the first
-       and last step it was in force (-1: never) - a canon's leader ticks are the ones between them */
-    struct NR { long long tick = -1; int midi = 0; float len16 = 0, vel = 0; };
-    NR ring[comp::NVOICE][64]; int rhead[comp::NVOICE] = {};
+    /* composition 3: each voice's last 256 own notes (not a relation's; 33 sixteenths of a 4-tone strum at 16n is 132), the
+       relations in force this step, and per relation the first and last step it was in force (-1: never) - a canon's leader
+       ticks are the ones between them. deg: the chord degree played (octave kept; a ninth of a 4-tone chord is 4); off: seconds
+       past the step (a strum's roll). A canon's leader that itself follows a canon (a chain) also records what it plays */
+    static const int RING = 256;
+    struct NR { long long tick = -1; int midi = 0, deg = 0; float len16 = 0, vel = 0, off = 0; };
+    NR ring[comp::NVOICE][RING]; int rhead[comp::NVOICE] = {}; double ctime = 0;
     struct Span { long long a = -1, b = -1; } sp[comp::REL_MAX]; long long ck = -1; bool relmade = false;
     int ract[comp::REL_MAX], nract = 0, hn = 0;
     int dj() const { return patch.comp.develop ? (int)std::min<long long>(cj, 1 << 20) : 0; }
@@ -1257,22 +1260,60 @@ struct Piece : Device {
             }
         }
     }
-    /* a voice's own note: into its ring (velocity as at unit gain), and doubled by each heterophony in force */
+    /* the chord degree of MIDI note m: the nearest chord tone, its octave kept (a 4-tone chord's ninth is degree 4) */
+    int chord_deg(int m) const {
+        const int nt = std::max(1, H.ntones); int best = 0, bd = 999;
+        for (int d = 0; d < nt; d++) { const int x = std::abs(m - H.tones[d] - 12 * floor_div(m - H.tones[d] + 6, 12)); if (x < bd) { bd = x; best = d; } }
+        return best + nt * floor_div(m - H.tones[best] + 6, 12);
+    }
+    /* the key's scale degree of m (the inverse of scale_midi, octave kept) */
+    int scale_deg_of(int m) const {
+        int q = quality_of(patch, 0); if (q < 0) q = Q_M7;
+        const auto &md = MODES[CHORDS[q].iv[1] == 3 ? MODE_AEOLIAN : MODE_IONIAN];
+        const int o = floor_div(m - patch.key, 12), r = m - patch.key - 12 * o;
+        int best = 0; for (int i = 1; i < md.n; i++) if (std::abs(md.iv[i] - r) < std::abs(md.iv[best] - r)) best = i;
+        return o * md.n + best;
+    }
+    void push_ring(int q, int m, double len16, double vel_unit, double off) {
+        NR &r = ring[q][rhead[q]++ % RING];
+        r.tick = ck; r.midi = m; r.deg = chord_deg(m); r.len16 = (float)len16; r.vel = (float)vel_unit; r.off = (float)off;
+    }
+    /* the pool of a chord's voices, set up as the role's main instrument is (once, at first use after a swap) */
+    void sync_pool(Role &rl) {
+        Synth *sy = rl.sy();
+        if (sy && !is_sampler(rl.cur))
+            for (int j = 0; j < Role::NPOOL; j++) if (rl.pool[rl.cur][j] && !rl.synced[rl.cur][j]) {
+                Synth *p = rl.pool[rl.cur][j].get();
+                p->set(rl.st); p->vol = sy->vol; p->shape(patch.env_on[rl.rec] ? &patch.env[rl.rec] : nullptr);
+                rl.synced[rl.cur][j] = true;
+            }
+    }
+    /* a voice's own note: into its ring (velocity as at unit gain), and doubled by each heterophony in force. A chord style's
+       notes (strum, swells) are doubled through the follower's chord voices */
     void own_note(int q, double f, double dur, double t, double vel) {
         const double s16 = 60.0 / patch.tempo / 4;
-        NR &r = ring[q][rhead[q]++ & 63];
-        r.tick = ck; r.midi = (int)std::lround(69 + 12 * std::log2(f / 440)); r.len16 = (float)(dur / s16); r.vel = (float)(vel / std::max(1e-6, cg[q]));
+        const int m = (int)std::lround(69 + 12 * std::log2(f / 440));
+        push_ring(q, m, dur / s16, vel / std::max(1e-6, cg[q]), t - ctime);
+        if (dur <= 0) return;   /* a held note has no length to double */
+        const double vu = vel / std::max(1e-6, cg[q]);
+        const bool chord = !melodic(q) && (ccur[q].style == comp::STRUM || ccur[q].style == comp::SWELLS);
         for (int i = 0; i < nract; i++) {
             const comp::Relation &c = patch.comp.rel[ract[i]];
             if (c.type != comp::R_HETERO || c.a != q) continue;
-            const int b = c.b; Role &rl2 = b == 0 ? top : b == 1 ? sectr : v3r; Synth *sy = rl2.sy();
-            const double to = t + c.offset_ms / 1000.0, v = r.vel * cg[b];
+            const int b = c.b; Role &rb = b == 0 ? top : b == 1 ? sectr : v3r;
+            const double v = vu * cg[b];
+            double to = t + c.offset_ms / 1000.0;
             relmade = true;
-            if (c.ornament > 0 && comp::rand01(patch.comp.seed ^ 0x4E7E, ck, b, hn++) < c.ornament) {   /* a grace: the scale tone above, 1/32 long, just before */
-                const double g = s16 / 2;
-                note(b + 1, sy, note_hz(scale_above(patch, r.midi)), g, std::max(t, to - g), v, true);
+            if (c.ornament > 0 && comp::rand01(patch.comp.seed ^ 0x4E7E, ck, b, hn++) < c.ornament) {
+                /* a grace: the scale tone above, 1/32 long (15 ms at least), ending exactly where the double starts - so a
+                   one-voice synth is not cut. An offset shorter than the grace moves the double to t + grace instead */
+                const double g = std::max(s16 / 2, 0.015);
+                if (to - g < t) to = t + g;
+                if (chord) sync_pool(rb);
+                note(b + 1, chord ? chord_voice(rb, to) : rb.sy(), note_hz(scale_above(patch, m)), g, to - g, v, true);
             }
-            note(b + 1, sy, f, dur, to, v, true);
+            if (chord) sync_pool(rb);
+            note(b + 1, chord ? chord_voice(rb, to + dur) : rb.sy(), f, dur, to, v, true);
             relmade = false;
         }
     }
@@ -1505,16 +1546,21 @@ struct Piece : Device {
     void compose_step(double time) {
         if (!patch.comp.on || !comp_live || H.ntones <= 0) return;
         const long long k = ticks - 1, bar = k / 16;
-        ck = k; hn = 0;
+        ck = k; hn = 0; ctime = time;
         nract = comp::relations_in_force(patch.comp, H.chord, zin, nzin, ract);
-        int fol[comp::NVOICE] = { -1, -1, -1 };   /* the canon (rel index) each voice follows: the first listed; a follower's own notes are not led */
         for (int i = 0; i < nract; i++) {
             const int r = ract[i]; if (sp[r].a < 0 || sp[r].b < k - 1) sp[r].a = k;
             sp[r].b = k;
         }
+        /* the canon (rel index) each voice follows: the first listed wins; a voice with a canon on it plays no style of its own.
+           A canon whose leader leads back to its follower (a -> b, b -> a) is dropped, so nothing feeds back; a chain
+           (a -> b, b -> c) stands, c following what b plays in its canon */
+        int fol[comp::NVOICE] = { -1, -1, -1 };
         for (int r = 0; r < patch.comp.nrel; r++) {
             const comp::Relation &c = patch.comp.rel[r];
-            if (c.type == comp::R_CANON && sp[r].b >= 0 && sp[r].b >= k - c.delay16 && fol[c.b] < 0 && fol[c.a] < 0) fol[c.b] = r;
+            if (c.type != comp::R_CANON || sp[r].b < 0 || sp[r].b < k - c.delay16 || fol[c.b] >= 0) continue;
+            int x = c.a; for (int h = 0; h < comp::NVOICE && fol[x] >= 0; h++) x = patch.comp.rel[fol[x]].a;
+            if (x != c.b) fol[c.b] = r;
         }
         for (int q = 0; q < comp::NVOICE; q++) {
             const comp::Voice &v = ccur[q];
@@ -1525,37 +1571,42 @@ struct Piece : Device {
         }
         ck = -1;
     }
-    /* chord degree (0..ntones-1) of the chord tone nearest m's pitch class */
-    int deg_of(int m) const {
-        int best = 0, bd = 99;
-        for (int d = 0; d < H.ntones; d++) { int x = std::abs(((H.tones[d] - m) % 12 + 12) % 12); x = std::min(x, 12 - x); if (x < bd) { bd = x; best = d; } }
-        return best;
-    }
-    /* canon: voice q plays the leader's own notes, `delay16` sixteenths late (whose leader tick lies in the relation's span:
-       first..last step in force), moved `trans` chord degrees, fitted to q's register on the chord now playing, at q's level.
-       Invert: about the leader's first note of that bar; retro: the leader's previous bar, mirrored in time. */
+    /* canon: voice q plays the leader's own notes `delay16` sixteenths late - those whose leader tick lies in the relation's span
+       (first..last step in force; the last delay's worth sounds just past the span) - moved `trans` degrees (chord degrees; scale
+       degrees when the leader is a scale-basis melody), fitted to q's register on the chord now playing, at q's level and with
+       the leader's roll (a strum's offsets within its step), through q's chord voices when a step has several notes.
+       Invert: about the leader's first note of that bar. Retro: the leader's previous bar, each note's start mirrored
+       (16 - start - length), then delayed by `delay16` like any canon. */
     void play_canon(int q, const comp::Relation &c, long long first, long long last, long long k, double time) {
         const comp::Voice &v = ccur[q];
         const double s16 = 60.0 / patch.tempo / 4;
-        Synth *sy = (q == 0 ? top : q == 1 ? sectr : v3r).sy();
+        Role &rl = q == 0 ? top : q == 1 ? sectr : v3r;
+        const bool sc = patch.comp.motif.basis == comp::SCALE_DEG && melodic(c.a);
         const NR *lead = ring[c.a];
-        const long long lt = k - c.delay16;
-        for (int i = 0; i < 64; i++) {
-            const NR &n = lead[i]; if (n.tick < 0) continue;
-            int m = n.midi;
-            if (c.transform == comp::T_RETRO) {
-                if (n.tick / 16 != k / 16 - 1 || std::max(0, 16 - (int)(n.tick % 16) - (int)std::lround(n.len16)) != k % 16 || k - 16 < first) continue;
-            } else {
-                if (n.tick != lt || lt < first || lt > last) continue;
-                if (c.transform == comp::T_INVERT) {
-                    int m0 = m; long long best = 1 << 30;
-                    for (int j = 0; j < 64; j++) if (lead[j].tick >= 0 && lead[j].tick / 16 == n.tick / 16 && lead[j].tick < best) { best = lead[j].tick; m0 = lead[j].midi; }
-                    m = 2 * m0 - m;
-                }
+        const long long u = k - c.delay16;   /* the leader tick this step replays */
+        const NR *hit[8]; int nh = 0;
+        for (int i = 0; i < RING && nh < 8; i++) {
+            const NR &n = lead[i]; if (n.tick < 0 || n.tick < first || n.tick > last || n.len16 <= 0) continue;
+            if (c.transform == comp::T_RETRO ? (u < 0 || n.tick / 16 != u / 16 - 1 || std::max(0, 16 - (int)(n.tick % 16) - (int)std::lround(n.len16)) != u % 16) : n.tick != u) continue;
+            hit[nh++] = &n;
+        }
+        bool leads = false;
+        for (int i = 0; i < nract; i++) if (patch.comp.rel[ract[i]].type == comp::R_CANON && patch.comp.rel[ract[i]].a == q) leads = true;
+        for (int i = 0; i < nh; i++) {
+            const NR &n = *hit[i];
+            int d = sc ? scale_deg_of(n.midi) : n.deg;
+            if (c.transform == comp::T_INVERT) {
+                const NR *f0 = &n; for (int j = 0; j < RING; j++) if (lead[j].tick >= 0 && lead[j].tick / 16 == n.tick / 16 && lead[j].tick < f0->tick) f0 = &lead[j];
+                d = 2 * (sc ? scale_deg_of(f0->midi) : f0->deg) - d;
             }
+            d += c.trans;
+            const int m = sc ? scale_midi(patch, d, 0, v.lo, v.hi) : deg_midi(d, v.lo, v.hi, 0);
+            const double dur = std::max(0.03, n.len16 * s16), t = time + n.off;
             relmade = true;
-            note(q + 1, sy, note_hz(deg_midi(deg_of(m) + c.trans, v.lo, v.hi, 0)), std::max(0.03, n.len16 * s16), time, n.vel * cg[q], true);
+            if (nh > 1) { sync_pool(rl); note(q + 1, chord_voice(rl, t + dur), note_hz(m), dur, t, n.vel * cg[q], true); }
+            else note(q + 1, rl.sy(), note_hz(m), dur, t, n.vel * cg[q], true);
             relmade = false;
+            if (leads) push_ring(q, m, n.len16, n.vel, n.off);   /* a chain: the next follower hears this voice as it plays */
         }
     }
     /* a chord degree (0 root .. 4 ninth) as a MIDI note, folded into [lo, hi]; degrees past the chord's tones go up an octave */
@@ -1650,12 +1701,7 @@ struct Piece : Device {
     void play_style(int q, const comp::Voice &v, long long k, long long bar, double time) {
         Role &rl = q == 0 ? top : q == 1 ? sectr : v3r;
         Synth *sy = rl.sy();
-        if (sy && (v.style == comp::STRUM || v.style == comp::SWELLS) && !is_sampler(rl.cur))
-            for (int j = 0; j < Role::NPOOL; j++) if (rl.pool[rl.cur][j] && !rl.synced[rl.cur][j]) {
-                Synth *p = rl.pool[rl.cur][j].get();
-                p->set(rl.st); p->vol = sy->vol; p->shape(patch.env_on[rl.rec] ? &patch.env[rl.rec] : nullptr);
-                rl.synced[rl.cur][j] = true;
-            }
+        if (v.style == comp::STRUM || v.style == comp::SWELLS) sync_pool(rl);
         const double g = cg[q];   /* each style at Free's level (comp_gains, comp_bar) */
         const int role = q + 1, ncols = std::max(1, (16 + v.rate - 1) / v.rate), j = dj();
         /* "bars": develop - an arpeggio's grid read backwards on odd bars of a chord, two columns on in bar 2 (of 4) */
