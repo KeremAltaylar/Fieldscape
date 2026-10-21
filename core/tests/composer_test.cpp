@@ -80,7 +80,7 @@ static double draw(void *p) { unsigned *s = (unsigned *)p; *s = *s * 1664525u + 
 static const char *ROUTE = R"({"version":17,"tempo":96,"key":50,"prog":[{"r":0,"q":"m7"},{"r":5,"q":"maj7"},{"r":7,"q":"7"},{"r":0,"q":"m9"}],
     "voice":{"on":true,"synth":"fm"},"sect":{"on":true,"synth":"fm"},"v3":{"on":true,"synth":"am"},"zones":{"on":false},"bed":{"on":false}%s})";
 /* the notes a route plays in `secs`, walked from 0 to 1 along it */
-static Log render(const std::string &comp, double secs, const char *zones_in = nullptr, const char *zone_entered = nullptr, double zone_at = 0.5) {
+static Log render(const std::string &comp, double secs, const char *zones_in = nullptr, const char *zone_entered = nullptr, double zone_at = 0.5, double zone_leave = -1) {
     char buf[8192]; std::snprintf(buf, sizeof buf, ROUTE, comp.c_str());
     unsigned seed = 11; Log l;
     fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128); fs_piece_test_hooks(pc, draw, &seed, lg, &l);
@@ -89,6 +89,7 @@ static Log render(const std::string &comp, double secs, const char *zones_in = n
     for (int b = 0; b < blocks; b++) {
         fs_piece_walk(pc, r, (double)b / blocks, 0);
         if (zones_in && b == (int)(blocks * zone_at)) fs_piece_zones(pc, zones_in, zone_entered ? zone_entered : "");
+        if (zone_leave >= 0 && b == (int)(blocks * zone_leave)) fs_piece_zones(pc, "", "");
         fs_process(pc, 128);
     }
     fs_destroy(pc); return l;
@@ -1246,7 +1247,71 @@ static void test_call() {
     const std::vector<TP> zb = notes_of(z, 3, 1000);
     assert(!zb.empty()); for (const TP &t : zb) assert(t.first >= 128 && t.first < 160);
     assert(has_note(z, 3, 146) && has_note(z, 3, 150));
+    /* the walker leaves the zone at 21 s (bar 8) - the answer still plays out its 2 bars (carry from task 3's review) */
+    const Log zl = render(rel_comp(MELV, R"({"role":"off"})", MOT2, R"([{"type":"call","a":0,"b":2,"source":"half","gap":2,"zone":"zA","trigger":"enter"}])"), 40, "zA", "zA", 0.5, 0.525);
+    assert(has_note(zl, 3, 146) && has_note(zl, 3, 150)); for (const TP &t : notes_of(zl, 3, 1000)) assert(t.first >= 128 && t.first < 160);
     std::printf("C call: own fills bar 2 (%d notes, none over a), half plays degrees 4 3 at the answer's start, mirror inverts 0 -2 -1 -4, enter answers only in bars 8-9 (%zu notes)\n", nb, zb.size());
+}
+
+/* composition 3, task 4: pitch relations. a = voice 0 (arpeggio on every sixteenth, plays first), b = voice 3 (55..70) */
+static std::string pr_route(const char *rels, const char *a = ARPV1) { return rel_comp(a, ARPV3, MOT, rels); }
+static std::vector<int> by_tick(const Log &l, int role, int n) { std::vector<int> v(n, -1); for (const TP &t : notes_of(l, role, n)) v[t.first] = t.second; return v; }
+static bool chord0_tone(int m) { const int c = ((m % 12) + 12) % 12; return c == 2 || c == 5 || c == 9 || c == 0; }
+static void test_motion() {
+    const int SPAN = span_ticks();
+    const Log base = render(pr_route("[]"), 40);
+    /* contrary, strength 1: b's move opposes a's last interval (0 when a's is 0 or b is at its register's edge); chord tones, in 55..70 */
+    const Log c = render(pr_route(R"([{"type":"motion","a":0,"b":2,"motion":"contrary","strength":1,"from":0,"to":0}])"), 40);
+    const std::vector<int> ca = by_tick(c, 1, SPAN), cb = by_tick(c, 3, SPAN); int strict = 0;
+    for (int k = 0; k < SPAN; k++) { assert(ca[k] >= 0 && cb[k] >= 55 && cb[k] <= 70 && chord0_tone(cb[k])); }
+    for (int k = 1; k < 32; k++) {
+        const int da = ca[k] - ca[k - 1], db = cb[k] - cb[k - 1];
+        if (da > 0) assert(db <= 0); else if (da < 0) assert(db >= 0); else assert(db == 0);
+        if (da * db < 0) strict++;
+    }
+    assert(strict >= 8);
+    /* a that repeats one pitch: b holds */
+    const Log r = render(pr_route(R"([{"type":"motion","a":0,"b":2,"motion":"contrary","from":0,"to":0}])", R"({"style":"arpeggio","rate":"16n","lo":50,"hi":74,"grid":[0]})"), 40);
+    const std::vector<int> rb = by_tick(r, 3, SPAN); for (int k = 1; k < SPAN; k++) assert(rb[k] == rb[0]);
+    /* par3 / par6: a diatonic third (3 or 4 semitones) / sixth (8 or 9) below a, in b's register, on >= 90% of the shared onsets */
+    for (int six = 0; six < 2; six++) {
+        const Log p = render(pr_route(six ? R"([{"type":"motion","a":0,"b":2,"motion":"par6","from":0,"to":0}])" : R"([{"type":"motion","a":0,"b":2,"motion":"par3","from":0,"to":0}])"), 40);
+        const std::vector<int> pa = by_tick(p, 1, SPAN), pb = by_tick(p, 3, SPAN); int ok = 0;
+        for (int k = 0; k < SPAN; k++) { assert(pb[k] >= 55 && pb[k] <= 70); const int d = (((pa[k] - pb[k]) % 12) + 12) % 12; if (six ? (d == 8 || d == 9) : (d == 3 || d == 4)) ok++; }
+        assert(ok >= SPAN * 9 / 10);
+    }
+    /* free, and strength 0: the route as it was; strength 0.5: about half the notes move */
+    assert(same(base, render(pr_route(R"([{"type":"motion","a":0,"b":2,"motion":"free","from":0,"to":3}])"), 40)));
+    assert(same(base, render(pr_route(R"([{"type":"motion","a":0,"b":2,"motion":"par3","strength":0,"from":0,"to":3}])"), 40)));
+    const Log h = render(pr_route(R"([{"type":"motion","a":0,"b":2,"motion":"par3","strength":0.5,"from":0,"to":3}])"), 40);
+    const std::vector<int> b0 = by_tick(base, 3, 256), b5 = by_tick(h, 3, 256); int n = 0, mv = 0;
+    for (int k = 0; k < 256; k++) if (b0[k] >= 0) { n++; if (b5[k] != b0[k]) mv++; }
+    assert(n > 100 && mv > n / 4 && mv < n * 3 / 4);
+    /* every moved note on every chord (a 4-chord walk): inside 55..70 */
+    for (size_t i = 0; i < h.f.size(); i++) if (h.role[i] == 3) assert(pitch(h, i) >= 55 && pitch(h, i) <= 70);
+    std::printf("C motion: contrary opposes a on %d of 31 moves (never with it), par3/par6 are a diatonic 3rd/6th below on >=90%% of %d onsets, strength 0 and free are the route unchanged, 0.5 moved %d of %d notes\n", strict, SPAN, mv, n);
+}
+static void test_unison() {
+    const int SPAN = span_ticks();
+    const Log base = render(pr_route("[]"), 40);
+    const std::vector<int> b0 = by_tick(base, 3, SPAN + 8);
+    /* meet change, unison: the first b note after each chord change (tick 0, tick SPAN) is a's pitch (a's register holds it: 55..70), the rest as before */
+    const Log u = render(pr_route(R"([{"type":"unison","a":0,"b":2,"meet":"change","octave":"unison","from":0,"to":3}])"), 40);
+    const std::vector<int> ua = by_tick(u, 1, SPAN + 8), ub = by_tick(u, 3, SPAN + 8);
+    for (int k : { 0, SPAN }) { assert(ub[k] >= 55 && ub[k] <= 70 && ((ub[k] - ua[k]) % 12 + 12) % 12 == 0); if (ua[k] >= 55 && ua[k] <= 70) assert(ub[k] == ua[k]); }
+    for (int k = 0; k < SPAN + 8; k++) if (k != 0 && k != SPAN) assert(ub[k] == b0[k]);
+    /* octave: a's pitch class, in b's own register, the octave nearest the note b would have played */
+    const Log o = render(pr_route(R"([{"type":"unison","a":0,"b":2,"meet":"change","octave":"octave","from":0,"to":3}])"), 40);
+    const std::vector<int> oa = by_tick(o, 1, SPAN + 8), ob = by_tick(o, 3, SPAN + 8);
+    for (int k : { 0, SPAN }) { assert(ob[k] >= 55 && ob[k] <= 70 && ((ob[k] - oa[k]) % 12 + 12) % 12 == 0 && std::abs(ob[k] - b0[k]) <= 6); }
+    /* never: nothing; cadence with no cadence in the chain: nothing */
+    assert(same(base, render(pr_route(R"([{"type":"unison","a":0,"b":2,"meet":"never","from":0,"to":3}])"), 40)));
+    assert(same(base, render(pr_route(R"([{"type":"unison","a":0,"b":2,"meet":"cadence","from":0,"to":3}])"), 40)));
+    /* cadence on chord 1 only: b meets a at the start of that chord's first bar (tick SPAN), not at tick 0 */
+    char cb[4096]; std::snprintf(cb, sizeof cb, R"(,"comp":{"voice":%s,"sect":{"role":"off"},"v3":%s,"bass":{"mode":"off"},%s,"chain":[{"op":"cadence","cad":"full","from":1,"to":1}],"bars":"repeat","relations":[{"type":"unison","a":0,"b":2,"meet":"cadence","from":0,"to":3}]})", ARPV1, ARPV3, MOT);
+    const Log k = render(cb, 40); const std::vector<int> ka = by_tick(k, 1, SPAN + 8), kb = by_tick(k, 3, SPAN + 8);
+    assert(kb[0] == b0[0] && ((kb[SPAN] - ka[SPAN]) % 12 + 12) % 12 == 0);
+    std::printf("C unison: change puts each voice's first note after a chord change on a (pitch %d = %d at tick %d), octave keeps b's register, cadence meets only at the cadence chord, never is nothing\n", ub[SPAN], ua[SPAN], SPAN);
 }
 
 int main(int argc, char **argv) {
@@ -1267,6 +1332,8 @@ int main(int argc, char **argv) {
     test_hocket();
     test_hocket_mask();
     test_call();
+    test_motion();
+    test_unison();
     test_parse();
     test_resolve();
     test_motif_parse();

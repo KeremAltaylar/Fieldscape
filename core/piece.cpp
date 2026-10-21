@@ -942,7 +942,9 @@ struct Piece : Device {
     struct NR { long long tick = -1; int midi = 0, deg = 0; float len16 = 0, vel = 0, off = 0; };
     NR ring[comp::NVOICE][RING]; int rhead[comp::NVOICE] = {}; double ctime = 0;
     struct Span { long long a = -1, b = -1; } sp[comp::REL_MAX]; long long ck = -1; bool relmade = false;
-    int ract[comp::REL_MAX], nract = 0, hn = 0;
+    int ract[comp::REL_MAX], nract = 0, hn = 0, mn = 0;
+    int chg = 0, ufirst[comp::NVOICE] = { -1, -1, -1 };   /* chord changes so far; the change each voice last sounded a note in (unison: its first note after one) */
+    bool cad_chord = false;                               /* this chord is covered by a chain cadence step (its first bar: cj == 0) */
     int hcnt[comp::REL_MAX] = {};                     /* hocket: line notes dealt so far in the relation's span */
     int ccall[comp::NVOICE] = { -1, -1, -1 };         /* the call (rel index) a voice answers this step, -1: none */
     int dj() const { return patch.comp.develop ? (int)std::min<long long>(cj, 1 << 20) : 0; }
@@ -1337,9 +1339,63 @@ struct Piece : Device {
         }
         return false;
     }
+    /* composition 3, pitch relations: before voice q's own note sounds (a relation's own notes - canon, hocket, call - are
+       never moved; a chord style's strum and swells are left whole, a moved tone each would collapse the chord). Motion:
+       contrary - the chord tone next above/below b's last pitch against a's last interval (b holds when a does not move or
+       b is at its register's edge); par3 / par6 - the key's scale tone a third / sixth below a's current pitch. With chance
+       `strength`, seeded apart from the piece's draws. Unison: at b's first note after a chord change (cadence: only on a
+       cadence chord's first bar) b takes a's pitch - a's own pitch if b's register holds it, else its octave nearest -
+       or, `octave`, a's pitch class at the octave nearest the note b would have played. Everything stays in b's register
+       and on a chord tone or the scale. Returns the new MIDI note, or -1 */
+    int pitch_rel(int q, int m) {
+        const comp::Voice &v = ccur[q];
+        if (!melodic(q) && (v.style == comp::STRUM || v.style == comp::SWELLS)) return -1;
+        auto last2 = [&](int x, int &cur, int &prev, long long &ct) {   /* x's latest note, and the one before at an earlier tick */
+            cur = prev = -1; ct = -1;
+            for (int i = 1; i <= RING && i <= rhead[x]; i++) {
+                const NR &n = ring[x][(rhead[x] - i) % RING]; if (n.tick < 0) break;
+                if (cur < 0) { cur = n.midi; ct = n.tick; } else if (n.tick < ct) { prev = n.midi; break; }
+            }
+        };
+        auto nearest = [&](int pc, int to) {   /* the pitch of class pc in b's register nearest `to`, -1 if none */
+            int best = -1; for (int x = v.lo; x <= v.hi; x++) if (((x - pc) % 12 + 12) % 12 == 0 && (best < 0 || std::abs(x - to) < std::abs(best - to))) best = x;
+            return best;
+        };
+        for (int i = 0; i < nract; i++) {
+            const comp::Relation &c = patch.comp.rel[ract[i]];
+            if (c.b != q || (c.type != comp::R_MOTION && c.type != comp::R_UNISON)) continue;
+            int ac, ap; long long at; last2(c.a, ac, ap, at);
+            if (ac < 0) continue;
+            if (c.type == comp::R_UNISON) {
+                if (c.meet == comp::U_NEVER || ufirst[q] == chg || (c.meet == comp::U_CADENCE && !(cad_chord && cj == 0))) continue;
+                const int r = c.octave || ac < v.lo || ac > v.hi ? nearest(ac, m) : ac;
+                if (r >= 0) return r;
+                continue;
+            }
+            if (c.motion == comp::M_FREE || !(comp::rand01(patch.comp.seed ^ 0x907B, ck, q, mn++) < c.strength)) continue;
+            int r = -1;
+            if (c.motion == comp::M_CONTRARY) {
+                int bc, bp; long long bt; last2(q, bc, bp, bt);
+                if (bc < 0) continue;
+                const int dir = ap < 0 ? 0 : -((ac > ap) - (ac < ap));
+                auto tone = [&](int x) { for (int d = 0; d < H.ntones; d++) if ((x - H.tones[d]) % 12 == 0) return true; return false; };
+                for (int x = bc + dir; dir && x >= v.lo && x <= v.hi && r < 0; x += dir) if (tone(x)) r = x;
+                if (r < 0) for (int w = 0; w <= 12 && r < 0; w++) for (int s2 = -1; s2 <= 1 && r < 0; s2 += 2) { const int x = bc + s2 * w; if (x >= v.lo && x <= v.hi && tone(x)) r = x; }
+            } else {
+                const int d = scale_deg_of(ac) - (c.motion == comp::M_PAR3 ? 2 : 5), x = scale_midi(patch, d, 0, v.lo, v.hi);
+                if (x >= v.lo && x <= v.hi) r = x;
+            }
+            if (r >= 0) return r;
+        }
+        return -1;
+    }
     void note(int role, Synth *sy, double f, double dur, double t, double vel, bool composed = false) {
         Role *rr = role == 0 ? &bass : role == 1 ? &top : role == 2 ? &sectr : role == 3 ? &v3r : nullptr;
         if (role >= 1 && role <= 3) nbar[role - 1]++;
+        if (composed && ck >= 0 && !relmade && role >= 1 && role <= 3) {
+            if (nract) { const int m = (int)std::lround(69 + 12 * std::log2(f / 440)), r = pitch_rel(role - 1, m); if (r >= 0 && r != m) f = note_hz(r); }
+            ufirst[role - 1] = chg;
+        }
         if (composed && ck >= 0 && !relmade && role >= 1 && role <= 3 && own_note(role - 1, f, dur, t, vel)) return;   /* hocket: it sounds on another member */
         if (composed && ck >= 0 && role >= 1 && role <= 3 && ccall[role - 1] >= 0 && dur > 0) {   /* an answer ends before the caller's next note */
             const int n = a_next(patch.comp.rel[ccall[role - 1]].a, ck);
@@ -1519,7 +1575,8 @@ struct Piece : Device {
         comp::Resolved r;
         const int chord = chord_index(t_along);
         comp::resolve(patch.comp, chord, patch.nprog, sector, patch.sect.n, zin, nzin, ent, ne, r);
-        if (chord != cchord) { cchord = chord; cbar0 = bar; }
+        if (chord != cchord) { cchord = chord; cbar0 = bar; chg++; }
+        cad_chord = false; for (int i = patch.comp.nchain - 1; i >= 0; i--) if (chord >= patch.comp.chain[i].from && chord <= patch.comp.chain[i].to) { cad_chord = patch.comp.chain[i].op == comp::OP_CADENCE; break; }
         cj = bar - cbar0;
         for (int q = 0; q < comp::NVOICE; q++) {
             /* the gain of the layer that sets this voice (zone > chord > section > route, as resolve), glided as the settings are */
@@ -1597,10 +1654,6 @@ struct Piece : Device {
         for (const NR &n : ring[c.a]) if (n.tick >= 0 && n.tick <= k) e = std::max(e, n.tick + std::max(1LL, (long long)std::ceil(n.len16)));
         return std::max(e + c.gap16, sp[r].a);
     }
-    bool entered(uint64_t zone, long long k) const {
-        for (int i = 0; i < nzent; i++) if (zent[i].id == zone && k / 16 >= zent[i].bar && k / 16 - zent[i].bar < comp::PHRASE_BARS) return true;
-        return false;
-    }
     /* source half: the motif's second half (notes from len16 / 2) fitted to the chord now playing; mirror: a's last phrase inverted
        about its first note (chord degrees). Either plays from the answer's start - its first note at once, the rest as spaced - in
        b's register, through b's chord voices when a step has several notes. `e`: sixteenths since the answer began */
@@ -1636,11 +1689,10 @@ struct Piece : Device {
     void compose_step(double time) {
         if (!patch.comp.on || !comp_live || H.ntones <= 0) return;
         const long long k = ticks - 1, bar = k / 16;
-        ck = k; hn = 0; ctime = time;
-        nract = comp::relations_in_force(patch.comp, H.chord, zin, nzin, ract);
-        { int n2 = 0;   /* a call with trigger "enter" acts for the phrase after entering its zone */
-          for (int i = 0; i < nract; i++) { const comp::Relation &c = patch.comp.rel[ract[i]]; if (c.type == comp::R_CALL && c.on_enter && !entered(c.zone, k)) continue; ract[n2++] = ract[i]; }
-          nract = n2; }
+        ck = k; hn = 0; mn = 0; ctime = time;
+        { uint64_t rec[8]; int nr = 0;   /* the zones entered in the last PHRASE_BARS: a call with trigger "enter" answers on them though the walker has left */
+          for (int i = 0; i < nzent; i++) if (bar >= zent[i].bar && bar - zent[i].bar < comp::PHRASE_BARS) rec[nr++] = zent[i].id;
+          nract = comp::relations_in_force(patch.comp, H.chord, zin, nzin, ract, rec, nr); }
         for (int i = 0; i < nract; i++) {
             const int r = ract[i]; if (sp[r].a < 0 || sp[r].b < k - 1) { sp[r].a = k; hcnt[r] = 0; }
             sp[r].b = k;
@@ -2170,7 +2222,7 @@ struct Piece : Device {
         patch = routes[near];
         apply_patch(now);
         H.idx = -1; H.chord = -1; H.ntones = -1;
-        sector = -1; comp_live = false; for (auto &x : sp) x = Span(); for (int &x : hcnt) x = 0; for (int q = 0; q < comp::NVOICE; q++) { rhead[q] = 0; for (auto &n : ring[q]) n.tick = -1; } nzent = 0; cad_oth = comp::OTH_HOLD; mel_step = -2; cchord = -2; mvar_on = false; nhist = 0; for (int q = 0; q < comp::NVOICE; q++) { cped_root[q] = -1; cpulse[q] = 0; calt[q] = 0; }
+        sector = -1; comp_live = false; for (auto &x : sp) x = Span(); for (int &x : hcnt) x = 0; for (int q = 0; q < comp::NVOICE; q++) { rhead[q] = 0; for (auto &n : ring[q]) n.tick = -1; } nzent = 0; chg = 0; for (int &x : ufirst) x = -1; cad_chord = false; cad_oth = comp::OTH_HOLD; mel_step = -2; cchord = -2; mvar_on = false; nhist = 0; for (int q = 0; q < comp::NVOICE; q++) { cped_root[q] = -1; cpulse[q] = 0; calt[q] = 0; }
         synth_to(walk_level(route_dist), now);
     }
     void walk(int r, double t, double dist, double now) {

@@ -172,13 +172,15 @@ static void rel_of(const Json *a, Relation *o, int &n) {
             for (int k = 0; k < 3; k++) { const Json *y = w->at(k); if (y && y->kind == Json::NUM) r.weight[k] = clamp8(y->num, 0, 4); }
     }
 }
-int relations_in_force(const Cfg &c, int chord, const uint64_t *inside, int ninside, int *out) {
+int relations_in_force(const Cfg &c, int chord, const uint64_t *inside, int ninside, int *out, const uint64_t *recent, int nrecent) {
     int n = 0;
     for (int i = 0; i < c.nrel && n < REL_MAX; i++) {
         const Relation &r = c.rel[i];
         if (chord < r.from || chord > r.to) continue;
+        const bool en = r.type == R_CALL && r.on_enter && r.zone != 0;
         bool in = r.zone == 0;
-        for (int k = 0; k < ninside && !in; k++) in = inside[k] == r.zone;
+        const uint64_t *l = en ? recent : inside; const int nl = en ? nrecent : ninside;
+        for (int k = 0; k < nl && !in; k++) in = l[k] == r.zone;
         if (in) out[n++] = i;
     }
     return n;

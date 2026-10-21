@@ -83,5 +83,5 @@ void glide(Voice &cur, const Voice &target, int blend);
    `last`: chord is that step's last (a cadence's: its note is the phrase's last). Plain data, no heap: the audio thread calls it once a bar */
 void motif_step(const Cfg &c, int chord, Phrase &out);
 /* the relations acting at chord `chord` with the walker inside `inside` zones: indices into c.rel, at most REL_MAX */
-int relations_in_force(const Cfg &c, int chord, const uint64_t *inside, int ninside, int *out);
+int relations_in_force(const Cfg &c, int chord, const uint64_t *inside, int ninside, int *out, const uint64_t *recent = nullptr, int nrecent = 0);   /* recent: zones entered within PHRASE_BARS - a call with trigger "enter" is in force on those, the walker inside or not */
 }
