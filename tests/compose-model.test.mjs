@@ -172,7 +172,7 @@ const CORE_KEYS = new Set([...CORE.matchAll(/(?:has|get)\("(\w+)"\)/g)].map((m) 
 const strTable = (re) => [...CORE.match(re)[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
 const CORE_STR = {
   style: strTable(/STYLES\[NSTYLE\] = \{([^}]*)\}/), role: strTable(/ROLES\[5\] = \{([^}]*)\}/), rate: strTable(/T\[\] = \{(.*)\};/),
-  pedal: strTable(/P\[3\] = \{([^}]*)\}/), dir: strTable(/D\[3\] = \{([^}]*)\}/), mode: strTable(/M\[3\] = \{([^}]*)\}/),
+  pedal: strTable(/P\[3\] = \{([^}]*)\}/), dir: strTable(/D\[3\] = \{([^}]*)\}/), mode: strTable(/M\[4\] = \{([^}]*)\}/),
   op: strTable(/OPS\[NOP\] = \{([^}]*)\}/), cad: strTable(/CAD\[3\] = \{([^}]*)\}/), others: strTable(/OTH\[3\] = \{([^}]*)\}/)
 };
 const CORE_NOTE_KEYS = new Set([...CORE.matchAll(/\bx->[ns]\("(\w+)"/g)].map((m) => m[1]));   /* a motif note's and a chain step's keys */

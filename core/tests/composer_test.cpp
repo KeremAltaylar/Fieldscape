@@ -4,6 +4,7 @@
 #include "../fieldscape.h"
 #include "../tone.hpp"
 #include "../levels.hpp"
+#include "comp_fp.hpp"
 #include <algorithm>
 #include <array>
 #include <cassert>
@@ -981,6 +982,73 @@ static unsigned long long repeat_hash(const char *bars, size_t *nn) {
     *nn = x.f.size() + y.f.size();
     return log_hash(x) * 31 + log_hash(y);
 }
+/* composition 4, task 1: the four new styles, the walking bass, ornaments, glides and microtones in the data */
+static void test_styles4_parse() {
+    using namespace comp;
+    auto parse = [](const char *s, Cfg &c) { Json j = Json::parse(s); comp_of(&j, c); };
+    static Cfg c;
+    parse(R"({"voice":{"style":"ostinato","rate":"16n","refit":"transpose","grid":[0,2,1,2]},
+        "sect":{"style":"chorale","voicing":"drop2","voices":6,"restrike":"2n","strict":0.4},
+        "v3":{"style":"tintinnabuli","answers":2,"tmode":"alt"},
+        "bass":{"mode":"walk","approach":"fifth","before":3,"wrate":"8n"}})", c);
+    assert(c.v[0].style == OSTINATO && c.v[0].refit == RF_TRANSPOSE && c.v[0].rate == 1 && c.v[0].grid[1] == 2);
+    assert(c.v[1].style == CHORALE && c.v[1].voicing == VO_DROP2 && c.v[1].nvoices == 6 && c.v[1].restrike == 8 && c.v[1].strict == 0.4f);
+    assert(c.v[2].style == TINTINNABULI && c.v[2].tvoice == 2 && c.v[2].tmode == TT_ALT);
+    assert(c.bass.mode == BASS_WALK && c.bass.approach == AP_FIFTH && c.bass.before == 3 && c.bass.wrate == 2);
+    assert(c.v[0].mask == F_ALL && c.bass.mask == B_ALL);
+    /* defaults */
+    Voice d; Bass bd;
+    assert(d.refit == RF_DEGREE && d.voicing == VO_CLOSE && d.nvoices == 4 && d.restrike == 16 && d.strict == 1 && d.tvoice == 0 && d.tmode == TT_BELOW);
+    assert(d.sil_min == 0.25f && d.sil_max == 1.5f && d.plen == 0.15f && d.orn == ORN_NONE && d.orn_every == 0 && d.orn_prob == 0.3f && d.orn_speed == 1);
+    assert(d.glide_ms == 0 && d.glide_iv == 0); for (int i = 0; i < 5; i++) assert(d.micro[i] == 0);
+    assert(bd.approach == AP_CHROMATIC && bd.before == 1 && bd.wrate == 4);
+    /* pointillist, ornaments, glides */
+    parse(R"({"voice":{"style":"pointillist","silence":[0.5,2],"plen":0.4,"orn":"mordent","orn_every":3,"orn_prob":0.6,"orn_speed":1.5,
+        "glide":120,"glide_iv":"leaps","micro":[-10,5,0,20,-30]}})", c);
+    const Voice &p = c.v[0];
+    assert(p.style == POINTILLIST && p.sil_min == 0.5f && p.sil_max == 2 && p.plen == 0.4f);
+    assert(p.orn == ORN_MORDENT && p.orn_every == 3 && p.orn_prob == 0.6f && p.orn_speed == 1.5f);
+    assert(p.glide_ms == 120 && p.glide_iv == 2 && p.micro[0] == -10 && p.micro[1] == 5 && p.micro[3] == 20 && p.micro[4] == -30);
+    /* clamps */
+    parse(R"({"voice":{"voices":9,"strict":3,"answers":7,"silence":[9,-1],"plen":0.001,"orn_every":99,"orn_prob":-1,"orn_speed":9,"glide":900,"micro":[99,-99],
+        "orn":"trill","glide_iv":"steps","refit":"nope","voicing":"nope","tmode":"nope"},"bass":{"before":0,"wrate":"1n","approach":"scale"}})", c);
+    const Voice &q = c.v[0];
+    assert(q.nvoices == 6 && q.strict == 1 && q.tvoice == 2 && q.sil_min == 0 && q.sil_max == 8 && q.plen == 0.03f && q.orn_every == 8 && q.orn_prob == 0 && q.orn_speed == 2);
+    assert(q.glide_ms == 400 && q.micro[0] == 50 && q.micro[1] == -50 && q.micro[2] == 0 && q.orn == ORN_TRILL && q.glide_iv == 1);
+    assert(q.refit == RF_DEGREE && q.voicing == VO_CLOSE && q.tmode == TT_BELOW);
+    assert(c.bass.before == 1 && c.bass.wrate == 16 && c.bass.approach == AP_SCALE);
+    parse(R"({"voice":{"voices":1,"silence":[2,1],"orn_speed":0.1}})", c);
+    assert(c.v[0].nvoices == 2 && c.v[0].sil_min == 1 && c.v[0].sil_max == 2 && c.v[0].orn_speed == 0.5f);   /* swapped: min <= max */
+    parse(R"({"voice":{"style":"bogus"}, "bass":{"before":9}})", c);
+    assert(c.v[0].style == FREE && c.bass.before == 4);
+    /* a layer setting only orn keeps every other field inherited: one bit per key */
+    parse(R"({"voice":{"style":"arpeggio","rate":"8n","glide":50,"micro":[1,2,3,4,5]},"over":{"chord":{"1":{"voice":{"orn":"grace"}},"2":{"voice":{"micro":[7]}},
+        "3":{"voice":{"silence":[1,2]}},"4":{"bass":{"approach":"scale"}}}}})", c);
+    assert(c.chord[1].v[0].mask == F_ORN && c.chord[2].v[0].mask == F_MICRO && c.chord[3].v[0].mask == F_SILENCE && c.chord[4].bass.mask == B_APPROACH);
+    static Resolved r;
+    resolve(c, 1, 8, -1, 1, nullptr, 0, nullptr, 0, r);
+    assert(r.v[0].orn == ORN_GRACE && r.v[0].style == ARPEGGIO && r.v[0].rate == 2 && r.v[0].glide_ms == 50 && r.v[0].micro[4] == 5);
+    resolve(c, 2, 8, -1, 1, nullptr, 0, nullptr, 0, r);
+    assert(r.v[0].micro[0] == 7 && r.v[0].micro[1] == 0 && r.v[0].orn == ORN_NONE && r.v[0].glide_ms == 50);   /* a short micro array: the rest 0 */
+    resolve(c, 3, 8, -1, 1, nullptr, 0, nullptr, 0, r);
+    assert(r.v[0].sil_min == 1 && r.v[0].sil_max == 2);
+    resolve(c, 4, 8, -1, 1, nullptr, 0, nullptr, 0, r);
+    assert(r.bass.approach == AP_SCALE && r.bass.mode == HOLD);
+    /* glide: the continuous new fields a 1/blend step closer, the discrete at once */
+    Voice a, b; a.strict = 1; a.sil_min = 0.2f; a.sil_max = 1; a.plen = 0.1f; a.orn_prob = 0; a.glide_ms = 0; a.micro[1] = 0;
+    b.strict = 0; b.sil_min = 1.2f; b.sil_max = 3; b.plen = 0.5f; b.orn_prob = 1; b.glide_ms = 200; b.micro[1] = 40; b.orn = ORN_TRILL; b.nvoices = 6;
+    glide(a, b, 4);
+    assert(std::fabs(a.strict - 0.75f) < 1e-6 && std::fabs(a.sil_min - 0.45f) < 1e-6 && std::fabs(a.sil_max - 1.5f) < 1e-6 && std::fabs(a.plen - 0.2f) < 1e-6);
+    assert(std::fabs(a.orn_prob - 0.25f) < 1e-6 && std::fabs(a.glide_ms - 50) < 1e-4 && a.micro[1] == 10 && a.orn == ORN_TRILL && a.nvoices == 6);
+    for (int i = 0; i < 3; i++) glide(a, b, 1); assert(a.micro[1] == 40 && a.glide_ms == 200);
+    /* the old routes do not move: the parsed fields that existed before (Cfg's size changed), recorded on the build before this task */
+    parse(fp::ROUTE3, c);
+    const unsigned long long h = fp::of(c);
+    std::printf("C styles4 parse: new styles, walk bass, ornaments, glides, micro read and clamped; step-3 route hash %llu\n", h);
+    assert(h == 12275640855702609546ull);
+    assert(NSTYLE == 10 && FREE == 0 && SWELLS == 5 && OSTINATO == 6);
+}
+
 static void test_repeat_hash() {
     size_t n; const unsigned long long h = repeat_hash(R"(,"bars":"repeat")", &n);
     std::printf("C bars repeat: %zu notes, hash %llu\n", n, h);
@@ -1498,6 +1566,7 @@ int main(int argc, char **argv) {
     test_unison();
     test_density();
     test_parse();
+    test_styles4_parse();
     test_resolve();
     test_motif_parse();
     test_relations_parse();

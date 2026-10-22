@@ -835,7 +835,7 @@ template <class T> static uint64_t fnv(uint64_t h, const T &x) { return fnv(h, &
 static double level_fix(int type, const comp::Voice &v, bool mel) {
     if (type < 0 || type > FORMANT) return 1;
     const int c = v.rate <= 1 ? 0 : v.rate <= 3 ? 1 : v.rate <= 6 ? 2 : 3;
-    return std::pow(10.0, -(mel ? LEVEL_FIX_MELODY[type] : LEVEL_FIX[type][v.style][c]) / 20);
+    return std::pow(10.0, -(mel ? LEVEL_FIX_MELODY[type] : v.style < comp::OSTINATO ? LEVEL_FIX[type][v.style][c] : 0) / 20);   /* the new styles: no fix until Task 6 regenerates the table (it is [..][6][..]) */
 }
 static void comp_gains(Patch &P, GainMemo *memo) {
     using namespace levels;
