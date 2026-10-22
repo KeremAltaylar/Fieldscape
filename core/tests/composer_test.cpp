@@ -5,11 +5,13 @@
 #include "../tone.hpp"
 #include "../levels.hpp"
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -79,7 +81,7 @@ static double draw(void *p) { unsigned *s = (unsigned *)p; *s = *s * 1664525u + 
 static const char *ROUTE = R"({"version":17,"tempo":96,"key":50,"prog":[{"r":0,"q":"m7"},{"r":5,"q":"maj7"},{"r":7,"q":"7"},{"r":0,"q":"m9"}],
     "voice":{"on":true,"synth":"fm"},"sect":{"on":true,"synth":"fm"},"v3":{"on":true,"synth":"am"},"zones":{"on":false},"bed":{"on":false}%s})";
 /* the notes a route plays in `secs`, walked from 0 to 1 along it */
-static Log render(const std::string &comp, double secs, const char *zones_in = nullptr, const char *zone_entered = nullptr, double zone_at = 0.5) {
+static Log render(const std::string &comp, double secs, const char *zones_in = nullptr, const char *zone_entered = nullptr, double zone_at = 0.5, double zone_leave = -1) {
     char buf[8192]; std::snprintf(buf, sizeof buf, ROUTE, comp.c_str());
     unsigned seed = 11; Log l;
     fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128); fs_piece_test_hooks(pc, draw, &seed, lg, &l);
@@ -88,6 +90,7 @@ static Log render(const std::string &comp, double secs, const char *zones_in = n
     for (int b = 0; b < blocks; b++) {
         fs_piece_walk(pc, r, (double)b / blocks, 0);
         if (zones_in && b == (int)(blocks * zone_at)) fs_piece_zones(pc, zones_in, zone_entered ? zone_entered : "");
+        if (zone_leave >= 0 && b == (int)(blocks * zone_leave)) fs_piece_zones(pc, "", "");
         fs_process(pc, 128);
     }
     fs_destroy(pc); return l;
@@ -296,7 +299,7 @@ static void test_model_defaults() {
 }
 
 /* worst block and p99.9 over 30 s, 128 frames, of a route with this comp and these synths (voice, sect, v3) */
-static void cost_of(const char *comp, const char *syn[3], double &worst, double &p999) {
+static void cost_of(const char *comp, const char *syn[3], double &worst, double &p999, int *over = nullptr) {
     char buf[8192]; std::snprintf(buf, sizeof buf, ROUTE, comp);
     std::string b(buf); const char *was[3] = { R"("voice":{"on":true,"synth":"fm"})", R"("sect":{"on":true,"synth":"fm"})", R"("v3":{"on":true,"synth":"am"})" };
     const char *key[3] = { "voice", "sect", "v3" };
@@ -306,6 +309,7 @@ static void cost_of(const char *comp, const char *syn[3], double &worst, double 
     for (int k = 0; k < (int)(30 * 48000 / 128); k++) { fs_piece_walk(pc, r, k / 11250.0, 0);
         auto t0 = std::chrono::steady_clock::now(); fs_process(pc, 128); if (k > 375) ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count()); }
     fs_destroy(pc);
+    if (over) { *over = 0; for (double m : ms) *over += m > 1.5; }
     std::sort(ms.begin(), ms.end()); worst = ms.back(); p999 = ms[(size_t)(ms.size() * 0.999)];
 }
 /* fix round 1 (review C1): a style's level was worked out on the audio thread, again whenever the walk moved the onsets or
@@ -339,6 +343,14 @@ static void test_cost() {
     cost_of(R"(,"comp":{"voice":{"style":"strum","rate":"8n","tones":[0,1,2,3,4],"spread":20},"sect":{"style":"strum","rate":"8n","tones":[0,1,2,3,4],"spread":20},"v3":{"style":"swells","rate":"2n","tones":[0,1,2,3,4]}})", metal, w2, p2);
     std::printf("C cost: fm/fm/am arpeggio-strum-swells p99.9 %.3f ms worst %.3f ms; metal x3 strum-strum-swells p99.9 %.3f ms worst %.3f ms (every voice busy)\n", p1, w1, p2, w2);
     assert(p1 < 1.0 && p2 < 1.0 && w1 < 1.33);   /* the worst block alone for fm/fm/am: OS spikes reach any block (the old build too) */
+    /* composition 3 (task 5): all seven relations at once - one of each across the three voices, every voice busy */
+    double w3, p3; int o3;
+    cost_of(R"(,"comp":{"seed":1,"voice":{"role":"melody","lo":50,"hi":81},"sect":{"style":"strum","rate":"8n","tones":[0,1,2,3,4],"spread":20,"lo":45,"hi":75},"v3":{"style":"arpeggio","rate":"16n","lo":55,"hi":70},"bass":{"mode":"off"},
+        "motif":{"basis":"chord","bars":2,"notes":[{"deg":0,"start":0,"len":4},{"deg":2,"start":4,"len":4},{"deg":1,"start":8,"len":4},{"deg":4,"start":12,"len":4}]},
+        "relations":[{"type":"canon","a":0,"b":2,"delay":8,"trans":4},{"type":"hetero","a":2,"b":1,"offset":30,"ornament":0.4},{"type":"hocket","a":2,"b":1,"c":0,"split":"alt"},
+        {"type":"call","a":0,"b":2,"gap":2},{"type":"motion","a":0,"b":2,"motion":"contrary"},{"type":"unison","a":0,"b":1,"meet":"change"},{"type":"density","cap":8,"weight":[2,1,1]}]})", fm, w3, p3, &o3);
+    std::printf("C cost: all seven relations at once (fm/fm/am) p99.9 %.3f ms worst %.3f ms, %d blocks over 1.5 ms\n", p3, w3, o3);
+    assert(p3 < 1.0 && o3 <= 2);
     int all = 0;
     for (const char *syn : { "fm", "formant", "metal" }) {
         double w, rd; int over; walk_cost(syn, w, over, rd); all += over;
@@ -567,6 +579,57 @@ static void test_motif_parse() {
     comp::Cfg e; comp::comp_of(r.get("comp"), e);
     assert(e.nchain == 1 && e.chain[0].from == 63 && e.chain[0].to == 63);
     std::printf("C motif parse: 4 notes (one clipped to the bar), 3 of 6 chain steps kept, melody role\n");
+}
+
+static void test_relations_parse() {
+    const char *J = R"({"comp":{"relations":[
+      {"type":"canon","a":0,"b":2,"from":1,"to":5,"zone":"zA","delay":12,"trans":-3,"transform":"retro"},
+      {"type":"call","a":2,"b":1,"source":"mirror","gap":4,"trigger":"enter"},
+      {"type":"hocket","a":0,"b":1,"c":2,"split":"mask","every":9,"mask":"x..x.x..x......xx"},
+      {"type":"hetero","a":1,"b":0,"offset":200,"ornament":0.4},
+      {"type":"motion","a":0,"b":1,"motion":"par6","strength":0.5},
+      {"type":"unison","a":0,"b":2,"meet":"never","octave":"octave"},
+      {"type":"density","a":0,"b":1,"c":2,"cap":99,"weight":[4,0,9]},
+      {"type":"canon","a":1,"b":1},
+      {"type":"bogus","a":0,"b":1},
+      {"type":"canon","a":0,"b":1,"from":9,"to":2},
+      {"type":"canon","a":0,"b":1,"from":63.6,"to":63.7},
+      {"type":"canon","a":0,"b":1,"from":62.6,"to":62.7,"delay":0}]}})";
+    Json j = Json::parse(J); comp::Cfg c; comp::comp_of(j.get("comp"), c);
+    assert(c.nrel == 8);                    /* a == b, unknown type, from > to, 63.6 -> 64 out of range: dropped */
+    const comp::Relation &k = c.rel[0];
+    assert(k.type == comp::R_CANON && k.a == 0 && k.b == 2 && k.c == 255 && k.from == 1 && k.to == 5 && k.zone == comp::id_hash("zA"));
+    assert(k.delay16 == 12 && k.trans == -3 && k.transform == comp::T_RETRO);
+    const comp::Relation &l = c.rel[1];
+    assert(l.type == comp::R_CALL && l.source == comp::A_MIRROR && l.gap16 == 4 && l.on_enter == 1 && l.zone == 0 && l.from == 0 && l.to == comp::NCHORD - 1);
+    const comp::Relation &h = c.rel[2];
+    assert(h.type == comp::R_HOCKET && h.c == 2 && h.split == comp::S_MASK && h.every == 4 && h.mask == (1u | 8u | 32u | 256u | 0x8000u));
+    const comp::Relation &e = c.rel[3];
+    assert(e.type == comp::R_HETERO && e.a == 1 && e.b == 0 && e.offset_ms == 120 && std::fabs(e.ornament - 0.4f) < 1e-6f);
+    const comp::Relation &m = c.rel[4];
+    assert(m.type == comp::R_MOTION && m.motion == comp::M_PAR6 && m.strength == 0.5f);
+    const comp::Relation &u = c.rel[5];
+    assert(u.type == comp::R_UNISON && u.meet == comp::U_NEVER && u.octave == 1);
+    const comp::Relation &d = c.rel[6];
+    assert(d.type == comp::R_DENSITY && d.c == 2 && d.cap == 32 && d.weight[0] == 4 && d.weight[1] == 0 && d.weight[2] == 4);
+    assert(c.rel[7].from == 63 && c.rel[7].to == 63 && c.rel[7].delay16 == 1);
+    /* in force: span and zone */
+    int out[comp::REL_MAX]; const uint64_t zA = comp::id_hash("zA"), zB = comp::id_hash("zB");
+    int n = comp::relations_in_force(c, 3, nullptr, 0, out);
+    assert(n == 6 && out[0] == 1 && out[1] == 2 && out[5] == 6);       /* not 0 (zone zA), not 7 (chord 63) */
+    n = comp::relations_in_force(c, 3, &zB, 1, out); assert(n == 6);
+    n = comp::relations_in_force(c, 3, &zA, 1, out); assert(n == 7 && out[0] == 0);
+    n = comp::relations_in_force(c, 0, &zA, 1, out); assert(n == 6 && out[0] == 1);   /* chord 0: before rel 0's span */
+    n = comp::relations_in_force(c, 63, nullptr, 0, out); assert(n == 7 && out[6] == 7);
+    Json q = Json::parse(R"({"comp":{}})"); comp::Cfg z; comp::comp_of(q.get("comp"), z); assert(z.nrel == 0);
+    { Json v = Json::parse(R"({"comp":{"relations":[{"type":"canon","a":5,"b":0},{"type":"canon","a":0,"b":-1},{"type":"hocket","a":0,"b":1,"c":1},{"type":"hocket","a":0,"b":1,"c":7}]}})");
+      comp::Cfg y; comp::comp_of(v.get("comp"), y);
+      assert(y.nrel == 2 && y.rel[0].c == 255 && y.rel[1].c == 255); }   /* a voice past 0..2 drops the relation; a bad or repeated c is ignored */
+    std::string many = R"({"comp":{"relations":[)";
+    for (int i = 0; i < 13; i++) many += std::string(i ? "," : "") + R"({"type":"unison","a":0,"b":1,"cap":)" + std::to_string(i + 1) + "}";
+    Json mj = Json::parse((many + "]}}").c_str()); comp::Cfg w; comp::comp_of(mj.get("comp"), w);
+    assert(w.nrel == comp::REL_MAX);                                    /* the 13th valid entry dropped */
+    std::printf("C relations parse: 8 of 12 entries kept in order, fields clamped, span/zone filter, cap %d\n", comp::REL_MAX);
 }
 
 /* D minor 7 (key 50), the walk's first chord for >= 2 bars: a 4-note chord-degree motif root-5th-3rd-9th, each a quarter */
@@ -971,19 +1034,473 @@ static void test_develop() {
     std::printf("C develop: %d of 6 other seeds change the melody; the cadence lands on bar 0 and its chord's later bars rest\n", differs);
 }
 
+/* composition 3: canon and heterophony replay a voice's own notes */
+static const char *MELV = R"({"role":"melody","lo":50,"hi":81})";
+static const char *ARPV3 = R"({"style":"arpeggio","rate":"16n","lo":55,"hi":70,"grid":[0,1,2,3,0,1,2,3,0,1,2,3,0,1,2,3]})";
+static std::string rel_comp(const char *voice, const char *v3, const char *motif, const char *rels, const char *sect = R"({"role":"off"})") {
+    char b[4096]; std::snprintf(b, sizeof b, R"(,"comp":{"voice":%s,"sect":%s,"v3":%s,"bass":{"mode":"off"},%s,"chain":[],"bars":"repeat","relations":%s})", voice, sect, v3, motif, rels);
+    return b;
+}
+static std::string rel_route(const char *rels, const char *v3 = ARPV3) { return rel_comp(MELV, v3, MOT, rels); }
+static int tick_of(double t) { return (int)std::lround(t / 0.15625); }
+/* chord 0's length in sixteenths on the 40 s walk, measured: an arpeggio on the chord's root changes pitch class with the chord */
+static int span_ticks() {
+    static int span = 0; if (span) return span;
+    const Log p = render(R"(,"comp":{"voice":{"style":"arpeggio","rate":"16n","lo":50,"hi":74,"grid":[0]},"sect":{"role":"off"},"v3":{"role":"off"},"bass":{"mode":"off"}})", 40);
+    const int pc = (int)std::lround(midi(p.f[0])) % 12;
+    for (size_t i = 0; i < p.f.size(); i++) if ((int)std::lround(midi(p.f[i])) % 12 != pc) { span = tick_of(p.t[i]); return span; }
+    assert(false); return 0;
+}
+static int dm(int d, int lo, int hi) {   /* chord 0 (D m7: 50 53 57 60) degree d fitted to [lo, hi] */
+    static const int T[4] = { 50, 53, 57, 60 }; int m = T[((d % 4) + 4) % 4] + 12 * (int)std::floor(d / 4.0);
+    while (m < lo) m += 12; while (m > hi && m - 12 >= lo) m -= 12; return m;
+}
+static int chord0_deg(int m) { static const int T[4] = { 50, 53, 57, 60 }; for (int d = 0; d < 4; d++) if ((m - T[d]) % 12 == 0) return d + 4 * ((m - T[d]) / 12); assert(false); return 0; }
+static int pitch(const Log &l, size_t i) { return (int)std::lround(midi(l.f[i])); }
+/* the role-`r` notes of l at tick `k` (+-0 ticks) */
+static bool has_note(const Log &l, int role, int k, int m = -1) {
+    for (size_t j = 0; j < l.f.size(); j++) if (l.role[j] == role && tick_of(l.t[j]) == k && (m < 0 || pitch(l, j) == m)) return true;
+    return false;
+}
+static void test_canon() {
+    const int SPAN = span_ticks();
+    /* chord 0 (D m7: 50 53 57 60) is the span; the leader plays root-5th-3rd-9th (50 57 53 62) = degrees 0 2 1 4 */
+    const Log l = render(rel_route(R"([{"type":"canon","a":0,"b":2,"delay":8,"trans":2,"from":0,"to":0}])"), 40);
+    int lead = 0, fol_in = 0, fol_after = 0;
+    for (size_t i = 0; i < l.f.size(); i++) if (l.role[i] == 1 && tick_of(l.t[i]) < SPAN) {
+        const int k = tick_of(l.t[i]), d = chord0_deg(pitch(l, i));
+        if (k + 8 < SPAN) assert(has_note(l, 3, k + 8, dm(d + 2, 55, 70)));          /* two chord degrees up, exactly */
+        else {                                                                      /* the tail sounds on the chord now playing (G maj7: G B D F#) */
+            bool ok = false; for (size_t j = 0; j < l.f.size(); j++) if (l.role[j] == 3 && tick_of(l.t[j]) == k + 8) { const int pc = pitch(l, j) % 12; ok = pc == 7 || pc == 11 || pc == 2 || pc == 6; }
+            assert(ok);
+        }
+        lead++;
+    }
+    for (size_t j = 0; j < l.f.size(); j++) if (l.role[j] == 3) {
+        const int k = tick_of(l.t[j]);
+        if (k < SPAN + 8) { fol_in++; bool from_lead = false;   /* every note in the span (and its delay's tail) is a replay of a leader note */
+            for (size_t i = 0; i < l.f.size(); i++) if (l.role[i] == 1 && tick_of(l.t[i]) == k - 8 && tick_of(l.t[i]) < SPAN) from_lead = true;
+            assert(from_lead); }
+        else fol_after++;
+    }
+    assert(lead >= 12 && fol_in == lead && fol_after > 30);   /* outside the span the arpeggio plays again */
+    /* the follower's level is its own style's: replays and the arpeggio within 2 dB */
+    { double a = 0, b = 0; int na = 0, nb = 0;
+      for (size_t j = 0; j < l.f.size(); j++) if (l.role[j] == 3) { const int k = tick_of(l.t[j]); if (k < SPAN) { a += std::log10(l.v[j]); na++; } else if (k > SPAN + 8) { b += std::log10(l.v[j]); nb++; } }
+      const double db = 20 * (a / na - b / nb); std::printf("C canon level: replays %.2f dB from the follower's own arpeggio\n", db); assert(std::fabs(db) < 2); }
+    /* invert: about the leader's first note of the bar (degree 0): degrees 0 -2 -1 -4 -> 62 57 60 62 in 55..70 */
+    { const Log x = render(rel_route(R"([{"type":"canon","a":0,"b":2,"delay":8,"transform":"invert","from":0,"to":0}])"), 40);
+      const int want[4] = { 62, 57, 60, 62 }; int n = 0;
+      for (size_t j = 0; j < x.f.size(); j++) if (x.role[j] == 3 && tick_of(x.t[j]) < SPAN) { const int u = tick_of(x.t[j]) - 8; assert(u >= 0 && u % 4 == 0 && pitch(x, j) == want[(u % 16) / 4]); n++; }
+      assert(n >= 8); }
+    /* retro: the previous bar backwards, 8 sixteenths late: the leader's notes 50 57 53 62 fitted to 55..70 are 62 57 65 62, start s -> 12 - s */
+    { const Log x = render(rel_route(R"([{"type":"canon","a":0,"b":2,"delay":8,"transform":"retro","from":0,"to":0}])"), 40);
+      const int want[4] = { 62, 57, 65, 62 }; int n = 0;
+      for (size_t j = 0; j < x.f.size(); j++) if (x.role[j] == 3 && tick_of(x.t[j]) < SPAN) {
+          const int u = tick_of(x.t[j]) - 8; assert(u >= 16 && u % 4 == 0 && pitch(x, j) == want[(12 - u % 16) / 4]); n++; }
+      assert(n >= 8);
+      /* nothing from the leader's bars outside the span: a canon over chord 1 only plays nothing in its first bar */
+      const Log y = render(rel_route(R"([{"type":"canon","a":0,"b":2,"delay":8,"transform":"retro","from":1,"to":1}])"), 40);
+      for (size_t j = 0; j < y.f.size(); j++) if (y.role[j] == 3 && tick_of(y.t[j]) >= SPAN && tick_of(y.t[j]) < SPAN + 24) assert(false); }
+    /* a ninth and an octave leap keep their contour: trans 4 on a 4-tone chord is an octave, so the follower is the leader + 12 */
+    { const char *mot = R"("motif":{"basis":"chord","notes":[{"deg":0,"start":0,"len":4},{"deg":4,"start":4,"len":4},{"deg":7,"start":8,"len":4},{"deg":2,"start":12,"len":4}]})";
+      const Log x = render(rel_comp(MELV, R"({"role":"off","lo":40,"hi":100})", mot, R"([{"type":"canon","a":0,"b":2,"delay":8,"trans":4,"from":0,"to":0}])"), 40); int n = 0;
+      for (size_t i = 0; i < x.f.size(); i++) if (x.role[i] == 1 && tick_of(x.t[i]) + 8 < SPAN) { assert(has_note(x, 3, tick_of(x.t[i]) + 8, pitch(x, i) + 12)); n++; }
+      assert(n >= 12); }
+    /* a zone-limited canon is silent outside its zone: never inside, the route is the route without it; inside from 20 s, the first 20 s are unchanged */
+    { const char *rz = R"([{"type":"canon","a":0,"b":2,"delay":8,"zone":"zA"}])";
+      const Log none = render(rel_route("[]"), 40);
+      assert(same(render(rel_route(rz), 40), none));
+      const Log in = render(rel_route(rz), 40, "zA", nullptr, 0.5);
+      std::vector<std::pair<double, int>> p1, p2; for (size_t i = 0; i < in.f.size(); i++) if (in.t[i] < 19.9) p1.push_back({ in.t[i], in.role[i] * 1000 + pitch(in, i) });
+      for (size_t i = 0; i < none.f.size(); i++) if (none.t[i] < 19.9) p2.push_back({ none.t[i], none.role[i] * 1000 + pitch(none, i) });
+      assert(p1 == p2 && !same(in, none)); }
+    std::printf("C canon: %d leader notes in span %d, %d follower notes = each +8 sixteenths and two degrees up exactly (tail on the new chord); invert, retro and a ninth with an octave leap exact; zone-limited; %d arpeggio notes after\n", lead, SPAN, fol_in, fol_after);
+}
+static void test_canon_no_feedback() {
+    const int SPAN = span_ticks();
+    const Log l = render(rel_route(R"([{"type":"canon","a":0,"b":2,"delay":8,"from":0,"to":0},{"type":"canon","a":2,"b":0,"delay":8,"from":0,"to":0}])"), 40);
+    std::map<std::pair<int, int>, int> cnt; int v3 = 0;
+    for (size_t i = 0; i < l.f.size(); i++) if (tick_of(l.t[i]) < SPAN) { cnt[{ tick_of(l.t[i]), pitch(l, i) }]++; if (l.role[i] == 3) v3++; }
+    int worst = 0; for (auto &c : cnt) worst = std::max(worst, c.second);
+    assert(v3 > 0 && worst == 1);
+    /* a chain a -> b, b -> c: c follows b as b plays it, a quarter later again (both register 50..81, no transposition) */
+    const Log ch = render(rel_comp(MELV, R"({"role":"off","lo":50,"hi":81})", MOT, R"([{"type":"canon","a":0,"b":1,"delay":4,"from":0,"to":0},{"type":"canon","a":1,"b":2,"delay":4,"from":0,"to":0}])", R"({"role":"off","lo":50,"hi":81})"), 40);
+    int n = 0; for (size_t i = 0; i < ch.f.size(); i++) if (ch.role[i] == 1 && tick_of(ch.t[i]) + 8 < SPAN) {
+        assert(has_note(ch, 2, tick_of(ch.t[i]) + 4, pitch(ch, i)) && has_note(ch, 3, tick_of(ch.t[i]) + 8, pitch(ch, i))); n++; }
+    assert(n >= 12);
+    std::printf("C canon no feedback: a->b and b->a, %d follower notes, no (tick, pitch) more than %d time; a chain a->b->c reaches c, %d notes\n", v3, worst, n);
+}
+/* a strum's notes keep their roll through a canon, on a follower that is one voice; 33 sixteenths of a 4-tone strum fit the ring */
+static void test_canon_strum() {
+    const int SPAN = span_ticks();
+    for (int delay : { 8, 32 }) {
+        char r[256]; std::snprintf(r, sizeof r, R"([{"type":"canon","a":0,"b":2,"delay":%d,"from":0,"to":0}])", delay);
+        const char *sv = delay == 8 ? R"({"style":"strum","rate":"1n","tones":[0,1,2,3],"dir":"up","spread":40,"lo":50,"hi":74})" : R"({"style":"strum","rate":"16n","tones":[0,1,2,3],"dir":"up","spread":5,"lo":50,"hi":74})";
+        const Log l = render(rel_comp(sv, R"({"role":"off","lo":50,"hi":74})", MOT, r), 40); int n = 0;
+        for (size_t i = 0; i < l.f.size(); i++) if (l.role[i] == 1 && tick_of(l.t[i]) + delay < SPAN) {
+            bool found = false; for (size_t j = 0; j < l.f.size(); j++) if (l.role[j] == 3 && std::fabs(l.t[j] - (l.t[i] + delay * 0.15625)) < 1e-6 && pitch(l, j) == pitch(l, i)) found = true;
+            assert(found); n++; }
+        assert(n >= 12);
+        std::printf("C canon strum: delay %d, %d strum notes each replayed at its roll offset\n", delay, n);
+    }
+}
+static void test_hetero() {
+    const int SPAN = span_ticks();
+    const char *v3 = R"({"role":"off"})";
+    const Log l0 = render(rel_route(R"([{"type":"hetero","a":0,"b":2,"offset":30,"ornament":0,"from":0,"to":0}])", v3), 40);
+    int na = 0, nb = 0;
+    for (size_t i = 0; i < l0.f.size(); i++) if (l0.role[i] == 1 && tick_of(l0.t[i]) < SPAN) {
+        na++; bool found = false;
+        for (size_t j = 0; j < l0.f.size(); j++) if (l0.role[j] == 3 && std::fabs(l0.t[j] - (l0.t[i] + 0.03)) <= 1.0 / 48000 + 1e-9 && l0.f[j] == l0.f[i]) found = true;
+        assert(found);
+    }
+    for (size_t j = 0; j < l0.f.size(); j++) if (l0.role[j] == 3) nb++;
+    assert(na >= 12 && nb == na);                         /* ornament 0: no grace notes */
+    const std::string o1 = rel_route(R"([{"type":"hetero","a":0,"b":2,"offset":30,"ornament":1,"from":0,"to":0}])", v3);
+    const Log l1 = render(o1, 40);
+    int nb1 = 0, graces = 0; for (int r : l1.role) if (r == 3) nb1++;
+    assert(nb1 == 2 * na);                                /* one grace per a-note */
+    assert(same(l1, render(o1, 40)));
+    /* the grace ends where its double starts, so a one-voice synth is not cut; the double has moved to t + grace (an offset of 30 ms is shorter) */
+    for (size_t j = 0; j < l1.f.size(); j++) if (l1.role[j] == 3 && l1.d[j] < 0.1) {
+        graces++; bool found = false;
+        for (size_t u = 0; u < l1.f.size(); u++) if (l1.role[u] == 3 && l1.d[u] >= 0.1 && std::fabs(l1.t[u] - (l1.t[j] + l1.d[j])) < 1e-9) found = true;
+        assert(found && std::fabs(l1.d[j] - 0.078125) < 1e-9);
+    }
+    assert(graces == na);
+    const Log l5 = render(rel_route(R"([{"type":"hetero","a":0,"b":2,"offset":30,"ornament":0.5,"from":0,"to":0}])", v3), 40);
+    int nb5 = 0; for (int r : l5.role) if (r == 3) nb5++;
+    assert(nb5 > na && nb5 < 2 * na);
+    std::printf("C hetero: %d notes doubled at +30 ms; ornament 0 -> %d, 1 -> %d (%d graces, each ending where its double starts), 0.5 -> %d notes on b\n", na, nb, nb1, graces, nb5);
+}
+/* a route swap clears the ring and the spans: the second route's follower replays nothing of the first's leader */
+static void test_canon_swap() {
+    char a[8192], b[8192];
+    std::snprintf(a, sizeof a, ROUTE, rel_route(R"([{"type":"canon","a":0,"b":2,"delay":8}])").c_str());
+    std::snprintf(b, sizeof b, ROUTE, rel_comp(R"({"role":"off"})", ARPV3, MOT, R"([{"type":"canon","a":0,"b":2,"delay":8}])").c_str());
+    unsigned s = 11; Log l;
+    fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128); fs_piece_test_hooks(pc, draw, &s, lg, &l);
+    const int r1 = fs_piece_add_route(pc, a), r2 = fs_piece_add_route(pc, b);
+    for (int k = 0; k < (int)(24 * 48000 / 128); k++) { fs_piece_walk(pc, k < 10 * 48000 / 128 ? r1 : r2, 0.02 + k / 90000.0, 0); fs_process(pc, 128); }
+    fs_destroy(pc);
+    double last_lead = 0, last_fol = 0; std::set<std::pair<double, int>> seen;
+    for (size_t i = 0; i < l.f.size(); i++) { if (l.role[i] == 1) last_lead = std::max(last_lead, l.t[i]); if (l.role[i] == 3) { last_fol = std::max(last_fol, l.t[i]); assert(seen.insert({ l.t[i], pitch(l, i) }).second); } }
+    std::printf("C canon swap: last leader note %.2f s, last follower note %.2f s\n", last_lead, last_fol);
+    assert(last_lead > 1 && last_fol <= last_lead + 8 * 0.15625 + 1e-6);
+}
+
+/* composition 3: hocket and call & response gate a line between voices */
+static const char *ARPV1 = R"({"style":"arpeggio","rate":"16n","lo":50,"hi":74,"grid":[0,1,2,3,0,1,2,3,0,1,2,3,0,1,2,3]})";
+typedef std::pair<int, int> TP;   /* (tick, pitch) */
+static std::vector<TP> notes_of(const Log &l, int role, int to) { std::vector<TP> o; for (size_t i = 0; i < l.f.size(); i++) if (l.role[i] == role && tick_of(l.t[i]) < to) o.push_back({ tick_of(l.t[i]), pitch(l, i) }); return o; }
+static std::string hk_route(const char *rels) { return rel_comp(ARPV1, R"({"role":"off"})", MOT, rels); }
+static void test_hocket() {
+    const int SPAN = span_ticks();
+    const std::vector<TP> line = notes_of(render(hk_route("[]"), 40), 1, SPAN);
+    const Log l = render(hk_route(R"([{"type":"hocket","a":0,"b":2,"split":"alt","from":0,"to":0}])"), 40);
+    const std::vector<TP> a = notes_of(l, 1, SPAN), b = notes_of(l, 3, SPAN);
+    assert(line.size() >= 40 && a.size() + b.size() == line.size());
+    std::vector<TP> u = a; u.insert(u.end(), b.begin(), b.end()); std::sort(u.begin(), u.end());
+    assert(u == line);                                                       /* the union is the line, no note on both */
+    for (size_t i = 0; i < line.size(); i++) {                               /* in turn: even notes on a, odd on b */
+        const std::vector<TP> &who = i % 2 ? b : a; assert(std::find(who.begin(), who.end(), line[i]) != who.end()); }
+    /* Review Focus 3: no bar of the line that had notes goes silent, whatever the split */
+    const char *splits[] = { R"("split":"alt")", R"("split":"every","every":3)", R"("split":"mask","mask":"................")", R"("split":"mask","mask":"xxxxxxxxxxxxxxxx")" };
+    int bars = 0;
+    for (const char *sp : splits) {
+        char r[256]; std::snprintf(r, sizeof r, R"([{"type":"hocket","a":0,"b":2,%s,"from":0,"to":0}])", sp);
+        const Log x = render(hk_route(r), 40);
+        for (int bar = 0; bar < SPAN / 16; bar++) { int nl = 0, nx = 0;
+            for (const TP &t : line) if (t.first / 16 == bar) nl++;
+            for (int role : { 1, 2, 3 }) for (const TP &t : notes_of(x, role, SPAN)) if (t.first / 16 == bar) nx++;
+            assert(nl > 0 && nx == nl); bars++; }
+    }
+    std::printf("C hocket: alt over %zu line notes, %zu on a and %zu on b in turn, union = the line; %d bars x 4 splits never silent\n", line.size(), a.size(), b.size(), bars);
+}
+static void test_hocket_mask() {
+    const int SPAN = span_ticks();
+    const std::vector<TP> line = notes_of(render(hk_route("[]"), 40), 1, SPAN);
+    const Log l = render(hk_route(R"([{"type":"hocket","a":0,"b":2,"split":"mask","mask":"x..x.xx.x...xx..","from":0,"to":0}])"), 40);
+    const char *m = "x..x.xx.x...xx.."; int na = 0, nb = 0;
+    for (const TP &t : line) { const bool on_a = m[t.first % 16] == 'x';
+        assert(has_note(l, on_a ? 1 : 3, t.first, t.second) && !has_note(l, on_a ? 3 : 1, t.first)); on_a ? na++ : nb++; }
+    /* every 2 over three members: a a b b c c; the third voice (sect) is silent of its own */
+    const Log e = render(rel_comp(ARPV1, R"({"role":"off"})", MOT, R"([{"type":"hocket","a":0,"b":2,"c":1,"split":"every","every":2,"from":0,"to":0}])"), 40);
+    for (size_t i = 0; i < line.size(); i++) { const int role = ((int)(i / 2) % 3) == 0 ? 1 : ((int)(i / 2) % 3) == 1 ? 3 : 2; assert(has_note(e, role, line[i].first, line[i].second)); }
+    std::printf("C hocket mask: x..x.xx.x...xx.. puts %d notes on a and %d on b exactly; every 2 over three voices cycles a a b b c c\n", na, nb);
+}
+/* hetero doubles what a keeps of a hocket, and no double of a note the density cap dropped */
+static void test_hetero_with() {
+    const int SPAN = span_ticks();
+    const char *v3 = R"({"role":"off"})";
+    const Log l = render(rel_comp(ARPV1, v3, MOT, R"([{"type":"hocket","a":0,"b":2,"split":"alt","from":0,"to":0},{"type":"hetero","a":0,"b":1,"offset":30,"ornament":0,"from":0,"to":0}])", R"({"role":"off","lo":50,"hi":74})"), 40);
+    int na = 0, nd = 0;
+    for (size_t i = 0; i < l.f.size(); i++) if (l.role[i] == 1 && tick_of(l.t[i]) < SPAN) { na++; bool found = false;
+        for (size_t j = 0; j < l.f.size(); j++) if (l.role[j] == 2 && std::fabs(l.t[j] - (l.t[i] + 0.03)) < 1e-3 && l.f[j] == l.f[i]) found = true;
+        assert(found); nd++; }
+    assert(na >= 12 && nd == na);
+    /* density: every double on b has its leader note sounding 30 ms before it */
+    const Log d = render(rel_comp(ARPV1, v3, MOT, R"([{"type":"hetero","a":0,"b":2,"offset":30,"ornament":0,"from":0,"to":0},{"type":"density","cap":4,"weight":[1,1,3]}])"), 40);
+    int nb = 0;
+    for (size_t j = 0; j < d.f.size(); j++) if (d.role[j] == 3) { nb++; bool found = false;
+        for (size_t i = 0; i < d.f.size(); i++) if (d.role[i] == 1 && std::fabs(d.t[i] + 0.03 - d.t[j]) < 1e-3) found = true;
+        assert(found); }
+    assert(nb > 0);
+    std::printf("C hetero with hocket/density: a's hocket-kept notes are doubled (%d of %d); %d doubles under a density cap, each with its leader note sounding\n", nd, na, nb);
+}
+static const char *MOT2 = R"("motif":{"basis":"chord","bars":2,"notes":[{"deg":0,"start":0,"len":4},{"deg":2,"start":4,"len":4},{"deg":1,"start":8,"len":4},{"deg":4,"start":12,"len":4},{"deg":4,"start":24,"len":4},{"deg":3,"start":28,"len":2}]})";
+static const char *MOT1 = R"("motif":{"basis":"chord","bars":2,"notes":[{"deg":0,"start":0,"len":4},{"deg":2,"start":4,"len":4},{"deg":1,"start":8,"len":4},{"deg":4,"start":12,"len":4}]})";
+static void test_call() {
+    const int SPAN = span_ticks();
+    /* own: a plays bar 1 of a 2-bar phrase; b's arpeggio fills the empty bar 2 (ticks 18..31: 2 sixteenths after a's last note ends), never over a */
+    const Log l = render(rel_comp(MELV, ARPV3, MOT1, R"([{"type":"call","a":0,"b":2,"gap":2,"from":0,"to":0}])"), 40);
+    int nb = 0;
+    for (size_t j = 0; j < l.f.size(); j++) if (l.role[j] == 3 && tick_of(l.t[j]) < SPAN) {
+        nb++; const int k = tick_of(l.t[j]); assert(k % 32 >= 18);
+        for (size_t i = 0; i < l.f.size(); i++) if (l.role[i] == 1) assert(l.t[j] + l.d[j] <= l.t[i] + 1e-9 || l.t[i] + l.d[i] <= l.t[j] + 1e-9); }
+    for (int k = 18; k < 32; k++) assert(has_note(l, 3, k));
+    assert(nb == (SPAN / 32) * 14 && !notes_of(l, 1, 40).empty());
+    /* half: b plays the motif's second half (degrees 4 and 3, fitted to its register), starting where the answer does (tick 18) */
+    const Log h = render(rel_comp(MELV, ARPV3, MOT2, R"([{"type":"call","a":0,"b":2,"source":"half","gap":2,"from":0,"to":0}])"), 40);
+    const std::vector<TP> hb = notes_of(h, 3, SPAN);
+    for (int c = 0; c < 2; c++) { assert(has_note(h, 3, 32 * c + 18, dm(4, 55, 70)) && has_note(h, 3, 32 * c + 22, dm(3, 55, 70))); }
+    assert((int)hb.size() == 2 * (SPAN / 32));
+    /* mirror: a's phrase inverted about its first note: degrees 0 -2 -1 -4 */
+    const Log m = render(rel_comp(MELV, ARPV3, MOT1, R"([{"type":"call","a":0,"b":2,"source":"mirror","gap":2,"from":0,"to":0}])"), 40);
+    const int want[4] = { dm(0, 55, 70), dm(-2, 55, 70), dm(-1, 55, 70), dm(-4, 55, 70) };
+    for (int c = 0; c < 2; c++) for (int i = 0; i < 4; i++) assert(has_note(m, 3, 32 * c + 18 + 4 * i, want[i]));
+    assert((int)notes_of(m, 3, SPAN).size() == 4 * (SPAN / 32));
+    /* trigger enter: nothing before the zone is entered (20 s = bar 8), the answer in the 2 bars after, nothing later */
+    const Log z = render(rel_comp(MELV, R"({"role":"off"})", MOT2, R"([{"type":"call","a":0,"b":2,"source":"half","gap":2,"zone":"zA","trigger":"enter"}])"), 40, "zA", "zA", 0.5);
+    const std::vector<TP> zb = notes_of(z, 3, 1000);
+    assert(!zb.empty()); for (const TP &t : zb) assert(t.first >= 128 && t.first < 160);
+    assert(has_note(z, 3, 146) && has_note(z, 3, 150));
+    /* the walker leaves the zone at 21 s (bar 8) - the answer still plays out its 2 bars (carry from task 3's review) */
+    const Log zl = render(rel_comp(MELV, R"({"role":"off"})", MOT2, R"([{"type":"call","a":0,"b":2,"source":"half","gap":2,"zone":"zA","trigger":"enter"}])"), 40, "zA", "zA", 0.5, 0.525);
+    assert(has_note(zl, 3, 146) && has_note(zl, 3, 150)); for (const TP &t : notes_of(zl, 3, 1000)) assert(t.first >= 128 && t.first < 160);
+    std::printf("C call: own fills bar 2 (%d notes, none over a), half plays degrees 4 3 at the answer's start, mirror inverts 0 -2 -1 -4, enter answers only in bars 8-9 (%zu notes)\n", nb, zb.size());
+}
+
+/* composition 3, task 4: pitch relations. a = voice 0 (arpeggio on every sixteenth, plays first), b = voice 3 (55..70) */
+static std::string pr_route(const char *rels, const char *a = ARPV1) { return rel_comp(a, ARPV3, MOT, rels); }
+static std::vector<int> by_tick(const Log &l, int role, int n) { std::vector<int> v(n, -1); for (const TP &t : notes_of(l, role, n)) v[t.first] = t.second; return v; }
+static bool chord0_tone(int m) { const int c = ((m % 12) + 12) % 12; return c == 2 || c == 5 || c == 9 || c == 0; }
+static void test_motion() {
+    const int SPAN = span_ticks();
+    const Log base = render(pr_route("[]"), 40);
+    /* contrary, strength 1: b's move opposes a's last interval (0 when a's is 0 or b is at its register's edge); chord tones, in 55..70 */
+    const Log c = render(pr_route(R"([{"type":"motion","a":0,"b":2,"motion":"contrary","strength":1,"from":0,"to":0}])"), 40);
+    const std::vector<int> ca = by_tick(c, 1, SPAN), cb = by_tick(c, 3, SPAN); int strict = 0;
+    for (int k = 0; k < SPAN; k++) { assert(ca[k] >= 0 && cb[k] >= 55 && cb[k] <= 70 && chord0_tone(cb[k])); }
+    for (int k = 1; k < 32; k++) {
+        const int da = ca[k] - ca[k - 1], db = cb[k] - cb[k - 1];
+        if (da > 0) assert(db <= 0); else if (da < 0) assert(db >= 0); else assert(db == 0);
+        if (da * db < 0) strict++;
+    }
+    assert(strict >= 8);
+    /* a that repeats one pitch: b holds */
+    const Log r = render(pr_route(R"([{"type":"motion","a":0,"b":2,"motion":"contrary","from":0,"to":0}])", R"({"style":"arpeggio","rate":"16n","lo":50,"hi":74,"grid":[0]})"), 40);
+    const std::vector<int> rb = by_tick(r, 3, SPAN); for (int k = 1; k < SPAN; k++) assert(rb[k] == rb[0]);
+    /* par3 / par6: a diatonic third (3 or 4 semitones) / sixth (8 or 9) below a, in b's register, on >= 90% of the shared onsets */
+    for (int six = 0; six < 2; six++) {
+        const Log p = render(pr_route(six ? R"([{"type":"motion","a":0,"b":2,"motion":"par6","from":0,"to":0}])" : R"([{"type":"motion","a":0,"b":2,"motion":"par3","from":0,"to":0}])"), 40);
+        const std::vector<int> pa = by_tick(p, 1, SPAN), pb = by_tick(p, 3, SPAN); int ok = 0;
+        for (int k = 0; k < SPAN; k++) { assert(pb[k] >= 55 && pb[k] <= 70); const int d = (((pa[k] - pb[k]) % 12) + 12) % 12; if (six ? (d == 8 || d == 9) : (d == 3 || d == 4)) ok++; }
+        assert(ok >= SPAN * 9 / 10);
+    }
+    /* free, and strength 0: the route as it was; strength 0.5: about half the notes move */
+    assert(same(base, render(pr_route(R"([{"type":"motion","a":0,"b":2,"motion":"free","from":0,"to":3}])"), 40)));
+    assert(same(base, render(pr_route(R"([{"type":"motion","a":0,"b":2,"motion":"par3","strength":0,"from":0,"to":3}])"), 40)));
+    const Log h = render(pr_route(R"([{"type":"motion","a":0,"b":2,"motion":"par3","strength":0.5,"from":0,"to":3}])"), 40);
+    const std::vector<int> b0 = by_tick(base, 3, 256), b5 = by_tick(h, 3, 256); int n = 0, mv = 0;
+    for (int k = 0; k < 256; k++) if (b0[k] >= 0) { n++; if (b5[k] != b0[k]) mv++; }
+    assert(n > 100 && mv > n / 4 && mv < n * 3 / 4);
+    /* every moved note on every chord (a 4-chord walk): inside 55..70 */
+    for (size_t i = 0; i < h.f.size(); i++) if (h.role[i] == 3) assert(pitch(h, i) >= 55 && pitch(h, i) <= 70);
+    /* a leader that plays after its follower in the voice order (a = voice 2, b = voice 0): b still reads a's CURRENT pitch, not the previous one */
+    { const Log p = render(rel_comp(ARPV1, ARPV3, MOT, R"([{"type":"motion","a":2,"b":0,"motion":"par3","from":0,"to":0}])"), 40);
+      const std::vector<int> pa = by_tick(p, 3, SPAN), pb = by_tick(p, 1, SPAN); int ok = 0, nn = 0;
+      for (int k = 0; k < SPAN; k++) if (pa[k] >= 0 && pb[k] >= 0) { nn++; const int d = (((pa[k] - pb[k]) % 12) + 12) % 12; if (d == 3 || d == 4) ok++; }
+      assert(nn >= SPAN * 9 / 10 && ok >= nn * 9 / 10); }
+    std::printf("C motion: contrary opposes a on %d of 31 moves (never with it), par3/par6 are a diatonic 3rd/6th below on >=90%% of %d onsets, strength 0 and free are the route unchanged, 0.5 moved %d of %d notes\n", strict, SPAN, mv, n);
+}
+static void test_unison() {
+    const int SPAN = span_ticks();
+    const Log base = render(pr_route("[]"), 40);
+    const std::vector<int> b0 = by_tick(base, 3, SPAN + 8);
+    /* meet change, unison: the first b note after each chord change (tick 0, tick SPAN) is a's pitch (a's register holds it: 55..70), the rest as before */
+    const Log u = render(pr_route(R"([{"type":"unison","a":0,"b":2,"meet":"change","octave":"unison","from":0,"to":3}])"), 40);
+    const std::vector<int> ua = by_tick(u, 1, SPAN + 8), ub = by_tick(u, 3, SPAN + 8);
+    for (int k : { 0, SPAN }) { assert(ub[k] >= 55 && ub[k] <= 70 && ((ub[k] - ua[k]) % 12 + 12) % 12 == 0); if (ua[k] >= 55 && ua[k] <= 70) assert(ub[k] == ua[k]); }
+    for (int k = 0; k < SPAN + 8; k++) if (k != 0 && k != SPAN) assert(ub[k] == b0[k]);
+    /* octave: a's pitch class, in b's own register, the octave nearest the note b would have played */
+    const Log o = render(pr_route(R"([{"type":"unison","a":0,"b":2,"meet":"change","octave":"octave","from":0,"to":3}])"), 40);
+    const std::vector<int> oa = by_tick(o, 1, SPAN + 8), ob = by_tick(o, 3, SPAN + 8);
+    for (int k : { 0, SPAN }) { assert(ob[k] >= 55 && ob[k] <= 70 && ((ob[k] - oa[k]) % 12 + 12) % 12 == 0 && std::abs(ob[k] - b0[k]) <= 6); }
+    /* never: nothing; cadence with no cadence in the chain: nothing */
+    assert(same(base, render(pr_route(R"([{"type":"unison","a":0,"b":2,"meet":"never","from":0,"to":3}])"), 40)));
+    assert(same(base, render(pr_route(R"([{"type":"unison","a":0,"b":2,"meet":"cadence","from":0,"to":3}])"), 40)));
+    /* cadence on chord 1 only: b meets a at the start of that chord's first bar (tick SPAN), not at tick 0 */
+    char cb[4096]; std::snprintf(cb, sizeof cb, R"(,"comp":{"voice":%s,"sect":{"role":"off"},"v3":%s,"bass":{"mode":"off"},%s,"chain":[{"op":"cadence","cad":"full","from":1,"to":1}],"bars":"repeat","relations":[{"type":"unison","a":0,"b":2,"meet":"cadence","from":0,"to":3}]})", ARPV1, ARPV3, MOT);
+    const Log k = render(cb, 40); const std::vector<int> ka = by_tick(k, 1, SPAN + 8), kb = by_tick(k, 3, SPAN + 8);
+    assert(kb[0] == b0[0] && ((kb[SPAN] - ka[SPAN]) % 12 + 12) % 12 == 0);
+    std::printf("C unison: change puts each voice's first note after a chord change on a (pitch %d = %d at tick %d), octave keeps b's register, cadence meets only at the cadence chord, never is nothing\n", ub[SPAN], ua[SPAN], SPAN);
+}
+
+/* composition 3, task 5: shared density. voice 0 = arpeggio on every sixteenth, voice 1 = 8n strum of 4, voice 2 = 8n euclid */
+static std::string dn_route(const char *rels, const char *sect = R"({"style":"strum","rate":"8n","tones":[0,1,2,3],"spread":0,"lo":45,"hi":75})",
+                            const char *v3 = R"({"style":"euclid","rate":"8n","pulses":5,"steps":8,"lo":55,"hi":80})") { return rel_comp(ARPV1, v3, MOT, rels, sect); }
+static void bar_counts(const Log &l, int bars, std::vector<std::array<int, 3>> &c) {
+    c.assign(bars, {0, 0, 0});
+    for (size_t i = 0; i < l.f.size(); i++) { const int b = tick_of(l.t[i]) / 16; if (l.role[i] >= 1 && l.role[i] <= 3 && b < bars) c[b][l.role[i] - 1]++; }
+}
+static void test_density() {
+    const int bars = span_ticks() / 16 - 1;
+    std::vector<std::array<int, 3>> c0, c; bar_counts(render(dn_route("[]"), 40), bars, c0);
+    const Log d = render(dn_route(R"([{"type":"density","cap":8,"weight":[2,1,1]}])"), 40); bar_counts(d, bars, c);
+    int tot = 0, nb = 0, worst = 0;
+    for (int b = 1; b < bars; b++) {   /* bar 0 can hold the chord's first notes only */
+        assert(c0[b][0] + c0[b][1] + c0[b][2] > 8);
+        const int want[3] = { 4, 2, 2 };
+        for (int q = 0; q < 3; q++) { worst = std::max(worst, std::abs(c[b][q] - want[q])); assert(std::abs(c[b][q] - want[q]) <= 1); }
+        tot += c[b][0] + c[b][1] + c[b][2]; nb++;
+    }
+    assert(tot <= 8 * nb);
+    /* weight 0: that voice's notes past the cap are dropped (it sounds only while the bar is under the cap) */
+    const Log z = render(dn_route(R"([{"type":"density","cap":8,"weight":[1,0,1]}])"), 40);
+    int zn = 0;
+    for (int b = 1; b < bars; b++) { int run = 0;
+        for (size_t i = 0; i < z.f.size(); i++) if (tick_of(z.t[i]) / 16 == b && z.role[i] >= 1 && z.role[i] <= 3) { assert(run < 8 || z.role[i] != 2); run++; zn += z.role[i] == 2; } }
+    /* cap above what the voices play: nothing changes (quota 16/8/8 holds arp 16, strum 2n 8, euclid <= 8) */
+    const char *quiet = R"({"style":"strum","rate":"2n","tones":[0,1,2,3],"spread":0,"lo":45,"hi":75})";
+    assert(same(render(dn_route("[]", quiet), 40), render(dn_route(R"([{"type":"density","cap":32,"weight":[2,1,1]}])", quiet), 40)));
+    /* every busy voice keeps a note a bar however small the cap or lopsided the weights; weight 0 may go silent */
+    int kept = 0;
+    for (const char *r : { R"([{"type":"density","cap":1,"weight":[1,1,1]}])", R"([{"type":"density","cap":2,"weight":[4,1,1]}])", R"([{"type":"density","cap":3,"weight":[1,4,1]}])" }) {
+        bar_counts(render(dn_route(r), 40), bars, c);
+        for (int b = 1; b < bars; b++) for (int q = 0; q < 3; q++) { assert(c[b][q] >= 1); kept++; }
+    }
+    bar_counts(render(dn_route(R"([{"type":"density","cap":1,"weight":[1,0,1]}])"), 40), bars, c);
+    for (int b = 1; b < bars; b++) assert(c[b][0] >= 1 && c[b][2] >= 1 && c[b][1] <= 1);
+    std::printf("C density: cap 8 weights 2/1/1 over %d bars - %.1f notes a bar (was %d), shares within %d of 4/2/2; weight 0 past the cap drops its notes (%d heard); cap 32 changes nothing; %d voice-bars each keep a note\n",
+                nb, (double)tot / nb, c0[1][0] + c0[1][1] + c0[1][2], worst, zn, kept);
+}
+
+/* composition 3, Task 6: a voice whose material comes from a relation is at Free's level too. The follower (voice 2, sect) alone
+   on the engine, dry: its leader (voice 1) has no instrument, so only what the relation gives voice 2 is heard. The leader is
+   sparse (a melody, 4 notes a bar) or dense (an arpeggio, 16n); canon and heterophony replay it, hocket deals it among members.
+   Each within 2 dB of voice 2's Free line (what level_db measures for it) on fm, am and metal */
+static double rel_db(const char *sy, const char *leader, const char *rels, double secs) {
+    char patch[4096], route[8192];
+    std::snprintf(patch, sizeof patch, R"({"version":17,"tempo":96,"key":50,"prog":[{"r":0,"q":"m7"},{"r":5,"q":"maj7"},{"r":7,"q":"7"},{"r":0,"q":"m9"}],"bed":{"on":false},"zones":{"on":false},
+        "fx":{"delayWet":0,"revWet":0},"fx2":{"delayWet":0,"revWet":0},"fx3":{"delayWet":0,"revWet":0},"morph":{"on":false},
+        "voice":{"on":false},"sect":{"on":true,"synth":"%s","harm":%g,"index":%g},"v3":{"on":false},
+        "comp":{"bass":{"mode":"off"},"voice":%s,"sect":{"role":"off"},"v3":{"role":"off"},%s,"chain":[],"bars":"repeat","relations":%s}})",
+        sy, hd(sy, 0), hd(sy, 1), leader, MOT, rels);
+    std::snprintf(route, sizeof route, R"({"type":"Feature","geometry":{"type":"LineString","coordinates":[[29.0,41.0],[29.004,41.0]]},"properties":{"id":"r1","kind":"route","name":"R","patch":%s}})", patch);
+    fs_engine *e = fs_engine_create(48000, 128); fs_engine_upsert(e, route);
+    const int blocks = (int)(secs * 48000 / 128); double s = 0; long long n = 0;
+    for (int b = 0; b < blocks; b++) {
+        if (b % 40 == 0) fs_engine_step(e, 29.0 + 0.004 * b / blocks, 41.0);
+        fs_engine_process(e, 128);
+        if (b >= 375) { const float *l = fs_engine_out(e, 0); for (int i = 0; i < 128; i++) { s += (double)l[i] * l[i]; n++; } }
+    }
+    fs_engine_destroy(e); return 10 * std::log10(s / std::max(1LL, n) + 1e-30);
+}
+static void test_relation_levels() {
+    static const struct { const char *n, *leader; } LD[] = { { "melody", R"({"role":"melody","lo":50,"hi":81})" },
+        { "arp16", R"({"style":"arpeggio","rate":"16n","lo":55,"hi":84,"grid":[0,1,2,3,0,1,2,3,0,1,2,3,0,1,2,3]})" } };
+    static const struct { const char *n, *r; } RL[] = {
+        { "canon", R"([{"type":"canon","a":0,"b":1,"delay":8}])" }, { "hetero", R"([{"type":"hetero","a":0,"b":1,"offset":30,"ornament":0}])" },
+        { "hocket2", R"([{"type":"hocket","a":0,"b":1,"split":"alt"}])" }, { "hocket3", R"([{"type":"hocket","a":0,"b":1,"c":2,"split":"alt"}])" } };
+    double worst = 0; const char *wn = "";
+    std::printf("C relation levels (member - Free, dB, voice 2):");
+    for (const char *sy : { "fm", "am", "metal" }) {
+        const double fr = level_db(sy, "", 41); std::printf("\n  %-6s", sy);
+        for (auto &l : LD) for (auto &r : RL) {
+            const double d = rel_db(sy, l.leader, r.r, 9) - fr; std::printf(" %s/%s %+.1f", l.n, r.n, d);
+            if (std::fabs(d) > std::fabs(worst)) { worst = d; wn = r.n; }
+        }
+    }
+    std::printf("\nC relation levels: the furthest from Free %+.1f dB (%s)\n", worst, wn);
+    assert(std::fabs(worst) <= 2.0);
+}
+/* Task 6: the patch read with every relation worked out (64 chords overridden, 7 relations), warm, under 1 ms; and a relation
+   edit reads the gains a fresh solve gives (the memo holds what the hits decide, so an edit re-solves only what it changed) */
+static void test_relation_read() {
+    auto ms = [](std::chrono::steady_clock::time_point t0) { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(); };
+    double worst = 0, cold = 0;
+    for (const char *sy : { "fm", "formant", "metal" }) {
+        std::string prog = "[", over = "{"; for (int i = 0; i < 64; i++) { prog += std::string(i ? "," : "") + R"({"r":0,"q":"m7"})";
+            over += std::string(i ? "," : "") + "\"" + std::to_string(i) + "\":{\"voice\":{\"style\":\"" + (i % 3 == 0 ? "strum" : i % 3 == 1 ? "swells" : "arpeggio") + "\"}}"; }
+        prog += "]"; over += "}";
+        const char *rels = R"([{"type":"canon","a":0,"b":2,"delay":8},{"type":"canon","a":1,"b":0,"delay":4},{"type":"hetero","a":2,"b":1,"offset":30,"ornament":0.4},{"type":"hetero","a":0,"b":1},
+            {"type":"hocket","a":1,"b":0,"c":2,"split":"alt"},{"type":"call","a":0,"b":1},{"type":"density","cap":8}])";
+        std::string r = std::string(R"({"version":17,"tempo":96,"key":50,"prog":)") + prog + R"(,"voice":{"on":true,"synth":")" + sy + R"("},"sect":{"on":true,"synth":")" + sy + R"("},"v3":{"on":true,"synth":")" + sy +
+            R"("},"zones":{"on":false},"bed":{"on":false},"comp":{"voice":{"style":"arpeggio","rate":"16n"},"sect":{"style":"strum"},"v3":{"style":"swells"},"over":{"chord":)" + over + R"(},"relations":)" + rels + "}}";
+        fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128);
+        auto t0 = std::chrono::steady_clock::now(); const int id = fs_piece_add_route(pc, r.c_str()); cold = std::max(cold, ms(t0));
+        for (int rep = 0; rep < 5; rep++) { t0 = std::chrono::steady_clock::now(); fs_piece_set_route(pc, id, r.c_str()); worst = std::max(worst, ms(t0)); }
+        float rg[36]; fs_piece_test_route_rgains(pc, id, rg); int solved = 0; for (float x : rg) solved += x > 0;
+        std::printf("C relation read %-7s: %d of 36 relation gains solved\n", sy, solved); assert(solved == 7);   /* 2 canons, 2 heterophonies, a hocket of 3 members: the call and density have no material to level */
+        fs_destroy(pc);
+    }
+    std::printf("C relation read: worst %.2f ms warm (64 chords overridden, 7 relations; fm, formant, metal), cold %.2f ms\n", worst, cold);
+    assert(worst < 1.0);
+    /* the memo: a relation edit, read after the unedited patch, is the fresh solve */
+    auto patch = [](const char *rels) { char b[4096]; std::snprintf(b, sizeof b, R"({"version":17,"tempo":96,"key":50,"prog":[{"r":0,"q":"m7"},{"r":5,"q":"maj7"},{"r":7,"q":"7"},{"r":0,"q":"m9"}],"bed":{"on":false},"zones":{"on":false},
+        "voice":{"on":true,"synth":"fm"},"sect":{"on":true,"synth":"metal","harm":4.1,"index":1.2},"v3":{"on":true,"synth":"formant","harm":0.5,"index":0.5},
+        "comp":{"bass":{"mode":"off"},"voice":{"role":"melody","lo":50,"hi":81},"sect":{"style":"arpeggio","rate":"16n"},"v3":{"style":"swells"},%s,"relations":%s}})", MOT, rels); return std::string(b); };
+    const std::string A = patch(R"([{"type":"canon","a":0,"b":2},{"type":"hocket","a":1,"b":0,"split":"alt"}])");
+    const std::string B[] = { patch(R"([{"type":"canon","a":1,"b":2},{"type":"hocket","a":1,"b":0,"split":"alt"}])"), patch(R"([{"type":"canon","a":0,"b":2},{"type":"hocket","a":1,"b":0,"c":2,"split":"alt"}])"),
+        patch(R"([{"type":"canon","a":0,"b":2},{"type":"hocket","a":1,"b":0,"split":"every","every":2}])"), patch(R"([{"type":"canon","a":0,"b":2},{"type":"hocket","a":1,"b":0,"split":"alt"},{"type":"hetero","a":1,"b":2}])"),
+        patch(R"([{"type":"hocket","a":1,"b":0,"split":"alt"}])"), patch(R"([{"type":"canon","a":0,"b":2,"delay":4,"trans":3},{"type":"hocket","a":1,"b":0,"split":"alt"}])") };
+    const char *what[] = { "canon leader", "hocket third member", "hocket split", "relation added", "relation removed", "canon delay (same material)" };
+    fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128);
+    const int id = fs_piece_add_route(pc, A.c_str()); int moved = 0;
+    for (int i = 0; i < 6; i++) {
+        fs_piece_set_route(pc, id, A.c_str()); fs_piece_set_route(pc, id, B[i].c_str());
+        float got[36], fresh[36], a[36], c0[3], c1[3];
+        fs_piece_test_route_rgains(pc, id, got); fs_piece_test_rgains(B[i].c_str(), fresh); fs_piece_test_rgains(A.c_str(), a);
+        fs_piece_test_route_gains(pc, id, c0); fs_piece_test_gains(B[i].c_str(), 0, 0, 0, c1);
+        for (int k = 0; k < 36; k++) { if (got[k] != fresh[k]) std::printf("C relation memo: %s slot %d %g, fresh %g\n", what[i], k, got[k], fresh[k]); assert(got[k] == fresh[k]); }
+        for (int q = 0; q < 3; q++) assert(c0[q] == c1[q]);
+        bool mv = false; for (int k = 0; k < 36; k++) mv = mv || got[k] != a[k]; moved += mv;
+    }
+    fs_destroy(pc);
+    std::printf("C relation memo: 6 relation edits read after the unedited patch have a fresh solve's gains; %d moved them (the delay edit keeps the material, so it does not)\n", moved);
+    assert(moved == 5);
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && !std::strcmp(argv[1], "final")) { test_empty_motif(); test_melody_gain_chain(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "room")) { test_room(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "levels")) { test_levels(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "levels-table")) { levels_table(); return 0; }
+    if (argc > 1 && !std::strcmp(argv[1], "fix")) { test_hetero_with(); test_motion(); test_density(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "onsets")) { test_onsets(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "cost")) { test_cost(); return 0; }
+    if (argc > 1 && !std::strcmp(argv[1], "rel")) { test_relation_levels(); test_relation_read(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "read")) { test_gain_memo(); test_gain_lengths(); test_patch_read_cost(); return 0; }
     test_repeat_hash();
     test_develop();
+    test_canon();
+    test_canon_no_feedback();
+    test_hetero();
+    test_canon_strum();
+    test_canon_swap();
+    test_hocket();
+    test_hocket_mask();
+    test_hetero_with();
+    test_call();
+    test_motion();
+    test_unison();
+    test_density();
     test_parse();
     test_resolve();
     test_motif_parse();
+    test_relations_parse();
     test_kept();
     test_off();
     test_arpeggio();
@@ -1003,11 +1520,13 @@ int main(int argc, char **argv) {
     test_chord_past_16();
     test_patch_read_cost();
     test_gain_memo();
+    test_relation_read();
     test_gain_lengths();
     test_cost();
     test_engine_zone();
     test_onsets();
     test_levels();
+    test_relation_levels();
     test_melody_gain_chain();
     test_room();
     std::printf("composer ok\n");

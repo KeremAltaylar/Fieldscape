@@ -131,6 +131,61 @@ static void chain_of(const Json *a, ChainStep *o, int &n) {
     }
 }
 
+static void rel_of(const Json *a, Relation *o, int &n) {
+    static const char *const TYPES[NREL] = { "canon", "call", "hocket", "hetero", "motion", "unison", "density" };
+    static const char *const TR[3] = { "none", "invert", "retro" }, *const SRC[3] = { "own", "half", "mirror" }, *const SPL[3] = { "alt", "every", "mask" },
+        *const MOT[4] = { "contrary", "par3", "par6", "free" }, *const MEET[3] = { "cadence", "change", "never" };
+    n = 0;
+    if (!a || a->kind != Json::ARR) return;
+    auto rnd = [](double d) { return std::isfinite(d) ? std::lround(d) : -1L; };
+    for (size_t i = 0; i < a->size() && n < REL_MAX; i++) {
+        const Json *x = a->at(i);
+        if (!x || x->kind != Json::OBJ) continue;
+        const int type = pick(x->s("type", ""), TYPES, NREL, NREL);
+        const long f = rnd(x->n("from", 0)), t = rnd(x->n("to", NCHORD - 1));   /* round, then validate */
+        const long la = rnd(x->n("a", 0)), lb = rnd(x->n("b", 1));   /* a voice past 0..2 drops the relation, not clamps it */
+        if (type == NREL || f < 0 || t < f || t >= NCHORD || la < 0 || la > 2 || lb < 0 || lb > 2 || la == lb) continue;
+        const uint8_t va = (uint8_t)la, vb = (uint8_t)lb;
+        Relation &r = o[n++];
+        r = Relation();
+        r.type = (uint8_t)type; r.a = va; r.b = vb;
+        if (x->get("c")) { const long lc = rnd(x->n("c", -1)); if (lc >= 0 && lc <= 2 && lc != la && lc != lb) r.c = (uint8_t)lc; }
+        r.from = (uint8_t)f; r.to = (uint8_t)t;
+        if (const Json *z = x->get("zone")) if (z->kind == Json::STR) r.zone = id_hash(z->str.c_str());
+        r.delay16 = clamp8(x->n("delay", 8), 1, 32);
+        r.trans = (int8_t)std::max(-7, std::min(7, (int)std::lround(x->n("trans", 0))));
+        r.transform = (uint8_t)pick(x->s("transform", "none"), TR, 3, T_NONE);
+        r.source = (uint8_t)pick(x->s("source", "own"), SRC, 3, A_OWN);
+        r.gap16 = clamp8(x->n("gap", 2), 1, 16);
+        r.on_enter = x->s("trigger", "phrase") == std::string("enter") ? 1 : 0;
+        r.split = (uint8_t)pick(x->s("split", "alt"), SPL, 3, S_ALT);
+        r.every = clamp8(x->n("every", 2), 2, 4);
+        if (x->get("mask")) { const std::string m = x->s("mask", ""); r.mask = 0; for (int k = 0; k < 16 && k < (int)m.size(); k++) if (m[k] == 'x') r.mask |= (uint16_t)(1u << k); }
+        r.offset_ms = clampf(x->n("offset", 30), 0, 120);
+        r.ornament = clampf(x->n("ornament", 0), 0, 1);
+        r.motion = (uint8_t)pick(x->s("motion", "contrary"), MOT, 4, M_CONTRARY);
+        r.strength = clampf(x->n("strength", 1), 0, 1);
+        r.meet = (uint8_t)pick(x->s("meet", "cadence"), MEET, 3, U_CADENCE);
+        r.octave = x->s("octave", "unison") == std::string("octave") ? 1 : 0;
+        r.cap = clamp8(x->n("cap", 8), 1, 32);
+        if (const Json *w = x->get("weight")) if (w->kind == Json::ARR)
+            for (int k = 0; k < 3; k++) { const Json *y = w->at(k); if (y && y->kind == Json::NUM) r.weight[k] = clamp8(y->num, 0, 4); }
+    }
+}
+int relations_in_force(const Cfg &c, int chord, const uint64_t *inside, int ninside, int *out, const uint64_t *recent, int nrecent) {
+    int n = 0;
+    for (int i = 0; i < c.nrel && n < REL_MAX; i++) {
+        const Relation &r = c.rel[i];
+        if (chord < r.from || chord > r.to) continue;
+        const bool en = r.type == R_CALL && r.on_enter && r.zone != 0;
+        bool in = r.zone == 0;
+        const uint64_t *l = en ? recent : inside; const int nl = en ? nrecent : ninside;
+        for (int k = 0; k < nl && !in; k++) in = l[k] == r.zone;
+        if (in) out[n++] = i;
+    }
+    return n;
+}
+
 void comp_of(const Json *j, Cfg &c) {
     static const Cfg kDefault;   /* static, not a ~25 KB temporary on the wasm stack */
     c = kDefault;
@@ -142,6 +197,7 @@ void comp_of(const Json *j, Cfg &c) {
     bass_of(j->get("bass"), c.bass, true);
     motif_of(j->get("motif"), c.motif);
     chain_of(j->get("chain"), c.chain, c.nchain);
+    rel_of(j->get("relations"), c.rel, c.nrel);
     const Json *ov = j->get("over");
     if (!ov || ov->kind != Json::OBJ) return;
     if (const Json *ch = ov->get("chord")) if (ch->kind == Json::OBJ)

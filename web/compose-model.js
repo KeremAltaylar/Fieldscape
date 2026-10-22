@@ -131,8 +131,10 @@
       (bandsAt || []).filter(function (b) { return b.kind === "zone"; }).forEach(function (b) {
         var o = comp.over.zone[b.id]; if (o && o[v]) { if (o[v].style) { style = o[v].style; styleSource = "zone"; } if (o[v].role) { role = o[v].role; roleSource = "zone"; } } });
       /* an off cell is the doing of the layer that turned it off */
-      if (role === "melody") { return { style: "melody", label: melodyLabel(comp, i, n), source: roleSource }; }
-      return role === "off" ? { style: "off", source: roleSource } : { style: style, source: styleSource };
+      var x = role === "melody" ? { style: "melody", label: melodyLabel(comp, i, n), source: roleSource } : role === "off" ? { style: "off", source: roleSource } : { style: style, source: styleSource };
+      var rel = comp.relations && comp.relations.length && relMark(comp, i, VOICES.indexOf(v), (bandsAt || []).filter(function (b) { return b.kind === "zone"; }).map(function (b) { return b.id; }));
+      if (rel) { x.rel = rel; }   /* composition 3: a relation drives this voice here (the cell's style and label stay) */
+      return x;
     });
   }
   function motifDefault() {
@@ -382,15 +384,155 @@
     });
     return chain;
   }
+  /* composition 3: relations between voices (core/composer.hpp Relation; rel_of parses them). A relation is
+     { type, a, b, [c], from, to, [zone], ...the type's fields }; a/b/c are voice indices 0..2, from/to chord steps. */
+  function menu(k, label, ids, def) { return { k: k, label: label, kind: "menu", options: ids.map(function (i) { return { id: i, label: i }; }), def: def }; }
+  function knob(k, label, min, max, step, def, fmt) { return { k: k, label: label, kind: "knob", min: min, max: max, step: step, def: def, fmt: fmt }; }
+  var RELATIONS = {
+    canon: { label: "Canon", fields: [knob("delay", "delay", 1, 32, 1, 8), knob("trans", "transpose", -7, 7, 1, 0), menu("transform", "transform", ["none", "invert", "retro"], "none")] },
+    call: { label: "Call & response", fields: [menu("source", "answer from", ["own", "half", "mirror"], "own"), knob("gap", "gap", 1, 16, 1, 2), menu("trigger", "trigger", ["phrase", "enter"], "phrase")] },
+    hocket: { label: "Hocket", fields: [menu("split", "split", ["alt", "every", "mask"], "alt"), knob("every", "every", 2, 4, 1, 2), { k: "mask", label: "mask", kind: "mask", def: "x.x.x.x.x.x.x.x." }] },
+    hetero: { label: "Heterophony", fields: [knob("offset", "offset", 0, 120, 1, 30, "ms"), knob("ornament", "ornament", 0, 1, 0.05, 0, "pct")] },
+    motion: { label: "Motion", fields: [menu("motion", "motion", ["contrary", "par3", "par6", "free"], "contrary"), knob("strength", "strength", 0, 1, 0.05, 1, "pct")] },
+    unison: { label: "Unison", fields: [menu("meet", "meet", ["cadence", "change", "never"], "cadence"), menu("octave", "at", ["unison", "octave"], "unison")] },
+    density: { label: "Shared density", fields: [knob("cap", "notes per bar", 1, 32, 1, 8), { k: "weight", label: "weights", kind: "weights", min: 0, max: 4, def: [1, 1, 1] }] }
+  };
+  var REL_MAX = 12;
+  function relField(r, k) { var t = RELATIONS[r.type], f = null; if (t) { t.fields.forEach(function (x) { if (x.k === k) { f = x; } }); } return f; }
+  function isVoice(x) { return Number.isInteger(x) && x >= 0 && x <= 2; }
+  /* the index it took, or -1 (unknown type, a voice outside 0..2, a == b, REL_MAX reached, or a second density) */
+  function addRelation(comp, type, a, b, span) {
+    var t = RELATIONS[type], rs = comp.relations || [];
+    if (!t || !isVoice(a) || !isVoice(b) || a === b || rs.length >= REL_MAX || (type === "density" && rs.some(function (x) { return x.type === "density"; }))) { return -1; }   /* the core reads the first density only */
+    var r = { type: type, a: a, b: b, from: 0, to: NCHORD - 1 };
+    if (span && Number.isInteger(span.from) && Number.isInteger(span.to) && span.from >= 0 && span.to >= span.from && span.to < NCHORD) { r.from = span.from; r.to = span.to; }
+    t.fields.forEach(function (f) { r[f.k] = clone(f.def); });
+    comp.relations = rs; rs.push(r);
+    return rs.length - 1;
+  }
+  /* true when it took the value (numbers clamp to the field's range; a menu, mask or voice that is not valid is refused) */
+  function setRelation(comp, i, k, v) {
+    var r = (comp.relations || [])[i]; if (!r) { return false; }
+    if (k === "a" || k === "b") { if (!isVoice(v) || v === r[k === "a" ? "b" : "a"] || v === r.c) { return false; } r[k] = v; return true; }
+    if (k === "c") { if (v == null) { delete r.c; return true; } if (!isVoice(v) || v === r.a || v === r.b) { return false; } r.c = v; return true; }
+    if (k === "from" || k === "to") {
+      if (!Number.isInteger(v) || v < 0 || v >= NCHORD || (k === "from" ? v > r.to : v < r.from)) { return false; }
+      r[k] = v; return true;
+    }
+    if (k === "zone") { if (v == null || v === "") { delete r.zone; return true; } if (typeof v !== "string") { return false; } r.zone = v; return true; }
+    var f = relField(r, k); if (!f) { return false; }
+    if (f.kind === "knob") { if (typeof v !== "number" || !isFinite(v)) { return false; } r[k] = clamp(f.step >= 1 ? Math.round(v) : Math.round(v / f.step) * f.step, f.min, f.max); return true; }
+    if (f.kind === "menu") { if (!f.options.some(function (o) { return o.id === v; })) { return false; } r[k] = v; return true; }
+    if (f.kind === "mask") { if (typeof v !== "string" || !/^[x.]{16}$/.test(v)) { return false; } r[k] = v; return true; }
+    if (!Array.isArray(v) || v.length !== 3 || !v.every(function (x) { return typeof x === "number" && isFinite(x); })) { return false; }
+    r[k] = v.map(function (x) { return clamp(Math.round(x), f.min, f.max); }); return true;
+  }
+  function removeRelation(comp, i) { if (!(comp.relations || [])[i]) { return false; } comp.relations.splice(i, 1); return true; }
+  /* indices of the relations in force at chord step `chord`, with the walker inside `zonesInside` (a call's "enter" trigger: the caller
+     passes the zones entered recently as well - the model just takes a list); a relation with no zone is everywhere */
+  function relationsAt(comp, chord, zonesInside) {
+    var out = [];
+    (comp.relations || []).forEach(function (r, i) {
+      if (chord >= r.from && chord <= r.to && (!r.zone || (zonesInside || []).indexOf(r.zone) >= 0)) { out.push(i); }
+    });
+    return out;
+  }
+  function bars(d) { return d === 16 ? "1 bar" : d === 8 ? "½ bar" : d === 4 ? "¼ bar" : d === 12 ? "¾ bar" : d + "/16"; }
+  function relLabel(r) {
+    var w = { canon: "canon · " + bars(r.delay) + (r.trans ? " · " + (r.trans > 0 ? "+" : "") + r.trans : "") + (r.transform !== "none" ? " · " + r.transform : ""),
+      call: "answers · " + r.source, hocket: "hocket · " + (r.split === "every" ? "every " + r.every : r.split), hetero: "hetero · " + r.offset + " ms",
+      motion: "motion · " + r.motion, unison: "unison · " + (r.octave === "octave" ? "octave" : r.meet), density: "density · " + r.cap };
+    return w[r.type];
+  }
+  /* what a drawn link needs: the relations that start inside a route of n chords */
+  function links(comp, n) {
+    var out = [];
+    (comp.relations || []).forEach(function (r, i) {
+      if (r.from >= n) { return; }
+      var l = { i: i, type: r.type, a: r.a, b: r.b, from: r.from, to: Math.min(r.to, n - 1), label: relLabel(r) };
+      if (r.c !== undefined) { l.c = r.c; }
+      out.push(l);
+    });
+    return out;
+  }
+  /* the word a lane cell shows when a relation drives that voice (a canon's or call's leader a is not driven; a hocket's and density's a is) */
+  var DRIVES = { canon: "canon", call: "answer", hocket: "hocket", hetero: "hetero", motion: "motion", unison: "unison", density: "density" };
+  function relMark(comp, i, v, zones) {
+    var word;
+    relationsAt(comp, i, zones).forEach(function (j) {
+      var r = comp.relations[j], both = r.type === "hocket" || r.type === "density";
+      if (v === r.b || v === r.c || (both && v === r.a)) { word = DRIVES[r.type]; }
+    });
+    return word;
+  }
+  /* what a letter's texture says about who plays what: the melody, the voice that follows it (the support, or the held voice
+     when the support rests) and the third. Never Free as a leader: a mover or held voice always has a style. */
+  function cast(t) {
+    var mel = -1, rest = [];
+    VOICES.forEach(function (v, k) { if (mel < 0 && t.v[v].role === "melody") { mel = k; } });
+    VOICES.forEach(function (v, k) { if (k !== mel) { rest.push(k); } });
+    if (mel < 0) { return null; }
+    var rank = function (k) { var v = VOICES[k]; return t.v[v].role === "off" ? 2 : t.roles[v] === "support" ? 0 : 1; };
+    rest.sort(function (x, y) { return rank(x) - rank(y); });
+    return { mel: mel, sup: rest[0], third: rest[1] };
+  }
+  /* a gentle relation (A, and the second one in a rich B): heterophony, or a motion rule - { type, f: fields } */
+  function gentle(r) {
+    if (r() < 0.5) { return { type: "hetero", f: { offset: int(r, 30, 60), ornament: 0.05 * int(r, 0, 6) } }; }
+    return { type: "motion", f: { motion: "contrary", strength: 0.6 + 0.05 * int(r, 0, 8) } };
+  }
+  /* A' : A's relation with one parameter moved */
+  function vary(r, g) {
+    var x = clone(g), ks = Object.keys(x.f).filter(function (k) { return k !== "motion"; }), k = ks[Math.floor(r() * ks.length)], v = x.f[k];
+    x.f[k] = Math.round((k === "offset" ? (v <= 45 ? v + 15 : v - 15) : k === "ornament" ? (v < 0.15 ? v + 0.15 : v - 0.15) : (v >= 0.8 ? v - 0.2 : v + 0.2)) * 20) / 20;
+    return x;
+  }
+  /* B or C: below 0.5 parallel motion; above, a canon, a call or a hocket */
+  function contrasting(r, c) {
+    if (c < 0.5) { return { type: "motion", f: { motion: one(r, ["par3", "par6"]), strength: 0.6 + 0.05 * int(r, 0, 8) } }; }
+    var k = one(r, ["canon", "call", "hocket"]);
+    if (k === "canon") { var d = int(r, 4, 8), tr = one(r, [-2, 2]); return { type: k, f: { delay: d, trans: tr, transform: c >= 0.8 ? one(r, ["none", "invert"]) : "none" } }; }
+    if (k === "call") { return { type: k, f: { source: one(r, ["half", "mirror"]) } }; }
+    return { type: k, f: { split: one(r, ["alt", "every"]), every: 2 } };
+  }
+  function put(out, g, a, b, from, to) {
+    var i = addRelation(out, g.type, a, b, { from: from, to: to });
+    if (i >= 0) { Object.keys(g.f).forEach(function (k) { setRelation(out, i, k, g.f[k]); }); }
+    return i;
+  }
+  /* composition 3: relations that fit the form, drawn last so a seed's textures, motif and chain are as they were.
+     "some": one per letter over its chords but the cadence chord (a repeated letter the same, A' a parameter off), and a
+     unison at each cadence chord; "rich" adds a shared density over the route and a second relation in B */
+  function relate(out, r, tex, spans, c, mode, n) {
+    if (mode === "none" || !n) { return; }
+    var rel = {}, A = cast(tex.A);
+    if (!A) { return; }
+    spans.forEach(function (s) {
+      var k = texKey(s.letter), t = tex[k], w = cast(t);
+      if (!rel[k]) { rel[k] = k === "A" ? gentle(r) : k === "A'" ? vary(r, rel.A) : contrasting(r, c); }
+      if (w && s.b - s.a >= 2) { put(out, rel[k], w.mel, w.sup, s.a, s.b - 2); }
+      if (w) { var z = s.b === n ? A : w, u = addRelation(out, "unison", z.mel, z.sup, { from: s.b - 1, to: s.b - 1 });   /* the route's last chord settles from A */   /* one per cadence chord: a route-wide unison would mark a melody lane "unison" on every chord */
+        if (u >= 0) { setRelation(out, u, "octave", "octave"); setRelation(out, u, "c", z.third); } }
+    });
+    if (mode !== "rich") { return; }
+    var dens = tex.A.dense, d = addRelation(out, "density", A.mel, A.sup, { from: 0, to: n - 1 });
+    if (d >= 0) { setRelation(out, d, "cap", dens ? int(r, 12, 14) : int(r, 10, 12)); var w3 = [1, 1, 1]; w3[A.mel] = 2; setRelation(out, d, "weight", w3); }
+    var g2 = gentle(r);
+    spans.forEach(function (s) {
+      var w = texKey(s.letter) === "B" && cast(tex.B);
+      if (w && s.b - s.a >= 2 && tex.B.v[VOICES[w.third]].role !== "off") { put(out, g2, w.mel, w.third, s.a, s.b - 2); }
+    });
+  }
   function generate(comp, opt) {
     var seed = Math.max(0, opt.seed | 0), c = Math.max(0, Math.min(1, +opt.contrast || 0)), type = formOf(opt.form).id;
-    var n = Math.min(NCHORD, Math.max(0, opt.nchords | 0)), bpm = +opt.bpm > 0 ? +opt.bpm : 96;
+    var mode = opt.relations === "none" || opt.relations === "rich" ? opt.relations : "some", n = Math.min(NCHORD, Math.max(0, opt.nchords | 0)), bpm = +opt.bpm > 0 ? +opt.bpm : 96;
     var r = rng(seed), A = textureA(r), tex = { A: A }, spans = formSpans(type, n), out = clone(comp), all = VOICES.concat(["bass"]);
     spans.forEach(function (s) { var k = texKey(s.letter); if (!tex[k]) { tex[k] = k === "A'" ? variantOf(r, A) : contrastOf(r, A, c); } });
     var end = tame(settle(r, A), bpm);
     tame(A.v, bpm); all.forEach(function (v) { out[v] = clone(A.v[v]); });
     out.motif = drawMotif(r); out.chain = drawChain(r, spans, n);
-    out.seed = seed; out.bars = "develop"; out.form = { type: type, contrast: c, seed: seed };
+    delete out.relations; relate(out, r, tex, spans, c, mode, n);
+    out.seed = seed; out.bars = "develop"; out.form = { type: type, contrast: c, seed: seed, relations: mode };
     out.over = { chord: {}, section: (comp.over && out.over.section) || {}, zone: (comp.over && out.over.zone) || {} };
     spans.forEach(function (s) {
       var t = tex[texKey(s.letter)], body = tame(clone(t.v), bpm), cad = tame(thin(t), bpm);
@@ -411,6 +553,7 @@
   var api = { VOICES: VOICES, STYLES: STYLES, ROLES: ROLES, OPS: OPS, motifDefault: motifDefault, motifStep: motifStep, setMotif: setMotif, setChain: setChain, chainAt: chainAt, RATES: RATES, FIELDS: FIELDS, BASS: BASS, defaults: defaults, TEMPLATES: TEMPLATES,
     scopeObj: scopeObj, setValue: setValue, clearValue: clearValue, clearScope: clearScope, effective: effective, cell: cell,
     bands: bands, history: history, summary: summary, clone: clone, label: label,
+    RELATIONS: RELATIONS, addRelation: addRelation, setRelation: setRelation, removeRelation: removeRelation, relationsAt: relationsAt, links: links,
     PRESETS: PRESETS, FORMS: FORMS, NCHORD: NCHORD, formSpans: formSpans, generate: generate, roll: roll };
   if (typeof module === "object" && module.exports) { module.exports = api; } else { root.FsCompose = api; }
 })(typeof globalThis !== "undefined" ? globalThis : this);
