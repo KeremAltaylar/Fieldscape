@@ -1541,6 +1541,51 @@ static void test_relation_read() {
     assert(moved == 5);
 }
 
+/* composition 4, task 2: ostinato and chorale */
+static const char *ONLY1 = R"("sect":{"role":"off"},"v3":{"role":"off"},"bass":{"mode":"off"})";
+static std::vector<int> sorted_bar(const Log &l, int b) { std::vector<int> n = bar_notes(l, 1, b); std::sort(n.begin(), n.end()); return n; }
+static void test_ostinato() {
+    const int CB = span_ticks() / 16;   /* chord 1 (G maj7: 55 59 62 66) starts at this bar */
+    auto ost = [&](const char *refit, const char *bars) { char b[1024]; std::snprintf(b, sizeof b, R"(,"comp":{"voice":{"style":"ostinato","rate":"4n","lo":50,"hi":74,"refit":"%s","grid":[0,2,1,3]},%s%s})", refit, ONLY1, bars); return render(b, 40); };
+    const Log d = ost("degree", ""), t = ost("transpose", "");
+    const std::vector<int> a0 = bar_notes(d, 1, 0), a1 = bar_notes(d, 1, CB), t0 = bar_notes(t, 1, 0), t1 = bar_notes(t, 1, CB);
+    assert((a0 == std::vector<int>{ 50, 57, 53, 60 }) && (t0 == a0));                       /* D A F C on Dm7, both refits */
+    assert(a1 == (std::vector<int>{ 55, 62, 59, 66 }));                                     /* degrees on the new chord: G D B F# */
+    assert(t1 == (std::vector<int>{ 55, 62, 58, 65 }));                                     /* the cell moved by the root step (+5), intervals 0 7 3 10 exact */
+    for (int b = 1; b < CB; b++) assert(bar_notes(d, 1, b) == a0 && bar_notes(t, 1, b) == t0);   /* develop is on (default): an ostinato still repeats */
+    std::printf("C ostinato: cell 0 2 1 3 = D A F C; chord 2 degree refit G D B F#, transpose G D Bb E (intervals exact); %d bars identical under develop\n", CB);
+}
+static int motion(const std::vector<int> &a, const std::vector<int> &b) { int m = 0; for (size_t i = 0; i < a.size(); i++) m += std::abs(a[i] - b[i]); return m; }
+static void test_chorale() {
+    auto cho = [&](const char *extra) { char b[1024]; std::snprintf(b, sizeof b, R"(,"comp":{"voice":{"style":"chorale","restrike":"1n","len":1,"lo":40,"hi":76,%s},%s})", extra, ONLY1); return render(b, 40); };
+    const Log c = cho(R"("voicing":"close","voices":4,"strict":0)"), o = cho(R"("voicing":"open","voices":4,"strict":0)"), d2 = cho(R"("voicing":"drop2","voices":4,"strict":0)");
+    assert(sorted_bar(c, 0) == (std::vector<int>{ 50, 53, 57, 60 }));
+    assert(sorted_bar(o, 0) == (std::vector<int>{ 50, 57, 65, 72 }));
+    assert(sorted_bar(d2, 0) == (std::vector<int>{ 45, 50, 53, 60 }));
+    /* held to the next restrike: a bar long (len 1) */
+    for (size_t i = 0; i < c.f.size(); i++) if (c.role[i] == 1) assert(std::fabs(c.d[i] - 2.5) < 1e-6);
+    /* Review Focus 1: 6 voices on a 4-tone chord - doubled in other octaves, no unisons, inside lo..hi, every voicing */
+    int doubled = 0, bars = 0;
+    for (const char *vo : { "close", "open", "drop2" }) for (const char *st : { "0", "1" }) {
+        char e[128]; std::snprintf(e, sizeof e, R"("voicing":"%s","voices":6,"strict":%s)", vo, st);
+        const Log s = cho(e);
+        for (int b = 0; b < 16; b++) {
+            const std::vector<int> n = sorted_bar(s, b); if (n.empty()) continue;
+            bars++; assert(n.size() == 6);
+            for (size_t i = 0; i < n.size(); i++) { assert(n[i] >= 40 && n[i] <= 76); if (i) assert(n[i] != n[i - 1]); }
+            std::set<int> pcs; for (int m : n) pcs.insert(m % 12); if (pcs.size() < n.size()) doubled++;
+        }
+    }
+    assert(bars > 30 && doubled == bars);
+    /* strict 1: less total motion between consecutive chords than strict 0 */
+    int m0 = 0, m1 = 0;
+    const Log s0 = cho(R"("voicing":"close","voices":4,"strict":0)"), s1 = cho(R"("voicing":"close","voices":4,"strict":1)");
+    for (int b = 1; b < 16; b++) { const auto p0 = sorted_bar(s0, b - 1), q0 = sorted_bar(s0, b), p1 = sorted_bar(s1, b - 1), q1 = sorted_bar(s1, b);
+        if (p0.size() == 4 && q0.size() == 4 && p1.size() == 4 && q1.size() == 4) { m0 += motion(p0, q0); m1 += motion(p1, q1); } }
+    assert(m0 > 0 && m1 < m0);
+    std::printf("C chorale: close 50 53 57 60, open 50 57 65 72, drop2 45 50 53 60; 6 voices on 4 tones: %d bars, all doubled, no unisons, inside 40..76; held a bar; voice-leading motion %d (strict 1) vs %d (strict 0)\n", bars, m1, m0);
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && !std::strcmp(argv[1], "final")) { test_empty_motif(); test_melody_gain_chain(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "room")) { test_room(); return 0; }
@@ -1552,6 +1597,8 @@ int main(int argc, char **argv) {
     if (argc > 1 && !std::strcmp(argv[1], "rel")) { test_relation_levels(); test_relation_read(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "read")) { test_gain_memo(); test_gain_lengths(); test_patch_read_cost(); return 0; }
     test_repeat_hash();
+    test_ostinato();
+    test_chorale();
     test_develop();
     test_canon();
     test_canon_no_feedback();

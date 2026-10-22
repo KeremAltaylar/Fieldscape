@@ -964,6 +964,8 @@ struct Piece : Device {
     comp::Voice ccur[comp::NVOICE]; comp::Bass cbass; bool comp_live = false;
     uint64_t zin[16] = {}; int nzin = 0; struct Ent { uint64_t id; long long bar; } zent[8]; int nzent = 0;
     int cpulse[comp::NVOICE] = {}, calt[comp::NVOICE] = {}, cped_root[comp::NVOICE] = {-1, -1, -1}; bool swell_shaped[comp::NVOICE] = {};
+    int ost_n0[comp::NVOICE] = {}, ost_t0[comp::NVOICE][8] = {};          /* ostinato: the first chord's tones the cell was set on (transpose refit) */
+    int cho_n[comp::NVOICE] = {}, cho_prev[comp::NVOICE][6] = {};         /* chorale: the voicing last sounded, ascending (voice leading) */
     double cg[comp::NVOICE] = { 1, 1, 1 };   /* each voice's style gain now (comp_bar glides it to its layer's) */
     bool styled(int q) const { return patch.comp.on && comp_live && ((ccur[q].style != comp::FREE && !bare(q)) || ccur[q].role == comp::OFF || melodic(q)); }
     /* composition 2: a melody voice plays the motif (its style aside); the phrase in force this bar; a cadence's last chord on
@@ -1344,7 +1346,7 @@ struct Piece : Device {
         push_ring(q, m, dur / s16, vel / std::max(1e-6, cg[q]), t - ctime);
         if (dur <= 0) return false;   /* a held note has no length to double */
         const double vu = vel / std::max(1e-6, cg[q]);
-        const bool chord = !melodic(q) && (ccur[q].style == comp::STRUM || ccur[q].style == comp::SWELLS);
+        const bool chord = !melodic(q) && (ccur[q].style == comp::STRUM || ccur[q].style == comp::SWELLS || ccur[q].style == comp::CHORALE);
         /* hocket: this line note sounds on one member only - a keeps it, or it moves to b (or c) at the same time, pitch and
            level (the member's own gain); a member without an instrument leaves it with a, so the line never loses a note */
         for (int i = 0; i < nract; i++) {
@@ -1395,7 +1397,7 @@ struct Piece : Device {
        and on a chord tone or the scale. Returns the new MIDI note, or -1 */
     int pitch_rel(int q, int m) {
         const comp::Voice &v = ccur[q];
-        if (!melodic(q) && (v.style == comp::STRUM || v.style == comp::SWELLS)) return -1;
+        if (!melodic(q) && (v.style == comp::STRUM || v.style == comp::SWELLS || v.style == comp::CHORALE)) return -1;
         auto last2 = [&](int x, int &cur, int &prev, long long &ct) {   /* x's latest note, and the one before at an earlier tick */
             cur = prev = -1; ct = -1;
             for (int i = 1; i <= RING && i <= rhead[x]; i++) {
@@ -1803,7 +1805,7 @@ struct Piece : Device {
                 if (c.source != comp::A_OWN) { play_answer(q, c, e, time); continue; }
             }
             if (melodic(q)) { play_melody(q, v, k, bar, time); continue; }
-            if (v.style == comp::FREE || bare(q) || v.role == comp::OFF || v.rate == 0 || k % v.rate || cad_rest(q, v.rate < 4)) continue;
+            if (v.style == comp::FREE || bare(q) || v.role == comp::OFF || v.rate == 0 || k % (v.style == comp::CHORALE ? std::max(1, (int)v.restrike) : v.rate) || cad_rest(q, (v.style == comp::CHORALE ? v.restrike : v.rate) < 4)) continue;
             play_style(q, v, k, bar, time);
         }
         for (int &x : ccall) x = -1;
@@ -1941,7 +1943,7 @@ struct Piece : Device {
     void play_style(int q, const comp::Voice &v, long long k, long long bar, double time) {
         Role &rl = q == 0 ? top : q == 1 ? sectr : v3r;
         Synth *sy = rl.sy();
-        if (v.style == comp::STRUM || v.style == comp::SWELLS) sync_pool(rl);
+        if (v.style == comp::STRUM || v.style == comp::SWELLS || v.style == comp::CHORALE) sync_pool(rl);
         const double g = cg[q];   /* each style at Free's level (comp_gains, comp_bar) */
         const int role = q + 1, ncols = std::max(1, (16 + v.rate - 1) / v.rate), j = dj();
         /* "bars": develop - an arpeggio's grid read backwards on odd bars of a chord, two columns on in bar 2 (of 4) */
@@ -2000,6 +2002,67 @@ struct Piece : Device {
             if (j > 0 && nt >= 2) drop = (j - 1) % nt;   /* develop: the voicing rotates - one tone silent, a different one each bar */
             int ti = -1;
             for (int d = 0; d < 5; d++) if (v.tones & (1u << d)) { if (++ti == drop) continue; double vl = (0.15 + 0.45 * v.peak) * g * (drop >= 0 ? std::sqrt(nt / (nt - 1.0)) : 1); vary(d, vl, d); note(role, chord_voice(rl, time + dur), note_hz(deg_midi(d, v.lo, v.hi, 0)), dur, time, vl, true); }
+            break;
+        }
+        case comp::OSTINATO: {
+            /* The one style that does not develop: its cell repeats every bar on purpose, whatever "bars" says (no dj() here, no
+               variation either). Degree refit: the cell's degrees on the chord now playing, as an arpeggio's. Transpose: the cell as
+               first heard (the first chord's tones), moved whole by the root's movement (nearest way, -6..+5), then by octaves into
+               lo..hi as one piece, so its intervals are exact on every chord. */
+            const int d = v.grid[col % ncols]; if (d < 0) return;
+            const double vl = vel(col);
+            if (v.refit == comp::RF_DEGREE) { note(role, sy, note_hz(deg_midi(d, v.lo, v.hi, 0)), dur, time, vl, true); break; }
+            if (ost_n0[q] <= 0) { ost_n0[q] = std::max(1, std::min(8, H.ntones)); for (int i = 0; i < ost_n0[q]; i++) ost_t0[q][i] = H.tones[i]; }
+            const int n0 = ost_n0[q];
+            auto raw = [&](int dd) { const int o = floor_div(dd, n0); return ost_t0[q][dd - o * n0] + 12 * o; };
+            int sh = ((H.tones[0] - ost_t0[q][0]) % 12 + 12) % 12; if (sh > 5) sh -= 12;
+            int mn = 1 << 20, mx = -(1 << 20);
+            for (int c = 0; c < ncols; c++) if (v.grid[c] >= 0) { const int m = raw(v.grid[c]) + sh; mn = std::min(mn, m); mx = std::max(mx, m); }
+            while (mn < v.lo) { mn += 12; mx += 12; sh += 12; }
+            while (mx > v.hi && mn - 12 >= v.lo) { mn -= 12; mx -= 12; sh -= 12; }
+            note(role, sy, note_hz(raw(d) + sh), dur, time, vl, true);
+            break;
+        }
+        case comp::CHORALE: {
+            /* every restrike, nvoices chord tones as one voicing. The candidates are the stacks of consecutive chord tones (in lo..hi, so a
+               voicing of more voices than the chord has tones doubles tones in other octaves, never a unison) from each possible bass,
+               shaped by close / open (every other tone an octave up) / drop2; a candidate is kept only if all its notes are inside
+               lo..hi and distinct. The plain one is the lowest root-position stack; the chosen one minimises
+               strict * (total motion from the last voicing, voices paired in order) + (1 - strict) * (distance of its bass from the plain bass).
+               ponytail: insertion sorts over <= 6 notes, and a scan of the register (<= 128 notes) for the pool - no heap, no std::sort. */
+            const int nn0 = std::max(2, std::min(6, (int)v.nvoices));
+            int pcs = 0; for (int i = 0; i < H.ntones; i++) pcs |= 1 << pc(H.tones[i]);
+            int pool[128], np = 0; for (int m = v.lo; m <= v.hi && np < 128; m++) if (pcs >> pc(m) & 1) pool[np++] = m;
+            if (!np) return;
+            const int rpc = pc(H.tones[0]);
+            auto build = [&](int b, int nn, int vo, int *out) {
+                if (b + nn > np) return false;
+                int s[6]; for (int i = 0; i < nn; i++) s[i] = pool[b + i];
+                if (vo == comp::VO_OPEN) for (int i = 1; i < nn; i += 2) s[i] += 12;
+                else if (vo == comp::VO_DROP2 && nn >= 2) s[nn - 2] -= 12;
+                for (int i = 1; i < nn; i++) { const int x = s[i]; int j = i - 1; while (j >= 0 && s[j] > x) { s[j + 1] = s[j]; j--; } s[j + 1] = x; }
+                for (int i = 0; i < nn; i++) { if (s[i] < v.lo || s[i] > v.hi || (i && s[i] == s[i - 1])) return false; out[i] = s[i]; }
+                return true;
+            };
+            int nn = nn0, vo = v.voicing, best[6], tmp[6]; bool have = false;
+            for (int pass = 0; pass < 3 && !have; pass++) {
+                if (pass == 1) vo = comp::VO_CLOSE;
+                if (pass == 2) nn = std::min(nn0, np);
+                int plain = -1; for (int b = 0; b < np && plain < 0; b++) if (pc(pool[b]) == rpc && build(b, nn, vo, tmp)) plain = b;
+                if (plain < 0) continue;
+                const bool lead = cho_n[q] == nn;
+                double bc = 1e18;
+                for (int b = 0; b < np; b++) {
+                    if (!build(b, nn, vo, tmp)) continue;
+                    double mv = 0; if (lead) for (int i = 0; i < nn; i++) mv += std::abs(tmp[i] - cho_prev[q][i]);
+                    const double c = lead ? v.strict * mv + (1 - v.strict) * std::abs(pool[b] - pool[plain]) : (b == plain ? 0 : 1);
+                    if (c < bc) { bc = c; have = true; std::memcpy(best, tmp, sizeof tmp); }
+                }
+            }
+            if (!have) return;
+            cho_n[q] = nn; std::memcpy(cho_prev[q], best, sizeof best);
+            const double sd = 60.0 / patch.tempo / 4 * std::max(1, (int)v.restrike) * v.len, vl = vel((k % 16) / std::max(1, (int)v.restrike));
+            for (int i = 0; i < nn; i++) note(role, chord_voice(rl, time + sd), note_hz(best[i]), sd, time, vl, true);
             break;
         }
         default: break;
@@ -2300,7 +2363,7 @@ struct Piece : Device {
         patch = routes[near];
         apply_patch(now);
         H.idx = -1; H.chord = -1; H.ntones = -1;
-        sector = -1; comp_live = false; for (auto &x : sp) x = Span(); for (int &x : hcnt) x = 0; for (int q = 0; q < comp::NVOICE; q++) { rhead[q] = 0; for (auto &n : ring[q]) n.tick = -1; } nzent = 0; chg = 0; for (int &x : ufirst) x = -1; cad_chord = false; cad_oth = comp::OTH_HOLD; mel_step = -2; cchord = -2; mvar_on = false; nhist = 0; for (int q = 0; q < comp::NVOICE; q++) { cped_root[q] = -1; cpulse[q] = 0; calt[q] = 0; }
+        sector = -1; comp_live = false; for (auto &x : sp) x = Span(); for (int &x : hcnt) x = 0; for (int q = 0; q < comp::NVOICE; q++) { rhead[q] = 0; for (auto &n : ring[q]) n.tick = -1; } nzent = 0; chg = 0; for (int &x : ufirst) x = -1; cad_chord = false; cad_oth = comp::OTH_HOLD; mel_step = -2; cchord = -2; mvar_on = false; nhist = 0; for (int q = 0; q < comp::NVOICE; q++) { cped_root[q] = -1; cpulse[q] = 0; calt[q] = 0; ost_n0[q] = 0; cho_n[q] = 0; }
         synth_to(walk_level(route_dist), now);
     }
     void walk(int r, double t, double dist, double now) {
