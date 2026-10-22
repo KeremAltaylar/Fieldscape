@@ -966,6 +966,7 @@ struct Piece : Device {
     int cpulse[comp::NVOICE] = {}, calt[comp::NVOICE] = {}, cped_root[comp::NVOICE] = {-1, -1, -1}; bool swell_shaped[comp::NVOICE] = {};
     int ost_n0[comp::NVOICE] = {}, ost_t0[comp::NVOICE][8] = {};          /* ostinato: the first chord's tones the cell was set on (transpose refit) */
     int cho_n[comp::NVOICE] = {}, cho_prev[comp::NVOICE][6] = {};         /* chorale: the voicing last sounded, ascending (voice leading) */
+    long long pt_next[comp::NVOICE] = { -1, -1, -1 }; int pt_n[comp::NVOICE] = {}, tcnt[comp::NVOICE] = {};   /* pointillist: the tick of the next onset, onsets so far; tintinnabuli: notes answered (alt) */
     double cg[comp::NVOICE] = { 1, 1, 1 };   /* each voice's style gain now (comp_bar glides it to its layer's) */
     bool styled(int q) const { return patch.comp.on && comp_live && ((ccur[q].style != comp::FREE && !bare(q)) || ccur[q].role == comp::OFF || melodic(q)); }
     /* composition 2: a melody voice plays the motif (its style aside); the phrase in force this bar; a cadence's last chord on
@@ -1463,6 +1464,7 @@ struct Piece : Device {
     void note(int role, Synth *sy, double f, double dur, double t, double vel, bool composed = false) {
         Role *rr = role == 0 ? &bass : role == 1 ? &top : role == 2 ? &sectr : role == 3 ? &v3r : nullptr;
         if (role >= 1 && role <= 3) nbar[role - 1]++;
+        if (!composed && ck < 0 && dur > 0 && role >= 1 && role <= 3 && patch.comp.on && comp_live && H.ntones > 0 && !styled(role - 1)) tint_free(role - 1, f, dur, t, vel);   /* a Free voice's note, answered */
         if (composed && ck >= 0 && !relmade && role >= 1 && role <= 3) {
             if (nract) { const int m = (int)std::lround(69 + 12 * std::log2(f / 440)), r = pitch_rel(role - 1, m); if (r >= 0 && r != m) f = note_hz(r); }
             ufirst[role - 1] = chg;
@@ -1760,6 +1762,58 @@ struct Piece : Device {
             relmade = false;
         }
     }
+    /* composition 4, tintinnabuli: voice a answers voice `tvoice`'s note m with the nearest triad tone (the chord's first three
+       tones) above or below it, moved by octaves into a's register; -1 when there is none */
+    bool tin(int a) const { const comp::Voice &v = ccur[a]; return v.style == comp::TINTINNABULI && v.role != comp::OFF && !bare(a) && !melodic(a); }
+    int tint_pitch(int a, int m) {
+        const comp::Voice &v = ccur[a];
+        const bool up = v.tmode == comp::TT_ABOVE || (v.tmode == comp::TT_ALT && (tcnt[a]++ & 1) == 0);
+        int tri = 0; for (int i = 0; i < H.ntones && i < 3; i++) tri |= 1 << pc(H.tones[i]);
+        for (int d = 1; d < 12; d++) { const int c = up ? m + d : m - d; if (tri >> pc(c) & 1) return fold(c, v.lo, v.hi); }
+        return -1;
+    }
+    void tint_play(int a, const int *m, const double *dur, const double *off, const double *vel, int n, double t) {
+        Role &rl = a == 0 ? top : a == 1 ? sectr : v3r;
+        for (int i = 0; i < n; i++) {
+            const int p = tint_pitch(a, m[i]); if (p < 0) continue;
+            bool dup = false; for (int j = 0; j < i; j++) if (tint_pitch_last[j] == p) dup = true;   /* two leader tones with one answer: sounds once */
+            tint_pitch_last[i] = p; if (dup) continue;
+            const double d = std::max(0.03, dur[i]), at = t + off[i];
+            const bool relm = relmade; relmade = true;
+            if (n > 1) { sync_pool(rl); note(a + 1, chord_voice(rl, at + d), note_hz(p), d, at, vel[i] * cg[a], true); }
+            else note(a + 1, rl.sy(), note_hz(p), d, at, vel[i] * cg[a], true);
+            relmade = relm;
+        }
+    }
+    int tint_pitch_last[8] = {};
+    void tint_step(int a, long long k, double time) {   /* the notes voice tvoice composed this sixteenth (its ring) */
+        const int q = ccur[a].tvoice; if (q == a) return;
+        const double s16 = 60.0 / patch.tempo / 4;
+        int m[8]; double dur[8], off[8], vel[8]; int n = 0;
+        for (int i = 0; i < RING && n < 8; i++) { const NR &r = ring[q][i]; if (r.tick != k || r.len16 <= 0) continue; m[n] = r.midi; dur[n] = r.len16 * s16; off[n] = r.off; vel[n] = r.vel; n++; }
+        tint_play(a, m, dur, off, vel, n, time);
+    }
+    void tint_free(int q, double f, double dur, double t, double vel) {   /* a Free voice's note, as it is struck */
+        for (int a = 0; a < comp::NVOICE; a++) {
+            if (a == q || !tin(a) || ccur[a].tvoice != q) continue;
+            const int m = (int)std::lround(69 + 12 * std::log2(f / 440)); const double z = 0;
+            tint_play(a, &m, &dur, &z, &vel, 1, t);
+        }
+    }
+    /* pointillist: one short note, then a seeded silence - the gap between onsets in sil_min..sil_max (to the nearest sixteenth);
+       the pitch a chord tone across lo..hi, the level within +-20 %. The randomness is the style's own (comp::rand01) */
+    void point_step(int q, const comp::Voice &v, long long k, double time) {
+        if (pt_next[q] >= 0 && k < pt_next[q]) return;
+        int pool[128], np = 0; for (int m = v.lo; m <= v.hi && np < 128; m++) for (int i = 0; i < H.ntones; i++) if (pc(m) == pc(H.tones[i])) { pool[np++] = m; break; }
+        if (!np) return;
+        const uint32_t sd = patch.comp.seed ^ 0x9017; const int n = pt_n[q]++;
+        const double s16 = 60.0 / patch.tempo / 4, gap = v.sil_min + (v.sil_max - v.sil_min) * comp::rand01(sd, n, q, 0);
+        pt_next[q] = k + std::max(1, (int)std::lround(gap / s16));
+        const int p = pool[std::min(np - 1, (int)(comp::rand01(sd, n, q, 1) * np))];
+        const double vl = (0.15 + 0.45 * v.peak) * cg[q] * (1 + 0.2 * (2 * comp::rand01(sd, n, q, 2) - 1));
+        Role &rl = q == 0 ? top : q == 1 ? sectr : v3r;
+        note(q + 1, rl.sy(), note_hz(p), v.plen, time, vl, true);
+    }
     void compose_step(double time) {
         if (!patch.comp.on || !comp_live || H.ntones <= 0) return;
         const long long k = ticks - 1, bar = k / 16;
@@ -1793,9 +1847,10 @@ struct Piece : Device {
            current pitch): pass 0 the rest, pass 1 those followers, pass 2 the call's answers */
         bool pf[comp::NVOICE] = {};
         for (int i = 0; i < nract; i++) { const comp::Relation &c = patch.comp.rel[ract[i]]; if ((c.type == comp::R_MOTION || c.type == comp::R_UNISON) && c.b != c.a) pf[c.b] = true; }
-        for (int pass = 0; pass < 3; pass++) for (int q = 0; q < comp::NVOICE; q++) {
+        /* tintinnabuli answers after every other voice (pass 3), so it hears this sixteenth's note whatever the voices' order */
+        for (int pass = 0; pass < 4; pass++) for (int q = 0; q < comp::NVOICE; q++) {
             const comp::Voice &v = ccur[q];
-            if ((ccall[q] >= 0 ? 2 : pf[q] ? 1 : 0) != pass) continue;
+            if ((ccall[q] < 0 && fol[q] < 0 && !mute[q] && tin(q) ? 3 : ccall[q] >= 0 ? 2 : pf[q] ? 1 : 0) != pass) continue;
             if (fol[q] >= 0) { play_canon(q, fol[q], sp[fol[q]].a, sp[fol[q]].b, k, time); continue; }
             if (mute[q]) continue;
             if (ccall[q] >= 0) {
@@ -1805,6 +1860,8 @@ struct Piece : Device {
                 if (c.source != comp::A_OWN) { play_answer(q, c, e, time); continue; }
             }
             if (melodic(q)) { play_melody(q, v, k, bar, time); continue; }
+            if (pass == 3) { tint_step(q, k, time); continue; }
+            if (v.style == comp::POINTILLIST) { if (!bare(q) && v.role != comp::OFF && !cad_rest(q, false)) point_step(q, v, k, time); continue; }
             if (v.style == comp::FREE || bare(q) || v.role == comp::OFF || v.rate == 0 || k % (v.style == comp::CHORALE ? std::max(1, (int)v.restrike) : v.rate) || cad_rest(q, (v.style == comp::CHORALE ? v.restrike : v.rate) < 4)) continue;
             play_style(q, v, k, bar, time);
         }
@@ -2363,7 +2420,7 @@ struct Piece : Device {
         patch = routes[near];
         apply_patch(now);
         H.idx = -1; H.chord = -1; H.ntones = -1;
-        sector = -1; comp_live = false; for (auto &x : sp) x = Span(); for (int &x : hcnt) x = 0; for (int q = 0; q < comp::NVOICE; q++) { rhead[q] = 0; for (auto &n : ring[q]) n.tick = -1; } nzent = 0; chg = 0; for (int &x : ufirst) x = -1; cad_chord = false; cad_oth = comp::OTH_HOLD; mel_step = -2; cchord = -2; mvar_on = false; nhist = 0; for (int q = 0; q < comp::NVOICE; q++) { cped_root[q] = -1; cpulse[q] = 0; calt[q] = 0; ost_n0[q] = 0; cho_n[q] = 0; }
+        sector = -1; comp_live = false; for (auto &x : sp) x = Span(); for (int &x : hcnt) x = 0; for (int q = 0; q < comp::NVOICE; q++) { rhead[q] = 0; for (auto &n : ring[q]) n.tick = -1; } nzent = 0; chg = 0; for (int &x : ufirst) x = -1; cad_chord = false; cad_oth = comp::OTH_HOLD; mel_step = -2; cchord = -2; mvar_on = false; nhist = 0; for (int q = 0; q < comp::NVOICE; q++) { cped_root[q] = -1; cpulse[q] = 0; calt[q] = 0; ost_n0[q] = 0; cho_n[q] = 0; pt_next[q] = -1; pt_n[q] = 0; tcnt[q] = 0; }
         synth_to(walk_level(route_dist), now);
     }
     void walk(int r, double t, double dist, double now) {

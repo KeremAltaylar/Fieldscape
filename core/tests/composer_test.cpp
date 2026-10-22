@@ -1586,7 +1586,49 @@ static void test_chorale() {
     std::printf("C chorale: close 50 53 57 60, open 50 57 65 72, drop2 45 50 53 60; 6 voices on 4 tones: %d bars, all doubled, no unisons, inside 40..76; held a bar; voice-leading motion %d (strict 1) vs %d (strict 0)\n", bars, m1, m0);
 }
 
+/* composition 4, task 3: tintinnabuli and pointillist */
+static void test_tintinnabuli() {
+    const int CB = span_ticks() / 16;
+    auto tin = [&](const char *lead, const char *mode) { char b[1024]; std::snprintf(b, sizeof b, R"(,"comp":{"voice":%s,"sect":{"style":"tintinnabuli","answers":0,"tmode":"%s","lo":40,"hi":70},"v3":{"role":"off"},"bass":{"mode":"off"}})", lead, mode); return render(b, 40); };
+    const char *OST = R"({"style":"ostinato","rate":"4n","lo":50,"hi":74,"grid":[0,2,1,3]})";
+    /* the melody D A F C on Dm7 (triad D F A): nearest triad tone above / below each, in 40..70, same time and length */
+    const Log a = tin(OST, "above"), b = tin(OST, "below"), l = tin(OST, "alt");
+    assert(bar_notes(a, 1, 0) == (std::vector<int>{ 50, 57, 53, 60 }));
+    assert(bar_notes(a, 2, 0) == (std::vector<int>{ 53, 62, 57, 62 }));
+    assert(bar_notes(b, 2, 0) == (std::vector<int>{ 45, 53, 50, 57 }));
+    assert(bar_notes(l, 2, 0) == (std::vector<int>{ 53, 53, 57, 57 }));   /* above, below, above, below */
+    for (size_t i = 0, j = 0; i < a.f.size(); i++) if (a.role[i] == 2) { while (a.role[j] != 1 || std::fabs(a.t[j] - a.t[i]) > 1e-9) j++; assert(std::fabs(a.d[j] - a.d[i]) < 1e-9); }
+    /* a Free voice is answered too: every T note sounds with a Free note, the nearest triad tone above it, not equal to it */
+    const Log f = tin(R"({"style":"free"})", "above");
+    int n = 0;
+    for (size_t i = 0; i < f.f.size(); i++) if (f.role[i] == 2 && f.t[i] < CB * 2.5 - 1e-6) {
+        int m = -1; for (size_t j = 0; j < f.f.size(); j++) if (f.role[j] == 1 && std::fabs(f.t[j] - f.t[i]) < 1e-9) m = (int)std::lround(midi(f.f[j]));
+        const int t = (int)std::lround(midi(f.f[i])); assert(m >= 0 && t != m && t >= 40 && t <= 70);
+        int d = 1; while (!(((m + d) % 12 == 2) || ((m + d) % 12 == 5) || ((m + d) % 12 == 9))) d++;
+        assert((t - m - d) % 12 == 0); n++;
+    }
+    assert(n > 3);
+    std::printf("C tintinnabuli: D A F C -> above F D A D, below A F D A, alt F F A A (40..70, same time and length); a Free voice answered too (%d notes in chord 1)\n", n);
+}
+static void test_pointillist() {
+    const int CB = span_ticks() / 16;
+    auto pt = [&](const char *sil, int seed) { char b[1024]; std::snprintf(b, sizeof b, R"(,"comp":{"seed":%d,"voice":{"style":"pointillist","silence":%s,"plen":0.1,"lo":50,"hi":74},%s})", seed, sil, ONLY1); return render(b, 40); };
+    const Log a = pt("[0.3,0.9]", 1), a2 = pt("[0.3,0.9]", 1), o = pt("[0.3,0.9]", 2), r = pt("[0.625,0.625]", 1);
+    const double s16 = 60.0 / 96 / 4;
+    int n = 0; double prev = -1;
+    for (size_t i = 0; i < a.f.size(); i++) if (a.role[i] == 1) {
+        assert(std::fabs(a.d[i] - 0.1) < 1e-6);
+        if (prev >= 0) { const double g = a.t[i] - prev; assert(g >= 0.3 - s16 - 1e-9 && g <= 0.9 + s16 + 1e-9); }
+        prev = a.t[i]; n++;
+        if (a.t[i] < CB * 2.5 - 1e-6) { const int pc = (int)std::lround(midi(a.f[i])) % 12; assert(pc == 2 || pc == 5 || pc == 9 || pc == 0); }
+    }
+    assert(n > 20 && same(a, a2) && !same(a, o));
+    prev = -1; for (size_t i = 0; i < r.f.size(); i++) if (r.role[i] == 1) { if (prev >= 0) assert(std::fabs(r.t[i] - prev - 0.625) < 1e-9); prev = r.t[i]; }
+    std::printf("C pointillist: %d onsets, every gap in 0.3..0.9 s (+-1/16), chord tones, same seed same notes, other seed differs; 0.625..0.625 is a regular pulse\n", n);
+}
+
 int main(int argc, char **argv) {
+    if (argc > 1 && !std::strcmp(argv[1], "tp")) { test_tintinnabuli(); test_pointillist(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "final")) { test_empty_motif(); test_melody_gain_chain(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "room")) { test_room(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "levels")) { test_levels(); return 0; }
@@ -1599,6 +1641,8 @@ int main(int argc, char **argv) {
     test_repeat_hash();
     test_ostinato();
     test_chorale();
+    test_tintinnabuli();
+    test_pointillist();
     test_develop();
     test_canon();
     test_canon_no_feedback();
