@@ -962,6 +962,8 @@ struct Piece : Device {
     int sector = -1;
     /* composition (step 1): the settings in force, gliding a bar at a time; zones; per-voice state */
     comp::Voice ccur[comp::NVOICE]; comp::Bass cbass; bool comp_live = false;
+    int wk_at[16] = { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 };   /* composition 4: the walking bass - this bar's pitch at each sixteenth, -1 none */
+    int wk_l1 = -1, wk_l2 = -1, cdir = 0; double cwt = -1;   /* its last two pitches (a run of one pitch is cut at 2); the walker's direction at the bar line, t_along then */
     uint64_t zin[16] = {}; int nzin = 0; struct Ent { uint64_t id; long long bar; } zent[8]; int nzent = 0;
     int cpulse[comp::NVOICE] = {}, calt[comp::NVOICE] = {}, cped_root[comp::NVOICE] = {-1, -1, -1}; bool swell_shaped[comp::NVOICE] = {};
     int ost_n0[comp::NVOICE] = {}, ost_t0[comp::NVOICE][8] = {};          /* ostinato: the first chord's tones the cell was set on (transpose refit) */
@@ -1692,9 +1694,70 @@ struct Piece : Device {
             if (mel.cadence && mel.last && comp::rand01(patch.comp.seed ^ 0xCAD0u, chord, comp::NVOICE, 0) < mel.strength) cad_oth = mel.others;
         }
         cbass = r.bass; comp_live = true;
-        bass_bar(time);
+        cdir = cwt < 0 || std::fabs(t_along - cwt) < 1e-7 ? 0 : (t_along > cwt ? 1 : -1); cwt = t_along;
+        bass_bar(time, bar);
     }
-    void bass_bar(double time) {
+    /* the key scale's step from p (dir +1 / -1); not folded */
+    int scale_step(int p, int dir) const {
+        const int m = scale_midi(patch, scale_deg_of(p) + dir, 0, -9999, 9999);
+        return (m - p) * dir > 0 ? m : p + dir;
+    }
+    /* composition 4, the walking bass: this bar's notes, one each `wrate` sixteenths. From the chord's root, step-wise through its
+       tones and the key's scale (seeded, comp::rand01); the last `before` beats (at most 3 notes) approach the NEXT chord's root -
+       the one the walker meets next (its direction at the bar line; still: the following chord of the progression; none left
+       that way: this chord) - by half steps, scale steps or its fifth. All inside the bass register, and a pitch never a
+       third time running. Bass notes are not a relations' voice (relations name voices 0..2), so no relation sees them. */
+    void plan_walk(long long bar) {
+        const int lo = patch.key - 24, hi = patch.key - 5, n = patch.nprog, wr = std::max(1, (int)cbass.wrate);
+        const int N = (16 + wr - 1) / wr, c = H.chord >= 0 ? H.chord : chord_index(t_along);
+        const int nc = cdir > 0 ? std::min(n - 1, c + 1) : cdir < 0 ? std::max(0, c - 1) : (c + 1) % n;
+        const int A = std::max(0, std::min(std::min(3, N - 1), (16 - (16 - 4 * (int)cbass.before) + wr - 1) / wr));
+        const uint32_t sd = patch.comp.seed ^ 0xBA55; int rn = 0;
+        for (int &x : wk_at) x = -1;
+        int tones[8]; const int nt = chord_tones(c, tones);
+        int prev = H.bass; bool have = H.have_bass; int j = 0;
+        auto put = [&](int m) {
+            if (m == wk_l1 && m == wk_l2) { const int u = scale_step(m, m + 2 <= hi ? 1 : -1); m = u; }
+            wk_at[j * wr] = m; j++; wk_l2 = wk_l1; wk_l1 = m; prev = m; have = true;
+        };
+        const int rootc = chord_root(c), rootn = chord_root(nc);
+        int rm[1] = { rootc }; int pl[16], pn = 0; pl[pn++] = lead_to(have, prev, rm, 1, lo, hi);
+        for (int cur = pl[0]; pn < N - A;) {
+            int d = comp::rand01(sd, bar, 3, rn++) < 0.5 ? 1 : -1;
+            if ((d > 0 && cur + 2 > hi) || (d < 0 && cur - 2 < lo)) d = -d;
+            int m = cur + d;
+            if (comp::rand01(sd, bar, 3, rn++) < 0.5) { for (int s = 1; s <= 7; s++) { bool ct = false; for (int k = 0; k < nt; k++) ct = ct || pc(cur + d * s) == pc(tones[k]); if (ct) { m = cur + d * s; break; } } }
+            else m = scale_step(cur, d);
+            if (m < lo || m > hi) m = scale_step(cur, -d);
+            pl[pn++] = cur = m;
+        }
+        int ap[3], na = 0;
+        if (A) {
+            int rn1[1] = { rootn }; const int T = lead_to(true, pl[pn - 1], rn1, 1, lo, hi);
+            int s = pl[pn - 1] >= T ? 1 : -1;
+            if (cbass.approach == comp::AP_FIFTH) {
+                const int f1 = T + 7 <= hi ? T + 7 : T - 5, f2 = T - 5 >= lo ? T - 5 : T + 7;
+                const int f = std::abs(f1 - pl[pn - 1]) <= std::abs(f2 - pl[pn - 1]) ? f1 : f2;
+                for (int a = A - 1; a >= 0; a--) ap[na++] = (A - 1 - a) % 2 ? T : f;   /* ... fifth, root, fifth: ends on the fifth, the root follows at the bar line */
+                if (A % 2 == 0) for (int a = 0; a < A; a++) ap[a] = (A - 1 - a) % 2 ? T : f;
+            } else {
+                auto run = [&](int dir) { int q = T; for (int a = A - 1; a >= 0; a--) { q = cbass.approach == comp::AP_SCALE ? scale_step(q, dir) : q + dir; ap[a] = q; } na = A; };
+                run(s); if (ap[0] < lo || ap[0] > hi) run(-s);
+            }
+            /* the last walked note must not be the approach's first (that, and the next root, would make a run of three) */
+            if (pl[pn - 1] == ap[0] && pn > 1) { const int u = scale_step(pl[pn - 1], pl[pn - 1] + 2 <= hi ? 1 : -1); if (u >= lo && u <= hi) pl[pn - 1] = u; }
+        }
+        for (int i = 0; i < pn; i++) put(pl[i]);
+        for (int i = 0; i < na; i++) put(ap[i]);
+        H.bass = prev; H.have_bass = true;
+    }
+    void bass_bar(double time, long long bar = 0) {
+        if (cbass.mode == comp::BASS_WALK) {
+            if (H.held && bass.sy()) bass.sy()->release(time);      /* a held root from before lets go at the bar line, as off does */
+            for (auto &h : heard[0]) if (h.held && h.until > time) h.until = time;
+            H.held = false; plan_walk(bar); return;
+        }
+        for (int &x : wk_at) x = -1;
         if (cbass.mode == comp::BASS_OFF) {
             if (H.held && bass.sy()) bass.sy()->release(time);
             for (auto &h : heard[0]) if (h.held && h.until > time) h.until = time;   /* final review M8: the readout lets it go too */
@@ -1818,6 +1881,9 @@ struct Piece : Device {
         if (!patch.comp.on || !comp_live || H.ntones <= 0) return;
         const long long k = ticks - 1, bar = k / 16;
         ck = k; hn = 0; mn = 0; ctime = time;
+        if (cbass.mode == comp::BASS_WALK && wk_at[k % 16] >= 0) {      /* the walking bass: a plain bass note, legato to its step */
+            const int m = wk_at[k % 16]; note(0, bass.sy(), note_hz(m), std::max(0.05, 0.9 * cbass.wrate * 60.0 / patch.tempo / 4), time, 0.5);
+        }
         { uint64_t rec[8]; int nr = 0;   /* the zones entered in the last PHRASE_BARS: a call with trigger "enter" answers on them though the walker has left */
           for (int i = 0; i < nzent; i++) if (bar >= zent[i].bar && bar - zent[i].bar < comp::PHRASE_BARS) rec[nr++] = zent[i].id;
           nract = comp::relations_in_force(patch.comp, H.chord, zin, nzin, ract, rec, nr); }
@@ -2420,7 +2486,7 @@ struct Piece : Device {
         patch = routes[near];
         apply_patch(now);
         H.idx = -1; H.chord = -1; H.ntones = -1;
-        sector = -1; comp_live = false; for (auto &x : sp) x = Span(); for (int &x : hcnt) x = 0; for (int q = 0; q < comp::NVOICE; q++) { rhead[q] = 0; for (auto &n : ring[q]) n.tick = -1; } nzent = 0; chg = 0; for (int &x : ufirst) x = -1; cad_chord = false; cad_oth = comp::OTH_HOLD; mel_step = -2; cchord = -2; mvar_on = false; nhist = 0; for (int q = 0; q < comp::NVOICE; q++) { cped_root[q] = -1; cpulse[q] = 0; calt[q] = 0; ost_n0[q] = 0; cho_n[q] = 0; pt_next[q] = -1; pt_n[q] = 0; tcnt[q] = 0; }
+        sector = -1; comp_live = false; for (auto &x : sp) x = Span(); for (int &x : hcnt) x = 0; for (int q = 0; q < comp::NVOICE; q++) { rhead[q] = 0; for (auto &n : ring[q]) n.tick = -1; } nzent = 0; chg = 0; for (int &x : ufirst) x = -1; cad_chord = false; cad_oth = comp::OTH_HOLD; wk_l1 = wk_l2 = -1; cwt = -1; cdir = 0; mel_step = -2; cchord = -2; mvar_on = false; nhist = 0; for (int q = 0; q < comp::NVOICE; q++) { cped_root[q] = -1; cpulse[q] = 0; calt[q] = 0; ost_n0[q] = 0; cho_n[q] = 0; pt_next[q] = -1; pt_n[q] = 0; tcnt[q] = 0; }
         synth_to(walk_level(route_dist), now);
     }
     void walk(int r, double t, double dist, double now) {

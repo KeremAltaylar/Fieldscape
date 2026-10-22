@@ -272,6 +272,52 @@ static void test_bass_off_heard() {
 
 /* final review I2, core against the page: for each style chosen in the dock's model (web/compose-model.js, run here in node),
    at the route and at a chord, the pattern or tones its inspector shows are what comp_of + resolve play from the JSON it writes */
+/* composition 4, task 4: the walking bass */
+static void test_walk() {
+    for (int ap = 0; ap < 3; ap++) {
+        const char *name[3] = { "chromatic", "scale", "fifth" };
+        char c[256]; std::snprintf(c, sizeof c, R"(,"comp":{"bass":{"mode":"walk","approach":"%s","before":1,"wrate":"4n"}})", name[ap]);
+        const Log l = render(c, 20);
+        std::vector<std::vector<int>> bars; for (int b = 0; b < 8; b++) bars.push_back(bar_notes(l, 0, b));
+        int changes = 0, bad = 0, out = 0, run = 1, maxrun = 1;
+        for (int b = 0; b < 8; b++) assert(bars[b].size() == 4);                         /* a note every quarter: never stops */
+        for (int b = 0; b < 8; b++) for (int m : bars[b]) out += m < 50 - 24 || m > 50 - 5;
+        for (int b = 1; b < 8; b++) {
+            const int last = bars[b - 1][3], first = bars[b][0];
+            if (first % 12 == bars[b - 1][0] % 12) continue;                             /* same chord: no change */
+            changes++;
+            const int d = std::abs(last - first), pcd = ((last - first) % 12 + 12) % 12;
+            if (ap == 0 ? d != 1 : ap == 1 ? (d < 1 || d > 2) : pcd != 7) bad++;
+        }
+        std::vector<int> all; for (auto &v : bars) for (int m : v) all.push_back(m);
+        for (size_t i = 1; i < all.size(); i++) { run = all[i] == all[i - 1] ? run + 1 : 1; maxrun = std::max(maxrun, run); }
+        std::printf("C walk %s: 8 bars x 4 notes, %d chord changes, %d approaches off, %d notes outside the register, longest run %d\n", name[ap], changes, bad, out, maxrun);
+        assert(changes >= 1 && bad == 0 && out == 0 && maxrun <= 2);
+    }
+    /* standing still: next is the following chord; walks round the root, never a third of one pitch, never stops */
+    {   char buf[8192]; std::snprintf(buf, sizeof buf, ROUTE, R"(,"comp":{"bass":{"mode":"walk","wrate":"4n"}})");
+        unsigned sd = 11; Log l; fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128); fs_piece_test_hooks(pc, draw, &sd, lg, &l);
+        const int r = fs_piece_add_route(pc, buf);
+        for (int b = 0; b < (int)(20 * 48000 / 128); b++) { fs_piece_walk(pc, r, 0.3, 0); fs_process(pc, 128); }
+        fs_destroy(pc);
+        std::vector<int> all; for (int b = 0; b < 8; b++) { auto v = bar_notes(l, 0, b); assert(v.size() == 4); for (int m : v) { all.push_back(m); assert(m >= 26 && m <= 45); } }
+        int run = 1, mx = 1; for (size_t i = 1; i < all.size(); i++) { run = all[i] == all[i - 1] ? run + 1 : 1; mx = std::max(mx, run); }
+        int first_root = 0; for (int b = 0; b < 8; b++) first_root += bar_notes(l, 0, b)[0] % 12 == 55 % 12;
+        std::printf("C walk still: 32 notes, longest run %d, %d bars start on the chord's root (G)\n", mx, first_root);
+        assert(mx <= 2 && first_root == 8);
+        (void)sd;
+    }
+    /* a chord's walk, then hold: from the bar line the bass is struck and held, no walk note after it and no walk note hanging */
+    {   const Log l = render(R"(,"comp":{"bass":{"mode":"walk"},"over":{"chord":{"1":{"bass":{"mode":"hold"}}}}})", 20);
+        int walk_after = 0, held = 0, hang = 0;
+        for (size_t i = 0; i < l.f.size(); i++) if (l.role[i] == 0) {
+            if (l.d[i] < 0) { held++; if (l.t[i] < 5) hang++; }
+            else if (l.t[i] > 7.5 && l.t[i] < 12.5) walk_after++;
+        }
+        std::printf("C walk to hold: %d held strikes (none before the change: %d), %d walk notes in the held bars\n", held, hang, walk_after);
+        assert(held >= 1 && hang == 0 && walk_after == 0);
+    }
+}
 static void test_model_defaults() {
 #ifdef __EMSCRIPTEN__
     const char *out = emscripten_run_script_string(R"JS((function () {
@@ -1628,6 +1674,7 @@ static void test_pointillist() {
 }
 
 int main(int argc, char **argv) {
+    if (argc > 1 && !std::strcmp(argv[1], "walk")) { test_walk(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "tp")) { test_tintinnabuli(); test_pointillist(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "final")) { test_empty_motif(); test_melody_gain_chain(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "room")) { test_room(); return 0; }
@@ -1643,6 +1690,7 @@ int main(int argc, char **argv) {
     test_chorale();
     test_tintinnabuli();
     test_pointillist();
+    test_walk();
     test_develop();
     test_canon();
     test_canon_no_feedback();
