@@ -742,6 +742,22 @@ try {
     await reopen4(`function (c) { c.sect.style = '${st}'; c.sect.glide = 120; }`); await vtab("voice 2"); await ev("document.querySelector('#cd-insp .cd-orn[aria-expanded=\"false\"]') && document.querySelector('#cd-insp .cd-orn').click(), 0"); await sleep(200);
     check(`${st}: the hint says glides do not apply to chord styles`, /glides don't apply to chord styles/.test(await hint()), await hint());
   }
+  /* final review 6 and 3: where the core ignores ornaments, glides and micro-tuning the dock says so and draws no ~; a chorale's voices row says what its synth plays at once */
+  const hints = () => ev("[].map.call(document.querySelectorAll('#cd-insp .cd-rolehint'), function (p) { return p.textContent; }).join('|')");
+  const unfold = async () => { await ev("document.querySelector('#cd-insp .cd-orn[aria-expanded=\"false\"]') && document.querySelector('#cd-insp .cd-orn').click(), 0"); await sleep(200); };
+  const marks = () => ev("document.querySelectorAll('#cd-lanes .cd-lane[data-voice=\"sect\"] .cd-cell.orn').length");
+  for (const st of ["strum", "swells", "chorale"]) {
+    await reopen4(`function (c) { c.sect.style = '${st}'; c.sect.orn = 'trill'; c.sect.orn_every = 1; c.sect.glide = 120; }`); await vtab("voice 2"); await unfold();
+    check(`${st}: the ornament row says ornaments do not apply to chord styles, and no ~ is drawn`, /ornaments don't apply to chord styles/.test(await hints()) && (await marks()) === 0, [await hints(), await marks()]);
+    await reopen4(`function (c) { c.sect.style = '${st}'; c.sect.orn = 'trill'; c.sect.micro = [0, 25, 0, 0, 0]; }`); await vtab("voice 2");
+    check(`${st}: a micro-tuning still draws the ~ (it applies)`, (await marks()) > 0, await marks());
+  }
+  await reopen4("function (c) { c.sect.style = 'tintinnabuli'; c.sect.orn = 'trill'; c.sect.orn_every = 1; c.sect.glide = 120; c.sect.micro = [0, 25, 0, 0, 0]; }"); await vtab("voice 2"); await unfold();
+  check("tintinnabuli: the ornament, glide and micro rows each say its answers get none, and no ~", /play no ornaments/.test(await hints()) && /don't glide/.test(await hints()) && /micro-tuned/.test(await hints()) && (await marks()) === 0, [await hints(), await marks()]);
+  await reopen4("function (c) { c.sect.style = 'chorale'; }"); await vtab("voice 2");
+  check("a chorale on fm: the voices row says it plays 5 at once", /fm plays 5 at once/.test(await hints()), await hints());
+  await ev(`__fa.patchEdit(${R}, function (p) { p.sect = Object.assign({}, p.sect, { synth: 'metal' }); }), 0`); await reopen4("function (c) { c.sect.style = 'chorale'; c.sect.voices = 5; }"); await vtab("voice 2");
+  check("on metal: it says 3 at once, and that the extra voices are left out", /metal plays 3 at once · the extra voices are left out/.test(await hints()), await hints());
   await ev(`__fa.patchEdit(${R}, function (p) { var v = JSON.parse(window.__v4); if (v[0]) { p.voice = v[0]; } else { delete p.voice; } if (v[1]) { p.sect = v[1]; } else { delete p.sect; } }), 0`);
   await ev(`FsComposeDock.close(), 0`); await sleep(300);
   await ev(`__fa.patchEdit(${R}, function (p) { var c = JSON.parse(window.__c4); if (c === null) { delete p.comp; } else { p.comp = c; } }), 0`); await sleep(300);

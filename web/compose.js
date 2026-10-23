@@ -300,14 +300,17 @@
     if (c.role === "melody") { return "Melody · motif"; }
     return M.label(c.style) + (c.style === "pedal" && c.pedal && c.pedal !== "root" ? " · " + (c.pedal === "fifth" ? "5th" : "fixed") : "");
   }
-  function ornSet(o) { return !!o && ((!!o.orn && o.orn !== "none") || o.glide > 0 || (o.micro || []).some(Boolean)); }
+  /* where the core ignores them (Piece::ornament, note): strum, swells and chorale play no ornament or glide, tintinnabuli's answers no micro either */
+  var CHORDY = ["strum", "swells", "chorale"];
+  function noOrn(style) { return CHORDY.indexOf(style) >= 0 || style === "tintinnabuli"; }
+  function ornSet(o, style) { return !!o && (!noOrn(style) && ((!!o.orn && o.orn !== "none") || o.glide > 0) || style !== "tintinnabuli" && (o.micro || []).some(Boolean)); }
   /* a voice's ornament settings over chord i, layer on layer as the cell takes its style: route < section < chord < zone */
-  function ornAt(v, i, at) {
+  function ornAt(v, i, at, style) {
     var o = Object.assign({}, comp[v]), take = function (x) { if (x && x[v]) { M.ORNAMENTS.forEach(function (f) { if (x[v][f.k] !== undefined) { o[f.k] = x[v][f.k]; } }); } };
     at.filter(function (b) { return b.kind === "section"; }).forEach(function (b) { take(comp.over.section[String(b.id)]); });
     take(comp.over.chord[String(i)]);
     at.filter(function (b) { return b.kind === "zone"; }).forEach(function (b) { take(comp.over.zone[b.id]); });
-    return ornSet(o);
+    return ornSet(o, style);
   }
   function lanes(n, bs) {
     var w = el("div", "cd-lanes"); w.id = "cd-lanes";
@@ -339,7 +342,7 @@
         var dr = c.rel && v !== "bass" ? drivenBy(i, vi, cells[i].at) : -1;   /* composition 3: a relation drives this voice here */
         if (dr >= 0 && st !== "off" && ((ri[dr] || {}).free || []).indexOf(i) < 0) { b.classList.add("relx"); b.classList.remove("cont"); b.style.setProperty("--rc", relCol(dr)); word = c.rel; long += " · " + c.rel;
           if (sel.kind === "rel" && sel.i === dr) { b.classList.add("relsel"); } }
-        var orn = v !== "bass" && st !== "off" && ornAt(v, i, cells[i].at);   /* composition 4: an ornament, a glide or a micro-tuning here: a small ~ */
+        var orn = v !== "bass" && st !== "off" && ornAt(v, i, cells[i].at, st);   /* composition 4: an ornament, a glide or a micro-tuning here: a small ~ */
         if (orn) { b.classList.add("orn"); long += " · ornaments"; }
         b.innerHTML = "<span></span>" + svg(v === "bass" ? "100 10" : "100 22", GLYPH[st] || GLYPH.free); b.firstChild.textContent = word;
         b.type = "button"; b.dataset.i = i; b.dataset.fk = "cell:" + v + ":" + i;
@@ -629,7 +632,7 @@
     fields.filter(function (f) { return f.k === "refit"; }).forEach(function (f) { fieldRow(vr, f, e);
       vr.appendChild(el("p", "cd-isub wrap cd-rolehint", "It repeats every bar on purpose; “keep its shape” moves the whole cell with the root.")); });
     w.appendChild(vr);
-    if (voice !== "bass") { ornSection(w, e, style); }
+    if (voice !== "bass") { ornSection(w, e, style, mel); }
     if (mel && sel.kind === "chord") {   /* what it plays here */
       w.appendChild(el("p", "cd-ieb", "plays here"));
       var st = M.chainAt(comp, sel.i), pl = plays(sel.i);
@@ -677,6 +680,10 @@
     if (f.kind === "micro") { microBlock(into, f, v, src); return; }
     if (f.k === "voicing") { voicingBlock(into, f, v, src); return; }
     var r = row(f, v, src); if (f.title) { r.title = f.title; } into.appendChild(r);
+    if (f.k === "voices" && !isSamp(voice)) {   /* a chorale asks no more voices than its synth plays at once (the role's own and its pool) */
+      var sy = voiceSynth(voice) || "fm", cap = sy === "metal" ? 3 : 5;
+      into.appendChild(el("p", "cd-isub wrap cd-rolehint", sy + " plays " + cap + " at once" + (+v > cap ? " · the extra voices are left out" : "")));
+    }
     if (f.k === "strict") {
       var p = Math.round(v * 100);
       into.appendChild(el("p", "cd-isub", p + " %: " + (p >= 50 ? "nearest-note voice-leading" : p > 0 ? "stays near root position" : "root position every time")));
@@ -760,7 +767,9 @@
     into.appendChild(g);
   }
   /* ornaments & glides (a collapsible section: closed unless something is set, its heading's dot lit when something is) */
-  function ornSection(w, e, style) {
+  function voiceSynth(vk) { return (((ctx.route.properties || {}).patch || {})[vk] || {}).synth; }   /* the route's synth for a voice */
+  function isSamp(vk) { var syn = voiceSynth(vk); return typeof syn === "string" && syn.indexOf("s-") === 0; }   /* the page's own test (lab-roles isSampler) */
+  function ornSection(w, e, style, mel) {
     var v = e.values, set = ornSet(v), open = ornOpen === null ? set : ornOpen;
     var fs = {}; M.ORNAMENTS.forEach(function (f) { fs[f.k] = f; });
     var sm = el("button", "cd-foldsum"); sm.type = "button"; sm.setAttribute("aria-expanded", "false"); sm.dataset.fk = "foldsum";
@@ -771,14 +780,18 @@
     hd.addEventListener("click", function () { ornOpen = !open; render(); }); w.appendChild(hd);
     if (!open) { return; }
     var box = el("div", "cd-fx"), g = function (k) { fieldRow(box, fs[k], e); };
+    var ign = mel ? null : style, tint = ign === "tintinnabuli", hint = function (t) { box.appendChild(el("p", "cd-isub wrap cd-rolehint", t)); };
     g("orn");
-    if (v.orn !== "none") { g("orn_every"); if (v.orn_every === 0) { g("orn_prob"); } g("orn_speed"); }
+    if (v.orn !== "none") { g("orn_every"); if (v.orn_every === 0) { g("orn_prob"); } g("orn_speed");
+      if (tint) { hint("tintinnabuli answers play no ornaments"); } else if (CHORDY.indexOf(ign) >= 0) { hint("ornaments don't apply to chord styles"); } }
     g("glide");
     if (v.glide > 0) { g("glide_iv");
-      var syn = (((ctx.route.properties || {}).patch || {})[voice] || {}).synth, sam = typeof syn === "string" && syn.indexOf("s-") === 0;   /* the page's own test (lab-roles isSampler) */
-      var why = sam ? "a sampler voice changes pitch without gliding" : ["strum", "swells", "chorale"].indexOf(style) >= 0 ? "glides don't apply to chord styles" : "";
-      if (why) { box.appendChild(el("p", "cd-isub wrap cd-rolehint", why)); } }
-    g("micro"); w.appendChild(box);
+      var sam = isSamp(voice);
+      var why = tint ? "tintinnabuli answers don't glide" : sam ? "a sampler voice changes pitch without gliding" : CHORDY.indexOf(ign) >= 0 ? "glides don't apply to chord styles" : "";
+      if (why) { hint(why); } }
+    g("micro");
+    if (tint && (v.micro || []).some(Boolean)) { hint("tintinnabuli answers aren't micro-tuned"); }
+    w.appendChild(box);
   }
   function growDock() { grown = !grown; document.body.classList.toggle("composing-grown", grown); resize(); render(); }
   /* the sentence's inspector: the selected chain step (operation, by, from, to; a cadence's type, the others, its strength) and
