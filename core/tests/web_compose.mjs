@@ -26,7 +26,7 @@ try {
   const key = async (k, code, mods = 0) => { await s.send("Input.dispatchKeyEvent", { type: "keyDown", key: k, code, windowsVirtualKeyCode: VK[k], modifiers: mods, text: k === " " ? " " : k === "Enter" ? "\r" : undefined });
     await s.send("Input.dispatchKeyEvent", { type: "keyUp", key: k, code, windowsVirtualKeyCode: VK[k], modifiers: mods }); await sleep(300); };
   const spillOf = () => ev(`(function(){ var out = [];
-    [["#compose-dock", "#compose-dock > *"], [".cd-main", ".cd-main > *, .cd-cell, .cd-chord"], ["#cd-insp", "#cd-insp > *, #cd-insp .cd-row2 > *"], [".cd-chips", ".cd-chips > *"], [".cd-ed", ".cd-ed *"]].forEach(function (k) {
+    [["#compose-dock", "#compose-dock > *"], [".cd-main", ".cd-main > *, .cd-cell, .cd-chord"], ["#cd-insp", "#cd-insp > *, #cd-insp .cd-row2 > *, #cd-insp .cd-micro *, #cd-insp .cd-vrow *"], [".cd-chips", ".cd-chips > *"], [".cd-ed", ".cd-ed *"]].forEach(function (k) {
       var c = document.querySelector(k[0]); if (!c) { if (k[0].indexOf(".cd-") !== 0 || k[0] === ".cd-main") { out.push(k[0] + " missing"); } return; } var r = c.getBoundingClientRect();
       [].forEach.call(document.querySelectorAll(k[1]), function (x) { var q = x.getBoundingClientRect();
         if (q.width && (q.right > r.right + 1 || q.bottom > r.bottom + 1 || q.left < r.left - 1)) out.push(k[0] + " > " + x.className); }); });
@@ -537,6 +537,182 @@ try {
   await ev(`__fa.patchEdit(${R}, function (p) { p.comp = window.__compSave; window.__compSave = null; }), 0`); await sleep(300);
   await ev(`FsComposeDock.close(), 0`); await sleep(300);
   await s.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false }); await sleep(600);
+  await ev(`fsListen.select(${R}), __fa.openPatchPanel(), document.getElementById('pp-compose').click(), 0`); await sleep(800);
+  /* composition 4 (task-9-brief.md): the four new styles' editors, ornaments & glides with micro-tuning, the walking bass */
+  await ev(`__fa.patchEdit(${R}, function (p) { window.__c4 = JSON.stringify(p.comp === undefined ? null : p.comp); }), 0`);
+  const reopen4 = async (edit) => { await ev(`FsComposeDock.close(), 0`); await sleep(250);
+    await ev(`__fa.patchEdit(${R}, function (p) { p.comp = FsCompose.defaults(); (${edit})(p.comp); }), 0`); await sleep(250);
+    await ev(`fsListen.select(${R}), __fa.openPatchPanel(), document.getElementById('pp-compose').click(), 0`); await sleep(700); };
+  const vtab = async (t) => { await ev(`${btn("#cd-insp .cd-vtabs button", t)}.click(), 0`); await sleep(250); };
+  const segBtn = async (k, v) => { await ev(`document.querySelector('#cd-insp [data-k="${k}"] button[data-v="${v}"]').click(), 0`); await sleep(300); };
+  const nth = async (k, n, v) => { await ev(`(function(){ var m = document.querySelectorAll('#cd-insp [data-k="${k}"] input')[${n}]; m.value = ${JSON.stringify(String(v))}; m.dispatchEvent(new Event('change', { bubbles: true })); })(), 0`); await sleep(300); };
+  const hasRow = (k) => ev(`!!document.querySelector('#cd-insp [data-k="${k}"]')`);
+  const snaps4 = []; const snap4 = async () => snaps4.push(await ev(`JSON.stringify(__fa.routePatch(${R}).comp)`));
+  const read4 = () => ev(`(function(){ var v = function (k, i) { var e = document.querySelectorAll('#cd-insp [data-k="' + k + '"] input, #cd-insp [data-k="' + k + '"] select')[i || 0]; return e ? e.value : null; },
+    p = function (k) { var b = document.querySelector('#cd-insp [data-k="' + k + '"] button[aria-pressed="true"]'); return b ? b.dataset.v : null; };
+    return { voices: v('voices'), restrike: v('restrike'), strict: v('strict'), voicing: p('voicing'), answers: v('answers'), tmode: p('tmode'), s0: v('silence', 0), s1: v('silence', 1), plen: v('plen'), refit: p('refit'), on: document.querySelectorAll('#cd-insp .cd-gc.on').length }; })()`);
+  const word4 = (v, i = 0) => ev(`document.querySelector('#cd-lanes .cd-lane[data-voice="${v}"] .cd-cell[data-i="${i}"] span').textContent`);
+  await reopen4("function (c) { }"); await snap4();
+  const glyphs = {}, defs = {};
+  for (const [id, word] of [["ostinato", "ostin."], ["chorale", "chor."], ["tintinnabuli", "tinti."], ["pointillist", "point."]]) {
+    await pick("style", id); await sleep(350); await snap4();
+    const c4 = await C(); glyphs[id] = await ev(`document.querySelector('#cd-lanes .cd-lane[data-voice="voice"] .cd-cell[data-i="0"] svg').innerHTML`); defs[id] = await read4();
+    check(`choosing ${id} writes it, and its lane cell reads ${word}`, c4.voice.style === id && (await word4("voice")) === word, [c4.voice, await word4("voice")]);
+  }
+  check("each new style has its own glyph in the lane", new Set(Object.values(glyphs)).size === 4 && Object.values(glyphs).every((g) => g.length > 40), Object.keys(glyphs));
+  const d = (id) => defs[id];
+  check("ostinato: its default cell is the core's 0 1 2 0 1 2 (written), refit 'by chord step', the grid shows it", d("ostinato").refit === "degree" && d("ostinato").on === 16, d("ostinato"));
+  check("chorale: voicing close, 4 voices, re-strike 1 bar, leading 100 %", d("chorale").voicing === "close" && d("chorale").voices === "4" && d("chorale").restrike === "1n" && +d("chorale").strict === 1, d("chorale"));
+  check("tintinnabuli: answers voice 1, the tone below", d("tintinnabuli").answers === "0" && d("tintinnabuli").tmode === "below", d("tintinnabuli"));
+  check("pointillist: silence 0.25 - 1.5 s, note 0.15 s", +d("pointillist").s0 === 0.25 && +d("pointillist").s1 === 1.5 && +d("pointillist").plen === 0.15, d("pointillist"));
+  /* ostinato */
+  await pick("style", "ostinato"); await sleep(350); await snap4();
+  check("choosing ostinato writes its grid default", JSON.stringify((await C()).voice.grid) === JSON.stringify(await ev("FsCompose.FIELDS.ostinato[0].def")), (await C()).voice.grid);
+  check("ostinato: the refit switch reads 'by chord step' | 'keep its shape'", (await ev("[].map.call(document.querySelectorAll('#cd-insp [data-k=\"refit\"] button'), function (b) { return b.textContent; }).join('|')")) === "by chord step|keep its shape", null);
+  await segBtn("refit", "transpose"); await snap4();
+  check("refit writes voice.refit", (await C()).voice.refit === "transpose", (await C()).voice);
+  /* chorale */
+  await pick("style", "chorale"); await sleep(350); await snap4();
+  check("chorale's voicing picker: three staves, close lit; its rate row is its re-strike", (await ev("document.querySelectorAll('#cd-insp [data-k=\"voicing\"] button svg').length")) === 3 && !(await hasRow("rate")) && await hasRow("restrike"), null);
+  await segBtn("voicing", "open"); await snap4();
+  check("voicing writes voice.voicing (open) and lights it", (await C()).voice.voicing === "open" && (await read4()).voicing === "open", (await C()).voice);
+  await ev("document.querySelector('#cd-insp [data-k=\"voicing\"] button[data-v=\"drop2\"]').focus(), 0");
+  const pp0 = await ev("window.__pp"); await key(" ", "Space"); await snap4();
+  check("Space on a voicing button presses it (drop2), not the sound", (await C()).voice.voicing === "drop2" && (await ev("window.__pp")) === pp0, [(await C()).voice.voicing, await ev("window.__pp")]);
+  check("a voicing press keeps focus on the picker", await ev("!!document.activeElement.closest('[data-fk=\"row:voicing\"]')"), await active());
+  await setIn("voices", 5); await sleep(300); await snap4();
+  await pick("restrike", "2n"); await sleep(300); await snap4();
+  await setIn("strict", 0.5); await sleep(300); await snap4();
+  c2 = await C();
+  check("voices, re-strike and leading write voices, restrike, strict", c2.voice.voices === 5 && c2.voice.restrike === "2n" && c2.voice.strict === 0.5, c2.voice);
+  check("the leading line explains itself (50 %)", await ev("[].some.call(document.querySelectorAll('#cd-insp .cd-isub'), function (p) { return /^50 %: /.test(p.textContent); })"), await insp());
+  /* tintinnabuli */
+  await pick("style", "tintinnabuli"); await sleep(350); await snap4();
+  await setIn("answers", 2); await sleep(300); await snap4();
+  await segBtn("tmode", "above"); await snap4();
+  c2 = await C();
+  check("answers and tone write answers, tmode", c2.voice.answers === 2 && c2.voice.tmode === "above", c2.voice);
+  check("tintinnabuli answering a Free voice says so (voice 3 plays Free)", await ev("[].some.call(document.querySelectorAll('#cd-insp .cd-isub'), function (p) { return /voice 3 plays Free/.test(p.textContent); })"), await insp());
+  /* pointillist: the two-handle silence range */
+  await pick("style", "pointillist"); await sleep(350); await snap4();
+  check("silence is a two-handle range (two inputs, 'shortest' and 'longest')", await ev("(function(){ var i = document.querySelectorAll('#cd-insp [data-k=\"silence\"] input'); return i.length === 2 && /shortest/.test(i[0].getAttribute('aria-label')) && /longest/.test(i[1].getAttribute('aria-label')); })()"), null);
+  await nth("silence", 0, 0.5); await snap4(); await nth("silence", 1, 2); await snap4();
+  check("silence writes [min, max]", JSON.stringify((await C()).voice.silence) === "[0.5,2]", (await C()).voice.silence);
+  await nth("silence", 0, 3); await snap4();
+  { const sl = (await C()).voice.silence || [1, 0]; check("the shortest cannot pass the longest", sl[0] <= sl[1], sl); }
+  await nth("silence", 0, 0.5); await snap4();
+  await ev("document.querySelectorAll('#cd-insp [data-k=\"silence\"] input')[0].focus(), 0"); await key("ArrowRight", "ArrowRight"); await snap4();
+  check("ArrowRight on the shortest handle: +0.05 s, focus kept on it", Math.abs(((await C()).voice.silence || [])[0] - 0.55) < 1e-9 && await ev("document.activeElement === document.querySelectorAll('#cd-insp [data-k=\"silence\"] input')[0]"), [(await C()).voice.silence, await active()]);
+  await ev("document.querySelectorAll('#cd-insp [data-k=\"silence\"] input')[1].focus(), 0"); await key("ArrowLeft", "ArrowLeft"); await snap4();
+  check("ArrowLeft on the longest handle: -0.05 s", Math.abs(((await C()).voice.silence || [])[1] - 1.95) < 1e-9, (await C()).voice.silence);
+  await setIn("plen", 0.3); await sleep(300); await snap4();
+  check("note length writes plen (0.3 s)", (await C()).voice.plen === 0.3 && !(await hasRow("rate")), (await C()).voice);
+  /* ornaments & glides */
+  const oh = () => ev(`(function(){ var h = document.querySelector('#cd-insp .cd-orn'); return h ? { open: h.getAttribute('aria-expanded'), dot: !!h.querySelector('.cd-odot'), rows: !!document.querySelector('#cd-insp [data-k="orn"]') } : null; })()`);
+  check("ornaments & glides: closed by default, nothing set, no dot, no rows", JSON.stringify(await oh()) === '{"open":"false","dot":false,"rows":false}', await oh());
+  const before17 = await ev(`JSON.stringify(__fa.routePatch(${R}).comp)`);
+  await ev("document.querySelector('#cd-insp .cd-orn').click(), 0"); await sleep(300);
+  check("its heading opens it (no edit is stored)", (await oh()).open === "true" && (await oh()).rows && before17 === (await ev(`JSON.stringify(__fa.routePatch(${R}).comp)`)), await oh());
+  check("opened with nothing set: ornament none, only the ornament row, glide, micro-tuning", (await ev("[].map.call(document.querySelectorAll('#cd-insp [data-k=\"orn\"] button'), function (b) { return b.textContent; }).join('|')")) === "none|grace|trill|mord.|slide" && !(await hasRow("orn_every")) && await hasRow("glide") && !(await hasRow("glide_iv")) && (await ev("document.querySelectorAll('#cd-insp [data-k=\"micro\"] input').length")) === 5, null);
+  await segBtn("orn", "trill"); await snap4();
+  check("ornament writes orn; every, speed appear; the heading's dot lights", (await C()).voice.orn === "trill" && await hasRow("orn_every") && await hasRow("orn_speed") && (await oh()).dot, [(await C()).voice, await oh()]);
+  await pick("orn_every", "3"); await sleep(300); await snap4();
+  check("every writes orn_every (3rd note), no chance row while it is set", (await C()).voice.orn_every === 3 && !(await hasRow("orn_prob")), (await C()).voice);
+  await pick("orn_every", "0"); await sleep(300); await snap4();
+  check("by chance: the chance row appears", (await C()).voice.orn_every === 0 && await hasRow("orn_prob") && /by chance/.test(await ev("document.querySelector('#cd-insp [data-k=\"orn_every\"] select').selectedOptions[0].textContent")), (await C()).voice);
+  await setIn("orn_prob", 0.5); await sleep(300); await snap4();
+  await setIn("orn_speed", 1.5); await sleep(300); await snap4();
+  await setIn("glide", 120); await sleep(300); await snap4();
+  c2 = await C();
+  check("chance, speed and glide write orn_prob, orn_speed, glide", c2.voice.orn_prob === 0.5 && c2.voice.orn_speed === 1.5 && c2.voice.glide === 120, c2.voice);
+  check("speed reads 1.5×, glide 120 ms", (await ev("document.querySelector('#cd-insp [data-k=\"orn_speed\"] .cd-v').textContent")) === "1.5×" && (await ev("document.querySelector('#cd-insp [data-k=\"glide\"] .cd-v').textContent")) === "120 ms", null);
+  check("a glide brings its 'glides' switch: all moves | steps | leaps", (await ev("[].map.call(document.querySelectorAll('#cd-insp [data-k=\"glide_iv\"] button'), function (b) { return b.textContent; }).join('|')")) === "all moves|steps|leaps", null);
+  await segBtn("glide_iv", "leaps"); await snap4();
+  check("glides writes glide_iv", (await C()).voice.glide_iv === "leaps", (await C()).voice);
+  await nth("micro", 1, 25); await snap4(); await nth("micro", 3, -14); await snap4();
+  check("the micro-tuning dials write micro: the 3rd +25, the 7th -14 (cents)", JSON.stringify((await C()).voice.micro) === "[0,25,0,-14,0]", (await C()).voice.micro);
+  check("a set dial is lit and says its cents", await ev("(function(){ var k = document.querySelectorAll('#cd-insp [data-k=\"micro\"] .cd-mk'); return k.length === 5 && k[1].classList.contains('set') && /\\+25/.test(k[1].textContent) && /−14/.test(k[3].textContent) && !k[0].classList.contains('set'); })()"), await ev("document.querySelector('#cd-insp [data-k=\"micro\"]').textContent"));
+  await ev("document.querySelectorAll('#cd-insp [data-k=\"micro\"] input')[2].focus(), 0"); await key("ArrowRight", "ArrowRight"); await snap4();
+  check("ArrowRight on a focused dial: +1 cent, focus kept", ((await C()).voice.micro || [])[2] === 1 && await ev("document.activeElement === document.querySelectorAll('#cd-insp [data-k=\"micro\"] input')[2]"), [(await C()).voice.micro, await active()]);
+  await key("ArrowLeft", "ArrowLeft"); await snap4(); await key("ArrowLeft", "ArrowLeft"); await snap4();
+  check("ArrowLeft twice on it: -1", ((await C()).voice.micro || [])[2] === -1, (await C()).voice.micro);
+  { /* a dial dragged up by the mouse: 1 cent a pixel, stored on release (one edit) */
+    const pt = await ev("(function(){ var r = document.querySelectorAll('#cd-insp [data-k=\"micro\"] .cd-mdial')[4].getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()");
+    const h0 = snaps4.length;
+    await mouse("mousePressed", pt[0], pt[1]); for (let k = 1; k <= 4; k++) { await mouse("mouseMoved", pt[0], pt[1] - 5 * k); await sleep(30); } await mouse("mouseReleased", pt[0], pt[1] - 20); await sleep(400); await snap4();
+    check("dragging a dial up 20 px: +20 cents on it, one edit", ((await C()).voice.micro || [])[4] === 20 && snaps4.length === h0 + 1, (await C()).voice.micro);
+  }
+  await ev("document.querySelectorAll('#cd-insp [data-k=\"micro\"] .cd-mdial')[4].dispatchEvent(new MouseEvent('dblclick', { bubbles: true })), 0"); await sleep(300); await snap4();
+  check("double-clicking a dial sets it back to 0", ((await C()).voice.micro || [])[4] === 0, (await C()).voice.micro);
+  check("ornamented cells carry a ~ mark (voice 1's), the others none", await ev("(function(){ var c = document.querySelectorAll('#cd-lanes .cd-lane[data-voice=\"voice\"] .cd-cell'); var o = document.querySelectorAll('#cd-lanes .cd-lane[data-voice=\"sect\"] .cd-cell.orn').length; return c.length === 16 && [].every.call(c, function (x) { return x.classList.contains('orn') && getComputedStyle(x, '::before').content === '\"~\"'; }) && o === 0; })()"), null);
+  const osp = await spillOf();
+  check("ornaments open on a pointillist voice: one screen at 1440x900", osp.length === 0, osp.slice(0, 5));
+  /* the walking bass */
+  await vtab("bass"); await pick("mode", "walk"); await sleep(300); await snap4();
+  check("bass walks: mode walk, rows approach, beats and walk rate (no pedal note)", (await C()).bass.mode === "walk" && await hasRow("approach") && await hasRow("before") && await hasRow("wrate") && !(await hasRow("note")), (await C()).bass);
+  check("the bass lane reads walk and says so", (await word4("bass")) === "walk" && /walks/.test(await ev("document.querySelector('#cd-lanes .cd-lane.bass .cd-name small').textContent")), await word4("bass"));
+  check("to next: half steps | scale | by the 5th", (await ev("[].map.call(document.querySelectorAll('#cd-insp [data-k=\"approach\"] button'), function (b) { return b.textContent; }).join('|')")) === "half steps|scale|by the 5th", null);
+  await segBtn("approach", "fifth"); await snap4(); await setIn("before", 2); await sleep(300); await snap4(); await pick("wrate", "8n"); await sleep(300); await snap4();
+  c2 = await C();
+  check("approach, beats and walk rate write approach, before, wrate", c2.bass.approach === "fifth" && c2.bass.before === 2 && c2.bass.wrate === "8n", c2.bass);
+  const bsp = await spillOf();
+  check("the walking bass inspector: one screen", bsp.length === 0, bsp.slice(0, 5));
+  /* one undo step each: back through every edit above */
+  await ev("document.body.focus(), 0");
+  let u4 = true, u4at = -1;
+  for (let i = snaps4.length - 2; i >= 0; i--) {
+    await ev("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true })), 0"); await sleep(150);
+    const now4 = await ev(`JSON.stringify(__fa.routePatch(${R}).comp)`);
+    if (now4 !== snaps4[i]) { u4 = false; const A = JSON.parse(now4), B = JSON.parse(snaps4[i]); u4at = [i, ["voice", "bass"].map((v) => Object.keys({ ...A[v], ...B[v] }).filter((k) => JSON.stringify(A[v][k]) !== JSON.stringify(B[v][k])).map((k) => v + "." + k)).flat()]; break; }
+  }
+  check("Ctrl+Z backs out every edit above one step at a time (" + (snaps4.length - 1) + " edits)", u4, u4at);
+  /* ornaments set: the section opens by itself, its dot lit; its heading closes it */
+  const ORN = "c.voice.orn = 'trill'; c.voice.orn_every = 0; c.voice.glide = 120; c.voice.micro = [0, 25, 0, -14, 0];";
+  await reopen4(`function (c) { ${ORN} }`);
+  check("ornaments set: the section is open, its dot lit", JSON.stringify(await oh()) === '{"open":"true","dot":true,"rows":true}', await oh());
+  await ev("document.querySelector('#cd-insp .cd-orn').click(), 0"); await sleep(300);
+  check("and its heading closes it again", (await oh()).open === "false" && !(await oh()).rows && (await oh()).dot, await oh());
+  /* the fit: every state with the section open, both desks */
+  const SETUPS = [["free", ""], ["melody", "c.voice.role = 'melody'; c.motif = FsCompose.motifDefault();"], ["arpeggio", "c.voice.style = 'arpeggio';"], ["strum", "c.voice.style = 'strum';"], ["euclid", "c.voice.style = 'euclid';"],
+    ["swells", "c.voice.style = 'swells';"], ["pedal", "c.voice.style = 'pedal';"], ["ostinato", "c.voice.style = 'ostinato';"], ["chorale", "c.voice.style = 'chorale';"],
+    ["tintinnabuli", "c.voice.style = 'tintinnabuli';"], ["pointillist", "c.voice.style = 'pointillist';"]];
+  const clipped = () => ev("[].filter.call(document.querySelectorAll('#cd-insp .cd-seg button, #cd-insp .cd-vbtn span, #cd-insp .cd-k'), function (b) { return b.scrollWidth > b.clientWidth + 1; }).map(function (b) { return b.textContent; })");
+  const folded = {};
+  for (const [w, h] of [[1440, 900], [1024, 700]]) {
+    await s.send("Emulation.setDeviceMetricsOverride", { width: w, height: h, deviceScaleFactor: 1, mobile: false }); await sleep(600);
+    for (const [nm, set] of SETUPS) {
+      await reopen4(`function (c) { ${set} ${ORN} }`);
+      const sp4 = await spillOf(), fo = await ev("document.getElementById('cd-insp').classList.contains('fold')");
+      folded[w + nm] = fo;
+      check(`${w}x${h} ${nm} voice, ornaments open: one screen`, sp4.length === 0 && (await oh()).open === "true", [sp4.slice(0, 4), await oh()]);
+    }
+    await reopen4(`function (c) { c.bass.mode = 'walk'; ${ORN} }`); await vtab("bass");
+    const spb = await spillOf();
+    check(`${w}x${h} the walking bass row: one screen`, spb.length === 0, spb.slice(0, 4));
+    check(`${w}x${h} the walk's switch and labels read whole`, !(await clipped()).length, await clipped());
+    check(`${w}x${h} the melody and Free voices keep all their rows with the section open (nothing folded away)`, !folded[w + "melody"] && !folded[w + "free"], folded);
+    await reopen4(`function (c) { c.voice.role = 'melody'; c.motif = FsCompose.motifDefault(); ${ORN} }`);
+    check(`${w}x${h} ornament, glides and tab switches and labels read whole`, !(await clipped()).length, await clipped());
+    const states = [];
+    states.push(["normal", await spillOf()]);
+    await ev("document.querySelector('#compose-dock .cd-icon[aria-label=\"Grow the dock\"]').click(), 0"); await sleep(600); states.push(["grown", await spillOf()]);
+    await ev("document.querySelector('#compose-dock .cd-icon[aria-label=\"Show the map\"]').click(), 0"); await sleep(600);
+    await ev("document.querySelector('#cd-lanes .cd-lane[data-voice=\"voice\"] .cd-layers').click(), 0"); await sleep(400); states.push(["layers", await spillOf()]);
+    await ev("document.querySelector('#cd-lanes .cd-lane[data-voice=\"voice\"] .cd-layers').click(), 0"); await sleep(300);
+    await ev("document.querySelector('#compose-dock .cd-gen').click(), 0"); await sleep(300); states.push(["generate panel", await spillOf()]);
+    await ev("document.querySelector('#compose-dock .cd-gen').click(), 0"); await sleep(300);
+    await addRel("canon"); await ev(`${vcell(0)}.click(), 0`); await sleep(400); states.push(["relations", await spillOf()]);
+    states.push(["chord scope keeps the section open", (await oh()).open === "true" ? [] : ["closed"]]);
+    for (const [nm, sp5] of states) { check(`${w}x${h} melody, ornaments open, ${nm}: one screen`, sp5.length === 0, sp5.slice(0, 4)); }
+  }
+  await s.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false }); await sleep(600);
+  /* the two mock frames: frame 1 (voice 2 an ostinato, voice 3 a chorale selected), frame 2 (ornaments, tintinnabuli, pointillist, a walking bass) */
+  await reopen4("function (c) { c.voice.role = 'melody'; c.motif = FsCompose.motifDefault(); c.sect.style = 'ostinato'; c.v3.style = 'chorale'; c.v3.voices = 4; }");
+  await vtab("voice 3"); await sleep(200); await shot("16-styles");
+  await reopen4("function (c) { c.voice.role = 'melody'; c.motif = FsCompose.motifDefault(); c.voice.orn = 'trill'; c.voice.orn_every = 3; c.voice.glide = 120; c.voice.micro = [0, 25, 0, -14, 0]; c.sect.style = 'tintinnabuli'; c.v3.style = 'pointillist'; c.bass.mode = 'walk'; }");
+  await sleep(200); await shot("17-ornaments");
+  await ev(`FsComposeDock.close(), 0`); await sleep(300);
+  await ev(`__fa.patchEdit(${R}, function (p) { var c = JSON.parse(window.__c4); if (c === null) { delete p.comp; } else { p.comp = c; } }), 0`); await sleep(300);
   await ev(`fsListen.select(${R}), __fa.openPatchPanel(), document.getElementById('pp-compose').click(), 0`); await sleep(800);
   /* a point's own panel: Compose is there, disabled, saying why */
   await ev("FsComposeDock.close(), 0");
