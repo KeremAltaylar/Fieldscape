@@ -627,3 +627,86 @@ test("generate relations: valid for the model, leaders never Free, deterministic
   assert.equal(gen({ form: "AABA", nchords: 0, contrast: 1 }).relations, undefined);
   assert.equal(gen({ form: "AABA", seed: 3 }).form.relations, "some", "the default");
 });
+
+/* composition 4, task 7: the four deeper styles, the walking bass, ornaments, glides and micro-tuning (core/composer.cpp voice_of / bass_of are the authority) */
+const HPP = readFileSync(new URL("../core/composer.hpp", import.meta.url), "utf8");
+const VOICE_SRC = CORE.slice(CORE.indexOf("static void voice_of"), CORE.indexOf("static void bass_of")), BASS_SRC = CORE.slice(CORE.indexOf("static void bass_of"), CORE.indexOf("static const char *const VKEYS"));
+const tbl = (name) => [...CORE.match(new RegExp("\\b" + name + "\\[\\d\\] = \\{([^}]*)\\}"))[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+const NEW_STYLES = ["ostinato", "chorale", "tintinnabuli", "pointillist"];
+const f4 = (list, k) => list.find((f) => f.k === k);
+const ids = (f) => f.options.map((o) => o.id);
+/* a number key's parse: [fallback, lo, hi] from clamp8/clampf(j->n("k", d), lo, hi) */
+const numParse = (src, k) => { const m = src.match(new RegExp('clamp(?:8|f)\\(j->n\\("' + k + '", ([-\\d.]+)\\), ([-\\d.]+), ([-\\d.]+)\\)')); return m && m.slice(1).map(Number); };
+const strParse = (src, k) => src.match(new RegExp('j->s\\("' + k + '", "([^"]*)"\\)'))[1];
+const hppDef = (name) => +HPP.match(new RegExp("\\b" + name + " = ([-\\d.]+)"))[1];
+test("composition 4: the styles, their strings and the table order are the core's", () => {
+  assert.deepEqual(M.STYLES.map((s) => s.id), strTable(/STYLES\[NSTYLE\] = \{([^}]*)\}/));
+  assert.deepEqual(NEW_STYLES.map(M.label), ["Ostinato", "Chorale", "Tintinnabuli", "Pointillist"]);
+  assert.deepEqual(ids(f4(M.FIELDS.ostinato, "refit")), tbl("RF")); assert.deepEqual(ids(f4(M.FIELDS.chorale, "voicing")), tbl("VO"));
+  assert.deepEqual(ids(f4(M.FIELDS.tintinnabuli, "tmode")), tbl("TM")); assert.deepEqual(ids(f4(M.ORNAMENTS, "orn")), tbl("OR"));
+  assert.deepEqual(ids(f4(M.ORNAMENTS, "glide_iv")), tbl("GI")); assert.deepEqual(ids(f4(M.BASS, "approach")), tbl("A"));
+  assert.deepEqual(ids(f4(M.BASS, "mode")), tbl("M"));
+  assert.deepEqual(ids(f4(M.FIELDS.chorale, "restrike")), CORE_STR.rate); assert.deepEqual(ids(f4(M.BASS, "wrate")), CORE_STR.rate);
+  assert.equal(M.summary(Object.assign(M.defaults(), { voice: { style: "chorale", role: "accomp" }, sect: { style: "tintinnabuli", role: "accomp" }, v3: { style: "pointillist", role: "accomp" } })), "Chorale · Tintinnabuli · Pointillist");
+});
+test("composition 4: every new key is one the core reads; its range and default are the core's", () => {
+  const fields = [].concat(...NEW_STYLES.map((s) => M.FIELDS[s]), M.ORNAMENTS), bassNew = M.BASS.slice(3);
+  const keys = new Set(fields.map((f) => f.k));
+  ["grid", "acc", "refit", "voicing", "voices", "restrike", "strict", "answers", "tmode", "silence", "plen", "orn", "orn_every", "orn_prob", "orn_speed", "glide", "glide_iv", "micro"].forEach((k) => assert.ok(keys.has(k), k));
+  assert.deepEqual(bassNew.map((f) => f.k), ["approach", "before", "wrate"]);
+  for (const f of fields) assert.ok(CORE_KEYS.has(f.k) || VOICE_SRC.includes('get("' + f.k + '")'), f.k);
+  for (const f of bassNew) assert.ok(BASS_SRC.includes('get("' + f.k + '")'), f.k);
+  for (const f of fields.concat(bassNew)) {
+    const src = bassNew.includes(f) ? BASS_SRC : VOICE_SRC;
+    if (f.kind === "knob") { const [d, lo, hi] = numParse(src, f.k); assert.deepEqual([f.def, f.min, f.max], [d, lo, hi], f.k); }
+    else if (f.kind === "menu" && f.k !== "restrike" && f.k !== "wrate") assert.equal(f.def, strParse(src, f.k), f.k);
+  }
+  assert.equal(f4(M.FIELDS.chorale, "restrike").def, strParse(VOICE_SRC, "restrike") === "1n" ? "1n" : "?"); assert.equal(f4(M.BASS, "wrate").def, strParse(BASS_SRC, "wrate"));
+  /* the struct defaults of composer.hpp */
+  const d = (s, k) => f4(M.FIELDS[s], k).def, STRIDE = { "16n": 1, "1n": 16, "4n": 4 };
+  assert.equal(d("chorale", "voices"), hppDef("nvoices")); assert.equal(STRIDE[d("chorale", "restrike")], hppDef("restrike")); assert.equal(d("chorale", "strict"), hppDef("strict"));
+  assert.equal(d("tintinnabuli", "answers"), hppDef("tvoice")); assert.equal(d("pointillist", "plen"), hppDef("plen"));
+  assert.deepEqual(d("pointillist", "silence"), [hppDef("sil_min"), hppDef("sil_max")]);
+  assert.equal(f4(M.ORNAMENTS, "orn_prob").def, hppDef("orn_prob")); assert.equal(f4(M.ORNAMENTS, "orn_speed").def, hppDef("orn_speed")); assert.equal(f4(M.ORNAMENTS, "orn_every").def, hppDef("orn_every"));
+  assert.equal(f4(M.ORNAMENTS, "glide").def, hppDef("glide_ms")); assert.deepEqual(f4(M.ORNAMENTS, "micro").def, [0, 0, 0, 0, 0]);
+  assert.equal(f4(M.BASS, "before").def, hppDef("before")); assert.equal(STRIDE[f4(M.BASS, "wrate").def], hppDef("wrate"));
+  /* silence 0..8 s (min, max each), micro -50..50 cents, as the core clamps them */
+  const s = f4(M.FIELDS.pointillist, "silence"), m = f4(M.ORNAMENTS, "micro");
+  assert.deepEqual([s.kind, s.min, s.max], ["range", 0, 8]); assert.ok(VOICE_SRC.includes("x->num : v.sil_min, 0, 8)")); assert.deepEqual([m.min, m.max], [-50, 50]); assert.ok(VOICE_SRC.includes("x->num + 50, 0, 100) - 50"));
+  /* the ostinato plays as an arpeggio: the same kinds, the core's own grid (0 1 2 ...) */
+  assert.equal(f4(M.FIELDS.ostinato, "grid").kind, "grid"); assert.equal(f4(M.FIELDS.ostinato, "acc").kind, "accents");
+  assert.deepEqual(f4(M.FIELDS.ostinato, "grid").def, Array.from({ length: 16 }, (_, i) => i % 3)); assert.deepEqual(f4(M.FIELDS.ostinato, "acc").def, Array(16).fill(70));
+});
+test("composition 4: effective shows each style's fields and defaults; ornaments and glides on every voice", () => {
+  for (const st of NEW_STYLES) {
+    const c = M.defaults(); M.setValue(c, { kind: "route" }, "sect", "style", st);
+    const e = M.effective(c, { kind: "route" }, "sect");
+    for (const f of M.FIELDS[st].concat(M.ORNAMENTS)) assert.deepEqual(e.values[f.k], f.def, st + " " + f.k);
+    assert.equal(e.values.tones, undefined); assert.equal(e.values.grid !== undefined, st === "ostinato");
+  }
+  const e = M.effective(M.defaults(), { kind: "route" }, "voice"); assert.equal(e.values.orn, "none"); assert.deepEqual(e.values.micro, [0, 0, 0, 0, 0]);
+  const b = M.effective(M.defaults(), { kind: "route" }, "bass"); assert.equal(b.values.approach, "chromatic"); assert.equal(b.values.before, 1); assert.equal(b.values.wrate, "4n");
+  const c = M.defaults(); M.setValue(c, { kind: "chord", i: 3 }, "voice", "orn", "trill");
+  const x = M.effective(c, { kind: "chord", i: 3 }, "voice"); assert.equal(x.values.orn, "trill"); assert.equal(x.source.orn, "here"); assert.equal(x.source.glide, "route");
+  M.clearValue(c, { kind: "chord", i: 3 }, "voice", "orn"); assert.equal(c.over.chord["3"], undefined);
+  const r = M.defaults(); M.setValue(r, { kind: "route" }, "voice", "micro", [10, 0, 0, 0, -5]); M.clearValue(r, { kind: "route" }, "voice", "micro");
+  assert.deepEqual(M.effective(r, { kind: "route" }, "voice").values.micro, [0, 0, 0, 0, 0]);
+});
+test("composition 4: choosing a new style writes its pattern, as the inspector shows it", () => {
+  for (const scope of [{ kind: "route" }, { kind: "chord", i: 2 }, { kind: "zone", id: "z" }]) {
+    const c = M.defaults(); M.setValue(c, scope, "voice", "style", "ostinato");
+    assert.deepEqual(M.scopeObj(c, scope, false).voice.grid, f4(M.FIELDS.ostinato, "grid").def);
+    assert.deepEqual(M.effective(c, scope, "voice").values.grid, M.scopeObj(c, scope, false).voice.grid);
+    for (const st of ["chorale", "tintinnabuli", "pointillist"]) { M.setValue(c, scope, "sect", "style", st); const o = M.scopeObj(c, scope, false).sect; assert.equal(o.style, st); assert.equal(o.grid, undefined); assert.equal(o.tones, undefined); }
+  }
+  const c = M.defaults(); M.setValue(c, { kind: "route" }, "bass", "mode", "walk");
+  assert.equal(M.effective(c, { kind: "route" }, "bass").values.mode, "walk");
+  M.setValue(c, { kind: "chord", i: 1 }, "voice", "style", "pointillist");
+  assert.equal(M.cell(c, 1, [])[0].style, "pointillist");
+});
+test("composition 4: generate is byte-identical to before the new styles", () => {
+  const out = [];
+  for (const form of M.FORMS.map((f) => f.id)) for (const contrast of [0, 0.3, 0.5, 0.8, 1]) for (const relations of ["none", "some", "rich"]) for (let seed = 1; seed <= 30; seed++) for (const nchords of [0, 1, 3, 16, 70])
+    out.push(M.generate(M.defaults(), { form, contrast, seed, nchords, relations, bpm: seed % 2 ? 96 : 140 }));
+  assert.equal(createHash("sha256").update(JSON.stringify(out)).digest("hex"), "8194807cddc3947b3cd25c907091e5a477128924d676df3986b592272ab9a6fe");
+});
