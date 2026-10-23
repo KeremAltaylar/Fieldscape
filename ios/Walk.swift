@@ -11,7 +11,7 @@ let MEDIA_URL = "https://fieldscape-media.keremaltaylar.workers.dev"
 /* web/compose-model.js summary(): per voice "Off", "Motif" (melody) or its style's label; no comp, no line */
 func compSummary(_ comp: [String: Any]?) -> String {
     guard let comp else { return "" }
-    let labels = ["free": "Free", "arpeggio": "Arpeggio", "pedal": "Pedal", "strum": "Strum", "euclid": "Euclidean", "swells": "Swells"]
+    let labels = ["free": "Free", "arpeggio": "Arpeggio", "pedal": "Pedal", "strum": "Strum", "euclid": "Euclidean", "swells": "Swells", "ostinato": "Ostinato", "chorale": "Chorale", "tintinnabuli": "Tintinnabuli", "pointillist": "Pointillist"]
     return ["voice", "sect", "v3"].map { k in
         let v = comp[k] as? [String: Any]
         let r = v?["role"] as? String
