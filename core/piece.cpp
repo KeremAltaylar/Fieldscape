@@ -797,6 +797,9 @@ static void free_hits(const Patch &P, int q, bool pl, std::vector<Hit> &h) {
 }
 /* the style's own stream over BARS bars, the progression's chords a bar each; its velocities before any gain (the strum's
    first tone keeps its accent; a chord's tones share nothing more - the gain gives the whole chord Free's power) */
+/* a chorale's voices the instrument can sound at once: the role's own plus its pool (a sampler has six of its own) - chord_voice deals round-robin, a
+   bigger chord would take its own first note again at the same time (final review 3) */
+static int chorale_cap(int type) { return type >= S_RETUNE ? 6 : Role::pool_n(type) + 1; }
 static void style_hits(const Patch &P, const comp::Voice &v, int nv, std::vector<Hit> &h, int q = 0) {
     const int stp = v.style == comp::CHORALE ? std::max(1, (int)v.restrike) : std::max(1, (int)v.rate);   /* chorale: its restrike is the step */
     const double six = 60.0 / P.tempo / 4, dur = six * stp * v.len; unsigned deal = 0, pulse = 0;
@@ -834,7 +837,7 @@ static void style_hits(const Patch &P, const comp::Voice &v, int nv, std::vector
             for (int d = 0; d < 5; d++) if (v.tones & (1u << d)) h.push_back(Hit{ t, dur, 0.15 + 0.45 * v.peak, (int)(deal++ % nv), deg_midi(tn, nt, d, v.lo, v.hi) });
         } else if (v.style == comp::CHORALE) {   /* nvoices consecutive chord tones from the lowest root in lo..hi, one velocity, through the pool voices */
             int pool[128], np = 0; for (int m = v.lo; m <= v.hi && np < 128; m++) for (int i = 0; i < nt; i++) if (((m - tn[i]) % 12 + 12) % 12 == 0) { pool[np++] = m; break; }
-            const int nn = std::min(np, std::max(2, std::min(6, (int)v.nvoices)));
+            const int nn = std::min(np, std::min(chorale_cap(q == 0 ? P.voice.synth : q == 1 ? P.sect.synth : P.v3.synth), std::max(2, std::min(6, (int)v.nvoices))));
             int b = 0; while (b < np && ((pool[b] - tn[0]) % 12 + 12) % 12) b++;
             b = std::max(0, std::min(b, np - nn));
             for (int i = 0; i < nn; i++) h.push_back(Hit{ t, dur, vel(col), (int)(deal++ % nv), pool[b + i] });
@@ -858,19 +861,31 @@ static void melody_hits(const Patch &P, const comp::Voice &v, std::vector<Hit> &
 /* composition 4, ornaments (Piece::ornament): the notes a voice's orn adds, as it plays them - a grace before the note (the scale tone
    above, 1/32 / speed), a trill's alternation, a mordent's three; all inside the note and before the voice's next step, one per note
    (every orn_every-th or by the seeded chance). A slide adds no note. The tone above is two semitones here (its power is the pitch's) */
-static void orn_hits(const Patch &P, const comp::Voice &v, int q, bool mel, std::vector<Hit> &h) {
+/* a trill's steps (np fit in the room): odd, so it ends on the main note, capped by what the voice's envelope can schedule (Param::CAP is
+   40 events, ~7 an attack): 17 - sixteen alternations and the main note held - when the pitch steps on a freq Param under one attack, else 5
+   re-attacks; under 3 is no trill. has_freq: the synths whose glide_param() is a freq Param */
+static bool has_freq(int t) { return t == FM || t == AM || t == MONO || t == SIMPLE || t == METAL || t == WAVETABLE; }
+static int trill_steps(int np, bool freq) { int s = std::min(np, freq ? 17 : 5); if (!(s & 1)) s--; return s < 3 ? 0 : s; }
+static void orn_hits(const Patch &P, const comp::Voice &v, int type, int q, bool mel, std::vector<Hit> &h) {
     if (v.orn == comp::ORN_NONE || v.orn == comp::ORN_SLIDE) return;
     if (!mel && (v.style == comp::STRUM || v.style == comp::SWELLS || v.style == comp::CHORALE)) return;
     std::sort(h.begin(), h.end(), [](const Hit &a, const Hit &b) { return a.t < b.t; });
     std::vector<Hit> o; o.reserve(h.size() * 2);
     const double six = 60.0 / P.tempo / 4, u = std::max(0.015, six / 2 / v.orn_speed); const int rate = std::max(1, (int)v.rate); int n = 0;
-    for (const Hit &x : h) {
+    for (size_t xi = 0; xi < h.size(); xi++) {
+        const Hit &x = h[xi];
         const long long k = (long long)std::floor(x.t / six + 1e-6); ++n;
-        const double room = mel ? x.dur : std::min(x.dur, (rate - k % rate) * six - 0.016);
+        /* pointillist plays no rate: its note may grow to 3 ornament steps if the gap to the next onset leaves them (Piece::ornament) */
+        const double room = mel ? x.dur : v.style == comp::POINTILLIST ? (xi + 1 < h.size() ? std::min(std::max(x.dur, 3 * u), h[xi + 1].t - x.t - 0.016) : x.dur) : std::min(x.dur, (rate - k % rate) * six - 0.016);
         if (!(v.orn_every ? n % v.orn_every == 0 : comp::rand01(P.comp.seed ^ 0x0A4E, k, q, n) < v.orn_prob) || room < 2 * u) { o.push_back(x); continue; }
         auto put = [&](double t, double d, int m) { Hit y = x; y.t = t; y.dur = d; y.m = m; y.v |= ORN; o.push_back(y); };
         if (v.orn == comp::ORN_GRACE) { put(x.t, u, x.m + 2); put(x.t + u, room - u, x.m); }
-        else if (v.orn == comp::ORN_TRILL) { const int np = (int)(room / u); for (int i = 0; i < np; i++) put(x.t + i * u, i == np - 1 ? room - (np - 1) * u : u, i & 1 ? x.m + 2 : x.m); }
+        else if (v.orn == comp::ORN_TRILL) {
+            const bool fq = has_freq(type); const int S = trill_steps((int)(room / u), fq);
+            if (!S) o.push_back(x);
+            else if (fq) { Hit y = x; y.dur = room; o.push_back(y); }   /* one attack, the pitch stepping under it */
+            else for (int i = 0; i < S; i++) put(x.t + i * u, i == S - 1 ? room - (S - 1) * u : u, i & 1 ? x.m + 2 : x.m);
+        }
         else if (room < 3 * u) o.push_back(x);
         else { put(x.t, u, x.m); put(x.t + u, u, x.m + 2); put(x.t + 2 * u, room - 2 * u, x.m); }
     }
@@ -971,7 +986,7 @@ static void comp_gains(Patch &P, GainMemo *memo) {
                 for (size_t i = 0; i < h.size(); i++) h[i].m = fold(h[i].m + (v.tmode == comp::TT_ABOVE ? 2 : v.tmode == comp::TT_ALT ? (i & 1 ? 2 : -2) : -2), v.lo, v.hi);
             }
             else if (mel) melody_hits(P, v, h); else style_hits(P, v, nv, h, q);
-            if (!ld && !pk) orn_hits(P, v, q, mel, h);   /* pluck: an ornamented line measures as loud as the plain (its burst is a note's own, whatever the pitch moves) */
+            if (!ld && !pk) orn_hits(P, v, types[q], q, mel, h);   /* pluck: an ornamented line measures as loud as the plain (its burst is a note's own, whatever the pitch moves) */
             P.cgain[L][q] = (float)(gain_of(h, nv, es) * level_fix(types[q], v, mel));
             if (nseen < (int)(sizeof got / sizeof got[0])) { seen[nseen] = v; got[nseen++] = P.cgain[L][q]; }
         }
@@ -1548,6 +1563,11 @@ struct Piece : Device {
         }
         return true;
     }
+    double micro_cents(const comp::Voice &mv, int m) {   /* a voice's micro offset for the chord degree the pitch is */
+        if (!(mv.micro[0] | mv.micro[1] | mv.micro[2] | mv.micro[3] | mv.micro[4])) return 0;
+        const int nt = std::max(1, H.ntones), cd = chord_deg(m);
+        return mv.micro[std::min(4, ((cd % nt) + nt) % nt)];
+    }
     void note(int role, Synth *sy, double f, double dur, double t, double vel, bool composed = false) {
         double cents = 0;
         Role *rr = role == 0 ? &bass : role == 1 ? &top : role == 2 ? &sectr : role == 3 ? &v3r : nullptr;
@@ -1557,10 +1577,7 @@ struct Piece : Device {
             if (nract) { const int m = (int)std::lround(69 + 12 * std::log2(f / 440)), r = pitch_rel(role - 1, m); if (r >= 0 && r != m) f = note_hz(r); }
             ufirst[role - 1] = chg;
             const comp::Voice &mv = ccur[role - 1];   /* composition 4: cents by the chord degree played */
-            if (mv.micro[0] | mv.micro[1] | mv.micro[2] | mv.micro[3] | mv.micro[4]) {
-                const int nt = std::max(1, H.ntones), cd = chord_deg((int)std::lround(69 + 12 * std::log2(f / 440)));
-                cents = mv.micro[std::min(4, ((cd % nt) + nt) % nt)];
-            }
+            cents = micro_cents(mv, (int)std::lround(69 + 12 * std::log2(f / 440)));
         }
         if (composed && ck >= 0 && !relmade && role >= 1 && role <= 3 && own_note(role - 1, f, dur, t, vel, cents)) return;   /* hocket: it sounds on another member */
         if (cents != 0) f *= std::pow(2.0, cents / 1200);
@@ -1598,13 +1615,25 @@ struct Piece : Device {
         const int n = ++ocnt[q];
         if (!(v.orn_every ? n % v.orn_every == 0 : comp::rand01(patch.comp.seed ^ 0x0A4E, ck, q, n) < v.orn_prob)) return false;
         const double s16 = 60.0 / patch.tempo / 4, u = std::max(0.015, s16 / 2 / v.orn_speed);
-        const double room = melodic(q) ? dur : std::min(dur, ctime + (v.rate - ck % v.rate) * s16 - 0.016 - t);
+        const double room = melodic(q) ? dur : v.style == comp::POINTILLIST ? std::min(std::max(dur, 3 * u), ctime + (pt_next[q] - ck) * s16 - 0.016 - t)   /* no rate: up to the next onset (orn_hits) */
+            : std::min(dur, ctime + (v.rate - ck % v.rate) * s16 - 0.016 - t);
         if (room < 2 * u) return false;
         const int m = (int)std::lround(69 + 12 * std::log2(f / 440)); const double up = note_hz(scale_above(patch, m));
         auto put = [&](double ff, double d, double tt) { sound(role, rr, sy, ff, d, tt, vel, true, gfrom, gms); gfrom = 0; gms = 0; };
         switch (v.orn) {
         case comp::ORN_GRACE: put(up, u, t); t += u; dur = room - u; return false;
-        case comp::ORN_TRILL: { const int np = (int)(room / u); for (int i = 0; i < np; i++) put(i & 1 ? up : f, i == np - 1 ? room - (np - 1) * u : u, t + i * u); return true; }
+        case comp::ORN_TRILL: {
+            Param *gp = rr && sy == rr->sy() ? sy->glide_param() : nullptr;
+            const int S = levels::trill_steps((int)(room / u), gp != nullptr); if (!S) return false;
+            if (!gp) { for (int i = 0; i < S; i++) put(i & 1 ? up : f, i == S - 1 ? room - (S - 1) * u : u, t + i * u); return true; }
+            /* one attack, the pitch stepping on the freq Param: S attacks' envelope events (7 each) would fold the first ones' (Param::CAP) */
+            const auto on = on_note; on_note = nullptr; sound(role, rr, sy, f, room, t, vel, true, gfrom, gms); on_note = on; gfrom = 0; gms = 0;
+            for (int i = 0; i < S; i++) {
+                if (i) gp->setValueAtTime(i & 1 ? up : f, t + i * u);
+                if (on) on(note_ctx, role, i & 1 ? up : f, i == S - 1 ? room - (S - 1) * u : u, t + i * u, vel);
+            }
+            return true;
+        }
         case comp::ORN_MORDENT: if (room < 3 * u) return false; put(f, u, t); put(up, u, t + u); t += 2 * u; dur = room - 2 * u; return false;
         case comp::ORN_SLIDE:
             if (rr && sy == rr->sy() && sy->glide_param()) { gfrom = note_hz(scale_below(patch, scale_below(patch, m))); gms = 1000 * std::min(room, s16 / v.orn_speed); }
@@ -1848,7 +1877,7 @@ struct Piece : Device {
        third time running. Bass notes are not a relations' voice (relations name voices 0..2), so no relation sees them. */
     void plan_walk(long long bar) {
         const int lo = patch.key - 24, hi = patch.key - 5, n = patch.nprog, wr = std::max(1, (int)cbass.wrate);
-        const int N = (16 + wr - 1) / wr, c = H.chord >= 0 ? H.chord : chord_index(t_along);
+        const int N = (16 + wr - 1) / wr, c = chord_index(t_along);   /* this bar's chord, as comp_bar resolved it (H.chord is still the last bar's until harmony_bar) */
         const int nc = cdir > 0 ? std::min(n - 1, c + 1) : cdir < 0 ? std::max(0, c - 1) : (c + 1) % n;
         const int A = std::max(0, std::min(std::min(3, N - 1), (16 - (16 - 4 * (int)cbass.before) + wr - 1) / wr));
         const uint32_t sd = patch.comp.seed ^ 0xBA55; int rn = 0;
@@ -2107,10 +2136,11 @@ struct Piece : Device {
             const int m = sc ? scale_midi(patch, d, 0, v.lo, v.hi) : deg_midi(d, v.lo, v.hi, 0);
             const double dur = std::max(0.03, n.len16 * s16), t = time + n.off;
             relmade = true;
-            if (nh > 1) { sync_pool(rl); note(q + 1, chord_voice(rl, t + dur), note_hz(m) * cents_ratio(n.cents), dur, t, n.vel * g, true); }
-            else note(q + 1, rl.sy(), note_hz(m) * cents_ratio(n.cents), dur, t, n.vel * g, true);
+            const double cn = c.trans ? micro_cents(v, m) : n.cents;   /* a transposed follower: its own table, by the degree it lands on */
+            if (nh > 1) { sync_pool(rl); note(q + 1, chord_voice(rl, t + dur), note_hz(m) * cents_ratio(cn), dur, t, n.vel * g, true); }
+            else note(q + 1, rl.sy(), note_hz(m) * cents_ratio(cn), dur, t, n.vel * g, true);
             relmade = false;
-            if (leads) push_ring(q, m, n.len16, n.vel, n.off, n.cents);   /* a chain: the next follower hears this voice as it plays */
+            if (leads) push_ring(q, m, n.len16, n.vel, n.off, cn);   /* a chain: the next follower hears this voice as it plays */
         }
     }
     static double cents_ratio(double c) { return c != 0 ? std::pow(2.0, c / 1200) : 1.0; }
@@ -2293,7 +2323,7 @@ struct Piece : Device {
                lo..hi and distinct. The plain one is the lowest root-position stack; the chosen one minimises
                strict * (total motion from the last voicing, voices paired in order) + (1 - strict) * (distance of its bass from the plain bass).
                ponytail: insertion sorts over <= 6 notes, and a scan of the register (<= 128 notes) for the pool - no heap, no std::sort. */
-            const int nn0 = std::max(2, std::min(6, (int)v.nvoices));
+            const int nn0 = std::min(levels::chorale_cap(rl.cur), std::max(2, std::min(6, (int)v.nvoices)));
             int pcs = 0; for (int i = 0; i < H.ntones; i++) pcs |= 1 << pc(H.tones[i]);
             int pool[128], np = 0; for (int m = v.lo; m <= v.hi && np < 128; m++) if (pcs >> pc(m) & 1) pool[np++] = m;
             if (!np) return;
@@ -2626,7 +2656,7 @@ struct Piece : Device {
         patch = routes[near];
         apply_patch(now);
         H.idx = -1; H.chord = -1; H.ntones = -1;
-        sector = -1; comp_live = false; for (auto &x : sp) x = Span(); for (int &x : hcnt) x = 0; for (int q = 0; q < comp::NVOICE; q++) { rhead[q] = 0; for (auto &n : ring[q]) n.tick = -1; } nzent = 0; chg = 0; for (int &x : ufirst) x = -1; cad_chord = false; cad_oth = comp::OTH_HOLD; wk_l1 = wk_l2 = -1; cwt = -1; cdir = 0; mel_step = -2; cchord = -2; mvar_on = false; nhist = 0; for (int q = 0; q < comp::NVOICE; q++) { cped_root[q] = -1; cpulse[q] = 0; calt[q] = 0; ost_n0[q] = 0; cho_n[q] = 0; pt_next[q] = -1; pt_n[q] = 0; tcnt[q] = 0; }
+        sector = -1; comp_live = false; for (auto &x : sp) x = Span(); for (int &x : hcnt) x = 0; for (int q = 0; q < comp::NVOICE; q++) { rhead[q] = 0; for (auto &n : ring[q]) n.tick = -1; } nzent = 0; chg = 0; for (int &x : ufirst) x = -1; cad_chord = false; cad_oth = comp::OTH_HOLD; wk_l1 = wk_l2 = -1; cwt = -1; cdir = 0; mel_step = -2; cchord = -2; for (double &x : oend) x = -1e9; mvar_on = false; nhist = 0; for (int q = 0; q < comp::NVOICE; q++) { cped_root[q] = -1; cpulse[q] = 0; calt[q] = 0; ost_n0[q] = 0; cho_n[q] = 0; pt_next[q] = -1; pt_n[q] = 0; tcnt[q] = 0; }
         synth_to(walk_level(route_dist), now);
     }
     void walk(int r, double t, double dist, double now) {
