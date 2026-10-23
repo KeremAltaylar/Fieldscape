@@ -180,6 +180,7 @@ struct Patch {
     EnvSpec env[3] = {}; bool env_on[3] = {};   /* 8b: each voice's note envelope; absent or null: the instrument's own */
     float cgain[1 + comp::NCHORD + comp::NSECTION + comp::NZONE][comp::NVOICE];   /* each layer's gain on each voice's style (comp_gains) */
     float rgain[comp::REL_MAX][comp::NVOICE];   /* composition 3: a relation's material at each member's level (comp_gains); 0: none worked out - the voice's own gain */
+    float bgain[17];    /* composition 4: the walking bass's notes at the held root's level, by wrate (sixteenths; comp_gains); 0: none worked out */
     comp::Cfg comp;    /* composition step 1: the voices' styles and overrides ("comp"; absent: off, today's voices) */
 };
 static SamplerCfg smp_of(const Json *role) {
@@ -719,7 +720,8 @@ static Synth *new_synth(int type) {     /* a digital synth, not yet init()ed (Pi
     }
 }
 namespace levels {
-struct Hit { double t, dur, vel; int v, m; };
+struct Hit { double t, dur, vel; int v, m; };   /* v: the voice dealt to; bit 8 (ORN): an ornament's note */
+static const int ORN = 0x100;
 static_assert(sizeof(Hit) == 32, "Hit is hashed as bytes: no padding");
 /* Task 4: 10 ms steps (were 5): every gain within 0.17 dB of the 5 ms solve (11 synths x the levels styles x 3 voices at
    60/96/140 bpm; 15 ms: 0.38, 20 ms: 0.67). The lengths stay: 8 bars of Free were 0.8 dB off, 4 of the style 0.5 */
@@ -729,14 +731,17 @@ static const int MAXH = 1024;
    pitch's note_power; vel x g, held to 1 as note() holds it when `clamp` */
 static double env_power(const EnvSpec &es, std::vector<Hit> &h, int nv, double from, double to, const Synth *sy, double g, bool clamp) {
     std::sort(h.begin(), h.end(), [](const Hit &a, const Hit &b) { return a.t < b.t; });
-    Envelope env[Role::NPOOL + 1]; double w[Role::NPOOL + 1];
-    for (int k = 0; k < nv; k++) { env[k].init(48000); env[k].set(es.a, es.d, es.s, es.r, es.aexp, es.rexp); w[k] = 1; }
+    Envelope env[Role::NPOOL + 1]; double w[Role::NPOOL + 1]; int lm[Role::NPOOL + 1];
+    for (int k = 0; k < nv; k++) { env[k].init(48000); env[k].set(es.a, es.d, es.s, es.r, es.aexp, es.rexp); w[k] = 1; lm[k] = -1; }
     double s = 0, np[128]; long long c = 0; size_t j = 0; for (double &x : np) x = -1;   /* note_power, a MIDI note once */
     for (double t = 0; t < to; t += STEP) {
         for (; j < h.size() && h[j].t <= t; j++) {
-            const int k = h[j].v % nv, m = std::max(0, std::min(127, h[j].m)); const double v = clamp ? std::min(1.0, h[j].vel * g) : h[j].vel * g;
+            const int k = (h[j].v & 0xff) % nv, m = std::max(0, std::min(127, h[j].m)); const double v = clamp ? std::min(1.0, h[j].vel * g) : h[j].vel * g;
             if (np[m] < 0) np[m] = sy->note_power(mtof(m));
-            env[k].triggerAttack(h[j].t, v); env[k].triggerRelease(h[j].t + h[j].dur); w[k] = np[m];
+            double at = h[j].t;   /* an ornament's note (Hit::v bit 8) on a voice still ringing another pitch: the fade of a period before it (Piece::sound) */
+            if ((h[j].v & ORN) && lm[k] >= 0 && lm[k] != m && env[k].sig.value(at) > 1e-3) { const double fd = std::min(0.012, std::max(0.006, 1 / mtof(lm[k]))); Synth::fade_env(env[k], at, fd); at += fd; }
+            lm[k] = m;
+            env[k].triggerAttack(at, v); env[k].triggerRelease(at + h[j].dur); w[k] = np[m];
         }
         for (int k = 0; k < nv; k++) { const double x = env[k].sig.render(t); if (t >= from) s += x * x * w[k]; }
         if (t >= from) c++;
@@ -792,16 +797,28 @@ static void free_hits(const Patch &P, int q, bool pl, std::vector<Hit> &h) {
 }
 /* the style's own stream over BARS bars, the progression's chords a bar each; its velocities before any gain (the strum's
    first tone keeps its accent; a chord's tones share nothing more - the gain gives the whole chord Free's power) */
-static void style_hits(const Patch &P, const comp::Voice &v, int nv, std::vector<Hit> &h) {
-    const double six = 60.0 / P.tempo / 4, dur = six * v.rate * v.len; unsigned deal = 0, pulse = 0;
+static void style_hits(const Patch &P, const comp::Voice &v, int nv, std::vector<Hit> &h, int q = 0) {
+    const int stp = v.style == comp::CHORALE ? std::max(1, (int)v.restrike) : std::max(1, (int)v.rate);   /* chorale: its restrike is the step */
+    const double six = 60.0 / P.tempo / 4, dur = six * stp * v.len; unsigned deal = 0, pulse = 0;
+    if (v.style == comp::POINTILLIST) {   /* composition 4: one short note, then a seeded silence (Piece::point_step); the chord tone across lo..hi, the level within +-20 % */
+        const uint32_t sd = P.comp.seed ^ 0x9017; int n = 0;
+        for (long long k = 0; k < 16 * BARS; n++) {
+            int tn[8]; const int nt = tones_of(P, (int)((k / 16) % std::max(1, P.nprog)), tn);
+            int pool[128], np = 0; for (int m = v.lo; m <= v.hi && np < 128; m++) for (int i = 0; i < nt; i++) if (((m - tn[i]) % 12 + 12) % 12 == 0) { pool[np++] = m; break; }
+            const double gap = v.sil_min + (v.sil_max - v.sil_min) * comp::rand01(sd, n, q, 0);
+            if (np) h.push_back(Hit{ k * six, v.plen, (0.15 + 0.45 * v.peak) * (1 + 0.2 * (2 * comp::rand01(sd, n, q, 2) - 1)), 0, pool[std::min(np - 1, (int)(comp::rand01(sd, n, q, 1) * np))] });
+            k += std::max(1, (int)std::lround(gap / six));
+        }
+        return;
+    }
     const int ncols = std::max(1, (16 + v.rate - 1) / v.rate);
     auto vel = [&](int c) { return 0.22 + 0.4 * v.acc[c % comp::MAX_COLS] / 100.0; };
     int seq[comp::MAX_COLS], ns = 0; for (int i = 0; i < comp::MAX_COLS; i++) if (v.grid[i] >= 0) seq[ns++] = v.grid[i];
     int pedal = -1;
-    for (int k = 0; k < 16 * BARS; k += std::max(1, (int)v.rate)) {
+    for (int k = 0; k < 16 * BARS; k += stp) {
         int tn[8]; const int nt = tones_of(P, (k / 16) % std::max(1, P.nprog), tn);
-        const int col = (k % 16) / v.rate; const double t = k * six;
-        if (v.style == comp::ARPEGGIO) { const int d = v.grid[col % ncols]; if (d >= 0) h.push_back(Hit{ t, dur, vel(col), 0, deg_midi(tn, nt, d, v.lo, v.hi) }); }
+        const int col = (k % 16) / stp; const double t = k * six;
+        if (v.style == comp::ARPEGGIO || v.style == comp::OSTINATO) {   /* the ostinato's cell: the grid, as an arpeggio's (a transposed one has the same notes' power) */ const int d = v.grid[col % ncols]; if (d >= 0) h.push_back(Hit{ t, dur, vel(col), 0, deg_midi(tn, nt, d, v.lo, v.hi) }); }
         else if (v.style == comp::PEDAL) {
             if (pedal < 0 || v.follow) pedal = tn[0];
             int m = v.pedal == 2 ? v.pedal_note : pedal + (v.pedal == 1 ? 7 : 0);
@@ -815,6 +832,12 @@ static void style_hits(const Patch &P, const comp::Voice &v, int nv, std::vector
                 h.push_back(Hit{ t + off, std::max(0.03, dur - off), vel(col) + (nd == 0 ? 0.12 : 0), (int)(deal++ % nv), deg_midi(tn, nt, d, v.lo, v.hi) }); nd++; }
         } else if (v.style == comp::SWELLS) {
             for (int d = 0; d < 5; d++) if (v.tones & (1u << d)) h.push_back(Hit{ t, dur, 0.15 + 0.45 * v.peak, (int)(deal++ % nv), deg_midi(tn, nt, d, v.lo, v.hi) });
+        } else if (v.style == comp::CHORALE) {   /* nvoices consecutive chord tones from the lowest root in lo..hi, one velocity, through the pool voices */
+            int pool[128], np = 0; for (int m = v.lo; m <= v.hi && np < 128; m++) for (int i = 0; i < nt; i++) if (((m - tn[i]) % 12 + 12) % 12 == 0) { pool[np++] = m; break; }
+            const int nn = std::min(np, std::max(2, std::min(6, (int)v.nvoices)));
+            int b = 0; while (b < np && ((pool[b] - tn[0]) % 12 + 12) % 12) b++;
+            b = std::max(0, std::min(b, np - nn));
+            for (int i = 0; i < nn; i++) h.push_back(Hit{ t, dur, vel(col), (int)(deal++ % nv), pool[b + i] });
         }
     }
 }
@@ -832,6 +855,27 @@ static void melody_hits(const Patch &P, const comp::Voice &v, std::vector<Hit> &
         }
     }
 }
+/* composition 4, ornaments (Piece::ornament): the notes a voice's orn adds, as it plays them - a grace before the note (the scale tone
+   above, 1/32 / speed), a trill's alternation, a mordent's three; all inside the note and before the voice's next step, one per note
+   (every orn_every-th or by the seeded chance). A slide adds no note. The tone above is two semitones here (its power is the pitch's) */
+static void orn_hits(const Patch &P, const comp::Voice &v, int q, bool mel, std::vector<Hit> &h) {
+    if (v.orn == comp::ORN_NONE || v.orn == comp::ORN_SLIDE) return;
+    if (!mel && (v.style == comp::STRUM || v.style == comp::SWELLS || v.style == comp::CHORALE)) return;
+    std::sort(h.begin(), h.end(), [](const Hit &a, const Hit &b) { return a.t < b.t; });
+    std::vector<Hit> o; o.reserve(h.size() * 2);
+    const double six = 60.0 / P.tempo / 4, u = std::max(0.015, six / 2 / v.orn_speed); const int rate = std::max(1, (int)v.rate); int n = 0;
+    for (const Hit &x : h) {
+        const long long k = (long long)std::floor(x.t / six + 1e-6); ++n;
+        const double room = mel ? x.dur : std::min(x.dur, (rate - k % rate) * six - 0.016);
+        if (!(v.orn_every ? n % v.orn_every == 0 : comp::rand01(P.comp.seed ^ 0x0A4E, k, q, n) < v.orn_prob) || room < 2 * u) { o.push_back(x); continue; }
+        auto put = [&](double t, double d, int m) { Hit y = x; y.t = t; y.dur = d; y.m = m; y.v |= ORN; o.push_back(y); };
+        if (v.orn == comp::ORN_GRACE) { put(x.t, u, x.m + 2); put(x.t + u, room - u, x.m); }
+        else if (v.orn == comp::ORN_TRILL) { const int np = (int)(room / u); for (int i = 0; i < np; i++) put(x.t + i * u, i == np - 1 ? room - (np - 1) * u : u, i & 1 ? x.m + 2 : x.m); }
+        else if (room < 3 * u) o.push_back(x);
+        else { put(x.t, u, x.m); put(x.t + u, u, x.m + 2); put(x.t + 2 * u, room - 2 * u, x.m); }
+    }
+    h.swap(o);
+}
 }  // namespace levels
 
 /* the gains (above) for every layer of the patch's comp, into P.cgain */
@@ -841,14 +885,17 @@ template <class T> static uint64_t fnv(uint64_t h, const T &x) { return fnv(h, &
    the memo, which holds the solve's own gains, so a regenerated table is never stale against it */
 static double level_fix(int type, const comp::Voice &v, bool mel) {
     if (type < 0 || type > FORMANT) return 1;
-    const int c = v.rate <= 1 ? 0 : v.rate <= 3 ? 1 : v.rate <= 6 ? 2 : 3;
-    return std::pow(10.0, -(mel ? LEVEL_FIX_MELODY[type] : v.style < comp::OSTINATO ? LEVEL_FIX[type][v.style][c] : 0) / 20);   /* the new styles: no fix until Task 6 regenerates the table (it is [..][6][..]) */
+    const int r = v.style == comp::CHORALE ? v.restrike : v.rate;   /* a chorale's rate is its restrike; tintinnabuli and pointillist play none of their own: one class */
+    const int c = v.style == comp::TINTINNABULI || v.style == comp::POINTILLIST || r <= 1 ? 0 : r <= 3 ? 1 : r <= 6 ? 2 : 3;
+    return std::pow(10.0, -(mel ? LEVEL_FIX_MELODY[type] : LEVEL_FIX[type][v.style][c]) / 20);
 }
 static void comp_gains(Patch &P, GainMemo *memo) {
     using namespace levels;
     for (auto &l : P.cgain) for (float &x : l) x = 1;
     for (auto &l : P.rgain) for (float &x : l) x = 0;
+    for (float &x : P.bgain) x = 0;
     if (!P.comp.on) return;
+    bool want[17] = {};   /* the walking bass's wrates in force, on any layer */
     const int types[3] = { P.voice.synth, P.sect.synth, P.v3.synth };
     const double harm[3] = { P.voice.harm, P.sect.harm, P.v3.harm }, index[3] = { P.voice.index, P.sect.index, P.v3.index };
     comp::Resolved r0; comp::resolve(P.comp, -1, 0, -1, 0, nullptr, 0, nullptr, 0, r0);   /* the route's own voices (layer 0) */
@@ -877,14 +924,16 @@ static void comp_gains(Patch &P, GainMemo *memo) {
         /* the gain that gives these notes (dealt to nv voices, through this envelope) Free's power; what decides it (the synth's
            key kf, the envelope, the notes as bytes) is the memo's key. note() holds an envelope's velocity to 1: a boosted style
            is solved for with that in (a few steps) */
-        auto gain_of = [&](std::vector<Hit> &h, int nv, const EnvSpec &es) {
-            const uint64_t kg = fnv(fnv(fnv(fnv(fnv(fnv(fnv(fnv(kf, nv), es.a), es.d), es.s), es.r), es.aexp), es.rexp), h.data(), h.size() * sizeof(Hit));
+        auto gain_of = [&](std::vector<Hit> &h, int nv, const EnvSpec &es, std::vector<Hit> *ref = nullptr) {   /* ref: the notes whose power (unclamped, at 1) is the target instead of Free's */
+            uint64_t kg = fnv(fnv(fnv(fnv(fnv(fnv(fnv(fnv(kf, nv), es.a), es.d), es.s), es.r), es.aexp), es.rexp), h.data(), h.size() * sizeof(Hit));
+            if (ref) kg = fnv(fnv(kg, 1), ref->data(), ref->size() * sizeof(Hit));
             double mg; if (memo && memo->get(kg, mg)) return mg;
             const double from = 16 * six, to = 16 * BARS * six;
-            auto power = [&](double g) { return pk ? pluck_power(pk, h, from, to, g) : env_power(es, h, nv, from, to, sy.get(), g, true); };
+            auto power = [&](double g) { return pk ? pluck_power(pk, h, from, to, g) : env_power(es, h, nv, from, to, sy.get(), g, !ref); };
+            double target = pfree; if (ref) target = pk ? pluck_power(pk, *ref, from, to, 1) : env_power(es, *ref, nv, from, to, sy.get(), 1, false);
             double g = 1, ps = power(1);
             for (int it = 0; it < 4 && ps > 1e-12; it++) {
-                const double ng = std::max(0.05, std::min(4.0, g * std::sqrt(pfree / ps)));
+                const double ng = std::max(0.05, std::min(4.0, g * std::sqrt(target / ps)));
                 if (std::fabs(ng / g - 1) < 0.01) { g = ng; break; }
                 g = ng; ps = power(g);
             }
@@ -900,18 +949,44 @@ static void comp_gains(Patch &P, GainMemo *memo) {
             else if (L <= comp::NCHORD + comp::NSECTION) { const int s = L - 1 - comp::NCHORD; o = &P.comp.section[s]; comp::resolve(P.comp, -1, 0, s, comp::NSECTION, nullptr, 0, nullptr, 0, r); }
             else { const int z = L - 1 - comp::NCHORD - comp::NSECTION; if (z >= P.comp.nzone) break; o = &P.comp.zone[z];
                 const uint64_t id = o->zone; comp::resolve(P.comp, -1, 0, -1, 0, &id, 1, &id, 1, r); }
+            if (q == 0 && r.bass.mode == comp::BASS_WALK && r.bass.wrate >= 1 && r.bass.wrate <= 16) want[r.bass.wrate] = true;
             if (o && (!o->used || !o->v[q].mask)) { P.cgain[L][q] = P.cgain[0][q]; continue; }
             const comp::Voice &v = r.v[q];
             const bool mel = v.role == comp::MELODY && P.comp.motif.n > 0;   /* a melody voice: its phrase, its style aside */
             if (!mel && (v.style == comp::FREE || v.role == comp::OFF || v.role == comp::MELODY)) {   /* a melody with no motif is Free */ P.cgain[L][q] = 1; continue; }
             int same = -1; for (int i = 0; i < nseen && same < 0; i++) if (!std::memcmp(&seen[i], &v, sizeof v)) same = i;   /* the same settings once worked out (padding that differs only works it out again) */
             if (same >= 0) { P.cgain[L][q] = got[same]; continue; }
-            const int nv = !mel && (v.style == comp::STRUM || v.style == comp::SWELLS) ? Role::pool_n(types[q]) + 1 : 1;
+            const comp::Voice *ld = !mel && v.style == comp::TINTINNABULI && v.tvoice != q ? &r0.v[v.tvoice] : nullptr;   /* tintinnabuli: the voice it answers, at the route's own settings */
+            const bool lmel = ld && ld->role == comp::MELODY && P.comp.motif.n > 0;
+            const bool lchord = ld && !lmel && (ld->style == comp::STRUM || ld->style == comp::SWELLS || ld->style == comp::CHORALE);   /* its answers go through the chord voices as the leader's chord does */
+            const int nv = lchord || (!mel && (v.style == comp::STRUM || v.style == comp::SWELLS || v.style == comp::CHORALE)) ? Role::pool_n(types[q]) + 1 : 1;
             const double dur = six * v.rate * v.len;
             const EnvSpec es = !mel && v.style == comp::SWELLS ? EnvSpec{ std::max(0.005, v.attack * dur), 0.005, 1.0, std::max(0.02, v.release * dur), own.aexp, own.rexp } : own;
-            std::vector<Hit> h; h.reserve(MAXH); if (mel) melody_hits(P, v, h); else style_hits(P, v, nv, h);
+            std::vector<Hit> h; h.reserve(MAXH);
+            if (ld) {   /* what the answered voice plays, each note to the nearest triad tone (about two semitones) above or below, in this voice's register */
+                if (ld->role == comp::OFF) {}
+                else if (lmel) melody_hits(P, *ld, h);
+                else if (ld->style == comp::FREE || ld->role == comp::MELODY) free_hits(P, v.tvoice, false, h);
+                else style_hits(P, *ld, nv, h, v.tvoice);
+                for (size_t i = 0; i < h.size(); i++) h[i].m = fold(h[i].m + (v.tmode == comp::TT_ABOVE ? 2 : v.tmode == comp::TT_ALT ? (i & 1 ? 2 : -2) : -2), v.lo, v.hi);
+            }
+            else if (mel) melody_hits(P, v, h); else style_hits(P, v, nv, h, q);
+            if (!ld && !pk) orn_hits(P, v, q, mel, h);   /* pluck: an ornamented line measures as loud as the plain (its burst is a note's own, whatever the pitch moves) */
             P.cgain[L][q] = (float)(gain_of(h, nv, es) * level_fix(types[q], v, mel));
             if (nseen < (int)(sizeof got / sizeof got[0])) { seen[nseen] = v; got[nseen++] = P.cgain[L][q]; }
+        }
+        /* composition 4, the walking bass: the voice's own synth (the bass is its role's), each walked note at 0.5 as the held root is
+           struck - the bass takes no style's gain - so the walk is as loud as hold: per wrate, the gain that gives a bar of walked
+           notes the power of the bar's held root (struck on every chord change; each bar on a percussive synth) */
+        for (int wr = 1; q == 0 && wr <= 16; wr++) if (want[wr]) {
+            std::vector<Hit> wk, hd; const int lo = P.key - 24, hi = P.key - 5, N = (16 + wr - 1) / wr; static const int OFS[4] = { 0, 2, 4, 2 }; const double bv = pk ? 1 : 0.5;   /* pluck: a note's level is its accent */
+            for (int b = 0; b < BARS; b++) {
+                const int rt = fold(root_of(P, b % std::max(1, P.nprog)), lo, hi);
+                for (int j = 0; j < N; j++) wk.push_back(Hit{ (b * 16 + j * wr) * six, std::max(0.05, 0.9 * wr * six), bv, 0, fold(rt + OFS[j % 4], lo, hi) });
+                if (b == 0 || P.nprog > 1 || PERCUSSIVE[types[0]]) hd.push_back(Hit{ b * 16 * six, 16 * six, bv, 0, rt });
+            }
+            if (P.nprog <= 1 && !PERCUSSIVE[types[0]]) hd[0].dur = 16 * BARS * six;
+            P.bgain[wr] = (float)(gain_of(wk, 1, own, &hd) * std::pow(10.0, -LEVEL_FIX_BASS[types[0]] / 20));
         }
         /* composition 3: what a relation gives this voice to play - a canon's or heterophony's follower the leader's notes, a hocket
            member (a, b, c) its share of a's line - at Free's level as the leader's route-level style gives them (a leader that
@@ -929,9 +1004,9 @@ static void comp_gains(Patch &P, GainMemo *memo) {
             const comp::Voice &lv = r0.v[c.a];
             const bool mel = lv.role == comp::MELODY && P.comp.motif.n > 0;
             if (!mel && (lv.style == comp::FREE || lv.role == comp::OFF || lv.role == comp::MELODY)) continue;
-            const bool chord = !mel && (lv.style == comp::STRUM || lv.style == comp::SWELLS);
+            const bool chord = !mel && (lv.style == comp::STRUM || lv.style == comp::SWELLS || lv.style == comp::CHORALE);
             const int nv = chord ? Role::pool_n(types[q]) + 1 : 1;
-            std::vector<Hit> h; h.reserve(MAXH); if (mel) melody_hits(P, lv, h); else style_hits(P, lv, nv, h);
+            std::vector<Hit> h; h.reserve(MAXH); if (mel) melody_hits(P, lv, h); else style_hits(P, lv, nv, h, c.a);
             if (hk) {   /* the notes this member keeps: the deal of own_note (the line's n-th note, or the mask's bit at its step) */
                 const int nm = c3 ? 3 : 2; size_t n = 0, o = 0;
                 for (const Hit &x : h) {
@@ -1946,7 +2021,7 @@ struct Piece : Device {
         const long long k = ticks - 1, bar = k / 16;
         ck = k; hn = 0; mn = 0; ctime = time;
         if (cbass.mode == comp::BASS_WALK && wk_at[k % 16] >= 0) {      /* the walking bass: a plain bass note, legato to its step */
-            const int m = wk_at[k % 16]; note(0, bass.sy(), note_hz(m), std::max(0.05, 0.9 * cbass.wrate * 60.0 / patch.tempo / 4), time, 0.5);
+            const int m = wk_at[k % 16]; note(0, bass.sy(), note_hz(m), std::max(0.05, 0.9 * cbass.wrate * 60.0 / patch.tempo / 4), time, (bass.cur == PLUCK ? 1 : 0.5) * (patch.bgain[std::min(16, (int)cbass.wrate)] > 0 ? patch.bgain[std::min(16, (int)cbass.wrate)] : 1), bass.cur == PLUCK);   /* the level of the held root (comp_gains: bgain); pluck takes its note's level as composed notes' */
         }
         { uint64_t rec[8]; int nr = 0;   /* the zones entered in the last PHRASE_BARS: a call with trigger "enter" answers on them though the walker has left */
           for (int i = 0; i < nzent; i++) if (bar >= zent[i].bar && bar - zent[i].bar < comp::PHRASE_BARS) rec[nr++] = zent[i].id;
