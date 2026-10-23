@@ -674,6 +674,13 @@ static int scale_midi(const Patch &P, int d, int oct, int lo, int hi) {
     const int o = floor_div(d, md.n);
     return fold(P.key + md.iv[d - o * md.n] + 12 * (o + oct), lo, hi);
 }
+/* the key's scale tone below MIDI note m */
+static int scale_below(const Patch &P, int m) {
+    int q = quality_of(P, 0); if (q < 0) q = Q_M7;
+    const auto &md = MODES[CHORDS[q].iv[1] == 3 ? MODE_AEOLIAN : MODE_IONIAN];
+    for (int d = m - 1; d >= m - 12; d--) for (int i = 0; i < md.n; i++) if (((d - P.key) % 12 + 12) % 12 == md.iv[i]) return d;
+    return m - 2;
+}
 /* the key's scale tone above MIDI note m */
 static int scale_above(const Patch &P, int m) {
     int q = quality_of(P, 0); if (q < 0) q = Q_M7;
@@ -984,7 +991,7 @@ struct Piece : Device {
        ticks are the ones between them. deg: the chord degree played (octave kept; a ninth of a 4-tone chord is 4); off: seconds
        past the step (a strum's roll). A canon's leader that itself follows a canon (a chain) also records what it plays */
     static const int RING = 256;
-    struct NR { long long tick = -1; int midi = 0, deg = 0; float len16 = 0, vel = 0, off = 0; };
+    struct NR { long long tick = -1; int midi = 0, deg = 0; float len16 = 0, vel = 0, off = 0, cents = 0; };   /* cents: the microtonal offset the note sounded with - a replay keeps it */
     NR ring[comp::NVOICE][RING]; int rhead[comp::NVOICE] = {}; double ctime = 0;
     struct Span { long long a = -1, b = -1; } sp[comp::REL_MAX]; long long ck = -1; bool relmade = false;
     int ract[comp::REL_MAX], nract = 0, hn = 0, mn = 0;
@@ -992,11 +999,13 @@ struct Piece : Device {
     bool cad_chord = false;                               /* this chord is covered by a chain cadence step (its first bar: cj == 0) */
     int hcnt[comp::REL_MAX] = {};                     /* hocket: line notes dealt so far in the relation's span */
     int ownd = -1;                                    /* density's verdict on the voice's own note, taken in own_note before its doubles (-1: not taken) */
+    int ocnt[comp::NVOICE] = {}; double oend[comp::NVOICE] = { -1e9, -1e9, -1e9 };   /* ornaments: composed notes so far; the end of a voice's last one (a glide is not carried over a rest) */
     int dcnt[comp::NVOICE] = {};                      /* density: notes each voice has sounded this bar (a strum's tones each count) */
     int ccall[comp::NVOICE] = { -1, -1, -1 };         /* the call (rel index) a voice answers this step, -1: none */
     int dj() const { return patch.comp.develop ? (int)std::min<long long>(cj, 1 << 20) : 0; }
     int mel_step = -2; long long mel_bar0 = 0;   /* the chain step in force, and the bar it began on: the phrase counts from there */
     bool bare(int q) const { return ccur[q].role == comp::MELODY && patch.comp.motif.n == 0; }   /* a melody with no motif plays as Free, whatever style it holds */
+    bool chord_style(int q) const { return !melodic(q) && (ccur[q].style == comp::STRUM || ccur[q].style == comp::SWELLS || ccur[q].style == comp::CHORALE); }   /* its notes go through chord voices: no ornaments, no glide */
     bool melodic(int q) const { return ccur[q].role == comp::MELODY && patch.comp.motif.n > 0; }
     bool cad_rest(int q, bool fast) const {
         if (cad_oth == comp::OTH_HOLD || melodic(q)) return false;
@@ -1325,9 +1334,9 @@ struct Piece : Device {
         int best = 0; for (int i = 1; i < md.n; i++) if (std::abs(md.iv[i] - r) < std::abs(md.iv[best] - r)) best = i;
         return o * md.n + best;
     }
-    void push_ring(int q, int m, double len16, double vel_unit, double off) {
+    void push_ring(int q, int m, double len16, double vel_unit, double off, double cents = 0) {
         NR &r = ring[q][rhead[q]++ % RING];
-        r.tick = ck; r.midi = m; r.deg = chord_deg(m); r.len16 = (float)len16; r.vel = (float)vel_unit; r.off = (float)off;
+        r.tick = ck; r.midi = m; r.deg = chord_deg(m); r.len16 = (float)len16; r.vel = (float)vel_unit; r.off = (float)off; r.cents = (float)cents;
     }
     /* the pool of a chord's voices, set up as the role's main instrument is (once, at first use after a swap) */
     void sync_pool(Role &rl) {
@@ -1343,10 +1352,11 @@ struct Piece : Device {
        notes (strum, swells) are doubled through the follower's chord voices */
     /* a relation's material at the member's level (comp_gains: rgain), or the voice's own gain when none was worked out */
     double rg(int r, int q) const { return patch.rgain[r][q] > 0 ? patch.rgain[r][q] : cg[q]; }
-    bool own_note(int q, double f, double dur, double t, double &vel) {
+    bool own_note(int q, double f0, double dur, double t, double &vel, double cents) {
         const double s16 = 60.0 / patch.tempo / 4;
-        const int m = (int)std::lround(69 + 12 * std::log2(f / 440));
-        push_ring(q, m, dur / s16, vel / std::max(1e-6, cg[q]), t - ctime);
+        const int m = (int)std::lround(69 + 12 * std::log2(f0 / 440));
+        const double f = cents != 0 ? f0 * std::pow(2.0, cents / 1200) : f0;   /* what sounds; the ring holds the note and its offset */
+        push_ring(q, m, dur / s16, vel / std::max(1e-6, cg[q]), t - ctime, cents);
         if (dur <= 0) return false;   /* a held note has no length to double */
         const double vu = vel / std::max(1e-6, cg[q]);
         const bool chord = !melodic(q) && (ccur[q].style == comp::STRUM || ccur[q].style == comp::SWELLS || ccur[q].style == comp::CHORALE);
@@ -1464,14 +1474,21 @@ struct Piece : Device {
         return true;
     }
     void note(int role, Synth *sy, double f, double dur, double t, double vel, bool composed = false) {
+        double cents = 0;
         Role *rr = role == 0 ? &bass : role == 1 ? &top : role == 2 ? &sectr : role == 3 ? &v3r : nullptr;
         if (role >= 1 && role <= 3) nbar[role - 1]++;
         if (!composed && ck < 0 && dur > 0 && role >= 1 && role <= 3 && patch.comp.on && comp_live && H.ntones > 0 && !styled(role - 1)) tint_free(role - 1, f, dur, t, vel);   /* a Free voice's note, answered */
         if (composed && ck >= 0 && !relmade && role >= 1 && role <= 3) {
             if (nract) { const int m = (int)std::lround(69 + 12 * std::log2(f / 440)), r = pitch_rel(role - 1, m); if (r >= 0 && r != m) f = note_hz(r); }
             ufirst[role - 1] = chg;
+            const comp::Voice &mv = ccur[role - 1];   /* composition 4: cents by the chord degree played */
+            if (mv.micro[0] | mv.micro[1] | mv.micro[2] | mv.micro[3] | mv.micro[4]) {
+                const int nt = std::max(1, H.ntones), cd = chord_deg((int)std::lround(69 + 12 * std::log2(f / 440)));
+                cents = mv.micro[std::min(4, ((cd % nt) + nt) % nt)];
+            }
         }
-        if (composed && ck >= 0 && !relmade && role >= 1 && role <= 3 && own_note(role - 1, f, dur, t, vel)) return;   /* hocket: it sounds on another member */
+        if (composed && ck >= 0 && !relmade && role >= 1 && role <= 3 && own_note(role - 1, f, dur, t, vel, cents)) return;   /* hocket: it sounds on another member */
+        if (cents != 0) f *= std::pow(2.0, cents / 1200);
         const int od = ownd; ownd = -1;
         if (composed && ck >= 0 && nract && role >= 1 && role <= 3 && !(od >= 0 ? od == 1 : density_ok(role - 1))) return;
         if (composed && ck >= 0 && role >= 1 && role <= 3 && ccall[role - 1] >= 0 && dur > 0) {   /* an answer ends before the caller's next note */
@@ -1479,6 +1496,50 @@ struct Piece : Device {
             if (n < 32) dur = std::max(0.02, std::min(dur, ctime + n * 60.0 / patch.tempo / 4 - 0.005 - t));
         }
         if (composed && !(rr && rr->cur == PLUCK)) vel = std::min(vel, 1.0);   /* an envelope's level; pluck's is a gain on its burst */
+        double gfrom = 0, gms = 0;
+        if (composed && ck >= 0 && !relmade && role >= 1 && role <= 3 && sy && dur > 0) {
+            const int q = role - 1; const comp::Voice &v = ccur[q];
+            const double t1 = t, d1 = dur;
+            /* composition 4, glide: a one-voice synth's pitch ramps from where it is to the new note (no retrigger jump) */
+            if (v.glide_ms > 0 && !chord_style(q) && rr && sy == rr->sy() && sy->glide_param() && sy->last_f > 0 && t - oend[q] <= 1.0) {
+                const double sm = std::fabs(12 * std::log2(f / sy->last_f));
+                if (v.glide_iv == 0 ? sm >= 0.5 : v.glide_iv == 1 ? (sm >= 0.5 && sm <= 2.5) : sm >= 4.5) gms = v.glide_ms;
+            }
+            const bool done = ornament(q, role, rr, sy, f, dur, t, vel, gfrom, gms);
+            oend[q] = t1 + d1;
+            if (done) return;
+        }
+        sound(role, rr, sy, f, dur, t, vel, composed, gfrom, gms);
+    }
+    /* composition 4, ornaments (the voice's orn: every orn_every-th note, or by seeded chance): grace - the scale tone above, 1/32
+       / speed, on the beat with the note following it (a scheduled step cannot reach back before itself); trill - the note's
+       length alternating with that tone at 1/32 / speed; mordent - note, tone above, note; slide - a glide into the note from a
+       third below over a 1/16. All inside the note and before the voice's next step (a margin for the fade a one-voice synth
+       takes between pitches), one per note, in sequence - never two at once. Returns true when the whole note was played */
+    bool ornament(int q, int role, Role *rr, Synth *sy, double f, double &dur, double &t, double vel, double &gfrom, double &gms) {
+        const comp::Voice &v = ccur[q];
+        if (v.orn == comp::ORN_NONE) return false;
+        if (chord_style(q)) return false;
+        const int n = ++ocnt[q];
+        if (!(v.orn_every ? n % v.orn_every == 0 : comp::rand01(patch.comp.seed ^ 0x0A4E, ck, q, n) < v.orn_prob)) return false;
+        const double s16 = 60.0 / patch.tempo / 4, u = std::max(0.015, s16 / 2 / v.orn_speed);
+        const double room = melodic(q) ? dur : std::min(dur, ctime + (v.rate - ck % v.rate) * s16 - 0.016 - t);
+        if (room < 2 * u) return false;
+        const int m = (int)std::lround(69 + 12 * std::log2(f / 440)); const double up = note_hz(scale_above(patch, m));
+        auto put = [&](double ff, double d, double tt) { sound(role, rr, sy, ff, d, tt, vel, true, gfrom, gms); gfrom = 0; gms = 0; };
+        switch (v.orn) {
+        case comp::ORN_GRACE: put(up, u, t); t += u; dur = room - u; return false;
+        case comp::ORN_TRILL: { const int np = (int)(room / u); for (int i = 0; i < np; i++) put(i & 1 ? up : f, i == np - 1 ? room - (np - 1) * u : u, t + i * u); return true; }
+        case comp::ORN_MORDENT: if (room < 3 * u) return false; put(f, u, t); put(up, u, t + u); t += 2 * u; dur = room - 2 * u; return false;
+        case comp::ORN_SLIDE:
+            if (rr && sy == rr->sy() && sy->glide_param()) { gfrom = note_hz(scale_below(patch, scale_below(patch, m))); gms = 1000 * std::min(room, s16 / v.orn_speed); }
+            return false;
+        default: return false;
+        }
+    }
+    /* a note sounded: the log hook, the sampler's and pluck's settings, a pitch change under a ringing voice faded, the attack
+       (gms > 0: its pitch ramps from gfrom - or from where the pitch is now, gfrom <= 0 - to f over gms ms), the heard slots */
+    void sound(int role, Role *rr, Synth *sy, double f, double dur, double t, double vel, bool composed, double gfrom, double gms) {
         if (on_note) on_note(note_ctx, role, f, dur, t, vel);
         if (!sy) return;
         /* a composed route's pluck takes its notes' level (level match); everything else of Free's is untouched */
@@ -1493,9 +1554,12 @@ struct Piece : Device {
         }
         /* a composed note on a voice still ringing another pitch: a fade of a period of that pitch (6-12 ms), then the note
            (Synth::fade) - shorter than its period, a low note's cut would thump. Free's notes as they were */
-        if (composed && !(rr && rr->cur == PLUCK) && sy->last_f > 0 && std::fabs(f / sy->last_f - 1) > 1e-3 && sy->sounding(t)) {
-            const double fd = std::min(0.012, std::max(0.006, 1 / sy->last_f)); sy->fade(t, fd); t += fd; }
+        Param *gp = gms > 0 ? sy->glide_param() : nullptr;
+        const double f0 = gp ? (gfrom > 0 ? gfrom : gp->value(t)) : f, cur = gp ? gp->value(t) : sy->last_f;
+        if (composed && !(rr && rr->cur == PLUCK) && cur > 0 && std::fabs(f0 / cur - 1) > 1e-3 && sy->sounding(t)) {
+            const double fd = std::min(0.012, std::max(0.006, 1 / cur)); sy->fade(t, fd); t += fd; }
         if (dur < 0) sy->attack(f, t, vel); else sy->attack_release(f, dur, t, vel);
+        if (gp && std::fabs(f0 / f - 1) > 1e-3) { gp->setValueAtTime(f0, t); gp->exponentialRampToValueAtTime(f, t + gms / 1000); }
         sy->last_f = f;
         if (role >= 0 && role <= 3 && !(rr && is_sampler(rr->cur))) {
             Heard *h = heard[role], *slot = &h[0];
@@ -1968,12 +2032,13 @@ struct Piece : Device {
             const int m = sc ? scale_midi(patch, d, 0, v.lo, v.hi) : deg_midi(d, v.lo, v.hi, 0);
             const double dur = std::max(0.03, n.len16 * s16), t = time + n.off;
             relmade = true;
-            if (nh > 1) { sync_pool(rl); note(q + 1, chord_voice(rl, t + dur), note_hz(m), dur, t, n.vel * g, true); }
-            else note(q + 1, rl.sy(), note_hz(m), dur, t, n.vel * g, true);
+            if (nh > 1) { sync_pool(rl); note(q + 1, chord_voice(rl, t + dur), note_hz(m) * cents_ratio(n.cents), dur, t, n.vel * g, true); }
+            else note(q + 1, rl.sy(), note_hz(m) * cents_ratio(n.cents), dur, t, n.vel * g, true);
             relmade = false;
-            if (leads) push_ring(q, m, n.len16, n.vel, n.off);   /* a chain: the next follower hears this voice as it plays */
+            if (leads) push_ring(q, m, n.len16, n.vel, n.off, n.cents);   /* a chain: the next follower hears this voice as it plays */
         }
     }
+    static double cents_ratio(double c) { return c != 0 ? std::pow(2.0, c / 1200) : 1.0; }
     /* a chord degree (0 root .. 4 ninth) as a MIDI note, folded into [lo, hi]; degrees past the chord's tones go up an octave */
     int deg_midi(int d, int lo, int hi, int oct) const {
         const int nt = std::max(1, H.ntones), o = floor_div(d, nt);

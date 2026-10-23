@@ -1673,6 +1673,178 @@ static void test_pointillist() {
     std::printf("C pointillist: %d onsets, every gap in 0.3..0.9 s (+-1/16), chord tones, same seed same notes, other seed differs; 0.625..0.625 is a regular pulse\n", n);
 }
 
+/* ---- composition 4: ornaments, glides, microtonal offsets ---- */
+static std::string orn_voice(const char *extra, const char *rate = "4n", double len = 0.5) {
+    char b[1024]; std::snprintf(b, sizeof b, R"(,"comp":{"seed":1,"voice":{"style":"arpeggio","rate":"%s","len":%g,"lo":50,"hi":74,"grid":[0,1,2,3],%s},%s})", rate, len, extra, ONLY1);
+    return b;
+}
+static void test_ornaments() {
+    const double U = 0.078125, S16 = 0.15625;   /* 1/32 and a sixteenth at 96 bpm */
+    const Log base = render(orn_voice(R"("orn":"none")"), 40);
+    std::vector<size_t> pl; for (size_t i = 0; i < base.f.size(); i++) if (base.role[i] == 1) pl.push_back(i);
+    assert(pl.size() > 40 && same(base, render(orn_voice(R"("orn":"none","orn_every":1)"), 40)));   /* none: untouched */
+    auto notes = [&](const Log &l, double a, double b) { std::vector<size_t> o; for (size_t i = 0; i < l.f.size(); i++) if (l.role[i] == 1 && l.t[i] > a - 1e-9 && l.t[i] < b - 1e-9) o.push_back(i); return o; };
+    auto gap_ok = [&](const Log &l) { for (size_t i = 0; i < l.f.size(); i++) if (l.role[i] == 1) { const double nb = (std::floor(l.t[i] / 0.625 + 1e-9) + 1) * 0.625; assert(l.t[i] + l.d[i] <= nb + 1e-9); } };
+    /* grace: every 2nd note is the scale tone above, 1/32, then the note after it, ending where it did */
+    { const Log g = render(orn_voice(R"("orn":"grace","orn_every":2)"), 40); int ng = 0; gap_ok(g);
+      for (size_t k = 0; k < pl.size(); k++) {
+          const size_t b = pl[k]; const auto at = notes(g, base.t[b], base.t[b] + 0.3);
+          if (at.size() == 1) { assert(g.f[at[0]] == base.f[b] && g.d[at[0]] == base.d[b]); continue; }
+          assert(at.size() == 2); ng++;
+          assert(std::fabs(g.d[at[0]] - U) < 1e-9 && std::fabs(g.t[at[1]] - (base.t[b] + U)) < 1e-9);          /* short, just before */
+          const int st = pitch(g, at[0]) - pitch(g, at[1]); assert(st >= 1 && st <= 2);                           /* one scale step up */
+          assert(g.f[at[1]] == base.f[b] && std::fabs(g.t[at[1]] + g.d[at[1]] - (base.t[b] + base.d[b])) < 1e-9);
+      }
+      assert(ng >= (int)pl.size() / 2 - 2 && ng <= (int)pl.size() / 2 + 2);
+      std::printf("C ornaments: grace every 2nd note - %d graces in %zu notes, each a 1/32 one scale step up before its note\n", ng, pl.size()); }
+    /* trill: the note's length filled with alternating pitches at 1/32 */
+    { const Log t = render(orn_voice(R"("orn":"trill","orn_every":1)"), 40); gap_ok(t); int nt = 0;
+      for (size_t k = 0; k < pl.size(); k++) {
+          const size_t b = pl[k]; const auto at = notes(t, base.t[b], base.t[b] + 0.6); assert(at.size() >= 3);
+          double sum = 0; for (size_t j = 0; j < at.size(); j++) {
+              sum += t.d[at[j]]; assert(std::fabs(t.t[at[j]] - (base.t[b] + j * U)) < 1e-9);
+              assert(j % 2 ? pitch(t, at[j]) > pitch(base, b) && pitch(t, at[j]) - pitch(base, b) <= 2 : t.f[at[j]] == base.f[b]);
+              if (j + 1 < at.size()) assert(std::fabs(t.d[at[j]] - U) < 1e-9);
+          }
+          assert(std::fabs(sum - base.d[b]) < 1e-9); nt++;
+      }
+      std::printf("C ornaments: trill - %d notes each filled with alternating pitches every 1/32, summing to the note's length\n", nt); }
+    /* mordent: note, tone above, note in the first 3/32 */
+    { const Log m = render(orn_voice(R"("orn":"mordent","orn_every":1)"), 40); gap_ok(m);
+      for (size_t k = 0; k < pl.size(); k++) {
+          const size_t b = pl[k]; const auto at = notes(m, base.t[b], base.t[b] + 0.6); assert(at.size() == 3);
+          assert(m.f[at[0]] == base.f[b] && m.f[at[2]] == base.f[b] && pitch(m, at[1]) > pitch(base, b));
+          assert(std::fabs(m.d[at[0]] - U) < 1e-9 && std::fabs(m.d[at[1]] - U) < 1e-9 && std::fabs(m.t[at[2]] - (base.t[b] + 2 * U)) < 1e-9);
+          assert(std::fabs(m.t[at[2]] + m.d[at[2]] - (base.t[b] + base.d[b])) < 1e-9);
+      }
+      std::printf("C ornaments: mordent - note, tone above, note, the first two 1/32 each\n"); }
+    /* chance: orn_every 0 and prob 0.5: about half, the same seed the same notes, another seed other notes */
+    { const std::string a = orn_voice(R"("orn":"grace","orn_every":0,"orn_prob":0.5)");
+      const Log x = render(a, 40), y = render(a, 40); int ng = 0; for (size_t i = 0; i < x.f.size(); i++) if (x.role[i] == 1 && std::fabs(x.d[i] - U) < 1e-9) ng++;
+      std::string o = a; o.replace(o.find("\"seed\":1"), 8, "\"seed\":7");
+      const double share = (double)ng / pl.size();
+      assert(same(x, y) && !same(x, render(o, 40)) && share > 0.3 && share < 0.7);
+      std::printf("C ornaments: prob 0.5 - %.0f%% of notes graced; same seed same notes, another seed differs\n", 100 * share); }
+    /* a 16n arpeggio with a trill (at 2x speed too) never crosses its next step */
+    for (const char *sp : { R"("orn":"trill","orn_every":1)", R"("orn":"trill","orn_every":1,"orn_speed":2)", R"("orn":"mordent","orn_every":1,"orn_speed":2)", R"("orn":"grace","orn_every":1,"orn_speed":0.5)" }) {
+        const Log t = render(orn_voice(sp, "16n", 0.9), 30); int n = 0;
+        for (size_t i = 0; i < t.f.size(); i++) if (t.role[i] == 1) {
+            const double nb = (std::floor(t.t[i] / S16 + 1e-9) + 1) * S16; assert(t.t[i] + t.d[i] <= nb + 1e-9); n++; }
+        assert(n > 40);
+    }
+    std::printf("C ornaments: at 16n, trills, mordents and graces (0.5-2x speed) end before the voice's next step\n");
+}
+
+/* the audio of voice 2 alone (chord 1 silent when `quiet`); the notes it played */
+struct Aud { std::vector<float> x; std::vector<double> t, f, vel; };
+static void audv(void *p, int role, double f, double, double t, double vel) { if (role == 2) { Aud *o = (Aud *)p; o->t.push_back(t); o->vel.push_back(vel); o->f.push_back(f); } }
+static Aud audio_run(const char *synth, double harm, double index, const char *st, double secs, bool quiet) {
+    char patch[4096];
+    std::snprintf(patch, sizeof patch, R"({"version":17,"tempo":96,"key":50,"prog":[{"r":0,"q":"m7"},{"r":5,"q":"maj7"},{"r":7,"q":"7"},{"r":0,"q":"m9"}],"bed":{"on":false},"zones":{"on":false},
+        "fx":{"delayWet":0,"revWet":0},"fx2":{"delayWet":0,"revWet":0},"fx3":{"delayWet":0,"revWet":0},"morph":{"on":false},
+        "voice":{"on":false},"sect":{"on":true,"synth":"%s","harm":%g,"index":%g},"v3":{"on":false},
+        "comp":{"bars":"repeat","bass":{"mode":"off"},"sect":%s%s}})", synth, harm, index, st, quiet ? R"(,"over":{"chord":{"0":{"sect":{"role":"off"}}}})" : "");
+    unsigned seed = 11; Aud o; fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128); fs_piece_test_hooks(pc, draw, &seed, audv, &o);
+    const int r = fs_piece_add_route(pc, patch); const int blocks = (int)(secs * 48000 / 128);
+    o.x.reserve(blocks * 128);
+    for (int b = 0; b < blocks; b++) { fs_piece_walk(pc, r, (double)b / blocks, 0); fs_process(pc, 128); const float *out = fs_out(pc, 0); o.x.insert(o.x.end(), out, out + 128); }
+    fs_destroy(pc); return o;
+}
+/* the pitch (Hz) over [t, t+win): positive-going zero crossings, interpolated; 0 when under 3 */
+static double zc_pitch(const std::vector<float> &x, double t, double win) {
+    const long long a = (long long)std::llround(t * 48000), b = std::min((long long)x.size() - 1, (long long)std::llround((t + win) * 48000));
+    double first = -1, last = -1; int n = 0;
+    for (long long i = std::max(1LL, a); i <= b; i++) if (x[i - 1] < 0 && x[i] >= 0) { const double c = (double)(i - 1) + -x[i - 1] / (double)(x[i] - x[i - 1]); if (first < 0) first = c; last = c; n++; }
+    return n < 3 ? 0 : (n - 1) * 48000.0 / (last - first);
+}
+static std::string glide_st(const char *grid, double ms, const char *iv) {
+    char b[512]; std::snprintf(b, sizeof b, R"({"style":"arpeggio","rate":"2n","len":0.6,"lo":55,"hi":75,"grid":%s,"glide":%g,"glide_iv":"%s"})", grid, ms, iv); return b;
+}
+static void test_glides() {
+    auto track = [&](const Aud &a, size_t k, double dt) { return zc_pitch(a.x, a.t[k] + dt, 0.02); };
+    auto run = [&](const char *grid, double ms, const char *iv) { return audio_run("fm", 1, 0.01, glide_st(grid, ms, iv).c_str(), 14, false); };
+    /* D A (a 7-semitone leap) with glide 120 ms: continuous, the pitch passes through the way between, then holds */
+    { const Aud a = run("[0,2]", 120, "all"); int n = 0;
+      for (size_t k = 1; k + 1 < a.t.size() && k < 8; k++) {
+          const double f0 = a.f[k - 1], f1 = a.f[k], up = f1 > f0 ? 1 : -1; double prev = f0; int mid = 0;
+          for (double dt = 0.012; dt <= 0.116; dt += 0.012) {
+              const double p = track(a, k, dt); assert(p > 0);
+              assert((p - prev) * up > -0.03 * prev);                                  /* never turns back */
+              if ((p - f0) * up > 0.1 * std::fabs(f1 - f0) && (f1 - p) * up > 0.1 * std::fabs(f1 - f0)) mid++;
+              prev = p;
+          }
+          assert(mid >= 4);                                                            /* most of the windows between the two pitches */
+          assert(std::fabs(track(a, k, 0.16) / f1 - 1) < 0.02 && std::fabs(track(a, k, 0.3) / f1 - 1) < 0.01);   /* arrived by ~120-160 ms */
+          assert(std::fabs(track(a, k, 0.012) / f1 - 1) > 0.05);                       /* started at the old pitch, not the new */
+          n++;
+      }
+      assert(n >= 5);
+      const Aud c = run("[0,2]", 0, "all");                                            /* control: no glide, the new pitch within 40 ms */
+      for (size_t k = 1; k < 6; k++) assert(std::fabs(track(c, k, 0.04) / c.f[k] - 1) < 0.02);
+      std::printf("C glides: fm D<->A at 120 ms - %d notes slid monotonically from the old pitch through the middle to the new by 160 ms; no glide: new pitch by 40 ms\n", n); }
+    /* steps only skips leaps; leaps only skips steps */
+    { auto glided = [&](const char *grid, const char *iv) { const Aud a = run(grid, 120, iv); int g = 0, p = 0;
+          for (size_t k = 1; k < 4; k++) { const double r = track(a, k, 0.03) / a.f[k] - 1; if (std::fabs(r) > 0.04) g++; else p++; } return g > 0 && p == 0 ? 1 : p > 0 && g == 0 ? 0 : -1; };
+      assert(glided("[3,4]", "steps") == 1 && glided("[0,2]", "steps") == 0 && glided("[0,2]", "leaps") == 1 && glided("[3,4]", "leaps") == 0 && glided("[0,2]", "all") == 1);
+      std::printf("C glides: steps-only glides a 2-semitone move and skips a leap; leaps-only the reverse\n"); }
+    /* no onset spike above a clean attack: the high band as a note starts, over what it was just before, per unit of velocity, against
+       a clean attack at the pitch it starts from (a glide starts at the old pitch; a plain change at its own, here the old note's too) */
+    { const char *ST = R"({"style":"arpeggio","rate":"8n","len":0.9,"lo":55,"hi":70,"grid":[0,2,0,2,0,2,0,2,0,2,0,2,0,2,0,2],"glide":120})";
+      auto clean = [&](const char *g, double &f) { char b[256]; std::snprintf(b, sizeof b, R"({"style":"arpeggio","rate":"1n","len":0.3,"lo":55,"hi":70,"grid":[%s]})", g);
+          const Onsets o = onset_run("fm", b); f = o.f[0]; return onset_peak(o, 0, false, false) / o.vel[0]; };
+      double fa, fb; const double ca = clean("0", fa), cb = clean("2", fb);
+      auto ratio = [&](const char *st, int &n) { const Onsets o = onset_run("fm", st); double most = 0; n = 0;
+          for (size_t k = 1; k < o.t.size() && o.t[k] < o.t[0] + 5; k++) { const double sf = o.f[k - 1] /* the pitch the note starts at */, c = o.f[k] != fa && o.f[k] != fb ? 0 : sf == fa ? ca : sf == fb ? cb : 0; if (c == 0) break; most = std::max(most, onset_peak(o, k, false, true) / o.vel[k] / c); n++; }
+          return most; };
+      int n; const double g = ratio(ST, n);
+      std::printf("C glides: onsets - %d glided notes, the largest rise in the highs x%.2f a clean attack\n", n, g);
+      assert(n >= 8 && g <= 1.0); }
+    /* a sampler voice and a chord-voice pool have no continuous pitch: the glide setting changes nothing there */
+    { const char *S = R"({"style":"arpeggio","rate":"2n","len":0.6,"lo":55,"hi":75,"grid":[0,2],"glide":%d})"; char a[256], b[256]; std::snprintf(a, sizeof a, S, 0); std::snprintf(b, sizeof b, S, 120);
+      const Aud x = audio_run("s-resonator", 0.5, 0.5, a, 12, false), y = audio_run("s-resonator", 0.5, 0.5, b, 12, false);
+      assert(x.t.size() > 6 && x.t == y.t && x.f == y.f && x.x == y.x);
+      const char *P = R"({"style":"strum","rate":"2n","glide":%d})"; std::snprintf(a, sizeof a, P, 0); std::snprintf(b, sizeof b, P, 120);
+      const Aud u = audio_run("fm", 1, 4, a, 12, false), v = audio_run("fm", 1, 4, b, 12, false);
+      assert(u.t.size() > 6 && u.x == v.x);
+      std::printf("C glides: a sampler voice and a strummed chord-voice pool - audio bit-identical with and without glide (plain note change)\n"); }
+    /* slide: the ornament ramps into the note from a third below over a sixteenth */
+    { const char *S = R"({"style":"arpeggio","rate":"2n","len":0.6,"lo":55,"hi":75,"grid":[0,2],"orn":"slide","orn_every":1})";
+      const Aud a = audio_run("fm", 1, 0.01, S, 14, false); int n = 0;
+      for (size_t k = 1; k < 7; k++) {
+          const double p0 = zc_pitch(a.x, a.t[k] + 0.012, 0.02), p1 = zc_pitch(a.x, a.t[k] + 0.3, 0.02);
+          assert(std::fabs(p1 / a.f[k] - 1) < 0.01 && p0 > 0 && p0 / a.f[k] < std::pow(2.0, -2.0 / 12) && p0 / a.f[k] > std::pow(2.0, -4.5 / 12));   /* starts a minor/major third below */
+          const double pm = zc_pitch(a.x, a.t[k] + 0.07, 0.02); assert(pm > p0 * 1.03 && pm < p1 * 0.99);
+          n++;
+      }
+      std::printf("C ornaments: slide - %d notes ramp up into the note from a third below over a 1/16\n", n); }
+}
+
+static double cents_of(double f) { const double m = 69 + 12 * std::log2(f / 440); return 100 * (m - std::round(m)); }
+static void test_micro() {
+    const Log base = render(orn_voice(R"("orn":"none")", "4n", 0.5), 40);
+    const Log l = render(orn_voice(R"("micro":[0,25,0,0,0])", "4n", 0.5), 40); int sharp = 0, plain = 0;
+    assert(l.f.size() == base.f.size());
+    for (size_t i = 0; i < l.f.size(); i++) if (l.role[i] == 1) {
+        const double c = cents_of(l.f[i]); assert(l.t[i] == base.t[i]);
+        if (std::fabs(c - 25) < 0.01) sharp++; else { assert(std::fabs(c) < 0.01); plain++; }
+    }
+    for (size_t i = 0; i < l.f.size(); i++) if (l.role[i] == 1 && tick_of(l.t[i]) < span_ticks()) {   /* chord 0: the F (degree 1) is sharp, D A C are not */
+        const int pc = pitch(l, i) % 12; assert((std::fabs(cents_of(l.f[i]) - 25) < 0.01) == (pc == 5)); }
+    assert(sharp > 8 && plain > 24 && std::fabs(cents_of(base.f[0])) < 0.01);
+    /* a canon follower replays the notes with their offsets; so does a heterophony double */
+    const char *MV = R"({"role":"melody","lo":50,"hi":81,"micro":[0,25,0,0,0]})";
+    const Log c = render(rel_comp(MV, ARPV3, MOT, R"([{"type":"canon","a":0,"b":2,"delay":8,"from":0,"to":0}])"), 40); int nc = 0, ns = 0;
+    for (size_t i = 0; i < c.f.size(); i++) if (c.role[i] == 1 && tick_of(c.t[i]) + 8 < span_ticks()) {
+        bool found = false; for (size_t j = 0; j < c.f.size(); j++) if (c.role[j] == 3 && tick_of(c.t[j]) == tick_of(c.t[i]) + 8) { found = true; assert(std::fabs(cents_of(c.f[j]) - cents_of(c.f[i])) < 0.01); }
+        assert(found); nc++; if (std::fabs(cents_of(c.f[i]) - 25) < 0.01) ns++; }
+    assert(nc >= 12 && ns >= 3);
+    const Log h = render(rel_comp(MV, R"({"role":"off"})", MOT, R"([{"type":"hetero","a":0,"b":2,"offset":30,"ornament":0,"from":0,"to":0}])"), 40); int nh = 0;
+    for (size_t i = 0; i < h.f.size(); i++) if (h.role[i] == 1 && tick_of(h.t[i]) < span_ticks()) {
+        bool found = false; for (size_t j = 0; j < h.f.size(); j++) if (h.role[j] == 3 && std::fabs(h.t[j] - h.t[i] - 0.03) < 1e-4 && h.f[j] == h.f[i]) found = true; assert(found); nh++; }
+    assert(nh >= 12);
+    std::printf("C micro: +25 cents on the 3rd - %d of %d notes sharp (the 3rds only); a canon follower replays %d notes with their offsets (%d at +25), a heterophony double %d\n", sharp, sharp + plain, nc, ns, nh);
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && !std::strcmp(argv[1], "walk")) { test_walk(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "tp")) { test_tintinnabuli(); test_pointillist(); return 0; }
@@ -1681,11 +1853,15 @@ int main(int argc, char **argv) {
     if (argc > 1 && !std::strcmp(argv[1], "levels")) { test_levels(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "levels-table")) { levels_table(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "fix")) { test_hetero_with(); test_motion(); test_density(); return 0; }
+    if (argc > 1 && !std::strcmp(argv[1], "orn")) { test_ornaments(); test_glides(); test_micro(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "onsets")) { test_onsets(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "cost")) { test_cost(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "rel")) { test_relation_levels(); test_relation_read(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "read")) { test_gain_memo(); test_gain_lengths(); test_patch_read_cost(); return 0; }
     test_repeat_hash();
+    test_ornaments();
+    test_glides();
+    test_micro();
     test_ostinato();
     test_chorale();
     test_tintinnabuli();
