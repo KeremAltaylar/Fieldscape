@@ -692,6 +692,14 @@
     if (sel.kind !== "route") { eb.appendChild(srcCell(src, f, [f.k])); }
     into.appendChild(eb);
   }
+  /* a full-line row has no source column: off the route, its own value gets a lit × (back to the inherited), an inherited one its source in its title */
+  function wideReset(r, f, src) {
+    if (sel.kind === "route") { return; }
+    r.classList.add("rs");
+    if (src !== "here") { r.title = "from the " + (src === "section" ? "section" : "route"); return; }
+    var x = el("button", "cd-reset", "×"); x.type = "button"; x.title = "Back to the inherited"; x.setAttribute("aria-label", "Reset " + f.label + " to the inherited");
+    x.addEventListener("click", function () { M.clearValue(comp, sel, voice, f.k); commit(); }); r.appendChild(x);
+  }
   var set1 = function (f) { return function (val) { M.setValue(comp, sel, voice, f.k, val); commit(); }; };
   /* a range of two handles (the pointillist's silence): two native sliders on one track, so the arrows work on a focused handle */
   function rangeRow(into, f, v, src) {
@@ -707,7 +715,7 @@
     var done = function () { if (+a.value > +b.value) { a.value = b.value; } set([+a.value, +b.value]); };
     a.addEventListener("change", done); b.addEventListener("change", done);
     [a, b].forEach(function (i) { i.addEventListener("dblclick", function () { set(f.def.slice()); }); });
-    box.appendChild(fill); box.appendChild(a); box.appendChild(b); paint(); ctl.appendChild(box); r.appendChild(ctl); into.appendChild(r); into.appendChild(hint);
+    box.appendChild(fill); box.appendChild(a); box.appendChild(b); paint(); ctl.appendChild(box); r.appendChild(ctl); wideReset(r, f, src); into.appendChild(r); into.appendChild(hint);
   }
   /* micro-tuning: five little dials, the root and the chord's 3rd, 5th, 7th, 9th, in cents. Each is a native slider (arrows move it a cent)
      drawn as a dial that a drag up or down turns; a double click puts it back to 0 */
@@ -766,7 +774,10 @@
     g("orn");
     if (v.orn !== "none") { g("orn_every"); if (v.orn_every === 0) { g("orn_prob"); } g("orn_speed"); }
     g("glide");
-    if (v.glide > 0) { g("glide_iv"); box.appendChild(el("p", "cd-isub wrap cd-rolehint", "a sampler voice changes pitch without gliding")); }
+    if (v.glide > 0) { g("glide_iv");
+      var syn = (((ctx.route.properties || {}).patch || {})[voice] || {}).synth, sam = typeof syn === "string" && syn.indexOf("s-") === 0;   /* the page's own test (lab-roles isSampler) */
+      var why = sam ? "a sampler voice changes pitch without gliding" : ["strum", "swells", "chorale"].indexOf(style) >= 0 ? "glides don't apply to chord styles" : "";
+      if (why) { box.appendChild(el("p", "cd-isub wrap cd-rolehint", why)); } }
     g("micro"); w.appendChild(box);
   }
   function growDock() { grown = !grown; document.body.classList.toggle("composing-grown", grown); resize(); render(); }
@@ -916,7 +927,7 @@
         b.addEventListener("click", function () { var a = (v || []).slice(), i = a.indexOf(d); if (i >= 0) { a.splice(i, 1); } else { a.push(d); } a.sort(); set(a.length ? a : [0]); }); t.appendChild(b); });
       ctl.appendChild(t);
     }
-    r.appendChild(ctl); if (f.kind === "seg") { return r; }   /* a switch takes the whole line: no value, no source column */
+    r.appendChild(ctl); if (f.kind === "seg") { if (!own) { wideReset(r, f, src); } return r; }   /* a switch takes the line: no value, and a source only as a × */
     r.appendChild(out); r.appendChild(own ? ownSrc(f, so) : srcCell(src, f, [f.k]));
     return r;
   }

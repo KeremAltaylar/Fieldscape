@@ -297,6 +297,7 @@ body.composing-grown #ls-panel { display: none; }   /* the listener's sheet: the
 .cd-row2 .cd-seg { width: 100%; }
 .cd-row2 .cd-seg button { padding: 2px; }
 .cd-row2.wide { grid-template-columns: 3.4rem minmax(0, 1fr); height: 26px; }
+.cd-row2.wide.rs { grid-template-columns: 3.4rem minmax(0, 1fr) 1rem; }   /* composition 4: a full-line row's × */
 /* a menu has no value to show: its select takes that column too (composition 4: "Tintinnabuli", "Pointillist", "by chance" read whole) */
 .cd-row2:has(> .cd-ctl > select) > .cd-ctl { grid-column: span 2; }
 .cd-row2:has(> .cd-ctl > select) > .cd-v { display: none; }

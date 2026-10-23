@@ -711,6 +711,38 @@ try {
   await vtab("voice 3"); await sleep(200); await shot("16-styles");
   await reopen4("function (c) { c.voice.role = 'melody'; c.motif = FsCompose.motifDefault(); c.voice.orn = 'trill'; c.voice.orn_every = 3; c.voice.glide = 120; c.voice.micro = [0, 25, 0, -14, 0]; c.sect.style = 'tintinnabuli'; c.v3.style = 'pointillist'; c.bass.mode = 'walk'; }");
   await sleep(200); await shot("17-ornaments");
+  /* fix round: the full-line rows reset like the others; the glide hint says what is true of this voice */
+  await reopen4("function (c) { }");
+  check("at the route, a full-line row has no reset (the route's own)", !(await ev("!!document.querySelector('#cd-insp .cd-row2[data-k=\"refit\"] .cd-reset, #cd-insp .cd-row2[data-k=\"tmode\"] .cd-reset')")), null);
+  await ev(`${vcell(2)}.click(), 0`); await sleep(300);
+  await ev("document.querySelector('#cd-insp .cd-orn').click(), 0"); await sleep(300);
+  const rk = (k) => `document.querySelector('#cd-insp .cd-row2[data-k="${k}"] .cd-reset')`;
+  check("at a chord, an inherited full-line row is dimmed and has no reset", await ev(`document.querySelector('#cd-insp .cd-row2[data-k="orn"]').classList.contains('inh') && !${rk("orn")}`), null);
+  const k4 = await ev(`JSON.stringify(__fa.routePatch(${R}).comp)`);
+  await segBtn("orn", "trill");
+  check("at a chord, orn writes the chord's own, lit with a ×", (await C()).over.chord["2"].voice.orn === "trill" && await ev(`!!${rk("orn")} && document.querySelector('#cd-insp .cd-row2[data-k="orn"]').classList.contains('mine')`), (await C()).over);
+  await ev(`${rk("orn")}.click(), 0`); await sleep(300);
+  check("× puts orn back to the route's (the chord's override gone)", !((await C()).over.chord["2"]) && (await ev(`JSON.stringify(__fa.routePatch(${R}).comp)`)) === k4, (await C()).over);
+  await ev("document.body.focus(), document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true })), 0"); await sleep(300);
+  check("one Ctrl+Z brings the trill back", (await C()).over.chord["2"].voice.orn === "trill", (await C()).over);
+  await reopen4("function (c) { c.v3.style = 'pointillist'; }"); await vtab("voice 3");
+  await ev(`${vcell(2).replace('"voice"', '"v3"')}.click(), 0`); await sleep(300);
+  await ev("document.querySelector('#cd-insp .cd-orn').click(), 0"); await sleep(300);
+  await nth("silence", 1, 3); await sleep(200);
+  check("at a chord, silence shows a × once set, and it resets", await ev(`!!${rk("silence")}`), null);
+  await ev(`${rk("silence")}.click(), 0`); await sleep(300);
+  check("silence × clears the chord's value", !((await C()).over.chord["2"]), (await C()).over);
+  const hint = () => ev("[].map.call(document.querySelectorAll('#cd-insp .cd-rolehint'), function (p) { return p.textContent; }).filter(function (t) { return /glid/.test(t); }).join('|')");
+  await ev(`__fa.patchEdit(${R}, function (p) { window.__v4 = JSON.stringify([p.voice, p.sect]); p.voice = Object.assign({}, p.voice, { synth: 's-test' }); p.sect = Object.assign({}, p.sect, { synth: 'fm' }); }), 0`);
+  await reopen4("function (c) { c.voice.glide = 120; c.sect.glide = 120; }");
+  check("a sampler voice with a glide set: the hint says it never glides", /a sampler voice changes pitch without gliding/.test(await hint()), await hint());
+  await vtab("voice 2");
+  check("a synth voice: no sampler hint", !/sampler/.test(await hint()), await hint());
+  for (const st of ["strum", "swells", "chorale"]) {
+    await reopen4(`function (c) { c.sect.style = '${st}'; c.sect.glide = 120; }`); await vtab("voice 2"); await ev("document.querySelector('#cd-insp .cd-orn[aria-expanded=\"false\"]') && document.querySelector('#cd-insp .cd-orn').click(), 0"); await sleep(200);
+    check(`${st}: the hint says glides do not apply to chord styles`, /glides don't apply to chord styles/.test(await hint()), await hint());
+  }
+  await ev(`__fa.patchEdit(${R}, function (p) { var v = JSON.parse(window.__v4); if (v[0]) { p.voice = v[0]; } else { delete p.voice; } if (v[1]) { p.sect = v[1]; } else { delete p.sect; } }), 0`);
   await ev(`FsComposeDock.close(), 0`); await sleep(300);
   await ev(`__fa.patchEdit(${R}, function (p) { var c = JSON.parse(window.__c4); if (c === null) { delete p.comp; } else { p.comp = c; } }), 0`); await sleep(300);
   await ev(`fsListen.select(${R}), __fa.openPatchPanel(), document.getElementById('pp-compose').click(), 0`); await sleep(800);
