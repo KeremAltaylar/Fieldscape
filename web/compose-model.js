@@ -118,6 +118,17 @@
     if (!Object.keys(o[voice]).length) { delete o[voice]; }
     if (emptyOver(o)) { delete comp.over[scope.kind][key(scope)]; }
   }
+  /* every layer over the route (chord, section, zone) that sets one of these keys for the voice - the count per layer kind */
+  function keyLayers(comp, voice, k) {
+    var out = { chord: 0, section: 0, zone: 0 };
+    Object.keys(out).forEach(function (kind) { Object.keys(comp.over[kind]).forEach(function (id) { var v = comp.over[kind][id][voice]; if (v && v[k] !== undefined) { out[kind]++; } }); });
+    return out;
+  }
+  /* "apply to all": the route's value then plays everywhere - one clearValue per layer, so the empty ones go too */
+  function clearKeyEverywhere(comp, voice, ks) {
+    [].concat(ks).forEach(function (k) { ["chord", "section", "zone"].forEach(function (kind) { Object.keys(comp.over[kind]).forEach(function (id) {
+      clearValue(comp, { kind: kind, i: +id, id: id }, voice, k); }); }); });
+  }
   function clearScope(comp, scope) { if (scope.kind !== "route") { delete comp.over[scope.kind][key(scope)]; } }
   function fieldDef(k, style) {
     var searchList = COMMON.concat(BASS, ORNAMENTS);
@@ -578,7 +589,7 @@
   function label(id) { for (var i = 0; i < STYLES.length; i++) { if (STYLES[i].id === id) { return STYLES[i].label; } } return id; }
   function summary(comp) { return VOICES.map(function (v) { return comp[v].role === "off" ? "Off" : comp[v].role === "melody" ? "Motif" : label(comp[v].style); }).join(" · "); }
   var api = { VOICES: VOICES, STYLES: STYLES, ROLES: ROLES, OPS: OPS, motifDefault: motifDefault, motifStep: motifStep, setMotif: setMotif, setChain: setChain, chainAt: chainAt, RATES: RATES, FIELDS: FIELDS, ORNAMENTS: ORNAMENTS, BASS: BASS, defaults: defaults, TEMPLATES: TEMPLATES,
-    scopeObj: scopeObj, setValue: setValue, clearValue: clearValue, clearScope: clearScope, effective: effective, cell: cell,
+    scopeObj: scopeObj, setValue: setValue, clearValue: clearValue, keyLayers: keyLayers, clearKeyEverywhere: clearKeyEverywhere, clearScope: clearScope, effective: effective, cell: cell,
     bands: bands, history: history, summary: summary, clone: clone, label: label,
     RELATIONS: RELATIONS, addRelation: addRelation, setRelation: setRelation, removeRelation: removeRelation, relationsAt: relationsAt, links: links,
     PRESETS: PRESETS, FORMS: FORMS, NCHORD: NCHORD, formSpans: formSpans, generate: generate, roll: roll };

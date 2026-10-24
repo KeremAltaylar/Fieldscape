@@ -343,6 +343,9 @@ body.composing-grown #ls-panel { display: none; }   /* the listener's sheet: the
 .cd-insp.tighter .cd-presets button, .cd-insp.tighter .cd-itools button { padding-top: 2px; padding-bottom: 2px; }
 .cd-insp.tighter .cd-ieb { margin-top: 2px; }
 .cd-insp.tighter .cd-accs { height: 14px; }
+.cd-note { margin: 0; font: var(--t-xs) var(--font-mono); color: var(--faint); line-height: 1.3; min-width: 0; overflow-wrap: anywhere; }
+.cd-note button { padding: 0; border: 0; background: none; color: var(--lamp); font: inherit; letter-spacing: 0; text-transform: none; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.cd-note button:hover { color: var(--accent); }
 .cd-insp.tightest .cd-rolehint { display: none; }
 .cd-ieb .cd-reset { letter-spacing: var(--track-meta); text-transform: uppercase; }
 /* snug and tiny (composition 4): past tightest - rows and dials a little smaller, then the sub-line goes */

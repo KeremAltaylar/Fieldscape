@@ -710,3 +710,19 @@ test("composition 4: generate is byte-identical to before the new styles", () =>
     out.push(M.generate(M.defaults(), { form, contrast, seed, nchords, relations, bpm: seed % 2 ? 96 : 140 }));
   assert.equal(createHash("sha256").update(JSON.stringify(out)).digest("hex"), "8194807cddc3947b3cd25c907091e5a477128924d676df3986b592272ab9a6fe");
 });
+test("clearKeyEverywhere: drops the keys for one voice in chord, section and zone layers; keeps the rest", () => {
+  const c = M.defaults();
+  M.setValue(c, { kind: "chord", i: 1 }, "voice", "style", "strum"); M.setValue(c, { kind: "chord", i: 1 }, "voice", "rate", 2);
+  M.setValue(c, { kind: "chord", i: 2 }, "voice", "style", "arp"); M.setValue(c, { kind: "chord", i: 2 }, "sect", "style", "arp");
+  M.setValue(c, { kind: "section", i: 1 }, "voice", "style", "arp");
+  M.setValue(c, { kind: "zone", id: "p1" }, "voice", "style", "arp"); M.setValue(c, { kind: "zone", id: "p1" }, "voice", "rate", 4); c.over.zone.p1.when = "enter";
+  M.setValue(c, { kind: "zone", id: "p2" }, "voice", "style", "arp");
+  assert.deepEqual(M.keyLayers(c, "voice", "style"), { chord: 2, section: 1, zone: 2 });
+  M.clearKeyEverywhere(c, "voice", ["style", "tones"]);
+  assert.deepEqual(M.keyLayers(c, "voice", "style"), { chord: 0, section: 0, zone: 0 });
+  assert.equal(c.over.chord["1"].voice.rate, 2); assert.equal(c.over.chord["1"].voice.style, undefined);
+  assert.equal(c.over.chord["2"].voice, undefined); assert.equal(c.over.chord["2"].sect.style, "arp");
+  assert.equal(c.over.section["1"], undefined);
+  assert.deepEqual(c.over.zone.p1, { when: "enter", blend: 1, voice: { rate: 4 } });   /* a zone keeps its when and blend */
+  assert.equal(c.over.zone.p2, undefined);   /* an override left empty goes, as clearValue drops it */
+});

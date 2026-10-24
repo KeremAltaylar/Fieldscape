@@ -826,6 +826,62 @@ try {
   await shot("9-24-chords-1024");
   await ev("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true })), FsComposeDock.close(), 0"); await sleep(300);
   await ev(`__fa.patchEdit(${R}, function (p) { p.prog = window.__prog24; }), 0`); await sleep(300);
+  /* composition 4: "apply to all" - a route-scope edit that generated chord overrides still shadow; the melody and relation hints */
+  {
+    await s.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false }); await sleep(500);
+    await ev(`__fa.patchEdit(${R}, function (p) { p.prog = window.__prog24; }), FsComposeDock.close(), __fa.openPatchPanel(), document.getElementById('pp-compose').click(), 0`); await sleep(900);
+    await ev("document.querySelector('#compose-dock .cd-gen').click(), 0"); await sleep(300);
+    await ev("document.getElementById('cd-generate').click(), 0"); await sleep(500);
+    await ev("document.querySelector('#compose-dock .cd-gen').click(), 0"); await sleep(300);
+    const NOTE = (k) => `(function(){ var p = document.querySelector('#cd-insp .cd-note[data-fk="note:${k}"]'); return p ? p.textContent : null; })()`;
+    const tab = (name) => ev(`[].filter.call(document.querySelectorAll('#cd-insp .cd-vtabs button'), function (b) { return b.textContent === '${name}'; })[0].click(), 0`).then(() => sleep(300));
+    const ga = await ev(`(function(){ var c = __fa.routePatch(${R}).comp, V = ["voice", "sect", "v3"], rows = V.map(function (v, k) { var chs = Object.keys(c.over.chord).filter(function (i) { return (c.over.chord[i][v] || {}).style; }).length;
+      var cells = []; for (var i = 0; i < 16; i++) { cells.push(FsCompose.cell(c, i, [], 16)[k]); }
+      return { v: v, chs: chs, mel: c[v].role === "melody", rel: cells.some(function (x) { return x.rel; }) }; }); return rows; })()`);
+    const sup = ga.filter((x) => !x.mel && x.chs > 0)[0], mv = ga.filter((x) => x.mel)[0], rv = ga.filter((x) => x.rel && !x.mel)[0];
+    check("Generate leaves a support voice with chord styles, a melody, and a relation-driven voice", !!sup && !!mv && !!rv, ga);
+    check("the route inspector: the route inspector", await ev("/the route/.test(document.getElementById('cd-insp-title').textContent)"), await ev("document.getElementById('cd-insp-title').textContent"));
+    const tabOf = { voice: "voice 1", sect: "voice 2", v3: "voice 3" };
+    await tab(tabOf[sup.v]);
+    check("no apply-to-all note before a field is edited at the route", (await ev("document.querySelectorAll('#cd-insp .cd-note[data-fk^=\"note:all:\"]').length")) === 0, null);
+    await pick("style", "ostinato"); await sleep(350);
+    const want = sup.chs + (sup.chs === 1 ? " chord sets its own style — apply to all" : " chords set their own style — apply to all");
+    const nt = await ev(NOTE("all:style"));
+    check("route-scope Ostinato: the note counts the chords that set their own style", !!nt && nt.indexOf(want.split(" — ")[0]) === 0 && /apply to all$/.test(nt), [nt, want]);
+    await shot("c4-apply-to-all-note");
+    const sp1 = await spillOf(); check("the apply-to-all note fits one screen at 1440x900", sp1.length === 0, sp1.slice(0, 5));
+    const smallest = await ev(`(function(){ var p = document.querySelector('#cd-insp .cd-note'); return parseFloat(getComputedStyle(p).fontSize); })()`);
+    check("the note is no smaller than --t-xs", smallest >= (await ev("parseFloat(getComputedStyle(document.querySelector('#cd-insp .cd-isub')).fontSize)")) - 0.5, smallest);
+    await ev(`document.querySelector('#cd-insp .cd-note[data-fk="note:all:style"] button').click(), 0`); await sleep(400);
+    const after = await ev(`(function(){ var c = __fa.routePatch(${R}).comp; return { chord: Object.keys(c.over.chord).filter(function (i) { return (c.over.chord[i]["${sup.v}"] || {}).style; }).length, note: !!document.querySelector('#cd-insp .cd-note[data-fk="note:all:style"]'), styles: (function(){ var o = []; for (var i = 0; i < 24; i++) { o.push(FsCompose.cell(c, i, [], 24)[["voice","sect","v3"].indexOf("${sup.v}")].style); } return o; })(), cells: [].map.call(document.querySelectorAll('#cd-lanes .cd-lane[data-voice="${sup.v}"] .cd-cell'), function (x) { return x.textContent; }) }; })()`);
+    check("apply to all: no chord-level style left, the note gone, no chord keeps another style: each cell reads ostin., off (a chord's own role) or a relation word", after.chord === 0 && !after.note && after.cells.length === 16 && after.cells.every((t) => /^(ostin\.|off|canon|answer|hocket|hetero|motion|unison|density)$/.test(t)) && after.styles.slice(0, 16).every((t) => t === "ostinato" || t === "off"), after);   /* off: a chord's own role; a relation word: the relation drives it */
+    await key("z", "KeyZ", 2);
+    check("one Ctrl+Z restores the chord styles and the note", await ev(`(function(){ var c = __fa.routePatch(${R}).comp; return Object.keys(c.over.chord).filter(function (i) { return (c.over.chord[i]["${sup.v}"] || {}).style; }).length === ${sup.chs} && c.${sup.v}.style === "ostinato" && !!document.querySelector('#cd-insp .cd-note[data-fk="note:all:style"]'); })()`), null);
+    await key("z", "KeyZ", 2);
+    check("a second Ctrl+Z undoes the style choice itself", await ev(`__fa.routePatch(${R}).comp.${sup.v}.style !== "ostinato"`), null);
+    await tab(tabOf[mv.v]);
+    const mn = await ev(NOTE("melody"));
+    check("the melody voice: the role hint", mn === "a melody plays its motif — set role to on to hear this style", mn);
+    const sp2 = await spillOf(); check("the melody hint fits one screen", sp2.length === 0, sp2.slice(0, 5));
+    await ev(`document.querySelector('#cd-insp .cd-note[data-fk="note:melody"] button').click(), 0`); await sleep(400);
+    check("set role to on: the voice's role is accomp, the hint gone", await ev(`__fa.routePatch(${R}).comp.${mv.v}.role === "accomp" && !document.querySelector('#cd-insp .cd-note[data-fk="note:melody"]')`), null);
+    await key("z", "KeyZ", 2);
+    check("one Ctrl+Z gives the melody back", await ev(`__fa.routePatch(${R}).comp.${mv.v}.role === "melody" && !!document.querySelector('#cd-insp .cd-note[data-fk="note:melody"]')`), null);
+    await tab(tabOf[rv.v]);
+    const rn = await ev(NOTE("rel"));
+    check("a relation-driven voice: 'a <relation> plays this voice on chords a–b'", /^an? (canon|answer|hocket|hetero|motion|unison|density) plays this voice on chords? \d+(–\d+)?$/.test(rn || ""), rn);
+    const sp3 = await spillOf(); check("the relation hint fits one screen", sp3.length === 0, sp3.slice(0, 5));
+    await s.send("Emulation.setDeviceMetricsOverride", { width: 1024, height: 700, deviceScaleFactor: 1, mobile: false }); await sleep(700);
+    for (const [name, k] of [[tabOf[sup.v], "all:style"], [tabOf[mv.v], "melody"], [tabOf[rv.v], "rel"]]) {
+      await tab(name);
+      if (k === "all:style") { await pick("style", "ostinato"); await sleep(350); }
+      await shot("c4-1024-" + k.replace(":", "-")); if (process.env.FS_DEBUG) console.log(await ev("(function(){ var i = document.getElementById('cd-insp'), n = i.querySelector('.cd-note'); return [i.className, i.scrollHeight, i.clientHeight, i.clientWidth, n && n.getBoundingClientRect().height]; })()"));
+      const sp = await spillOf(); check("1024x700: " + name + (await ev(NOTE(k)) ? " with its note" : " (no note)") + " fits one screen", sp.length === 0, sp.slice(0, 5));
+    }
+    await tab(tabOf[rv.v]);
+    await ev(`document.querySelector('#cd-insp .cd-note[data-fk="note:rel"] button').click(), 0`); await sleep(400);
+    check("its link selects the relation chip", await ev("!!document.querySelector('#cd-relrow .cd-rchip.on, #cd-relrow .cd-rchip[aria-pressed=\"true\"]') || /relation|canon|answer|hocket|hetero|motion|unison|density/i.test(document.getElementById('cd-insp-title').textContent)"), await ev("document.getElementById('cd-insp-title').textContent"));
+  }
   /* desk only: a phone's patch panel has no Compose */
   await s.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(600);
   await ev(`fsListen.select(${R}), __fa.openPatchPanel(), 0`); await sleep(600);

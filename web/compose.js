@@ -4,7 +4,7 @@
    inherited ones dimmed with their source. Edits go through ctx.save (the route's patch): heard at once. Desk only. */
 (function () {
   var M = window.FsCompose, ctx = null, comp = null, hist = null, sel = { kind: "route" }, voice = "voice", grown = false, saveErr = null, nowTimer = null, statsTimer = null, audio = [], polls = 0;
-  var gen = false, genForm = "AABA", genContrast = 0.6, genRel = "some";   /* the Generate form panel: open, its form and contrast */
+  var edited = null, gen = false, genForm = "AABA", genContrast = 0.6, genRel = "some";   /* the Generate form panel: open, its form and contrast */
   /* composition 2: the selected chain step and motif note (sel.kind "sent" puts them in the inspector), the roll's cursor, the
      lane whose layers are shown, the motif generator's seed */
   var si = -1, ni = -1, cur = { row: 0, col: 0 }, lay = null, mseed = 0;
@@ -109,7 +109,7 @@
   function resize() { if (window.__fa && __fa.map) { setTimeout(function () { __fa.map.resize(); }, 0); } }
 
   function open(c) {
-    ctx = c; comp = M.clone(ctx.comp()); hist = M.history(100); hist.push(comp); sel = { kind: "route" }; voice = "voice"; ornOpen = null; saveErr = null; gen = false; si = ni = -1; lay = null; capped = false; relMenu = false;
+    ctx = c; comp = M.clone(ctx.comp()); hist = M.history(100); hist.push(comp); sel = { kind: "route" }; voice = "voice"; edited = null; ornOpen = null; saveErr = null; gen = false; si = ni = -1; lay = null; capped = false; relMenu = false;
     var d = document.getElementById("compose-dock");
     if (!d) { d = el("section", "cd"); d.id = "compose-dock"; d.setAttribute("aria-label", "Compose"); document.body.appendChild(d); }
     document.body.classList.add("composing"); d.hidden = false; resize();
@@ -592,7 +592,9 @@
     var s = nums.length ? (nums.length > 1 ? "voices " + nums.slice(0, -1).join(", ") + " and " + nums[nums.length - 1] : "voice " + nums[0]) : "";
     return s + (bass ? (s ? " and the bass" : "the bass") : ""); }
 
+  var curBs = [], curN = 0;
   function inspector(w, bs, n) {
+    curBs = bs; curN = n;
     if (gen) { genPanel(w, n); return; }
     if (sel.kind === "sent") { sentPanel(w, n); return; }
     if (sel.kind === "rel") { relPanel(w, bs, n); return; }
@@ -626,7 +628,8 @@
       (mel ? M.FIELDS.common.filter(function (f) { return f.k !== "style" && f.k !== "rate"; }) : M.FIELDS.common.concat(M.FIELDS[style] || [])).filter(function (f) { return HIDE.indexOf(f.k) < 0; });
     var vr = el("div", "cd-vrows");   /* the voice's own rows: one holder, so they can fold away as one */
     fields.filter(function (f) { return f.kind !== "grid" && f.kind !== "accents" && f.k !== "refit"; }).forEach(function (f) { fieldRow(vr, f, e);
-      if (f.k === "role") { vr.appendChild(el("p", "cd-isub wrap cd-rolehint", "“melody” plays the motif; “on” plays the style; “off” is silent.")); } });
+      if (f.k === "role") { vr.appendChild(el("p", "cd-isub wrap cd-rolehint", "“melody” plays the motif; “on” plays the style; “off” is silent.")); }
+      if (f.k === (mel ? "role" : "style")) { styleNotes(vr, mel); } });
     var grid = fields.filter(function (f) { return f.kind === "grid"; })[0];
     if (grid) { patternBlock(vr, grid, fields.filter(function (f) { return f.kind === "accents"; })[0], e); }
     fields.filter(function (f) { return f.k === "refit"; }).forEach(function (f) { fieldRow(vr, f, e);
@@ -674,12 +677,41 @@
   function adapt(f) { var s = SEGS[f.k]; return s ? Object.assign({}, f, { kind: "seg", o: s.o, label: s.label }) : ADAPT[f.k] ? Object.assign({}, f, ADAPT[f.k]) : f; }
   var VOIC = [["close", "close", [36, 29, 22, 15]], ["open", "open", [40, 26, 19, 8]], ["drop2", "drop-2", [43, 29, 22, 15]]];
   /* one field's row in the inspector (v: the effective value, e.source: where it comes from), whatever its kind */
+  /* composition 4: a note under a row - what still keeps the edit from being heard - with a button (or a link) that fixes it */
+  function noteLine(into, parts, name, title, fn) {
+    var p = el("p", "cd-note"); p.dataset.fk = "note:" + name;
+    parts[0] && p.appendChild(document.createTextNode(parts[0]));
+    var b = el("button", null, parts[1]); b.type = "button"; b.title = title; b.addEventListener("click", fn); p.appendChild(b);
+    parts[2] && p.appendChild(document.createTextNode(parts[2])); into.appendChild(p);
+  }
+  /* a route-scope edit that a chord, section or zone layer overrides for this voice: "apply to all" removes those keys (one undo step) */
+  function applyNote(into, f) {
+    if (sel.kind !== "route" || !edited || edited.voice !== voice || edited.k !== f.k) { return; }   /* only the field just edited here, not every key a chord sets */
+    var L = M.keyLayers(comp, voice, f.k), parts = [["chord", "chords"], ["section", "sections"], ["zone", "zones"]].map(function (a) { return L[a[0]] ? L[a[0]] + " " + (L[a[0]] === 1 ? a[0] : a[1]) : ""; }).filter(Boolean);
+    if (!parts.length) { return; }
+    var one = parts.length === 1 && /^1 /.test(parts[0]);
+    noteLine(into, [parts.join(", ") + (one ? " sets its own " : " set their own ") + f.label + " — ", "apply to all", ""], "all:" + f.k, "Remove it from those layers, so the route’s " + f.label + " plays everywhere",
+      function () { M.clearKeyEverywhere(comp, voice, f.k === "style" ? ["style", "grid", "tones"] : f.k); commit(); });   /* a style's grid and tones were written with it */
+  }
+  /* why a style may not sound: the voice plays the motif (role melody), or a relation plays it on some chords */
+  function styleNotes(into, mel) {
+    if (voice === "bass") { return; }
+    if (mel) { noteLine(into, ["a melody plays its motif — ", "set role to on", " to hear this style"], "melody", "Role “on” at " + scopeName(sel), function () { M.setValue(comp, sel, voice, "role", "accomp"); commit(); }); }
+    if (sel.kind !== "route") { return; }
+    var vi = VS.indexOf(voice), at = [], word, first = -1, lo = 99999, hi = -1;
+    for (var i = 0; i < curN; i++) {
+      at = curBs.filter(function (b) { return b.t0 < (i + 1) / curN && b.t1 > i / curN; });
+      var c = M.cell(comp, i, at, curN)[vi];
+      if (c.rel && c.style !== "off") { if (first < 0) { first = drivenBy(i, vi, at); word = c.rel; } lo = Math.min(lo, i); hi = i; }
+    }
+    if (first >= 0) { noteLine(into, [/^[aeiou]/.test(word) ? "an " : "a ", word, " plays this voice on " + (lo === hi ? "chord " + (lo + 1) : "chords " + (lo + 1) + "–" + (hi + 1))], "rel", "Show this relation", function () { pickRel(first); }); }
+  }
   function fieldRow(into, f0, e) {
     var f = adapt(f0), v = e.values[f.k], src = e.source[f.k];
-    if (f.kind === "range") { rangeRow(into, f, v, src); return; }
-    if (f.kind === "micro") { microBlock(into, f, v, src); return; }
-    if (f.k === "voicing") { voicingBlock(into, f, v, src); return; }
-    var r = row(f, v, src); if (f.title) { r.title = f.title; } into.appendChild(r);
+    if (f.kind === "range") { rangeRow(into, f, v, src); applyNote(into, f); return; }
+    if (f.kind === "micro") { microBlock(into, f, v, src); applyNote(into, f); return; }
+    if (f.k === "voicing") { voicingBlock(into, f, v, src); applyNote(into, f); return; }
+    var r = row(f, v, src); if (f.title) { r.title = f.title; } into.appendChild(r); applyNote(into, f);
     if (f.k === "voices" && !isSamp(voice)) {   /* a chorale asks no more voices than its synth plays at once (the role's own and its pool) */
       var sy = voiceSynth(voice) || "fm", cap = sy === "metal" ? 3 : 5;
       into.appendChild(el("p", "cd-isub wrap cd-rolehint", sy + " plays " + cap + " at once" + (+v > cap ? " · the extra voices are left out" : "")));
@@ -707,7 +739,7 @@
     var x = el("button", "cd-reset", "×"); x.type = "button"; x.title = "Back to the inherited"; x.setAttribute("aria-label", "Reset " + f.label + " to the inherited");
     x.addEventListener("click", function () { M.clearValue(comp, sel, voice, f.k); commit(); }); r.appendChild(x);
   }
-  var set1 = function (f) { return function (val) { M.setValue(comp, sel, voice, f.k, val); commit(); }; };
+  var set1 = function (f) { return function (val) { edited = { voice: voice, k: f.k }; M.setValue(comp, sel, voice, f.k, val); commit(); }; };
   /* a range of two handles (the pointillist's silence): two native sliders on one track, so the arrows work on a focused handle */
   function rangeRow(into, f, v, src) {
     var mine = sel.kind === "route" || src === "here", set = set1(f), lo = v[0], hi = v[1];
@@ -915,7 +947,7 @@
     var r = el("div", "cd-row2 " + (f.kind === "seg" ? "wide " : "") + (mine ? "mine" : "inh")); r.dataset.k = f.k; r.dataset.fk = "row:" + f.k;
     r.appendChild(el("span", "cd-k", f.label));
     /* a voice made the melody gets a motif to play (the starter) in the same undo step */
-    var set = own || function (val) { M.setValue(comp, sel, voice, f.k, val); if (f.k === "role" && val === "melody" && !comp.motif) { M.setMotif(comp, M.motifDefault()); } commit(); };
+    var set = own || function (val) { edited = { voice: voice, k: f.k }; M.setValue(comp, sel, voice, f.k, val); if (f.k === "role" && val === "melody" && !comp.motif) { M.setMotif(comp, M.motifDefault()); } commit(); };
     var ctl = el("span", "cd-ctl"), out = el("span", "cd-v", "");
     if (f.kind === "menu") {
       var m = el("select"); m.setAttribute("aria-label", f.label);
