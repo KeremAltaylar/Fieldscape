@@ -26,7 +26,7 @@ try {
   const key = async (k, code, mods = 0) => { await s.send("Input.dispatchKeyEvent", { type: "keyDown", key: k, code, windowsVirtualKeyCode: VK[k], modifiers: mods, text: k === " " ? " " : k === "Enter" ? "\r" : undefined });
     await s.send("Input.dispatchKeyEvent", { type: "keyUp", key: k, code, windowsVirtualKeyCode: VK[k], modifiers: mods }); await sleep(300); };
   const spillOf = () => ev(`(function(){ var out = [];
-    [["#compose-dock", "#compose-dock > *"], [".cd-main", ".cd-main > *, .cd-cell, .cd-chord"], ["#cd-insp", "#cd-insp > *, #cd-insp .cd-row2 > *"], [".cd-chips", ".cd-chips > *"], [".cd-ed", ".cd-ed *"]].forEach(function (k) {
+    [["#compose-dock", "#compose-dock > *"], [".cd-main", ".cd-main > *, .cd-cell, .cd-chord"], ["#cd-insp", "#cd-insp > *, #cd-insp .cd-row2 > *, #cd-insp .cd-micro *, #cd-insp .cd-vrow *"], [".cd-chips", ".cd-chips > *"], [".cd-ed", ".cd-ed *"]].forEach(function (k) {
       var c = document.querySelector(k[0]); if (!c) { if (k[0].indexOf(".cd-") !== 0 || k[0] === ".cd-main") { out.push(k[0] + " missing"); } return; } var r = c.getBoundingClientRect();
       [].forEach.call(document.querySelectorAll(k[1]), function (x) { var q = x.getBoundingClientRect();
         if (q.width && (q.right > r.right + 1 || q.bottom > r.bottom + 1 || q.left < r.left - 1)) out.push(k[0] + " > " + x.className); }); });
@@ -538,6 +538,230 @@ try {
   await ev(`FsComposeDock.close(), 0`); await sleep(300);
   await s.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false }); await sleep(600);
   await ev(`fsListen.select(${R}), __fa.openPatchPanel(), document.getElementById('pp-compose').click(), 0`); await sleep(800);
+  /* composition 4 (task-9-brief.md): the four new styles' editors, ornaments & glides with micro-tuning, the walking bass */
+  await ev(`__fa.patchEdit(${R}, function (p) { window.__c4 = JSON.stringify(p.comp === undefined ? null : p.comp); }), 0`);
+  const reopen4 = async (edit) => { await ev(`FsComposeDock.close(), 0`); await sleep(250);
+    await ev(`__fa.patchEdit(${R}, function (p) { p.comp = FsCompose.defaults(); (${edit})(p.comp); }), 0`); await sleep(250);
+    await ev(`fsListen.select(${R}), __fa.openPatchPanel(), document.getElementById('pp-compose').click(), 0`); await sleep(700); };
+  const vtab = async (t) => { await ev(`${btn("#cd-insp .cd-vtabs button", t)}.click(), 0`); await sleep(250); };
+  const segBtn = async (k, v) => { await ev(`document.querySelector('#cd-insp [data-k="${k}"] button[data-v="${v}"]').click(), 0`); await sleep(300); };
+  const nth = async (k, n, v) => { await ev(`(function(){ var m = document.querySelectorAll('#cd-insp [data-k="${k}"] input')[${n}]; m.value = ${JSON.stringify(String(v))}; m.dispatchEvent(new Event('change', { bubbles: true })); })(), 0`); await sleep(300); };
+  const hasRow = (k) => ev(`!!document.querySelector('#cd-insp [data-k="${k}"]')`);
+  const snaps4 = []; const snap4 = async () => snaps4.push(await ev(`JSON.stringify(__fa.routePatch(${R}).comp)`));
+  const read4 = () => ev(`(function(){ var v = function (k, i) { var e = document.querySelectorAll('#cd-insp [data-k="' + k + '"] input, #cd-insp [data-k="' + k + '"] select')[i || 0]; return e ? e.value : null; },
+    p = function (k) { var b = document.querySelector('#cd-insp [data-k="' + k + '"] button[aria-pressed="true"]'); return b ? b.dataset.v : null; };
+    return { voices: v('voices'), restrike: v('restrike'), strict: v('strict'), voicing: p('voicing'), answers: v('answers'), tmode: p('tmode'), s0: v('silence', 0), s1: v('silence', 1), plen: v('plen'), refit: p('refit'), on: document.querySelectorAll('#cd-insp .cd-gc.on').length }; })()`);
+  const word4 = (v, i = 0) => ev(`document.querySelector('#cd-lanes .cd-lane[data-voice="${v}"] .cd-cell[data-i="${i}"] span').textContent`);
+  await reopen4("function (c) { }"); await snap4();
+  const glyphs = {}, defs = {};
+  for (const [id, word] of [["ostinato", "ostin."], ["chorale", "chor."], ["tintinnabuli", "tinti."], ["pointillist", "point."]]) {
+    await pick("style", id); await sleep(350); await snap4();
+    const c4 = await C(); glyphs[id] = await ev(`document.querySelector('#cd-lanes .cd-lane[data-voice="voice"] .cd-cell[data-i="0"] svg').innerHTML`); defs[id] = await read4();
+    check(`choosing ${id} writes it, and its lane cell reads ${word}`, c4.voice.style === id && (await word4("voice")) === word, [c4.voice, await word4("voice")]);
+  }
+  check("each new style has its own glyph in the lane", new Set(Object.values(glyphs)).size === 4 && Object.values(glyphs).every((g) => g.length > 40), Object.keys(glyphs));
+  const d = (id) => defs[id];
+  check("ostinato: its default cell is the core's 0 1 2 0 1 2 (written), refit 'by chord step', the grid shows it", d("ostinato").refit === "degree" && d("ostinato").on === 16, d("ostinato"));
+  check("chorale: voicing close, 4 voices, re-strike 1 bar, leading 100 %", d("chorale").voicing === "close" && d("chorale").voices === "4" && d("chorale").restrike === "1n" && +d("chorale").strict === 1, d("chorale"));
+  check("tintinnabuli: answers voice 1, the tone below", d("tintinnabuli").answers === "0" && d("tintinnabuli").tmode === "below", d("tintinnabuli"));
+  check("pointillist: silence 0.25 - 1.5 s, note 0.15 s", +d("pointillist").s0 === 0.25 && +d("pointillist").s1 === 1.5 && +d("pointillist").plen === 0.15, d("pointillist"));
+  /* ostinato */
+  await pick("style", "ostinato"); await sleep(350); await snap4();
+  check("choosing ostinato writes its grid default", JSON.stringify((await C()).voice.grid) === JSON.stringify(await ev("FsCompose.FIELDS.ostinato[0].def")), (await C()).voice.grid);
+  check("ostinato: the refit switch reads 'by chord step' | 'keep its shape'", (await ev("[].map.call(document.querySelectorAll('#cd-insp [data-k=\"refit\"] button'), function (b) { return b.textContent; }).join('|')")) === "by chord step|keep its shape", null);
+  await segBtn("refit", "transpose"); await snap4();
+  check("refit writes voice.refit", (await C()).voice.refit === "transpose", (await C()).voice);
+  /* chorale */
+  await pick("style", "chorale"); await sleep(350); await snap4();
+  check("chorale's voicing picker: three staves, close lit; its rate row is its re-strike", (await ev("document.querySelectorAll('#cd-insp [data-k=\"voicing\"] button svg').length")) === 3 && !(await hasRow("rate")) && await hasRow("restrike"), null);
+  await segBtn("voicing", "open"); await snap4();
+  check("voicing writes voice.voicing (open) and lights it", (await C()).voice.voicing === "open" && (await read4()).voicing === "open", (await C()).voice);
+  await ev("document.querySelector('#cd-insp [data-k=\"voicing\"] button[data-v=\"drop2\"]').focus(), 0");
+  const pp0 = await ev("window.__pp"); await key(" ", "Space"); await snap4();
+  check("Space on a voicing button presses it (drop2), not the sound", (await C()).voice.voicing === "drop2" && (await ev("window.__pp")) === pp0, [(await C()).voice.voicing, await ev("window.__pp")]);
+  check("a voicing press keeps focus on the picker", await ev("!!document.activeElement.closest('[data-fk=\"row:voicing\"]')"), await active());
+  await setIn("voices", 5); await sleep(300); await snap4();
+  await pick("restrike", "2n"); await sleep(300); await snap4();
+  await setIn("strict", 0.5); await sleep(300); await snap4();
+  c2 = await C();
+  check("voices, re-strike and leading write voices, restrike, strict", c2.voice.voices === 5 && c2.voice.restrike === "2n" && c2.voice.strict === 0.5, c2.voice);
+  check("the leading line explains itself (50 %)", await ev("[].some.call(document.querySelectorAll('#cd-insp .cd-isub'), function (p) { return /^50 %: /.test(p.textContent); })"), await insp());
+  /* tintinnabuli */
+  await pick("style", "tintinnabuli"); await sleep(350); await snap4();
+  await setIn("answers", 2); await sleep(300); await snap4();
+  await segBtn("tmode", "above"); await snap4();
+  c2 = await C();
+  check("answers and tone write answers, tmode", c2.voice.answers === 2 && c2.voice.tmode === "above", c2.voice);
+  check("tintinnabuli answering a Free voice says so (voice 3 plays Free)", await ev("[].some.call(document.querySelectorAll('#cd-insp .cd-isub'), function (p) { return /voice 3 plays Free/.test(p.textContent); })"), await insp());
+  /* pointillist: the two-handle silence range */
+  await pick("style", "pointillist"); await sleep(350); await snap4();
+  check("silence is a two-handle range (two inputs, 'shortest' and 'longest')", await ev("(function(){ var i = document.querySelectorAll('#cd-insp [data-k=\"silence\"] input'); return i.length === 2 && /shortest/.test(i[0].getAttribute('aria-label')) && /longest/.test(i[1].getAttribute('aria-label')); })()"), null);
+  await nth("silence", 0, 0.5); await snap4(); await nth("silence", 1, 2); await snap4();
+  check("silence writes [min, max]", JSON.stringify((await C()).voice.silence) === "[0.5,2]", (await C()).voice.silence);
+  await nth("silence", 0, 3); await snap4();
+  { const sl = (await C()).voice.silence || [1, 0]; check("the shortest cannot pass the longest", sl[0] <= sl[1], sl); }
+  await nth("silence", 0, 0.5); await snap4();
+  await ev("document.querySelectorAll('#cd-insp [data-k=\"silence\"] input')[0].focus(), 0"); await key("ArrowRight", "ArrowRight"); await snap4();
+  check("ArrowRight on the shortest handle: +0.05 s, focus kept on it", Math.abs(((await C()).voice.silence || [])[0] - 0.55) < 1e-9 && await ev("document.activeElement === document.querySelectorAll('#cd-insp [data-k=\"silence\"] input')[0]"), [(await C()).voice.silence, await active()]);
+  await ev("document.querySelectorAll('#cd-insp [data-k=\"silence\"] input')[1].focus(), 0"); await key("ArrowLeft", "ArrowLeft"); await snap4();
+  check("ArrowLeft on the longest handle: -0.05 s", Math.abs(((await C()).voice.silence || [])[1] - 1.95) < 1e-9, (await C()).voice.silence);
+  await setIn("plen", 0.3); await sleep(300); await snap4();
+  check("note length writes plen (0.3 s)", (await C()).voice.plen === 0.3 && !(await hasRow("rate")), (await C()).voice);
+  /* ornaments & glides */
+  const oh = () => ev(`(function(){ var h = document.querySelector('#cd-insp .cd-orn'); return h ? { open: h.getAttribute('aria-expanded'), dot: !!h.querySelector('.cd-odot'), rows: !!document.querySelector('#cd-insp [data-k="orn"]') } : null; })()`);
+  check("ornaments & glides: closed by default, nothing set, no dot, no rows", JSON.stringify(await oh()) === '{"open":"false","dot":false,"rows":false}', await oh());
+  const before17 = await ev(`JSON.stringify(__fa.routePatch(${R}).comp)`);
+  await ev("document.querySelector('#cd-insp .cd-orn').click(), 0"); await sleep(300);
+  check("its heading opens it (no edit is stored)", (await oh()).open === "true" && (await oh()).rows && before17 === (await ev(`JSON.stringify(__fa.routePatch(${R}).comp)`)), await oh());
+  check("opened with nothing set: ornament none, only the ornament row, glide, micro-tuning", (await ev("[].map.call(document.querySelectorAll('#cd-insp [data-k=\"orn\"] button'), function (b) { return b.textContent; }).join('|')")) === "none|grace|trill|mord.|slide" && !(await hasRow("orn_every")) && await hasRow("glide") && !(await hasRow("glide_iv")) && (await ev("document.querySelectorAll('#cd-insp [data-k=\"micro\"] input').length")) === 5, null);
+  await segBtn("orn", "trill"); await snap4();
+  check("ornament writes orn; every, speed appear; the heading's dot lights", (await C()).voice.orn === "trill" && await hasRow("orn_every") && await hasRow("orn_speed") && (await oh()).dot, [(await C()).voice, await oh()]);
+  await pick("orn_every", "3"); await sleep(300); await snap4();
+  check("every writes orn_every (3rd note), no chance row while it is set", (await C()).voice.orn_every === 3 && !(await hasRow("orn_prob")), (await C()).voice);
+  await pick("orn_every", "0"); await sleep(300); await snap4();
+  check("by chance: the chance row appears", (await C()).voice.orn_every === 0 && await hasRow("orn_prob") && /by chance/.test(await ev("document.querySelector('#cd-insp [data-k=\"orn_every\"] select').selectedOptions[0].textContent")), (await C()).voice);
+  await setIn("orn_prob", 0.5); await sleep(300); await snap4();
+  await setIn("orn_speed", 1.5); await sleep(300); await snap4();
+  await setIn("glide", 120); await sleep(300); await snap4();
+  c2 = await C();
+  check("chance, speed and glide write orn_prob, orn_speed, glide", c2.voice.orn_prob === 0.5 && c2.voice.orn_speed === 1.5 && c2.voice.glide === 120, c2.voice);
+  check("speed reads 1.5×, glide 120 ms", (await ev("document.querySelector('#cd-insp [data-k=\"orn_speed\"] .cd-v').textContent")) === "1.5×" && (await ev("document.querySelector('#cd-insp [data-k=\"glide\"] .cd-v').textContent")) === "120 ms", null);
+  check("a glide brings its 'glides' switch: all moves | steps | leaps", (await ev("[].map.call(document.querySelectorAll('#cd-insp [data-k=\"glide_iv\"] button'), function (b) { return b.textContent; }).join('|')")) === "all moves|steps|leaps", null);
+  await segBtn("glide_iv", "leaps"); await snap4();
+  check("glides writes glide_iv", (await C()).voice.glide_iv === "leaps", (await C()).voice);
+  await nth("micro", 1, 25); await snap4(); await nth("micro", 3, -14); await snap4();
+  check("the micro-tuning dials write micro: the 3rd +25, the 7th -14 (cents)", JSON.stringify((await C()).voice.micro) === "[0,25,0,-14,0]", (await C()).voice.micro);
+  check("a set dial is lit and says its cents", await ev("(function(){ var k = document.querySelectorAll('#cd-insp [data-k=\"micro\"] .cd-mk'); return k.length === 5 && k[1].classList.contains('set') && /\\+25/.test(k[1].textContent) && /−14/.test(k[3].textContent) && !k[0].classList.contains('set'); })()"), await ev("document.querySelector('#cd-insp [data-k=\"micro\"]').textContent"));
+  await ev("document.querySelectorAll('#cd-insp [data-k=\"micro\"] input')[2].focus(), 0"); await key("ArrowRight", "ArrowRight"); await snap4();
+  check("ArrowRight on a focused dial: +1 cent, focus kept", ((await C()).voice.micro || [])[2] === 1 && await ev("document.activeElement === document.querySelectorAll('#cd-insp [data-k=\"micro\"] input')[2]"), [(await C()).voice.micro, await active()]);
+  await key("ArrowLeft", "ArrowLeft"); await snap4(); await key("ArrowLeft", "ArrowLeft"); await snap4();
+  check("ArrowLeft twice on it: -1", ((await C()).voice.micro || [])[2] === -1, (await C()).voice.micro);
+  { /* a dial dragged up by the mouse: 1 cent a pixel, stored on release (one edit) */
+    const pt = await ev("(function(){ var r = document.querySelectorAll('#cd-insp [data-k=\"micro\"] .cd-mdial')[4].getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()");
+    const h0 = snaps4.length;
+    await mouse("mousePressed", pt[0], pt[1]); for (let k = 1; k <= 4; k++) { await mouse("mouseMoved", pt[0], pt[1] - 5 * k); await sleep(30); } await mouse("mouseReleased", pt[0], pt[1] - 20); await sleep(400); await snap4();
+    check("dragging a dial up 20 px: +20 cents on it, one edit", ((await C()).voice.micro || [])[4] === 20 && snaps4.length === h0 + 1, (await C()).voice.micro);
+  }
+  await ev("document.querySelectorAll('#cd-insp [data-k=\"micro\"] .cd-mdial')[4].dispatchEvent(new MouseEvent('dblclick', { bubbles: true })), 0"); await sleep(300); await snap4();
+  check("double-clicking a dial sets it back to 0", ((await C()).voice.micro || [])[4] === 0, (await C()).voice.micro);
+  check("ornamented cells carry a ~ mark (voice 1's), the others none", await ev("(function(){ var c = document.querySelectorAll('#cd-lanes .cd-lane[data-voice=\"voice\"] .cd-cell'); var o = document.querySelectorAll('#cd-lanes .cd-lane[data-voice=\"sect\"] .cd-cell.orn').length; return c.length === 16 && [].every.call(c, function (x) { return x.classList.contains('orn') && getComputedStyle(x, '::before').content === '\"~\"'; }) && o === 0; })()"), null);
+  const osp = await spillOf();
+  check("ornaments open on a pointillist voice: one screen at 1440x900", osp.length === 0, osp.slice(0, 5));
+  /* the walking bass */
+  await vtab("bass"); await pick("mode", "walk"); await sleep(300); await snap4();
+  check("bass walks: mode walk, rows approach, beats and walk rate (no pedal note)", (await C()).bass.mode === "walk" && await hasRow("approach") && await hasRow("before") && await hasRow("wrate") && !(await hasRow("note")), (await C()).bass);
+  check("the bass lane reads walk and says so", (await word4("bass")) === "walk" && /walks/.test(await ev("document.querySelector('#cd-lanes .cd-lane.bass .cd-name small').textContent")), await word4("bass"));
+  check("to next: half steps | scale | by the 5th", (await ev("[].map.call(document.querySelectorAll('#cd-insp [data-k=\"approach\"] button'), function (b) { return b.textContent; }).join('|')")) === "half steps|scale|by the 5th", null);
+  await segBtn("approach", "fifth"); await snap4(); await setIn("before", 2); await sleep(300); await snap4(); await pick("wrate", "8n"); await sleep(300); await snap4();
+  c2 = await C();
+  check("approach, beats and walk rate write approach, before, wrate", c2.bass.approach === "fifth" && c2.bass.before === 2 && c2.bass.wrate === "8n", c2.bass);
+  const bsp = await spillOf();
+  check("the walking bass inspector: one screen", bsp.length === 0, bsp.slice(0, 5));
+  /* one undo step each: back through every edit above */
+  await ev("document.body.focus(), 0");
+  let u4 = true, u4at = -1;
+  for (let i = snaps4.length - 2; i >= 0; i--) {
+    await ev("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true })), 0"); await sleep(150);
+    const now4 = await ev(`JSON.stringify(__fa.routePatch(${R}).comp)`);
+    if (now4 !== snaps4[i]) { u4 = false; const A = JSON.parse(now4), B = JSON.parse(snaps4[i]); u4at = [i, ["voice", "bass"].map((v) => Object.keys({ ...A[v], ...B[v] }).filter((k) => JSON.stringify(A[v][k]) !== JSON.stringify(B[v][k])).map((k) => v + "." + k)).flat()]; break; }
+  }
+  check("Ctrl+Z backs out every edit above one step at a time (" + (snaps4.length - 1) + " edits)", u4, u4at);
+  /* ornaments set: the section opens by itself, its dot lit; its heading closes it */
+  const ORN = "c.voice.orn = 'trill'; c.voice.orn_every = 0; c.voice.glide = 120; c.voice.micro = [0, 25, 0, -14, 0];";
+  await reopen4(`function (c) { ${ORN} }`);
+  check("ornaments set: the section is open, its dot lit", JSON.stringify(await oh()) === '{"open":"true","dot":true,"rows":true}', await oh());
+  await ev("document.querySelector('#cd-insp .cd-orn').click(), 0"); await sleep(300);
+  check("and its heading closes it again", (await oh()).open === "false" && !(await oh()).rows && (await oh()).dot, await oh());
+  /* the fit: every state with the section open, both desks */
+  const SETUPS = [["free", ""], ["melody", "c.voice.role = 'melody'; c.motif = FsCompose.motifDefault();"], ["arpeggio", "c.voice.style = 'arpeggio';"], ["strum", "c.voice.style = 'strum';"], ["euclid", "c.voice.style = 'euclid';"],
+    ["swells", "c.voice.style = 'swells';"], ["pedal", "c.voice.style = 'pedal';"], ["ostinato", "c.voice.style = 'ostinato';"], ["chorale", "c.voice.style = 'chorale';"],
+    ["tintinnabuli", "c.voice.style = 'tintinnabuli';"], ["pointillist", "c.voice.style = 'pointillist';"]];
+  const clipped = () => ev("[].filter.call(document.querySelectorAll('#cd-insp .cd-seg button, #cd-insp .cd-vbtn span, #cd-insp .cd-k'), function (b) { return b.scrollWidth > b.clientWidth + 1; }).map(function (b) { return b.textContent; })");
+  const folded = {};
+  for (const [w, h] of [[1440, 900], [1024, 700]]) {
+    await s.send("Emulation.setDeviceMetricsOverride", { width: w, height: h, deviceScaleFactor: 1, mobile: false }); await sleep(600);
+    for (const [nm, set] of SETUPS) {
+      await reopen4(`function (c) { ${set} ${ORN} }`);
+      const sp4 = await spillOf(), fo = await ev("document.getElementById('cd-insp').classList.contains('fold')");
+      folded[w + nm] = fo;
+      check(`${w}x${h} ${nm} voice, ornaments open: one screen`, sp4.length === 0 && (await oh()).open === "true", [sp4.slice(0, 4), await oh()]);
+    }
+    await reopen4(`function (c) { c.bass.mode = 'walk'; ${ORN} }`); await vtab("bass");
+    const spb = await spillOf();
+    check(`${w}x${h} the walking bass row: one screen`, spb.length === 0, spb.slice(0, 4));
+    check(`${w}x${h} the walk's switch and labels read whole`, !(await clipped()).length, await clipped());
+    check(`${w}x${h} the melody and Free voices keep all their rows with the section open (nothing folded away)`, !folded[w + "melody"] && !folded[w + "free"], folded);
+    await reopen4(`function (c) { c.voice.role = 'melody'; c.motif = FsCompose.motifDefault(); ${ORN} }`);
+    check(`${w}x${h} ornament, glides and tab switches and labels read whole`, !(await clipped()).length, await clipped());
+    const states = [];
+    states.push(["normal", await spillOf()]);
+    await ev("document.querySelector('#compose-dock .cd-icon[aria-label=\"Grow the dock\"]').click(), 0"); await sleep(600); states.push(["grown", await spillOf()]);
+    await ev("document.querySelector('#compose-dock .cd-icon[aria-label=\"Show the map\"]').click(), 0"); await sleep(600);
+    await ev("document.querySelector('#cd-lanes .cd-lane[data-voice=\"voice\"] .cd-layers').click(), 0"); await sleep(400); states.push(["layers", await spillOf()]);
+    await ev("document.querySelector('#cd-lanes .cd-lane[data-voice=\"voice\"] .cd-layers').click(), 0"); await sleep(300);
+    await ev("document.querySelector('#compose-dock .cd-gen').click(), 0"); await sleep(300); states.push(["generate panel", await spillOf()]);
+    await ev("document.querySelector('#compose-dock .cd-gen').click(), 0"); await sleep(300);
+    await addRel("canon"); await ev(`${vcell(0)}.click(), 0`); await sleep(400); states.push(["relations", await spillOf()]);
+    states.push(["chord scope keeps the section open", (await oh()).open === "true" ? [] : ["closed"]]);
+    for (const [nm, sp5] of states) { check(`${w}x${h} melody, ornaments open, ${nm}: one screen`, sp5.length === 0, sp5.slice(0, 4)); }
+  }
+  await s.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false }); await sleep(600);
+  /* the two mock frames: frame 1 (voice 2 an ostinato, voice 3 a chorale selected), frame 2 (ornaments, tintinnabuli, pointillist, a walking bass) */
+  await reopen4("function (c) { c.voice.role = 'melody'; c.motif = FsCompose.motifDefault(); c.sect.style = 'ostinato'; c.v3.style = 'chorale'; c.v3.voices = 4; }");
+  await vtab("voice 3"); await sleep(200); await shot("16-styles");
+  await reopen4("function (c) { c.voice.role = 'melody'; c.motif = FsCompose.motifDefault(); c.voice.orn = 'trill'; c.voice.orn_every = 3; c.voice.glide = 120; c.voice.micro = [0, 25, 0, -14, 0]; c.sect.style = 'tintinnabuli'; c.v3.style = 'pointillist'; c.bass.mode = 'walk'; }");
+  await sleep(200); await shot("17-ornaments");
+  /* fix round: the full-line rows reset like the others; the glide hint says what is true of this voice */
+  await reopen4("function (c) { }");
+  check("at the route, a full-line row has no reset (the route's own)", !(await ev("!!document.querySelector('#cd-insp .cd-row2[data-k=\"refit\"] .cd-reset, #cd-insp .cd-row2[data-k=\"tmode\"] .cd-reset')")), null);
+  await ev(`${vcell(2)}.click(), 0`); await sleep(300);
+  await ev("document.querySelector('#cd-insp .cd-orn').click(), 0"); await sleep(300);
+  const rk = (k) => `document.querySelector('#cd-insp .cd-row2[data-k="${k}"] .cd-reset')`;
+  check("at a chord, an inherited full-line row is dimmed and has no reset", await ev(`document.querySelector('#cd-insp .cd-row2[data-k="orn"]').classList.contains('inh') && !${rk("orn")}`), null);
+  const k4 = await ev(`JSON.stringify(__fa.routePatch(${R}).comp)`);
+  await segBtn("orn", "trill");
+  check("at a chord, orn writes the chord's own, lit with a ×", (await C()).over.chord["2"].voice.orn === "trill" && await ev(`!!${rk("orn")} && document.querySelector('#cd-insp .cd-row2[data-k="orn"]').classList.contains('mine')`), (await C()).over);
+  await ev(`${rk("orn")}.click(), 0`); await sleep(300);
+  check("× puts orn back to the route's (the chord's override gone)", !((await C()).over.chord["2"]) && (await ev(`JSON.stringify(__fa.routePatch(${R}).comp)`)) === k4, (await C()).over);
+  await ev("document.body.focus(), document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true })), 0"); await sleep(300);
+  check("one Ctrl+Z brings the trill back", (await C()).over.chord["2"].voice.orn === "trill", (await C()).over);
+  await reopen4("function (c) { c.v3.style = 'pointillist'; }"); await vtab("voice 3");
+  await ev(`${vcell(2).replace('"voice"', '"v3"')}.click(), 0`); await sleep(300);
+  await ev("document.querySelector('#cd-insp .cd-orn').click(), 0"); await sleep(300);
+  await nth("silence", 1, 3); await sleep(200);
+  check("at a chord, silence shows a × once set, and it resets", await ev(`!!${rk("silence")}`), null);
+  await ev(`${rk("silence")}.click(), 0`); await sleep(300);
+  check("silence × clears the chord's value", !((await C()).over.chord["2"]), (await C()).over);
+  const hint = () => ev("[].map.call(document.querySelectorAll('#cd-insp .cd-rolehint'), function (p) { return p.textContent; }).filter(function (t) { return /glid/.test(t); }).join('|')");
+  await ev(`__fa.patchEdit(${R}, function (p) { window.__v4 = JSON.stringify([p.voice, p.sect]); p.voice = Object.assign({}, p.voice, { synth: 's-test' }); p.sect = Object.assign({}, p.sect, { synth: 'fm' }); }), 0`);
+  await reopen4("function (c) { c.voice.glide = 120; c.sect.glide = 120; }");
+  check("a sampler voice with a glide set: the hint says it never glides", /a sampler voice changes pitch without gliding/.test(await hint()), await hint());
+  await vtab("voice 2");
+  check("a synth voice: no sampler hint", !/sampler/.test(await hint()), await hint());
+  for (const st of ["strum", "swells", "chorale"]) {
+    await reopen4(`function (c) { c.sect.style = '${st}'; c.sect.glide = 120; }`); await vtab("voice 2"); await ev("document.querySelector('#cd-insp .cd-orn[aria-expanded=\"false\"]') && document.querySelector('#cd-insp .cd-orn').click(), 0"); await sleep(200);
+    check(`${st}: the hint says glides do not apply to chord styles`, /glides don't apply to chord styles/.test(await hint()), await hint());
+  }
+  /* final review 6 and 3: where the core ignores ornaments, glides and micro-tuning the dock says so and draws no ~; a chorale's voices row says what its synth plays at once */
+  const hints = () => ev("[].map.call(document.querySelectorAll('#cd-insp .cd-rolehint'), function (p) { return p.textContent; }).join('|')");
+  const unfold = async () => { await ev("document.querySelector('#cd-insp .cd-orn[aria-expanded=\"false\"]') && document.querySelector('#cd-insp .cd-orn').click(), 0"); await sleep(200); };
+  const marks = () => ev("document.querySelectorAll('#cd-lanes .cd-lane[data-voice=\"sect\"] .cd-cell.orn').length");
+  for (const st of ["strum", "swells", "chorale"]) {
+    await reopen4(`function (c) { c.sect.style = '${st}'; c.sect.orn = 'trill'; c.sect.orn_every = 1; c.sect.glide = 120; }`); await vtab("voice 2"); await unfold();
+    check(`${st}: the ornament row says ornaments do not apply to chord styles, and no ~ is drawn`, /ornaments don't apply to chord styles/.test(await hints()) && (await marks()) === 0, [await hints(), await marks()]);
+    await reopen4(`function (c) { c.sect.style = '${st}'; c.sect.orn = 'trill'; c.sect.micro = [0, 25, 0, 0, 0]; }`); await vtab("voice 2");
+    check(`${st}: a micro-tuning still draws the ~ (it applies)`, (await marks()) > 0, await marks());
+  }
+  await reopen4("function (c) { c.sect.style = 'tintinnabuli'; c.sect.orn = 'trill'; c.sect.orn_every = 1; c.sect.glide = 120; c.sect.micro = [0, 25, 0, 0, 0]; }"); await vtab("voice 2"); await unfold();
+  check("tintinnabuli: the ornament, glide and micro rows each say its answers get none, and no ~", /play no ornaments/.test(await hints()) && /don't glide/.test(await hints()) && /micro-tuned/.test(await hints()) && (await marks()) === 0, [await hints(), await marks()]);
+  await reopen4("function (c) { c.sect.style = 'chorale'; }"); await vtab("voice 2");
+  check("a chorale on fm: the voices row says it plays 5 at once", /fm plays 5 at once/.test(await hints()), await hints());
+  await ev(`__fa.patchEdit(${R}, function (p) { p.sect = Object.assign({}, p.sect, { synth: 'metal' }); }), 0`); await reopen4("function (c) { c.sect.style = 'chorale'; c.sect.voices = 5; }"); await vtab("voice 2");
+  check("on metal: it says 3 at once, and that the extra voices are left out", /metal plays 3 at once · the extra voices are left out/.test(await hints()), await hints());
+  await ev(`__fa.patchEdit(${R}, function (p) { var v = JSON.parse(window.__v4); if (v[0]) { p.voice = v[0]; } else { delete p.voice; } if (v[1]) { p.sect = v[1]; } else { delete p.sect; } }), 0`);
+  await ev(`FsComposeDock.close(), 0`); await sleep(300);
+  await ev(`__fa.patchEdit(${R}, function (p) { var c = JSON.parse(window.__c4); if (c === null) { delete p.comp; } else { p.comp = c; } }), 0`); await sleep(300);
+  await ev(`fsListen.select(${R}), __fa.openPatchPanel(), document.getElementById('pp-compose').click(), 0`); await sleep(800);
   /* a point's own panel: Compose is there, disabled, saying why */
   await ev("FsComposeDock.close(), 0");
   await ev("document.querySelector('#f-rhythm').click(), 0"); await sleep(800);
@@ -602,6 +826,94 @@ try {
   await shot("9-24-chords-1024");
   await ev("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true })), FsComposeDock.close(), 0"); await sleep(300);
   await ev(`__fa.patchEdit(${R}, function (p) { p.prog = window.__prog24; }), 0`); await sleep(300);
+  /* composition 4: "apply to all" - a route-scope edit that generated chord overrides still shadow; the melody and relation hints */
+  {
+    await s.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false }); await sleep(500);
+    await ev(`__fa.patchEdit(${R}, function (p) { p.prog = window.__prog24; }), FsComposeDock.close(), __fa.openPatchPanel(), document.getElementById('pp-compose').click(), 0`); await sleep(900);
+    await ev("document.querySelector('#compose-dock .cd-gen').click(), 0"); await sleep(300);
+    await ev("document.getElementById('cd-generate').click(), 0"); await sleep(500);
+    await ev("document.querySelector('#compose-dock .cd-gen').click(), 0"); await sleep(300);
+    const NOTE = (k) => `(function(){ var p = document.querySelector('#cd-insp .cd-note[data-fk="note:${k}"]'); return p ? p.textContent : null; })()`;
+    const tab = (name) => ev(`[].filter.call(document.querySelectorAll('#cd-insp .cd-vtabs button'), function (b) { return b.textContent === '${name}'; })[0].click(), 0`).then(() => sleep(300));
+    const ga = await ev(`(function(){ var c = __fa.routePatch(${R}).comp, V = ["voice", "sect", "v3"], rows = V.map(function (v, k) { var chs = Object.keys(c.over.chord).filter(function (i) { return (c.over.chord[i][v] || {}).style; }).length;
+      var cells = []; for (var i = 0; i < 16; i++) { cells.push(FsCompose.cell(c, i, [], 16)[k]); }
+      return { v: v, chs: chs, mel: c[v].role === "melody", rel: cells.some(function (x) { return x.rel; }) }; }); return rows; })()`);
+    const sup = ga.filter((x) => !x.mel && x.chs > 0)[0], mv = ga.filter((x) => x.mel)[0], rv = ga.filter((x) => x.rel && !x.mel)[0];
+    check("Generate leaves a support voice with chord styles, a melody, and a relation-driven voice", !!sup && !!mv && !!rv, ga);
+    check("the route inspector: the route inspector", await ev("/the route/.test(document.getElementById('cd-insp-title').textContent)"), await ev("document.getElementById('cd-insp-title').textContent"));
+    const tabOf = { voice: "voice 1", sect: "voice 2", v3: "voice 3" };
+    await tab(tabOf[sup.v]);
+    check("no apply-to-all note before a field is edited at the route", (await ev("document.querySelectorAll('#cd-insp .cd-note[data-fk^=\"note:all:\"]').length")) === 0, null);
+    await pick("style", "ostinato"); await sleep(350);
+    const want = sup.chs + (sup.chs === 1 ? " chord sets its own style — apply to all" : " chords set their own style — apply to all");
+    const nt = await ev(NOTE("all:style"));
+    check("route-scope Ostinato: the note counts the chords that set their own style", !!nt && nt.indexOf(want.split(" — ")[0]) === 0 && /apply to all$/.test(nt), [nt, want]);
+    await shot("c4-apply-to-all-note");
+    const sp1 = await spillOf(); check("the apply-to-all note fits one screen at 1440x900", sp1.length === 0, sp1.slice(0, 5));
+    const smallest = await ev(`(function(){ var p = document.querySelector('#cd-insp .cd-note'); return parseFloat(getComputedStyle(p).fontSize); })()`);
+    check("the note is no smaller than --t-xs", smallest >= (await ev("parseFloat(getComputedStyle(document.querySelector('#cd-insp .cd-isub')).fontSize)")) - 0.5, smallest);
+    await ev(`document.querySelector('#cd-insp .cd-note[data-fk="note:all:style"] button').click(), 0`); await sleep(400);
+    const after = await ev(`(function(){ var c = __fa.routePatch(${R}).comp; return { chord: Object.keys(c.over.chord).filter(function (i) { return (c.over.chord[i]["${sup.v}"] || {}).style; }).length, note: !!document.querySelector('#cd-insp .cd-note[data-fk="note:all:style"]'), styles: (function(){ var o = []; for (var i = 0; i < 24; i++) { o.push(FsCompose.cell(c, i, [], 24)[["voice","sect","v3"].indexOf("${sup.v}")].style); } return o; })(), cells: [].map.call(document.querySelectorAll('#cd-lanes .cd-lane[data-voice="${sup.v}"] .cd-cell'), function (x) { return x.textContent; }) }; })()`);
+    check("apply to all: no chord-level style left, the note gone, no chord keeps another style: each cell reads ostin., off (a chord's own role) or a relation word", after.chord === 0 && !after.note && after.cells.length === 16 && after.cells.every((t) => /^(ostin\.|off|canon|answer|hocket|hetero|motion|unison|density)$/.test(t)) && after.styles.slice(0, 16).every((t) => t === "ostinato" || t === "off"), after);   /* off: a chord's own role; a relation word: the relation drives it */
+    await key("z", "KeyZ", 2);
+    check("one Ctrl+Z restores the chord styles and the note", await ev(`(function(){ var c = __fa.routePatch(${R}).comp; return Object.keys(c.over.chord).filter(function (i) { return (c.over.chord[i]["${sup.v}"] || {}).style; }).length === ${sup.chs} && c.${sup.v}.style === "ostinato" && !!document.querySelector('#cd-insp .cd-note[data-fk="note:all:style"]'); })()`), null);
+    await key("z", "KeyZ", 2);
+    check("a second Ctrl+Z undoes the style choice itself", await ev(`__fa.routePatch(${R}).comp.${sup.v}.style !== "ostinato"`), null);
+    await tab(tabOf[mv.v]);
+    const mn = await ev(NOTE("melody"));
+    check("the melody voice: the role hint", mn === "a melody plays its motif — set role to on to hear this style", mn);
+    const sp2 = await spillOf(); check("the melody hint fits one screen", sp2.length === 0, sp2.slice(0, 5));
+    await ev(`document.querySelector('#cd-insp .cd-note[data-fk="note:melody"] button').click(), 0`); await sleep(400);
+    check("set role to on: the voice's role is accomp, the hint gone", await ev(`__fa.routePatch(${R}).comp.${mv.v}.role === "accomp" && !document.querySelector('#cd-insp .cd-note[data-fk="note:melody"]')`), null);
+    await key("z", "KeyZ", 2);
+    check("one Ctrl+Z gives the melody back", await ev(`__fa.routePatch(${R}).comp.${mv.v}.role === "melody" && !!document.querySelector('#cd-insp .cd-note[data-fk="note:melody"]')`), null);
+    await tab(tabOf[rv.v]);
+    const rn = await ev(NOTE("rel"));
+    check("a relation-driven voice: 'a <relation> plays this voice on chords a–b'", /^an? (canon|answer|hocket|hetero|motion|unison|density) plays this voice on chords? \d+(–\d+)?$/.test(rn || ""), rn);
+    const sp3 = await spillOf(); check("the relation hint fits one screen", sp3.length === 0, sp3.slice(0, 5));
+    await s.send("Emulation.setDeviceMetricsOverride", { width: 1024, height: 700, deviceScaleFactor: 1, mobile: false }); await sleep(700);
+    for (const [name, k] of [[tabOf[sup.v], "all:style"], [tabOf[mv.v], "melody"], [tabOf[rv.v], "rel"]]) {
+      await tab(name);
+      if (k === "all:style") { await pick("style", "ostinato"); await sleep(350); }
+      await shot("c4-1024-" + k.replace(":", "-")); if (process.env.FS_DEBUG) console.log(await ev("(function(){ var i = document.getElementById('cd-insp'), n = i.querySelector('.cd-note'); return [i.className, i.scrollHeight, i.clientHeight, i.clientWidth, n && n.getBoundingClientRect().height]; })()"));
+      const sp = await spillOf(); check("1024x700: " + name + (await ev(NOTE(k)) ? " with its note" : " (no note)") + " fits one screen", sp.length === 0, sp.slice(0, 5));
+    }
+    await tab(tabOf[rv.v]);
+    await ev(`document.querySelector('#cd-insp .cd-note[data-fk="note:rel"] button').click(), 0`); await sleep(400);
+    check("its link selects the relation chip", await ev("!!document.querySelector('#cd-relrow .cd-rchip.on, #cd-relrow .cd-rchip[aria-pressed=\"true\"]') || /relation|canon|answer|hocket|hetero|motion|unison|density/i.test(document.getElementById('cd-insp-title').textContent)"), await ev("document.getElementById('cd-insp-title').textContent"));
+  }
+  /* composition 4: the way back to the route - Esc, the title's "the route" link, a lane's voice name */
+  {
+    const title = () => ev("document.getElementById('cd-insp-title').textContent");
+    const styleOf = (v) => ev(`__fa.routePatch(${R}).comp.${v}.style`);
+    const VKEY = { "voice 1": "voice", "voice 2": "sect", "voice 3": "v3" };
+    const viaStyle = async (label, want) => {
+      const t = await title(); const v = VKEY[t.slice(0, 7).toLowerCase()];
+      check(label + ": the title reads the route", t === want, t);
+      const sp = await spillOf(); check(label + ": one screen", sp.length === 0, sp.slice(0, 5));
+      await pick("style", "strum"); await sleep(350);
+      check(label + ": a style edit writes comp." + v + ".style", (await styleOf(v)) === "strum", await styleOf(v));
+      await key("z", "KeyZ", 2);
+    };
+    await ev("document.querySelector('#cd-lanes .cd-lane[data-voice=\"sect\"] .cd-cell').click(), 0"); await sleep(300);
+    check("a chord is selected: the title carries its up link", /chord 1$/.test(await title()) && !!(await ev("document.querySelector('#cd-insp .cd-ih .cd-up')")), await title());
+    const upSize = await ev("parseFloat(getComputedStyle(document.querySelector('#cd-insp .cd-up')).fontSize) >= parseFloat(getComputedStyle(document.querySelector('#cd-insp .cd-isub')).fontSize) - 0.5");
+    check("the up link is no smaller than --t-xs", upSize, null);
+    await ev("document.querySelector('#cd-insp .cd-up').click(), 0"); await sleep(300);
+    await viaStyle("the title's link", "Voice 2 · the route");
+    await ev("document.querySelector('#cd-lanes .cd-lane[data-voice=\"sect\"] .cd-cell').click(), 0"); await sleep(300);
+    await ev("document.querySelector('#cd-lanes .cd-lane[data-voice=\"v3\"] .cd-name').click(), 0"); await sleep(300);
+    await viaStyle("a lane's voice name", "Voice 3 · the route");
+    await ev("document.querySelector('#cd-lanes .cd-lane[data-voice=\"voice\"] .cd-cell').click(), 0"); await sleep(300);
+    await key("Escape", "Escape"); await sleep(300);
+    check("Esc on a chord: the dock stays, the route is selected", (await ev("FsComposeDock.isOpen()")) && /the route$/.test(await title()), await title());
+    await ev("document.querySelector('#cd-lanes .cd-lane[data-voice=\"sect\"] .cd-cell').click(), 0"); await sleep(300);
+    await ev("document.querySelector('#compose-dock .cd-icon[aria-label=\"Grow the dock\"]').click(), 0"); await sleep(600);
+    await key("Escape", "Escape"); await sleep(300);
+    await viaStyle("grown, Esc", "Voice 2 · the route");
+    await key("Escape", "Escape"); await sleep(400);
+    check("Esc on the route closes the dock", !(await ev("FsComposeDock.isOpen()")), null);
+  }
   /* desk only: a phone's patch panel has no Compose */
   await s.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(600);
   await ev(`fsListen.select(${R}), __fa.openPatchPanel(), 0`); await sleep(600);

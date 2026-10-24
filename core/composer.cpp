@@ -30,7 +30,7 @@ static int stride(const std::string &s) {
 static uint8_t clamp8(double x, int lo, int hi) { return (uint8_t)std::max(lo, std::min(hi, (int)std::lround(x))); }
 static float clampf(double x, double lo, double hi) { return (float)std::max(lo, std::min(hi, std::isfinite(x) ? x : lo)); }
 
-static const char *const STYLES[NSTYLE] = { "free", "arpeggio", "pedal", "strum", "euclid", "swells" };
+static const char *const STYLES[NSTYLE] = { "free", "arpeggio", "pedal", "strum", "euclid", "swells", "ostinato", "chorale", "tintinnabuli", "pointillist" };
 static const char *const ROLES[5] = { "melody", "counter", "accomp", "bass", "off" };
 
 /* one voice's settings: every key present sets its bit in mask; `all` (the route's own) sets every bit */
@@ -67,14 +67,41 @@ static void voice_of(const Json *j, Voice &v, bool all) {
     if (has("attack")) { v.attack = clampf(j->n("attack", 0.3), 0.01, 0.95); v.mask |= F_ATTACK; }
     if (has("release")) { v.release = clampf(j->n("release", 0.4), 0.01, 0.95); v.mask |= F_RELEASE; }
     if (has("peak")) { v.peak = clampf(j->n("peak", 0.8), 0, 1); v.mask |= F_PEAK; }
+    static const char *const RF[2] = { "degree", "transpose" }, *const VO[3] = { "close", "open", "drop2" }, *const TM[3] = { "above", "below", "alt" },
+        *const OR[5] = { "none", "grace", "trill", "mordent", "slide" }, *const GI[3] = { "all", "steps", "leaps" };
+    if (has("refit")) { v.refit = (uint8_t)pick(j->s("refit", "degree"), RF, 2, RF_DEGREE); v.mask |= F_REFIT; }
+    if (has("voicing")) { v.voicing = (uint8_t)pick(j->s("voicing", "close"), VO, 3, VO_CLOSE); v.mask |= F_VOICING; }
+    if (has("voices")) { v.nvoices = clamp8(j->n("voices", 4), 2, 6); v.mask |= F_NVOICES; }
+    if (has("restrike")) { v.restrike = (uint8_t)stride(j->s("restrike", "1n")); v.mask |= F_RESTRIKE; }
+    if (has("strict")) { v.strict = clampf(j->n("strict", 1), 0, 1); v.mask |= F_STRICT; }
+    if (has("answers")) { v.tvoice = clamp8(j->n("answers", 0), 0, 2); v.mask |= F_ANSWERS; }
+    if (has("tmode")) { v.tmode = (uint8_t)pick(j->s("tmode", "below"), TM, 3, TT_BELOW); v.mask |= F_TMODE; }
+    if (const Json *a = j->get("silence")) if (a->kind == Json::ARR) {
+        const Json *x = a->at(0), *y = a->at(1);
+        float lo = clampf(x && x->kind == Json::NUM ? x->num : v.sil_min, 0, 8), hi = clampf(y && y->kind == Json::NUM ? y->num : v.sil_max, 0, 8);
+        v.sil_min = std::min(lo, hi); v.sil_max = std::max(lo, hi); v.mask |= F_SILENCE; }
+    if (has("plen")) { v.plen = clampf(j->n("plen", 0.15), 0.03, 2); v.mask |= F_PLEN; }
+    if (has("orn")) { v.orn = (uint8_t)pick(j->s("orn", "none"), OR, 5, ORN_NONE); v.mask |= F_ORN; }
+    if (has("orn_every")) { v.orn_every = clamp8(j->n("orn_every", 0), 0, 8); v.mask |= F_ORN_EVERY; }
+    if (has("orn_prob")) { v.orn_prob = clampf(j->n("orn_prob", 0.3), 0, 1); v.mask |= F_ORN_PROB; }
+    if (has("orn_speed")) { v.orn_speed = clampf(j->n("orn_speed", 1), 0.5, 2); v.mask |= F_ORN_SPEED; }
+    if (has("glide")) { v.glide_ms = clampf(j->n("glide", 0), 0, 400); v.mask |= F_GLIDE; }
+    if (has("glide_iv")) { v.glide_iv = (uint8_t)pick(j->s("glide_iv", "all"), GI, 3, 0); v.mask |= F_GLIDE_IV; }
+    if (const Json *a = j->get("micro")) if (a->kind == Json::ARR) {
+        for (int i = 0; i < 5; i++) { const Json *x = a->at(i); v.micro[i] = x && x->kind == Json::NUM ? (int8_t)clamp8(x->num + 50, 0, 100) - 50 : (int8_t)0; }
+        v.mask |= F_MICRO; }
 }
 static void bass_of(const Json *j, Bass &b, bool all) {
     if (all) b.mask = B_ALL;
     if (!j || j->kind != Json::OBJ) return;
-    static const char *const M[3] = { "hold", "pedal", "off" }, *const P[3] = { "root", "fifth", "fixed" };
-    if (j->get("mode")) { b.mode = (uint8_t)pick(j->s("mode", "hold"), M, 3, HOLD); b.mask |= B_MODE; }
+    static const char *const M[4] = { "hold", "pedal", "off", "walk" }, *const P[3] = { "root", "fifth", "fixed" };
+    if (j->get("mode")) { b.mode = (uint8_t)pick(j->s("mode", "hold"), M, 4, HOLD); b.mask |= B_MODE; }
     if (j->get("pedal")) { b.pedal = (uint8_t)pick(j->s("pedal", "root"), P, 3, 0); b.mask |= B_PEDAL; }
     if (j->get("note")) { b.note = clamp8(j->n("note", 38), 12, 72); b.mask |= B_NOTE; }
+    static const char *const A[3] = { "chromatic", "scale", "fifth" };
+    if (j->get("approach")) { b.approach = (uint8_t)pick(j->s("approach", "chromatic"), A, 3, AP_CHROMATIC); b.mask |= B_APPROACH; }
+    if (j->get("before")) { b.before = clamp8(j->n("before", 1), 1, 4); b.mask |= B_BEFORE; }
+    if (j->get("wrate")) { b.wrate = (uint8_t)stride(j->s("wrate", "4n")); b.mask |= B_WRATE; }
 }
 static const char *const VKEYS[NVOICE] = { "voice", "sect", "v3" };
 static void over_of(const Json *j, Over &o) {
@@ -209,7 +236,7 @@ void comp_of(const Json *j, Cfg &c) {
 }
 
 static void merge(Voice &d, const Voice &s) {
-    const uint32_t m = s.mask;
+    const uint64_t m = s.mask;
     if (m & F_STYLE) d.style = s.style;
     if (m & F_ROLE) d.role = s.role;
     if (m & F_RATE) d.rate = s.rate;
@@ -232,17 +259,36 @@ static void merge(Voice &d, const Voice &s) {
     if (m & F_ATTACK) d.attack = s.attack;
     if (m & F_RELEASE) d.release = s.release;
     if (m & F_PEAK) d.peak = s.peak;
+    if (m & F_REFIT) d.refit = s.refit;
+    if (m & F_VOICING) d.voicing = s.voicing;
+    if (m & F_NVOICES) d.nvoices = s.nvoices;
+    if (m & F_RESTRIKE) d.restrike = s.restrike;
+    if (m & F_STRICT) d.strict = s.strict;
+    if (m & F_ANSWERS) d.tvoice = s.tvoice;
+    if (m & F_TMODE) d.tmode = s.tmode;
+    if (m & F_SILENCE) { d.sil_min = s.sil_min; d.sil_max = s.sil_max; }
+    if (m & F_PLEN) d.plen = s.plen;
+    if (m & F_ORN) d.orn = s.orn;
+    if (m & F_ORN_EVERY) d.orn_every = s.orn_every;
+    if (m & F_ORN_PROB) d.orn_prob = s.orn_prob;
+    if (m & F_ORN_SPEED) d.orn_speed = s.orn_speed;
+    if (m & F_GLIDE) d.glide_ms = s.glide_ms;
+    if (m & F_GLIDE_IV) d.glide_iv = s.glide_iv;
+    if (m & F_MICRO) std::memcpy(d.micro, s.micro, sizeof d.micro);
 }
 static void apply(Resolved &r, const Over &o) {
     for (int q = 0; q < NVOICE; q++) merge(r.v[q], o.v[q]);
     if (o.bass.mask & B_MODE) r.bass.mode = o.bass.mode;
     if (o.bass.mask & B_PEDAL) r.bass.pedal = o.bass.pedal;
     if (o.bass.mask & B_NOTE) r.bass.note = o.bass.note;
+    if (o.bass.mask & B_APPROACH) r.bass.approach = o.bass.approach;
+    if (o.bass.mask & B_BEFORE) r.bass.before = o.bass.before;
+    if (o.bass.mask & B_WRATE) r.bass.wrate = o.bass.wrate;
     r.blend = std::max(r.blend, (int)o.blend);
 }
 void resolve(const Cfg &c, int chord, int nchord, int section, int nsection, const uint64_t *inside, int ninside,
              const uint64_t *entered, int nentered, Resolved &out) {
-    out = Resolved();
+    out.blend = 0;   /* not `out = Resolved()`: a temporary of three Voices built, then copied over, per call (comp_gains calls this per chord and layer) */
     for (int q = 0; q < NVOICE; q++) out.v[q] = c.v[q];
     out.bass = c.bass;
     if (section >= 0 && section < NSECTION && section < nsection && c.section[section].used) apply(out, c.section[section]);
@@ -257,10 +303,19 @@ void glide(Voice &cur, const Voice &t, int blend) {
     const float a = blend > 0 ? 1.0f / (float)blend : 1.0f;
     auto toward = [&](float &x, float y) { x += (y - x) * a; if (std::fabs(y - x) < 1e-4f) x = y; };
     const float len = cur.len, var = cur.variation, sp = cur.spread_ms, at = cur.attack, re = cur.release, pk = cur.peak;
+    const float sn = cur.strict, s0 = cur.sil_min, s1 = cur.sil_max, pl = cur.plen, op = cur.orn_prob, gm = cur.glide_ms;
+    int8_t mc[5]; std::memcpy(mc, cur.micro, sizeof mc);
     cur = t;                                            /* the discrete settings: at once, on this bar line */
     cur.len = len; cur.variation = var; cur.spread_ms = sp; cur.attack = at; cur.release = re; cur.peak = pk;
+    cur.strict = sn; cur.sil_min = s0; cur.sil_max = s1; cur.plen = pl; cur.orn_prob = op; cur.glide_ms = gm;
     toward(cur.len, t.len); toward(cur.variation, t.variation); toward(cur.spread_ms, t.spread_ms);
     toward(cur.attack, t.attack); toward(cur.release, t.release); toward(cur.peak, t.peak);
+    toward(cur.strict, t.strict); toward(cur.sil_min, t.sil_min); toward(cur.sil_max, t.sil_max); toward(cur.plen, t.plen);
+    toward(cur.orn_prob, t.orn_prob); toward(cur.glide_ms, t.glide_ms);
+    for (int i = 0; i < 5; i++) {   /* microtones: whole cents, the last step snapped */
+        const float x = (float)mc[i], y = (float)t.micro[i];
+        cur.micro[i] = std::fabs(y - x) <= 1 ? t.micro[i] : (int8_t)std::lround(x + (y - x) * a);
+    }
 }
 void motif_step(const Cfg &c, int chord, Phrase &o) {
     o = Phrase();

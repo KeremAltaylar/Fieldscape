@@ -4,6 +4,7 @@
 #include "../fieldscape.h"
 #include "../tone.hpp"
 #include "../levels.hpp"
+#include "comp_fp.hpp"
 #include <algorithm>
 #include <array>
 #include <cassert>
@@ -271,6 +272,65 @@ static void test_bass_off_heard() {
 
 /* final review I2, core against the page: for each style chosen in the dock's model (web/compose-model.js, run here in node),
    at the route and at a chord, the pattern or tones its inspector shows are what comp_of + resolve play from the JSON it writes */
+/* composition 4, task 4: the walking bass */
+static void test_walk_roots();
+static void test_walk() {
+    for (int ap = 0; ap < 3; ap++) {
+        const char *name[3] = { "chromatic", "scale", "fifth" };
+        char c[256]; std::snprintf(c, sizeof c, R"(,"comp":{"bass":{"mode":"walk","approach":"%s","before":1,"wrate":"4n"}})", name[ap]);
+        const Log l = render(c, 20);
+        std::vector<std::vector<int>> bars; for (int b = 0; b < 8; b++) bars.push_back(bar_notes(l, 0, b));
+        int changes = 0, bad = 0, out = 0, run = 1, maxrun = 1;
+        for (int b = 0; b < 8; b++) assert(bars[b].size() == 4);                         /* a note every quarter: never stops */
+        for (int b = 0; b < 8; b++) for (int m : bars[b]) out += m < 50 - 24 || m > 50 - 5;
+        for (int b = 1; b < 8; b++) {
+            const int last = bars[b - 1][3], first = bars[b][0];
+            if (first % 12 == bars[b - 1][0] % 12) continue;                             /* same chord: no change */
+            changes++;
+            const int d = std::abs(last - first), pcd = ((last - first) % 12 + 12) % 12;
+            if (ap == 0 ? d != 1 : ap == 1 ? (d < 1 || d > 2) : pcd != 7) bad++;
+        }
+        std::vector<int> all; for (auto &v : bars) for (int m : v) all.push_back(m);
+        for (size_t i = 1; i < all.size(); i++) { run = all[i] == all[i - 1] ? run + 1 : 1; maxrun = std::max(maxrun, run); }
+        std::printf("C walk %s: 8 bars x 4 notes, %d chord changes, %d approaches off, %d notes outside the register, longest run %d\n", name[ap], changes, bad, out, maxrun);
+        assert(changes >= 1 && bad == 0 && out == 0 && maxrun <= 2);
+    }
+    /* standing still: next is the following chord; walks round the root, never a third of one pitch, never stops */
+    {   char buf[8192]; std::snprintf(buf, sizeof buf, ROUTE, R"(,"comp":{"bass":{"mode":"walk","wrate":"4n"}})");
+        unsigned sd = 11; Log l; fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128); fs_piece_test_hooks(pc, draw, &sd, lg, &l);
+        const int r = fs_piece_add_route(pc, buf);
+        for (int b = 0; b < (int)(20 * 48000 / 128); b++) { fs_piece_walk(pc, r, 0.3, 0); fs_process(pc, 128); }
+        fs_destroy(pc);
+        std::vector<int> all; for (int b = 0; b < 8; b++) { auto v = bar_notes(l, 0, b); assert(v.size() == 4); for (int m : v) { all.push_back(m); assert(m >= 26 && m <= 45); } }
+        int run = 1, mx = 1; for (size_t i = 1; i < all.size(); i++) { run = all[i] == all[i - 1] ? run + 1 : 1; mx = std::max(mx, run); }
+        int first_root = 0; for (int b = 0; b < 8; b++) first_root += bar_notes(l, 0, b)[0] % 12 == 55 % 12;
+        std::printf("C walk still: 32 notes, longest run %d, %d bars start on the chord's root (G)\n", mx, first_root);
+        assert(mx <= 2 && first_root == 8);
+        (void)sd;
+    }
+    /* a chord's walk, then hold: from the bar line the bass is struck and held, no walk note after it and no walk note hanging */
+    {   const Log l = render(R"(,"comp":{"bass":{"mode":"walk"},"over":{"chord":{"1":{"bass":{"mode":"hold"}}}}})", 20);
+        int walk_after = 0, held = 0, hang = 0;
+        for (size_t i = 0; i < l.f.size(); i++) if (l.role[i] == 0) {
+            if (l.d[i] < 0) { held++; if (l.t[i] < 5) hang++; }
+            else if (l.t[i] > 7.5 && l.t[i] < 12.5) walk_after++;
+        }
+        std::printf("C walk to hold: %d held strikes (none before the change: %d), %d walk notes in the held bars\n", held, hang, walk_after);
+        assert(held >= 1 && hang == 0 && walk_after == 0);
+    }
+    test_walk_roots();
+}
+/* final review C2: at each chord change the walk's first note is the chord's root, on the bar line where hold strikes it (it played the last chord's) */
+static void test_walk_roots() {
+    const Log h = render(R"(,"comp":{"bass":{"mode":"hold"}})", 20), w = render(R"(,"comp":{"bass":{"mode":"walk","wrate":"4n"}})", 20); int n = 0;
+    for (size_t i = 0; i < h.f.size(); i++) if (h.role[i] == 0 && h.d[i] < 0) {
+        bool found = false;
+        for (size_t j = 0; j < w.f.size(); j++) if (w.role[j] == 0 && std::fabs(w.t[j] - h.t[i]) < 1e-6) { found = true; assert((int)std::lround(69 + 12 * std::log2(w.f[j] / 440)) % 12 == (int)std::lround(69 + 12 * std::log2(h.f[i] / 440)) % 12); }
+        assert(found); n++;
+    }
+    assert(n >= 4);
+    std::printf("C walk roots: the walk's note on each of %d hold strikes (the changes) is the held root's pitch class\n", n);
+}
 static void test_model_defaults() {
 #ifdef __EMSCRIPTEN__
     const char *out = emscripten_run_script_string(R"JS((function () {
@@ -351,6 +411,13 @@ static void test_cost() {
         {"type":"call","a":0,"b":2,"gap":2},{"type":"motion","a":0,"b":2,"motion":"contrary"},{"type":"unison","a":0,"b":1,"meet":"change"},{"type":"density","cap":8,"weight":[2,1,1]}]})", fm, w3, p3, &o3);
     std::printf("C cost: all seven relations at once (fm/fm/am) p99.9 %.3f ms worst %.3f ms, %d blocks over 1.5 ms\n", p3, w3, o3);
     assert(p3 < 1.0 && o3 <= 2);
+    /* composition 4 (task 6): a 6-voice chorale on voice 2, glides on a trilled 16n melody (voice 1) and on an arpeggio, the walking bass */
+    double w4, p4; int o4;
+    cost_of(R"(,"comp":{"seed":1,"voice":{"role":"melody","lo":50,"hi":81,"orn":"trill","orn_every":2,"orn_speed":2,"glide":60},"sect":{"style":"chorale","restrike":"4n","voices":6,"voicing":"open","lo":40,"hi":84},
+        "v3":{"style":"arpeggio","rate":"16n","lo":55,"hi":70,"glide":40,"orn":"grace","orn_prob":0.5},"bass":{"mode":"walk"},
+        "motif":{"basis":"chord","bars":1,"notes":[{"deg":0,"start":0,"len":1},{"deg":2,"start":1,"len":1},{"deg":1,"start":2,"len":1},{"deg":4,"start":3,"len":1},{"deg":0,"start":4,"len":4},{"deg":2,"start":8,"len":2},{"deg":1,"start":10,"len":2},{"deg":3,"start":12,"len":4}]}})", fm, w4, p4, &o4);
+    std::printf("C cost: a 6-voice chorale + glides + a trilled melody + a walking bass (fm/fm/am) p99.9 %.3f ms worst %.3f ms, %d blocks over 1.5 ms\n", p4, w4, o4);
+    assert(p4 < 1.0 && o4 <= 2);
     int all = 0;
     for (const char *syn : { "fm", "formant", "metal" }) {
         double w, rd; int over; walk_cost(syn, w, over, rd); all += over;
@@ -407,13 +474,16 @@ static double hd(const char *sy, int w) {     /* index.html SYNTH_PARAMS: pickin
     return 0;
 }
 static const char *MOT = R"("motif":{"basis":"chord","notes":[{"deg":0,"start":0,"len":4},{"deg":2,"start":4,"len":4},{"deg":1,"start":8,"len":4},{"deg":4,"start":12,"len":4}]})";
-/* the engine's output rms (dBFS) from 1 s, walking the route in `secs` with voice 2 alone on synth `sy`, style `style` ("": Free) */
-static double level_db(const char *sy, const char *style, double secs, double from_s = 1) {
+/* the engine's output rms (dBFS) from 1 s, walking the route in `secs` with voice 2 alone on synth `sy`, style `style` ("": Free).
+   Composition 4, Task 6: `v0` - voice 0 too, on the same synth with this comp (nullptr: off); `bass`: the bass's comp ("off");
+   style == nullptr: voice 2 off */
+static double level_patch(const char *sy, const char *style, double secs, double from_s = 1, const char *v0 = nullptr, const char *bass = R"({"mode":"off"})") {
     char patch[4096], route[8192];
     std::snprintf(patch, sizeof patch, R"({"version":17,"tempo":96,"key":50,"prog":[{"r":0,"q":"m7"},{"r":5,"q":"maj7"},{"r":7,"q":"7"},{"r":0,"q":"m9"}],"bed":{"on":false},"zones":{"on":false},
         "fx":{"delayWet":0,"revWet":0},"fx2":{"delayWet":0,"revWet":0},"fx3":{"delayWet":0,"revWet":0},"morph":{"on":false},
-        "voice":{"on":false},"sect":{"on":true,"synth":"%s","harm":%g,"index":%g},"v3":{"on":false},"comp":{"bass":{"mode":"off"}%s%s}})",
-        sy, hd(sy, 0), hd(sy, 1), *style ? R"(,"sect":)" : "", style);
+        "voice":{"on":%s,"synth":"%s","harm":%g,"index":%g},"sect":{"on":%s,"synth":"%s","harm":%g,"index":%g},"v3":{"on":false},"comp":{"bass":%s%s%s%s%s}})",
+        v0 ? "true" : "false", sy, hd(sy, 0), hd(sy, 1), style ? "true" : "false", sy, hd(sy, 0), hd(sy, 1), bass,
+        v0 ? R"(,"voice":)" : "", v0 ? v0 : "", style && *style ? R"(,"sect":)" : "", style && *style ? style : "");
     std::snprintf(route, sizeof route, R"({"type":"Feature","geometry":{"type":"LineString","coordinates":[[29.0,41.0],[29.004,41.0]]},"properties":{"id":"r1","kind":"route","name":"R","patch":%s}})", patch);
     fs_engine *e = fs_engine_create(48000, 128); fs_engine_upsert(e, route);
     const int blocks = (int)(secs * 48000 / 128); double s = 0; long long n = 0;
@@ -423,6 +493,12 @@ static double level_db(const char *sy, const char *style, double secs, double fr
         if (b >= (int)(from_s * 375)) { const float *l = fs_engine_out(e, 0); for (int i = 0; i < 128; i++) { s += (double)l[i] * l[i]; n++; } }
     }
     fs_engine_destroy(e); return 10 * std::log10(s / std::max(1LL, n) + 1e-30);
+}
+static double level_db(const char *sy, const char *style, double secs, double from_s = 1) { return level_patch(sy, style ? style : "", secs, from_s); }
+/* tintinnabuli (voice 2) answering voice 0 (`lead`: its comp): its own power, the two voices' over voice 0's alone, as Free's level */
+static double level_tin(const char *sy, const char *tin, const char *lead, double secs) {
+    const double both = level_patch(sy, tin, secs, 1, lead), alone = level_patch(sy, nullptr, secs, 1, lead);
+    return 10 * std::log10(std::max(1e-12, std::pow(10, both / 10) - std::pow(10, alone / 10)));
 }
 /* the dock's default rate (1/8) for each style, then the templates' (web/compose-model.js), their registers too */
 static const char *const LEVEL_ST[][2] = {
@@ -435,6 +511,27 @@ static const char *const LEVEL_ST[][2] = {
         { "swells 1n", R"({"style":"swells","rate":"1n","len":1,"tones":[0,2,4]})" },
         { "swells 2n.", R"({"style":"swells","rate":"2n.","len":1,"tones":[1,3],"lo":60,"hi":84,"attack":0.6,"release":0.5})" } };
 static const char *const LEVEL_SY[] = { "fm", "am", "duo", "mono", "simple", "pluck", "metal", "membrane", "wavetable", "comb", "formant" };
+/* Composition 4, Task 6: the four new styles, each in the rate classes (16n, 8n, 4n, 2n+) it has - chorale's by its restrike;
+   tintinnabuli and pointillist play no rate of their own (class 0 only) - as tools/levels.mjs measures them. `lead`: voice 0's
+   comp when the style answers it (tintinnabuli) */
+static const struct NewLevel { int st, c; const char *name, *j, *lead; } LEVEL_NEW[] = {
+    { comp::OSTINATO, 0, "ostinato 16n", R"({"style":"ostinato","rate":"16n","grid":[0,2,4,2,0,2,4,2,0,2,4,2,0,2,4,2],"lo":55,"hi":84})", nullptr },
+    { comp::OSTINATO, 1, "ostinato 8n", R"({"style":"ostinato"})", nullptr },
+    { comp::OSTINATO, 2, "ostinato 4n transpose", R"({"style":"ostinato","rate":"4n","refit":"transpose"})", nullptr },
+    { comp::OSTINATO, 3, "ostinato 2n", R"({"style":"ostinato","rate":"2n"})", nullptr },
+    { comp::CHORALE, 0, "chorale 16n", R"({"style":"chorale","restrike":"16n","voices":3})", nullptr },
+    { comp::CHORALE, 1, "chorale 8n", R"({"style":"chorale","restrike":"8n"})", nullptr },
+    { comp::CHORALE, 2, "chorale 4n", R"({"style":"chorale","restrike":"4n","voicing":"open"})", nullptr },
+    { comp::CHORALE, 3, "chorale 1n", R"({"style":"chorale"})", nullptr },
+    { comp::CHORALE, 3, "chorale 2n 6 voices", R"({"style":"chorale","restrike":"2n","voices":6,"voicing":"drop2","lo":40,"hi":84})", nullptr },
+    { comp::TINTINNABULI, 0, "tintinnabuli on Free", R"({"style":"tintinnabuli"})", "{}" },
+    { comp::TINTINNABULI, 0, "tintinnabuli on arp", R"({"style":"tintinnabuli","tmode":"above"})", R"({"style":"arpeggio","rate":"8n"})" },
+    { comp::POINTILLIST, 0, "pointillist", R"({"style":"pointillist"})", nullptr },
+    { comp::POINTILLIST, 0, "pointillist dense", R"({"style":"pointillist","silence":[0.1,0.5],"plen":0.3,"lo":55,"hi":84})", nullptr } };
+static double level_new(const char *sy, const NewLevel &c, double secs) {
+    return c.lead ? level_tin(sy, c.j, c.lead, secs) : level_db(sy, c.j, secs);
+}
+static const char *const WALKS[3] = { R"({"mode":"walk"})", R"({"mode":"walk","wrate":"8n","approach":"scale"})", R"({"mode":"walk","wrate":"2n","approach":"fifth","before":2})" };
 static void test_levels() {
     const auto &ST = LEVEL_ST; const auto &SY = LEVEL_SY;
     /* 2 dB on every synth. The gains are worked out from the envelope when the patch is read (a render of the synth, 50-350
@@ -454,6 +551,12 @@ static void test_levels() {
             if (std::fabs(d) > std::fabs(mine)) mine = d;
             over = std::max(over, std::fabs(d) - 2.0);
         }
+        for (auto &c : LEVEL_NEW) {   /* Task 6: the new styles */
+            const double d = level_new(sy, c, secs) - fr; std::printf(" %s %+.1f", c.name, d);
+            if (std::fabs(d) > std::fabs(worst)) { worst = d; ws = c.name; wy = sy; }
+            if (std::fabs(d) > std::fabs(mine)) mine = d;
+            over = std::max(over, std::fabs(d) - 2.0);
+        }
         {   /* a melody voice too (Task 5: formant's sat +2.3 before the table) */
             const std::string mel = std::string(R"({"role":"melody","lo":50,"hi":81}, )") + MOT;
             const double d = level_db(sy, mel.c_str(), secs) - fr; std::printf(" mel %+.1f", d);
@@ -465,6 +568,45 @@ static void test_levels() {
     }
     std::printf("\nC levels: the furthest from Free %+.1f dB (%s %s); every synth within 2 dB\n", worst, wy, ws);
     assert(over <= 0);
+}
+/* Task 6: the walking bass at the level of the held root (the voice's own synth, voice 0 silent, nothing else sounding), at the
+   default wrate, 8n and 2n, each approach */
+static void test_walk_level() {
+    double worst = 0; const char *wy = "", *wm = "";
+    std::printf("C walk level (walk - hold, dB):");
+    for (const char *sy : LEVEL_SY) {
+        const bool pl = !std::strcmp(sy, "pluck");
+        const double secs = pl ? 31 : 12, hold = level_patch(sy, nullptr, secs, 1, R"({"role":"off"})", R"({"mode":"hold"})");
+        std::printf("\n  %-9s hold %5.1f dBFS", sy, hold);
+        for (const char *w : WALKS) {
+            const double d = level_patch(sy, nullptr, secs, 1, R"({"role":"off"})", w) - hold; std::printf(" %+.1f", d);
+            if (std::fabs(d) > std::fabs(worst)) { worst = d; wy = sy; wm = w; }
+        }
+    }
+    std::printf("\nC walk level: the furthest from hold %+.1f dB (%s %s)\n", worst, wy, wm);
+    assert(std::fabs(worst) <= 2);
+}
+/* Task 6: an ornamented voice as loud as the plain one - the extra notes (a grace, a trill's alternation, a mordent) are in the solve */
+static void test_ornament_level() {
+    double worst = 0, wtol = 2; const char *wy = "", *wo = "";
+    std::printf("C ornament level (ornamented - plain, dB, voice 2):");
+    for (const char *sy : LEVEL_SY) {
+        const bool pl = !std::strcmp(sy, "pluck"); const double secs = pl ? 31 : 9;
+        const std::string mel = std::string(R"({"role":"melody","lo":50,"hi":81)"), tail = std::string("}, ") + MOT;
+        const double pm = level_db(sy, (mel + tail).c_str(), secs), pa = level_db(sy, R"({"style":"arpeggio","rate":"8n"})", secs);
+        std::printf("\n  %-9s", sy);
+        /* tol: orn_speed 2 (a trill of 39 ms notes, the style's fastest) is held to 4 dB: the envelope's power model reads such notes 2-4 dB off, signed by the synth */
+        struct { const char *n, *o; bool m; double tol; } C[] = { { "melody grace", R"(,"orn":"grace","orn_every":1)", true, 2 }, { "melody trill", R"(,"orn":"trill","orn_every":1)", true, 2 },
+            { "melody mordent", R"(,"orn":"mordent","orn_every":2)", true, 2 }, { "melody trill 16th", R"(,"orn":"trill","orn_every":1,"orn_speed":2)", true, 4 },
+            { "arp trill", R"(,"orn":"trill","orn_every":2)", false, 2 }, { "arp grace", R"(,"orn":"grace","orn_prob":0.6)", false, 2 } };
+        for (auto &c : C) {
+            const std::string j = c.m ? mel + c.o + tail : std::string(R"({"style":"arpeggio","rate":"8n")") + c.o + "}";
+            const double d = level_db(sy, j.c_str(), secs) - (c.m ? pm : pa); std::printf(" %+.1f", d);
+            if (std::fabs(d) - c.tol > std::fabs(worst) - wtol) { worst = d; wy = sy; wo = c.n; wtol = c.tol; }
+        }
+    }
+    std::printf("\nC ornament level: the furthest beyond its tolerance %+.1f dB (%s %s)\n", worst, wy, wo);
+    assert(std::fabs(worst) <= wtol);
 }
 
 /* final review I1: a melody voice with no motif plays as Free (the dock says so), whatever style it holds - Generate's
@@ -769,9 +911,11 @@ static void test_chord_past_16() {
 static void test_patch_read_cost() {
     double worst = 0, edit = 0, cold = 0;
     auto ms = [](std::chrono::steady_clock::time_point t0) { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(); };
+    /* Task 6: the new styles among the overrides (chord 7 stays swells), every fourth chord's voice ornamented */
+    static const char *const OV[10] = { "strum", "arpeggio", "pedal", "euclid", "ostinato", "chorale", "tintinnabuli", "swells", "pointillist", "arpeggio" };
     for (const char *sy : { "fm", "formant", "metal" }) {
         std::string prog = "[", over = "{"; for (int i = 0; i < 64; i++) { prog += std::string(i ? "," : "") + R"({"r":0,"q":"m7"})";
-            over += std::string(i ? "," : "") + "\"" + std::to_string(i) + "\":{\"voice\":{\"style\":\"" + (i % 3 == 0 ? "strum" : i % 3 == 1 ? "swells" : "arpeggio") + "\"}}"; }
+            over += std::string(i ? "," : "") + "\"" + std::to_string(i) + "\":{\"voice\":{\"style\":\"" + OV[i % 10] + (i % 4 == 0 ? R"(","orn":"trill","orn_every":2)" : "\"") + "}}"; }
         prog += "]"; over += "}";
         std::string r = std::string(R"({"version":17,"tempo":96,"key":50,"prog":)") + prog + R"(,"voice":{"on":true,"synth":")" + sy + R"("},"sect":{"on":true,"synth":")" + sy + R"("},"v3":{"on":true,"synth":")" + sy + R"("},"zones":{"on":false},"bed":{"on":false},"comp":{"voice":{"style":"arpeggio"},"sect":{"style":"strum"},"v3":{"style":"swells"},"over":{"chord":)" + over + "}}}";
         const double w0 = worst, e0 = edit, c0 = cold; worst = edit = cold = 0;
@@ -794,6 +938,7 @@ static void test_patch_read_cost() {
 static void test_gain_lengths() {
     double worst = 0; const char *ws = "", *wy = ""; int wq = 0;
     std::vector<std::string> st; for (auto &e : LEVEL_ST) st.push_back(e[1]);
+    for (auto &c : LEVEL_NEW) st.push_back(c.j);   /* Task 6 */
     st.push_back(std::string(R"({"role":"melody","lo":50,"hi":81}, )") + MOT);
     for (const char *sy : LEVEL_SY) for (size_t k = 0; k < st.size(); k++) {
         const bool mel = k + 1 == st.size();
@@ -803,7 +948,7 @@ static void test_gain_lengths() {
             "comp":{"bass":{"mode":"off"},"voice":%s,"sect":%s,"v3":%s}})", tempo, sy, hd(sy, 0), hd(sy, 1), sy, hd(sy, 0), hd(sy, 1), sy, hd(sy, 0), hd(sy, 1),
             st[k].c_str(), mel ? R"({"style":"strum"})" : st[k].c_str(), mel ? R"({"style":"swells"})" : st[k].c_str());
         float ref[3], now[3]; fs_piece_test_gains(p, 16, 6, 0.005, ref); fs_piece_test_gains(p, 0, 0, 0, now);
-        for (int q = 0; q < 3; q++) { const double d = 20 * std::log10(now[q] / ref[q]); if (std::fabs(d) > std::fabs(worst)) { worst = d; ws = mel ? "melody" : LEVEL_ST[k][0]; wy = sy; wq = q; } }
+        for (int q = 0; q < 3; q++) { const double d = 20 * std::log10(now[q] / ref[q]); if (std::fabs(d) > std::fabs(worst)) { worst = d; ws = mel ? "melody" : k < sizeof LEVEL_ST / sizeof LEVEL_ST[0] ? LEVEL_ST[k][0] : LEVEL_NEW[k - sizeof LEVEL_ST / sizeof LEVEL_ST[0]].name; wy = sy; wq = q; } }
       }
     }
     std::printf("C gains at 10 ms steps: furthest %+.2f dB from the 5 ms solve's (%s %s, voice %d)\n", worst, wy, ws, wq + 1);
@@ -826,8 +971,14 @@ static void levels_table() {
         const double fr = level_db(sy, "", pl ? 61 : 41), secs = pl ? 31 : 9;
         double sum[comp::NSTYLE][4] = {}; int n[comp::NSTYLE][4] = {};
         for (auto &c : CELL) { sum[c.st][c.c] += level_db(sy, c.j, secs) - fr; n[c.st][c.c]++; }
-        for (int s = 1; s < comp::NSTYLE; s++) for (int c = 0; c < 4; c++) std::printf("LEVEL %d %d %d %.3f %.3f\n", y, s, c, sum[s][c] / n[s][c], LEVEL_FIX[y][s][c]);
+        for (auto &c : LEVEL_NEW) { sum[c.st][c.c] += level_new(sy, c, secs) - fr; n[c.st][c.c]++; }   /* Task 6: tintinnabuli and pointillist have class 0 only */
+        for (int s = 1; s < comp::NSTYLE; s++) for (int c = 0; c < 4; c++) if (n[s][c]) std::printf("LEVEL %d %d %d %.3f %.3f\n", y, s, c, sum[s][c] / n[s][c], LEVEL_FIX[y][s][c]);
         std::printf("MELODY %d %.3f %.3f\n", y, level_db(sy, mel.c_str(), secs) - fr, LEVEL_FIX_MELODY[y]);
+        {   /* Task 6: the walking bass over the held root, the mean of three wrates */
+            double d = 0; const double hold = level_patch(sy, nullptr, pl ? 31 : 12, 1, R"({"role":"off"})", R"({"mode":"hold"})");
+            for (const char *w : WALKS) d += level_patch(sy, nullptr, pl ? 31 : 12, 1, R"({"role":"off"})", w) - hold;
+            std::printf("BASS %d %.3f %.3f\n", y, d / 3, LEVEL_FIX_BASS[y]);
+        }
         std::fflush(stdout);
     }
 }
@@ -981,6 +1132,73 @@ static unsigned long long repeat_hash(const char *bars, size_t *nn) {
     *nn = x.f.size() + y.f.size();
     return log_hash(x) * 31 + log_hash(y);
 }
+/* composition 4, task 1: the four new styles, the walking bass, ornaments, glides and microtones in the data */
+static void test_styles4_parse() {
+    using namespace comp;
+    auto parse = [](const char *s, Cfg &c) { Json j = Json::parse(s); comp_of(&j, c); };
+    static Cfg c;
+    parse(R"({"voice":{"style":"ostinato","rate":"16n","refit":"transpose","grid":[0,2,1,2]},
+        "sect":{"style":"chorale","voicing":"drop2","voices":6,"restrike":"2n","strict":0.4},
+        "v3":{"style":"tintinnabuli","answers":2,"tmode":"alt"},
+        "bass":{"mode":"walk","approach":"fifth","before":3,"wrate":"8n"}})", c);
+    assert(c.v[0].style == OSTINATO && c.v[0].refit == RF_TRANSPOSE && c.v[0].rate == 1 && c.v[0].grid[1] == 2);
+    assert(c.v[1].style == CHORALE && c.v[1].voicing == VO_DROP2 && c.v[1].nvoices == 6 && c.v[1].restrike == 8 && c.v[1].strict == 0.4f);
+    assert(c.v[2].style == TINTINNABULI && c.v[2].tvoice == 2 && c.v[2].tmode == TT_ALT);
+    assert(c.bass.mode == BASS_WALK && c.bass.approach == AP_FIFTH && c.bass.before == 3 && c.bass.wrate == 2);
+    assert(c.v[0].mask == F_ALL && c.bass.mask == B_ALL);
+    /* defaults */
+    Voice d; Bass bd;
+    assert(d.refit == RF_DEGREE && d.voicing == VO_CLOSE && d.nvoices == 4 && d.restrike == 16 && d.strict == 1 && d.tvoice == 0 && d.tmode == TT_BELOW);
+    assert(d.sil_min == 0.25f && d.sil_max == 1.5f && d.plen == 0.15f && d.orn == ORN_NONE && d.orn_every == 0 && d.orn_prob == 0.3f && d.orn_speed == 1);
+    assert(d.glide_ms == 0 && d.glide_iv == 0); for (int i = 0; i < 5; i++) assert(d.micro[i] == 0);
+    assert(bd.approach == AP_CHROMATIC && bd.before == 1 && bd.wrate == 4);
+    /* pointillist, ornaments, glides */
+    parse(R"({"voice":{"style":"pointillist","silence":[0.5,2],"plen":0.4,"orn":"mordent","orn_every":3,"orn_prob":0.6,"orn_speed":1.5,
+        "glide":120,"glide_iv":"leaps","micro":[-10,5,0,20,-30]}})", c);
+    const Voice &p = c.v[0];
+    assert(p.style == POINTILLIST && p.sil_min == 0.5f && p.sil_max == 2 && p.plen == 0.4f);
+    assert(p.orn == ORN_MORDENT && p.orn_every == 3 && p.orn_prob == 0.6f && p.orn_speed == 1.5f);
+    assert(p.glide_ms == 120 && p.glide_iv == 2 && p.micro[0] == -10 && p.micro[1] == 5 && p.micro[3] == 20 && p.micro[4] == -30);
+    /* clamps */
+    parse(R"({"voice":{"voices":9,"strict":3,"answers":7,"silence":[9,-1],"plen":0.001,"orn_every":99,"orn_prob":-1,"orn_speed":9,"glide":900,"micro":[99,-99],
+        "orn":"trill","glide_iv":"steps","refit":"nope","voicing":"nope","tmode":"nope"},"bass":{"before":0,"wrate":"1n","approach":"scale"}})", c);
+    const Voice &q = c.v[0];
+    assert(q.nvoices == 6 && q.strict == 1 && q.tvoice == 2 && q.sil_min == 0 && q.sil_max == 8 && q.plen == 0.03f && q.orn_every == 8 && q.orn_prob == 0 && q.orn_speed == 2);
+    assert(q.glide_ms == 400 && q.micro[0] == 50 && q.micro[1] == -50 && q.micro[2] == 0 && q.orn == ORN_TRILL && q.glide_iv == 1);
+    assert(q.refit == RF_DEGREE && q.voicing == VO_CLOSE && q.tmode == TT_BELOW);
+    assert(c.bass.before == 1 && c.bass.wrate == 16 && c.bass.approach == AP_SCALE);
+    parse(R"({"voice":{"voices":1,"silence":[2,1],"orn_speed":0.1}})", c);
+    assert(c.v[0].nvoices == 2 && c.v[0].sil_min == 1 && c.v[0].sil_max == 2 && c.v[0].orn_speed == 0.5f);   /* swapped: min <= max */
+    parse(R"({"voice":{"style":"bogus"}, "bass":{"before":9}})", c);
+    assert(c.v[0].style == FREE && c.bass.before == 4);
+    /* a layer setting only orn keeps every other field inherited: one bit per key */
+    parse(R"({"voice":{"style":"arpeggio","rate":"8n","glide":50,"micro":[1,2,3,4,5]},"over":{"chord":{"1":{"voice":{"orn":"grace"}},"2":{"voice":{"micro":[7]}},
+        "3":{"voice":{"silence":[1,2]}},"4":{"bass":{"approach":"scale"}}}}})", c);
+    assert(c.chord[1].v[0].mask == F_ORN && c.chord[2].v[0].mask == F_MICRO && c.chord[3].v[0].mask == F_SILENCE && c.chord[4].bass.mask == B_APPROACH);
+    static Resolved r;
+    resolve(c, 1, 8, -1, 1, nullptr, 0, nullptr, 0, r);
+    assert(r.v[0].orn == ORN_GRACE && r.v[0].style == ARPEGGIO && r.v[0].rate == 2 && r.v[0].glide_ms == 50 && r.v[0].micro[4] == 5);
+    resolve(c, 2, 8, -1, 1, nullptr, 0, nullptr, 0, r);
+    assert(r.v[0].micro[0] == 7 && r.v[0].micro[1] == 0 && r.v[0].orn == ORN_NONE && r.v[0].glide_ms == 50);   /* a short micro array: the rest 0 */
+    resolve(c, 3, 8, -1, 1, nullptr, 0, nullptr, 0, r);
+    assert(r.v[0].sil_min == 1 && r.v[0].sil_max == 2);
+    resolve(c, 4, 8, -1, 1, nullptr, 0, nullptr, 0, r);
+    assert(r.bass.approach == AP_SCALE && r.bass.mode == HOLD);
+    /* glide: the continuous new fields a 1/blend step closer, the discrete at once */
+    Voice a, b; a.strict = 1; a.sil_min = 0.2f; a.sil_max = 1; a.plen = 0.1f; a.orn_prob = 0; a.glide_ms = 0; a.micro[1] = 0;
+    b.strict = 0; b.sil_min = 1.2f; b.sil_max = 3; b.plen = 0.5f; b.orn_prob = 1; b.glide_ms = 200; b.micro[1] = 40; b.orn = ORN_TRILL; b.nvoices = 6;
+    glide(a, b, 4);
+    assert(std::fabs(a.strict - 0.75f) < 1e-6 && std::fabs(a.sil_min - 0.45f) < 1e-6 && std::fabs(a.sil_max - 1.5f) < 1e-6 && std::fabs(a.plen - 0.2f) < 1e-6);
+    assert(std::fabs(a.orn_prob - 0.25f) < 1e-6 && std::fabs(a.glide_ms - 50) < 1e-4 && a.micro[1] == 10 && a.orn == ORN_TRILL && a.nvoices == 6);
+    for (int i = 0; i < 3; i++) glide(a, b, 1); assert(a.micro[1] == 40 && a.glide_ms == 200);
+    /* the old routes do not move: the parsed fields that existed before (Cfg's size changed), recorded on the build before this task */
+    parse(fp::ROUTE3, c);
+    const unsigned long long h = fp::of(c);
+    std::printf("C styles4 parse: new styles, walk bass, ornaments, glides, micro read and clamped; step-3 route hash %llu\n", h);
+    assert(h == 12275640855702609546ull);
+    assert(NSTYLE == 10 && FREE == 0 && SWELLS == 5 && OSTINATO == 6);
+}
+
 static void test_repeat_hash() {
     size_t n; const unsigned long long h = repeat_hash(R"(,"bars":"repeat")", &n);
     std::printf("C bars repeat: %zu notes, hash %llu\n", n, h);
@@ -1473,17 +1691,364 @@ static void test_relation_read() {
     assert(moved == 5);
 }
 
+/* composition 4, task 2: ostinato and chorale */
+static const char *ONLY1 = R"("sect":{"role":"off"},"v3":{"role":"off"},"bass":{"mode":"off"})";
+static std::vector<int> sorted_bar(const Log &l, int b) { std::vector<int> n = bar_notes(l, 1, b); std::sort(n.begin(), n.end()); return n; }
+static void test_ostinato() {
+    const int CB = span_ticks() / 16;   /* chord 1 (G maj7: 55 59 62 66) starts at this bar */
+    auto ost = [&](const char *refit, const char *bars) { char b[1024]; std::snprintf(b, sizeof b, R"(,"comp":{"voice":{"style":"ostinato","rate":"4n","lo":50,"hi":74,"refit":"%s","grid":[0,2,1,3]},%s%s})", refit, ONLY1, bars); return render(b, 40); };
+    const Log d = ost("degree", ""), t = ost("transpose", "");
+    const std::vector<int> a0 = bar_notes(d, 1, 0), a1 = bar_notes(d, 1, CB), t0 = bar_notes(t, 1, 0), t1 = bar_notes(t, 1, CB);
+    assert((a0 == std::vector<int>{ 50, 57, 53, 60 }) && (t0 == a0));                       /* D A F C on Dm7, both refits */
+    assert(a1 == (std::vector<int>{ 55, 62, 59, 66 }));                                     /* degrees on the new chord: G D B F# */
+    assert(t1 == (std::vector<int>{ 55, 62, 58, 65 }));                                     /* the cell moved by the root step (+5), intervals 0 7 3 10 exact */
+    for (int b = 1; b < CB; b++) assert(bar_notes(d, 1, b) == a0 && bar_notes(t, 1, b) == t0);   /* develop is on (default): an ostinato still repeats */
+    std::printf("C ostinato: cell 0 2 1 3 = D A F C; chord 2 degree refit G D B F#, transpose G D Bb E (intervals exact); %d bars identical under develop\n", CB);
+}
+static int motion(const std::vector<int> &a, const std::vector<int> &b) { int m = 0; for (size_t i = 0; i < a.size(); i++) m += std::abs(a[i] - b[i]); return m; }
+static void test_chorale() {
+    auto cho = [&](const char *extra) { char b[1024]; std::snprintf(b, sizeof b, R"(,"comp":{"voice":{"style":"chorale","restrike":"1n","len":1,"lo":40,"hi":76,%s},%s})", extra, ONLY1); return render(b, 40); };
+    const Log c = cho(R"("voicing":"close","voices":4,"strict":0)"), o = cho(R"("voicing":"open","voices":4,"strict":0)"), d2 = cho(R"("voicing":"drop2","voices":4,"strict":0)");
+    assert(sorted_bar(c, 0) == (std::vector<int>{ 50, 53, 57, 60 }));
+    assert(sorted_bar(o, 0) == (std::vector<int>{ 50, 57, 65, 72 }));
+    assert(sorted_bar(d2, 0) == (std::vector<int>{ 45, 50, 53, 60 }));
+    /* held to the next restrike: a bar long (len 1) */
+    for (size_t i = 0; i < c.f.size(); i++) if (c.role[i] == 1) assert(std::fabs(c.d[i] - 2.5) < 1e-6);
+    /* Review Focus 1: 6 voices on a 4-tone chord - doubled in other octaves, no unisons, inside lo..hi, every voicing */
+    int doubled = 0, bars = 0;
+    for (const char *vo : { "close", "open", "drop2" }) for (const char *st : { "0", "1" }) {
+        char e[128]; std::snprintf(e, sizeof e, R"("voicing":"%s","voices":6,"strict":%s)", vo, st);
+        const Log s = cho(e);
+        for (int b = 0; b < 16; b++) {
+            const std::vector<int> n = sorted_bar(s, b); if (n.empty()) continue;
+            bars++; assert(n.size() == 5);   /* fm: its own voice and a pool of 4 */
+            for (size_t i = 0; i < n.size(); i++) { assert(n[i] >= 40 && n[i] <= 76); if (i) assert(n[i] != n[i - 1]); }
+            std::set<int> pcs; for (int m : n) pcs.insert(m % 12); if (pcs.size() < n.size()) doubled++;
+        }
+    }
+    assert(bars > 30 && doubled >= bars / 2 && doubled < bars);   /* the 4-tone chords double a tone; the m9 has five */
+    /* strict 1: less total motion between consecutive chords than strict 0 */
+    int m0 = 0, m1 = 0;
+    const Log s0 = cho(R"("voicing":"close","voices":4,"strict":0)"), s1 = cho(R"("voicing":"close","voices":4,"strict":1)");
+    for (int b = 1; b < 16; b++) { const auto p0 = sorted_bar(s0, b - 1), q0 = sorted_bar(s0, b), p1 = sorted_bar(s1, b - 1), q1 = sorted_bar(s1, b);
+        if (p0.size() == 4 && q0.size() == 4 && p1.size() == 4 && q1.size() == 4) { m0 += motion(p0, q0); m1 += motion(p1, q1); } }
+    assert(m0 > 0 && m1 < m0);
+    /* final review 3: a chorale asks no more voices than the synth has (fm 5, metal 3), so none re-attacks another at the same time */
+    for (const char *sy : { "fm", "metal" }) for (int nv = 2; nv <= 6; nv++) {
+        char b[512], buf[8192]; std::snprintf(b, sizeof b, R"(,"comp":{"voice":{"style":"chorale","restrike":"1n","len":1,"lo":40,"hi":76,"voices":%d},%s})", nv, ONLY1);
+        std::snprintf(buf, sizeof buf, ROUTE, b); std::string pj(buf); const std::string was = R"("voice":{"on":true,"synth":"fm"})";
+        pj.replace(pj.find(was), was.size(), std::string(R"("voice":{"on":true,"synth":")") + sy + "\"}");
+        unsigned seed = 11; Log l; fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128); fs_piece_test_hooks(pc, draw, &seed, lg, &l);
+        const int r = fs_piece_add_route(pc, pj.c_str()); for (int k = 0; k < (int)(20 * 48000 / 128); k++) { fs_piece_walk(pc, r, k / 7500.0, 0); fs_process(pc, 128); } fs_destroy(pc);
+        const int cap = !std::strcmp(sy, "fm") ? 5 : 3;
+        for (int bar = 0; bar < 6; bar++) { const auto n = sorted_bar(l, bar); if (n.empty()) continue; assert((int)n.size() == std::min(nv, cap)); for (size_t i = 1; i < n.size(); i++) assert(n[i] != n[i - 1]); }
+    }
+    std::printf("C chorale: 2..6 voices play at most 5 on fm and 3 on metal, all distinct\n");
+    std::printf("C chorale: close 50 53 57 60, open 50 57 65 72, drop2 45 50 53 60; 6 voices on 4 tones (5 sound on fm): %d bars, all doubled, no unisons, inside 40..76; held a bar; voice-leading motion %d (strict 1) vs %d (strict 0)\n", bars, m1, m0);
+}
+
+/* composition 4, task 3: tintinnabuli and pointillist */
+static void test_tintinnabuli() {
+    const int CB = span_ticks() / 16;
+    auto tin = [&](const char *lead, const char *mode) { char b[1024]; std::snprintf(b, sizeof b, R"(,"comp":{"voice":%s,"sect":{"style":"tintinnabuli","answers":0,"tmode":"%s","lo":40,"hi":70},"v3":{"role":"off"},"bass":{"mode":"off"}})", lead, mode); return render(b, 40); };
+    const char *OST = R"({"style":"ostinato","rate":"4n","lo":50,"hi":74,"grid":[0,2,1,3]})";
+    /* the melody D A F C on Dm7 (triad D F A): nearest triad tone above / below each, in 40..70, same time and length */
+    const Log a = tin(OST, "above"), b = tin(OST, "below"), l = tin(OST, "alt");
+    assert(bar_notes(a, 1, 0) == (std::vector<int>{ 50, 57, 53, 60 }));
+    assert(bar_notes(a, 2, 0) == (std::vector<int>{ 53, 62, 57, 62 }));
+    assert(bar_notes(b, 2, 0) == (std::vector<int>{ 45, 53, 50, 57 }));
+    assert(bar_notes(l, 2, 0) == (std::vector<int>{ 53, 53, 57, 57 }));   /* above, below, above, below */
+    for (size_t i = 0, j = 0; i < a.f.size(); i++) if (a.role[i] == 2) { while (a.role[j] != 1 || std::fabs(a.t[j] - a.t[i]) > 1e-9) j++; assert(std::fabs(a.d[j] - a.d[i]) < 1e-9); }
+    /* a Free voice is answered too: every T note sounds with a Free note, the nearest triad tone above it, not equal to it */
+    const Log f = tin(R"({"style":"free"})", "above");
+    int n = 0;
+    for (size_t i = 0; i < f.f.size(); i++) if (f.role[i] == 2 && f.t[i] < CB * 2.5 - 1e-6) {
+        int m = -1; for (size_t j = 0; j < f.f.size(); j++) if (f.role[j] == 1 && std::fabs(f.t[j] - f.t[i]) < 1e-9) m = (int)std::lround(midi(f.f[j]));
+        const int t = (int)std::lround(midi(f.f[i])); assert(m >= 0 && t != m && t >= 40 && t <= 70);
+        int d = 1; while (!(((m + d) % 12 == 2) || ((m + d) % 12 == 5) || ((m + d) % 12 == 9))) d++;
+        assert((t - m - d) % 12 == 0); n++;
+    }
+    assert(n > 3);
+    std::printf("C tintinnabuli: D A F C -> above F D A D, below A F D A, alt F F A A (40..70, same time and length); a Free voice answered too (%d notes in chord 1)\n", n);
+}
+static void test_pointillist() {
+    const int CB = span_ticks() / 16;
+    auto pt = [&](const char *sil, int seed) { char b[1024]; std::snprintf(b, sizeof b, R"(,"comp":{"seed":%d,"voice":{"style":"pointillist","silence":%s,"plen":0.1,"lo":50,"hi":74},%s})", seed, sil, ONLY1); return render(b, 40); };
+    const Log a = pt("[0.3,0.9]", 1), a2 = pt("[0.3,0.9]", 1), o = pt("[0.3,0.9]", 2), r = pt("[0.625,0.625]", 1);
+    const double s16 = 60.0 / 96 / 4;
+    int n = 0; double prev = -1;
+    for (size_t i = 0; i < a.f.size(); i++) if (a.role[i] == 1) {
+        assert(std::fabs(a.d[i] - 0.1) < 1e-6);
+        if (prev >= 0) { const double g = a.t[i] - prev; assert(g >= 0.3 - s16 - 1e-9 && g <= 0.9 + s16 + 1e-9); }
+        prev = a.t[i]; n++;
+        if (a.t[i] < CB * 2.5 - 1e-6) { const int pc = (int)std::lround(midi(a.f[i])) % 12; assert(pc == 2 || pc == 5 || pc == 9 || pc == 0); }
+    }
+    assert(n > 20 && same(a, a2) && !same(a, o));
+    prev = -1; for (size_t i = 0; i < r.f.size(); i++) if (r.role[i] == 1) { if (prev >= 0) assert(std::fabs(r.t[i] - prev - 0.625) < 1e-9); prev = r.t[i]; }
+    std::printf("C pointillist: %d onsets, every gap in 0.3..0.9 s (+-1/16), chord tones, same seed same notes, other seed differs; 0.625..0.625 is a regular pulse\n", n);
+    /* final review 7: ornaments fire at the defaults (its room was a hidden rate's) and stay before the next onset */
+    { char b[512]; std::snprintf(b, sizeof b, R"(,"comp":{"seed":1,"voice":{"style":"pointillist","orn":"grace","orn_every":1,"lo":50,"hi":74},%s})", ONLY1);
+      const Log l = render(b, 40); std::vector<size_t> pl; for (size_t i = 0; i < l.f.size(); i++) if (l.role[i] == 1) pl.push_back(i);
+      int g = 0; for (size_t i = 0; i < pl.size(); i++) { if (std::fabs(l.d[pl[i]] - 0.078125) < 1e-9) g++; if (i + 1 < pl.size()) assert(l.t[pl[i]] + l.d[pl[i]] <= l.t[pl[i + 1]] + 1e-9); }
+      std::printf("C pointillist: orn grace at the defaults - %d graces in %zu notes, each ending before the next onset\n", g, pl.size()); assert(g >= 8); }
+}
+
+/* ---- composition 4: ornaments, glides, microtonal offsets ---- */
+static std::string orn_voice(const char *extra, const char *rate = "4n", double len = 0.5) {
+    char b[1024]; std::snprintf(b, sizeof b, R"(,"comp":{"seed":1,"voice":{"style":"arpeggio","rate":"%s","len":%g,"lo":50,"hi":74,"grid":[0,1,2,3],%s},%s})", rate, len, extra, ONLY1);
+    return b;
+}
+static void test_ornaments() {
+    const double U = 0.078125, S16 = 0.15625;   /* 1/32 and a sixteenth at 96 bpm */
+    const Log base = render(orn_voice(R"("orn":"none")"), 40);
+    std::vector<size_t> pl; for (size_t i = 0; i < base.f.size(); i++) if (base.role[i] == 1) pl.push_back(i);
+    assert(pl.size() > 40 && same(base, render(orn_voice(R"("orn":"none","orn_every":1)"), 40)));   /* none: untouched */
+    auto notes = [&](const Log &l, double a, double b) { std::vector<size_t> o; for (size_t i = 0; i < l.f.size(); i++) if (l.role[i] == 1 && l.t[i] > a - 1e-9 && l.t[i] < b - 1e-9) o.push_back(i); return o; };
+    auto gap_ok = [&](const Log &l) { for (size_t i = 0; i < l.f.size(); i++) if (l.role[i] == 1) { const double nb = (std::floor(l.t[i] / 0.625 + 1e-9) + 1) * 0.625; assert(l.t[i] + l.d[i] <= nb + 1e-9); } };
+    /* grace: every 2nd note is the scale tone above, 1/32, then the note after it, ending where it did */
+    { const Log g = render(orn_voice(R"("orn":"grace","orn_every":2)"), 40); int ng = 0; gap_ok(g);
+      for (size_t k = 0; k < pl.size(); k++) {
+          const size_t b = pl[k]; const auto at = notes(g, base.t[b], base.t[b] + 0.3);
+          if (at.size() == 1) { assert(g.f[at[0]] == base.f[b] && g.d[at[0]] == base.d[b]); continue; }
+          assert(at.size() == 2); ng++;
+          assert(std::fabs(g.d[at[0]] - U) < 1e-9 && std::fabs(g.t[at[1]] - (base.t[b] + U)) < 1e-9);          /* short, just before */
+          const int st = pitch(g, at[0]) - pitch(g, at[1]); assert(st >= 1 && st <= 2);                           /* one scale step up */
+          assert(g.f[at[1]] == base.f[b] && std::fabs(g.t[at[1]] + g.d[at[1]] - (base.t[b] + base.d[b])) < 1e-9);
+      }
+      assert(ng >= (int)pl.size() / 2 - 2 && ng <= (int)pl.size() / 2 + 2);
+      std::printf("C ornaments: grace every 2nd note - %d graces in %zu notes, each a 1/32 one scale step up before its note\n", ng, pl.size()); }
+    /* trill: the note's length filled with alternating pitches at 1/32 */
+    { const Log t = render(orn_voice(R"("orn":"trill","orn_every":1)"), 40); gap_ok(t); int nt = 0;
+      for (size_t k = 0; k < pl.size(); k++) {
+          const size_t b = pl[k]; const auto at = notes(t, base.t[b], base.t[b] + 0.6); assert(at.size() >= 3);
+          double sum = 0; for (size_t j = 0; j < at.size(); j++) {
+              sum += t.d[at[j]]; assert(std::fabs(t.t[at[j]] - (base.t[b] + j * U)) < 1e-9);
+              assert(j % 2 ? pitch(t, at[j]) > pitch(base, b) && pitch(t, at[j]) - pitch(base, b) <= 2 : t.f[at[j]] == base.f[b]);
+              if (j + 1 < at.size()) assert(std::fabs(t.d[at[j]] - U) < 1e-9);
+          }
+          assert(std::fabs(sum - base.d[b]) < 1e-9); nt++;
+      }
+      std::printf("C ornaments: trill - %d notes each filled with alternating pitches every 1/32, summing to the note's length\n", nt); }
+    /* mordent: note, tone above, note in the first 3/32 */
+    { const Log m = render(orn_voice(R"("orn":"mordent","orn_every":1)"), 40); gap_ok(m);
+      for (size_t k = 0; k < pl.size(); k++) {
+          const size_t b = pl[k]; const auto at = notes(m, base.t[b], base.t[b] + 0.6); assert(at.size() == 3);
+          assert(m.f[at[0]] == base.f[b] && m.f[at[2]] == base.f[b] && pitch(m, at[1]) > pitch(base, b));
+          assert(std::fabs(m.d[at[0]] - U) < 1e-9 && std::fabs(m.d[at[1]] - U) < 1e-9 && std::fabs(m.t[at[2]] - (base.t[b] + 2 * U)) < 1e-9);
+          assert(std::fabs(m.t[at[2]] + m.d[at[2]] - (base.t[b] + base.d[b])) < 1e-9);
+      }
+      std::printf("C ornaments: mordent - note, tone above, note, the first two 1/32 each\n"); }
+    /* chance: orn_every 0 and prob 0.5: about half, the same seed the same notes, another seed other notes */
+    { const std::string a = orn_voice(R"("orn":"grace","orn_every":0,"orn_prob":0.5)");
+      const Log x = render(a, 40), y = render(a, 40); int ng = 0; for (size_t i = 0; i < x.f.size(); i++) if (x.role[i] == 1 && std::fabs(x.d[i] - U) < 1e-9) ng++;
+      std::string o = a; o.replace(o.find("\"seed\":1"), 8, "\"seed\":7");
+      const double share = (double)ng / pl.size();
+      assert(same(x, y) && !same(x, render(o, 40)) && share > 0.3 && share < 0.7);
+      std::printf("C ornaments: prob 0.5 - %.0f%% of notes graced; same seed same notes, another seed differs\n", 100 * share); }
+    /* a 16n arpeggio with a trill (at 2x speed too) never crosses its next step */
+    for (const char *sp : { R"("orn":"trill","orn_every":1)", R"("orn":"trill","orn_every":1,"orn_speed":2)", R"("orn":"mordent","orn_every":1,"orn_speed":2)", R"("orn":"grace","orn_every":1,"orn_speed":0.5)" }) {
+        const Log t = render(orn_voice(sp, "16n", 0.9), 30); int n = 0;
+        for (size_t i = 0; i < t.f.size(); i++) if (t.role[i] == 1) {
+            const double nb = (std::floor(t.t[i] / S16 + 1e-9) + 1) * S16; assert(t.t[i] + t.d[i] <= nb + 1e-9); n++; }
+        assert(n > 40);
+    }
+    std::printf("C ornaments: at 16n, trills, mordents and graces (0.5-2x speed) end before the voice's next step\n");
+}
+
+/* the audio of voice 2 alone (chord 1 silent when `quiet`); the notes it played */
+struct Aud { std::vector<float> x; std::vector<double> t, f, vel; };
+static void audv(void *p, int role, double f, double, double t, double vel) { if (role == 2) { Aud *o = (Aud *)p; o->t.push_back(t); o->vel.push_back(vel); o->f.push_back(f); } }
+static Aud audio_run(const char *synth, double harm, double index, const char *st, double secs, bool quiet) {
+    char patch[4096];
+    std::snprintf(patch, sizeof patch, R"({"version":17,"tempo":96,"key":50,"prog":[{"r":0,"q":"m7"},{"r":5,"q":"maj7"},{"r":7,"q":"7"},{"r":0,"q":"m9"}],"bed":{"on":false},"zones":{"on":false},
+        "fx":{"delayWet":0,"revWet":0},"fx2":{"delayWet":0,"revWet":0},"fx3":{"delayWet":0,"revWet":0},"morph":{"on":false},
+        "voice":{"on":false},"sect":{"on":true,"synth":"%s","harm":%g,"index":%g},"v3":{"on":false},
+        "comp":{"bars":"repeat","bass":{"mode":"off"},"sect":%s%s}})", synth, harm, index, st, quiet ? R"(,"over":{"chord":{"0":{"sect":{"role":"off"}}}})" : "");
+    unsigned seed = 11; Aud o; fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128); fs_piece_test_hooks(pc, draw, &seed, audv, &o);
+    const int r = fs_piece_add_route(pc, patch); const int blocks = (int)(secs * 48000 / 128);
+    o.x.reserve(blocks * 128);
+    for (int b = 0; b < blocks; b++) { fs_piece_walk(pc, r, (double)b / blocks, 0); fs_process(pc, 128); const float *out = fs_out(pc, 0); o.x.insert(o.x.end(), out, out + 128); }
+    fs_destroy(pc); return o;
+}
+/* the pitch (Hz) over [t, t+win): positive-going zero crossings, interpolated; 0 when under 3 */
+static double zc_pitch(const std::vector<float> &x, double t, double win) {
+    const long long a = (long long)std::llround(t * 48000), b = std::min((long long)x.size() - 1, (long long)std::llround((t + win) * 48000));
+    double first = -1, last = -1; int n = 0;
+    for (long long i = std::max(1LL, a); i <= b; i++) if (x[i - 1] < 0 && x[i] >= 0) { const double c = (double)(i - 1) + -x[i - 1] / (double)(x[i] - x[i - 1]); if (first < 0) first = c; last = c; n++; }
+    return n < 3 ? 0 : (n - 1) * 48000.0 / (last - first);
+}
+static std::string glide_st(const char *grid, double ms, const char *iv) {
+    char b[512]; std::snprintf(b, sizeof b, R"({"style":"arpeggio","rate":"2n","len":0.6,"lo":55,"hi":75,"grid":%s,"glide":%g,"glide_iv":"%s"})", grid, ms, iv); return b;
+}
+static void test_glides() {
+    auto track = [&](const Aud &a, size_t k, double dt) { return zc_pitch(a.x, a.t[k] + dt, 0.02); };
+    auto run = [&](const char *grid, double ms, const char *iv) { return audio_run("fm", 1, 0.01, glide_st(grid, ms, iv).c_str(), 14, false); };
+    /* D A (a 7-semitone leap) with glide 120 ms: continuous, the pitch passes through the way between, then holds */
+    { const Aud a = run("[0,2]", 120, "all"); int n = 0;
+      for (size_t k = 1; k + 1 < a.t.size() && k < 8; k++) {
+          const double f0 = a.f[k - 1], f1 = a.f[k], up = f1 > f0 ? 1 : -1; double prev = f0; int mid = 0;
+          for (double dt = 0.012; dt <= 0.116; dt += 0.012) {
+              const double p = track(a, k, dt); assert(p > 0);
+              assert((p - prev) * up > -0.03 * prev);                                  /* never turns back */
+              if ((p - f0) * up > 0.1 * std::fabs(f1 - f0) && (f1 - p) * up > 0.1 * std::fabs(f1 - f0)) mid++;
+              prev = p;
+          }
+          assert(mid >= 4);                                                            /* most of the windows between the two pitches */
+          assert(std::fabs(track(a, k, 0.16) / f1 - 1) < 0.02 && std::fabs(track(a, k, 0.3) / f1 - 1) < 0.01);   /* arrived by ~120-160 ms */
+          assert(std::fabs(track(a, k, 0.012) / f1 - 1) > 0.05);                       /* started at the old pitch, not the new */
+          n++;
+      }
+      assert(n >= 5);
+      const Aud c = run("[0,2]", 0, "all");                                            /* control: no glide, the new pitch within 40 ms */
+      for (size_t k = 1; k < 6; k++) assert(std::fabs(track(c, k, 0.04) / c.f[k] - 1) < 0.02);
+      std::printf("C glides: fm D<->A at 120 ms - %d notes slid monotonically from the old pitch through the middle to the new by 160 ms; no glide: new pitch by 40 ms\n", n); }
+    /* steps only skips leaps; leaps only skips steps */
+    { auto glided = [&](const char *grid, const char *iv) { const Aud a = run(grid, 120, iv); int g = 0, p = 0;
+          for (size_t k = 1; k < 4; k++) { const double r = track(a, k, 0.03) / a.f[k] - 1; if (std::fabs(r) > 0.04) g++; else p++; } return g > 0 && p == 0 ? 1 : p > 0 && g == 0 ? 0 : -1; };
+      assert(glided("[3,4]", "steps") == 1 && glided("[0,2]", "steps") == 0 && glided("[0,2]", "leaps") == 1 && glided("[3,4]", "leaps") == 0 && glided("[0,2]", "all") == 1);
+      std::printf("C glides: steps-only glides a 2-semitone move and skips a leap; leaps-only the reverse\n"); }
+    /* no onset spike above a clean attack: the high band as a note starts, over what it was just before, per unit of velocity, against
+       a clean attack at the pitch it starts from (a glide starts at the old pitch; a plain change at its own, here the old note's too) */
+    { const char *ST = R"({"style":"arpeggio","rate":"8n","len":0.9,"lo":55,"hi":70,"grid":[0,2,0,2,0,2,0,2,0,2,0,2,0,2,0,2],"glide":120})";
+      auto clean = [&](const char *g, double &f) { char b[256]; std::snprintf(b, sizeof b, R"({"style":"arpeggio","rate":"1n","len":0.3,"lo":55,"hi":70,"grid":[%s]})", g);
+          const Onsets o = onset_run("fm", b); f = o.f[0]; return onset_peak(o, 0, false, false) / o.vel[0]; };
+      double fa, fb; const double ca = clean("0", fa), cb = clean("2", fb);
+      auto ratio = [&](const char *st, int &n) { const Onsets o = onset_run("fm", st); double most = 0; n = 0;
+          for (size_t k = 1; k < o.t.size() && o.t[k] < o.t[0] + 5; k++) { const double sf = o.f[k - 1] /* the pitch the note starts at */, c = o.f[k] != fa && o.f[k] != fb ? 0 : sf == fa ? ca : sf == fb ? cb : 0; if (c == 0) break; most = std::max(most, onset_peak(o, k, false, true) / o.vel[k] / c); n++; }
+          return most; };
+      int n; const double g = ratio(ST, n);
+      std::printf("C glides: onsets - %d glided notes, the largest rise in the highs x%.2f a clean attack\n", n, g);
+      assert(n >= 8 && g <= 1.0); }
+    /* a sampler voice and a chord-voice pool have no continuous pitch: the glide setting changes nothing there */
+    { const char *S = R"({"style":"arpeggio","rate":"2n","len":0.6,"lo":55,"hi":75,"grid":[0,2],"glide":%d})"; char a[256], b[256]; std::snprintf(a, sizeof a, S, 0); std::snprintf(b, sizeof b, S, 120);
+      const Aud x = audio_run("s-resonator", 0.5, 0.5, a, 12, false), y = audio_run("s-resonator", 0.5, 0.5, b, 12, false);
+      assert(x.t.size() > 6 && x.t == y.t && x.f == y.f && x.x == y.x);
+      const char *P = R"({"style":"strum","rate":"2n","glide":%d})"; std::snprintf(a, sizeof a, P, 0); std::snprintf(b, sizeof b, P, 120);
+      const Aud u = audio_run("fm", 1, 4, a, 12, false), v = audio_run("fm", 1, 4, b, 12, false);
+      assert(u.t.size() > 6 && u.x == v.x);
+      std::printf("C glides: a sampler voice and a strummed chord-voice pool - audio bit-identical with and without glide (plain note change)\n"); }
+    /* slide: the ornament ramps into the note from a third below over a sixteenth */
+    { const char *S = R"({"style":"arpeggio","rate":"2n","len":0.6,"lo":55,"hi":75,"grid":[0,2],"orn":"slide","orn_every":1})";
+      const Aud a = audio_run("fm", 1, 0.01, S, 14, false); int n = 0;
+      for (size_t k = 1; k < 7; k++) {
+          const double p0 = zc_pitch(a.x, a.t[k] + 0.012, 0.02), p1 = zc_pitch(a.x, a.t[k] + 0.3, 0.02);
+          assert(std::fabs(p1 / a.f[k] - 1) < 0.01 && p0 > 0 && p0 / a.f[k] < std::pow(2.0, -2.0 / 12) && p0 / a.f[k] > std::pow(2.0, -4.5 / 12));   /* starts a minor/major third below */
+          const double pm = zc_pitch(a.x, a.t[k] + 0.07, 0.02); assert(pm > p0 * 1.03 && pm < p1 * 0.99);
+          n++;
+      }
+      std::printf("C ornaments: slide - %d notes ramp up into the note from a third below over a 1/16\n", n); }
+}
+
+/* final review C1 (composition 4): a long note's trill keeps its level. A pedal on every note at 1n/2n/4n with a trill: each 1/32 window within
+   3 dB of the plain pedal's at the same place (the envelope's 40-event cap folded the first notes' events when a trill was ~100 attacks), at
+   most 16 alternations on a synth with a freq Param (one attack and pitch steps) and 5 where each is a new attack, the last pitch the main note */
+static double win_rms(const std::vector<float> &x, double t, double w) {
+    const long long a = (long long)std::llround(t * 48000), b = std::min((long long)x.size(), (long long)std::llround((t + w) * 48000)); double s = 0;
+    for (long long i = a; i < b; i++) s += (double)x[i] * x[i];
+    return std::sqrt(s / std::max(1LL, b - a));
+}
+static void test_trill_budget() {
+    const double U = 0.078125; int checked = 0; double worst = 0;
+    for (const char *sy : { "simple", "fm", "s-resonator", "pluck" })
+        for (const char *rate : { "1n", "2n", "4n" }) for (const char *orn : { "trill", "mordent", "grace", "slide" }) {
+            char a[256], b[256]; const bool smp = !std::strcmp(sy, "s-resonator") || !std::strcmp(sy, "pluck");
+            if (smp && std::strcmp(orn, "trill")) continue;
+            std::snprintf(a, sizeof a, R"({"style":"pedal","rate":"%s","len":0.95,"pedal":"root","lo":50,"hi":74,"orn":"none"})", rate);
+            std::snprintf(b, sizeof b, R"({"style":"pedal","rate":"%s","len":0.95,"pedal":"root","lo":50,"hi":74,"orn":"%s","orn_every":1})", rate, orn);
+            const double secs = 24; const Aud p = audio_run(sy, 1, 0.01, a, secs, false), t = audio_run(sy, 1, 0.01, b, secs, false);
+            for (size_t k = 1; k + 1 < p.t.size() && p.t[k + 1] < secs - 1; k++) {
+                std::vector<size_t> st; for (size_t j = 0; j < t.t.size(); j++) if (t.t[j] > p.t[k] - 1e-6 && t.t[j] < p.t[k + 1] - 1e-6) st.push_back(j);
+                assert(!st.empty()); const bool tr = !std::strcmp(orn, "trill");
+                if (tr) { assert(st.size() <= (smp ? 5u : 17u)); assert(std::fabs(t.f[st.back()] / p.f[k] - 1) < 1e-9); }
+                if (smp) continue;
+                const double room = (p.t[k + 1] - p.t[k]) * 0.95 - 0.02; const int nw = std::min(17, (int)(room / U) - 1);
+                for (int i = tr ? 0 : 6; i < nw; i++) {   /* a mordent's or grace's own attacks are louder than the plain note's decay: after them the levels match */
+                    const double rp = win_rms(p.x, p.t[k] + i * U, U), rt = win_rms(t.x, p.t[k] + i * U, U);
+                    if (rp < 1e-4) continue;
+                    const double d = 20 * std::log10(std::max(1e-9, rt) / rp); if (std::fabs(d) > std::fabs(worst)) worst = d; checked++;
+                    if (std::fabs(d) >= 3) std::printf("  %s %s %s note %zu window %d: %+.1f dB\n", sy, rate, orn, k, i, d);
+                    assert(std::fabs(d) < 3);
+                }
+            }
+        }
+    std::printf("C trill budget: pedal at 1n/2n/4n with every ornament on simple and fm, trills on samplers - %d windows within 3 dB of the plain pedal (worst %+.1f), trills end on the main note\n", checked, worst);
+}
+
+/* final review 8: a route change clears the glide's memory - the new route's first note starts at its own pitch, not sliding from the old route's last */
+static void test_glide_route_change() {
+    auto route = [&](int deg) { char st[256], b[4096]; std::snprintf(st, sizeof st, R"({"style":"arpeggio","rate":"2n","len":0.6,"lo":55,"hi":75,"grid":[%d],"glide":120})", deg);
+        std::snprintf(b, sizeof b, R"({"version":17,"tempo":96,"key":50,"prog":[{"r":0,"q":"m7"}],"bed":{"on":false},"zones":{"on":false},"fx":{"delayWet":0,"revWet":0},"fx2":{"delayWet":0,"revWet":0},"fx3":{"delayWet":0,"revWet":0},"morph":{"on":false},
+            "voice":{"on":false},"sect":{"on":true,"synth":"fm","harm":1,"index":0.01},"v3":{"on":false},"comp":{"bars":"repeat","bass":{"mode":"off"},"sect":%s}})", st); return std::string(b); };
+    const std::string a = route(0), b = route(3);
+    unsigned seed = 11; Aud o; fs_device *pc = fs_create("piece"); fs_prepare(pc, 48000, 128); fs_piece_test_hooks(pc, draw, &seed, audv, &o);
+    const int r1 = fs_piece_add_route(pc, a.c_str()), r2 = fs_piece_add_route(pc, b.c_str()); const int blocks = (int)(20 * 48000 / 128);
+    for (int k = 0; k < blocks; k++) { fs_piece_walk(pc, k < blocks / 2 ? r1 : r2, 0.02, 0); fs_process(pc, 128); const float *out = fs_out(pc, 0); o.x.insert(o.x.end(), out, out + 128); }
+    fs_destroy(pc);
+    size_t first = 0; while (first < o.t.size() && std::fabs(o.f[first] / o.f[0] - 1) < 0.01) first++;
+    assert(first > 3 && first < o.t.size());
+    const double p = zc_pitch(o.x, o.t[first] + 0.012, 0.02);
+    std::printf("C glide route change: the new route's first note (%.1f Hz) sounds %.1f Hz 12 ms in (the old route's was %.1f)\n", o.f[first], p, o.f[first - 1]);
+    assert(std::fabs(p / o.f[first] - 1) < 0.03);
+}
+static double cents_of(double f) { const double m = 69 + 12 * std::log2(f / 440); return 100 * (m - std::round(m)); }
+static void test_micro() {
+    const Log base = render(orn_voice(R"("orn":"none")", "4n", 0.5), 40);
+    const Log l = render(orn_voice(R"("micro":[0,25,0,0,0])", "4n", 0.5), 40); int sharp = 0, plain = 0;
+    assert(l.f.size() == base.f.size());
+    for (size_t i = 0; i < l.f.size(); i++) if (l.role[i] == 1) {
+        const double c = cents_of(l.f[i]); assert(l.t[i] == base.t[i]);
+        if (std::fabs(c - 25) < 0.01) sharp++; else { assert(std::fabs(c) < 0.01); plain++; }
+    }
+    for (size_t i = 0; i < l.f.size(); i++) if (l.role[i] == 1 && tick_of(l.t[i]) < span_ticks()) {   /* chord 0: the F (degree 1) is sharp, D A C are not */
+        const int pc = pitch(l, i) % 12; assert((std::fabs(cents_of(l.f[i]) - 25) < 0.01) == (pc == 5)); }
+    assert(sharp > 8 && plain > 24 && std::fabs(cents_of(base.f[0])) < 0.01);
+    /* a canon follower replays the notes with their offsets; so does a heterophony double */
+    const char *MV = R"({"role":"melody","lo":50,"hi":81,"micro":[0,25,0,0,0]})";
+    const Log c = render(rel_comp(MV, ARPV3, MOT, R"([{"type":"canon","a":0,"b":2,"delay":8,"from":0,"to":0}])"), 40); int nc = 0, ns = 0;
+    for (size_t i = 0; i < c.f.size(); i++) if (c.role[i] == 1 && tick_of(c.t[i]) + 8 < span_ticks()) {
+        bool found = false; for (size_t j = 0; j < c.f.size(); j++) if (c.role[j] == 3 && tick_of(c.t[j]) == tick_of(c.t[i]) + 8) { found = true; assert(std::fabs(cents_of(c.f[j]) - cents_of(c.f[i])) < 0.01); }
+        assert(found); nc++; if (std::fabs(cents_of(c.f[i]) - 25) < 0.01) ns++; }
+    assert(nc >= 12 && ns >= 3);
+    /* final review 5: a transposed follower lands on other degrees - its own table (here +40 on the 4th tone), not the leader's +25 */
+    { const Log x = render(rel_comp(MV, R"({"role":"off","micro":[0,0,0,40,0]})", MOT, R"([{"type":"canon","a":0,"b":2,"delay":8,"trans":2,"from":0,"to":0}])"), 40); int n = 0, f40 = 0;
+      for (size_t i = 0; i < x.f.size(); i++) if (x.role[i] == 3 && tick_of(x.t[i]) < span_ticks()) { const double c = cents_of(x.f[i]); assert(std::fabs(c) < 0.01 || std::fabs(c - 40) < 0.01); f40 += std::fabs(c - 40) < 0.01; n++; }
+      assert(n >= 12 && f40 >= 2);
+      std::printf("C micro: a canon follower transposed 2 degrees plays its own table - %d notes, %d at +40, none at the leader's +25\n", n, f40); }
+    const Log h = render(rel_comp(MV, R"({"role":"off"})", MOT, R"([{"type":"hetero","a":0,"b":2,"offset":30,"ornament":0,"from":0,"to":0}])"), 40); int nh = 0;
+    for (size_t i = 0; i < h.f.size(); i++) if (h.role[i] == 1 && tick_of(h.t[i]) < span_ticks()) {
+        bool found = false; for (size_t j = 0; j < h.f.size(); j++) if (h.role[j] == 3 && std::fabs(h.t[j] - h.t[i] - 0.03) < 1e-4 && h.f[j] == h.f[i]) found = true; assert(found); nh++; }
+    assert(nh >= 12);
+    std::printf("C micro: +25 cents on the 3rd - %d of %d notes sharp (the 3rds only); a canon follower replays %d notes with their offsets (%d at +25), a heterophony double %d\n", sharp, sharp + plain, nc, ns, nh);
+}
+
 int main(int argc, char **argv) {
+    if (argc > 1 && !std::strcmp(argv[1], "walk")) { test_walk(); return 0; }
+    if (argc > 1 && !std::strcmp(argv[1], "tp")) { test_tintinnabuli(); test_pointillist(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "final")) { test_empty_motif(); test_melody_gain_chain(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "room")) { test_room(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "levels")) { test_levels(); return 0; }
+    if (argc > 1 && !std::strcmp(argv[1], "walklevel")) { test_walk_level(); return 0; }
+    if (argc > 1 && !std::strcmp(argv[1], "ornlevel")) { test_ornament_level(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "levels-table")) { levels_table(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "fix")) { test_hetero_with(); test_motion(); test_density(); return 0; }
+    if (argc > 1 && !std::strcmp(argv[1], "orn")) { test_ornaments(); test_glides(); test_trill_budget(); test_glide_route_change(); test_micro(); return 0; }
+    if (argc > 1 && !std::strcmp(argv[1], "chorale")) { test_chorale(); return 0; }
+    if (argc > 1 && !std::strcmp(argv[1], "trill")) { test_trill_budget(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "onsets")) { test_onsets(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "cost")) { test_cost(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "rel")) { test_relation_levels(); test_relation_read(); return 0; }
     if (argc > 1 && !std::strcmp(argv[1], "read")) { test_gain_memo(); test_gain_lengths(); test_patch_read_cost(); return 0; }
     test_repeat_hash();
+    test_ornaments();
+    test_glides();
+    test_trill_budget();
+    test_glide_route_change();
+    test_micro();
+    test_ostinato();
+    test_chorale();
+    test_tintinnabuli();
+    test_pointillist();
+    test_walk();
     test_develop();
     test_canon();
     test_canon_no_feedback();
@@ -1498,6 +2063,7 @@ int main(int argc, char **argv) {
     test_unison();
     test_density();
     test_parse();
+    test_styles4_parse();
     test_resolve();
     test_motif_parse();
     test_relations_parse();
@@ -1526,6 +2092,8 @@ int main(int argc, char **argv) {
     test_engine_zone();
     test_onsets();
     test_levels();
+    test_walk_level();
+    test_ornament_level();
     test_relation_levels();
     test_melody_gain_chain();
     test_room();

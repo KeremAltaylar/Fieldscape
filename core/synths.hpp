@@ -65,6 +65,8 @@ struct Synth {
        (the waveform's slope breaks: a click). It fades over `dur` first (an exponential, a quarter of `dur` its time
        constant: down to 2 % and no corner at its end), and the note starts after (the piece's note()) */
     double last_f = 0;
+    /* composition 4's glides: a one-voice synth's continuous pitch (attack sets it, render reads it per sample), else none */
+    virtual Param *glide_param() { return nullptr; }
     virtual bool sounding(double t) { Envelope *v = amp(); return v && v->sig.value(t) > 1e-3; }
     static void fade_env(Envelope &e, double t, double dur) { e.sig.setRampPoint(t); e.sig.setTargetAtTime(0, t, dur / 4); }
     virtual void fade(double t, double dur) { if (Envelope *v = amp()) fade_env(*v, t, dur); }
@@ -80,6 +82,7 @@ struct Synth {
 
 /* ---- ModulationSynth / FMSynth / AMSynth: carrier and modulator Synths at -10 dB each ---- */
 struct ModSynth : Synth {
+    Param *glide_param() override { return &freq; }
     bool am = false;
     Osc car, mod;
     Envelope env, menv;
@@ -125,6 +128,7 @@ struct ModSynth : Synth {
 
 /* ---- MonoSynth: oscillator -> lowpass (driven by a FrequencyEnvelope) -> amplitude envelope ---- */
 struct MonoSynth : Synth {
+    Param *glide_param() override { return &freq; }
     Osc osc;
     Envelope env, fenv;
     Envelope *amp() override { return &env; }
@@ -216,6 +220,7 @@ struct DuoSynth : Synth {
 
 /* ---- Tone.Synth: an oscillator through an amplitude envelope (also the zones' one-shot) ---- */
 struct SimpleSynth : Synth {
+    Param *glide_param() override { return &freq; }
     Osc osc;
     Envelope env;
     Envelope *amp() override { return &env; }
@@ -321,6 +326,7 @@ struct PluckSynth : Synth {
 /* ---- MetalSynth: six square FM oscillators at inharmonic ratios, through a highpass swept by
    the envelope ---- */
 struct MetalSynth : Synth {
+    Param *glide_param() override { return &freq; }
     Osc car[6], mod[6];
     Envelope env;
     Envelope *amp() override { return &env; }
@@ -365,6 +371,7 @@ struct MetalSynth : Synth {
 
 /* ---- MembraneSynth: a sine whose pitch falls from note x 2^octaves to the note ---- */
 struct MembraneSynth : SimpleSynth {
+    Param *glide_param() override { return nullptr; }   /* its attack drops the pitch itself */
     double pitch_decay = 0.12, octaves = 3.2;
     void init(double s) override {
         SimpleSynth::init(s);
@@ -405,6 +412,7 @@ struct Followed : Synth {
 static const double WAVE_GAIN[8] = { 0.704, 0.575, 0.774, 1.012, 1.000, 2.100, 1.458, 1.347 };
 
 struct WavetableVoice : Followed {
+    Param *glide_param() override { return &freq; }
     Osc a, b;
     Ctl ga, gb;
     Envelope env;

@@ -6,19 +6,27 @@
 #include <cstdint>
 
 namespace comp {
-enum Style { FREE, ARPEGGIO, PEDAL, STRUM, EUCLID, SWELLS, NSTYLE };
+enum Style { FREE, ARPEGGIO, PEDAL, STRUM, EUCLID, SWELLS, OSTINATO, CHORALE, TINTINNABULI, POINTILLIST, NSTYLE };   /* appended: 0-5 keep their indexes (core/levels.hpp's LEVEL_FIX has only those) */
 enum Role { MELODY, COUNTER, ACCOMP, BASS, OFF };        /* step 1: OFF silences the voice; the others play their style */
-enum BassMode { HOLD, BASS_PEDAL, BASS_OFF };
+enum BassMode { HOLD, BASS_PEDAL, BASS_OFF, BASS_WALK };
+enum Refit { RF_DEGREE, RF_TRANSPOSE };                 /* ostinato: refit by chord degree / fixed transposition from the first chord */
+enum Voicing { VO_CLOSE, VO_OPEN, VO_DROP2 };
+enum TMode { TT_ABOVE, TT_BELOW, TT_ALT };              /* tintinnabuli: nearest triad tone above / below / alternating */
+enum Approach { AP_CHROMATIC, AP_SCALE, AP_FIFTH };
+enum Orn { ORN_NONE, ORN_GRACE, ORN_TRILL, ORN_MORDENT, ORN_SLIDE };
 enum When { INSIDE, ENTER };
-enum Field : uint32_t { F_STYLE = 1u, F_ROLE = 2u, F_RATE = 4u, F_LO = 8u, F_HI = 16u, F_LEN = 32u, F_VAR = 64u, F_ACC = 128u,
+enum Field : uint64_t { F_STYLE = 1u, F_ROLE = 2u, F_RATE = 4u, F_LO = 8u, F_HI = 16u, F_LEN = 32u, F_VAR = 64u, F_ACC = 128u,
     F_GRID = 256u, F_SPAN = 512u, F_TONES = 1024u, F_PEDAL = 2048u, F_DIR = 4096u, F_SPREAD = 8192u,
     F_PNOTE = 1u << 14, F_FOLLOW = 1u << 15, F_PULSES = 1u << 16, F_STEPS = 1u << 17, F_ROT = 1u << 18,
-    F_ATTACK = 1u << 19, F_RELEASE = 1u << 20, F_PEAK = 1u << 21, F_ALL = 0x3FFFFFu };   /* one bit per key: a layer holds only what it sets */
-enum BassField : uint32_t { B_MODE = 1u, B_PEDAL = 2u, B_NOTE = 4u, B_ALL = 7u };
+    F_ATTACK = 1u << 19, F_RELEASE = 1u << 20, F_PEAK = 1u << 21,
+    F_REFIT = 1ull << 22, F_VOICING = 1ull << 23, F_NVOICES = 1ull << 24, F_RESTRIKE = 1ull << 25, F_STRICT = 1ull << 26, F_ANSWERS = 1ull << 27,
+    F_TMODE = 1ull << 28, F_SILENCE = 1ull << 29, F_PLEN = 1ull << 30, F_ORN = 1ull << 31, F_ORN_EVERY = 1ull << 32, F_ORN_PROB = 1ull << 33,
+    F_ORN_SPEED = 1ull << 34, F_GLIDE = 1ull << 35, F_GLIDE_IV = 1ull << 36, F_MICRO = 1ull << 37, F_ALL = (1ull << 38) - 1 };   /* one bit per key: a layer holds only what it sets */
+enum BassField : uint32_t { B_MODE = 1u, B_PEDAL = 2u, B_NOTE = 4u, B_APPROACH = 8u, B_BEFORE = 16u, B_WRATE = 32u, B_ALL = 63u };
 static const int MAX_COLS = 16, NCHORD = 64, NSECTION = 16, NZONE = 12, PHRASE_BARS = 2, NVOICE = 3;
 
 struct Voice {
-    uint32_t mask = 0;                                /* which fields this layer sets (the route sets all) */
+    uint64_t mask = 0;                                /* which fields this layer sets (the route sets all) */
     uint8_t style = FREE, role = ACCOMP, rate = 2;    /* rate: a step, in sixteenths (1 2 3 4 6 8 12 16) */
     uint8_t lo = 48, hi = 84;                         /* register, MIDI */
     float len = 0.9f, variation = 0;                  /* share of the step a note fills; 0 = exactly as set */
@@ -29,9 +37,15 @@ struct Voice {
     uint8_t dir = 0; float spread_ms = 40;            /* strum: 0 up, 1 down, 2 alternating; the roll */
     uint8_t pulses = 5, steps = 8, rot = 0;           /* euclidean */
     float attack = 0.3f, release = 0.4f, peak = 0.8f; /* swells: attack and release as shares of the note; level */
+    uint8_t refit = RF_DEGREE;                        /* ostinato (also grid/acc as arpeggio) */
+    uint8_t voicing = VO_CLOSE, nvoices = 4, restrike = 16; float strict = 1;   /* chorale: restrike in sixteenths; voice-leading strictness 0..1 */
+    uint8_t tvoice = 0, tmode = TT_BELOW;             /* tintinnabuli: the voice it answers (0..2) */
+    float sil_min = 0.25f, sil_max = 1.5f, plen = 0.15f;   /* pointillist: seconds of silence between notes, a note's length */
+    uint8_t orn = ORN_NONE, orn_every = 0; float orn_prob = 0.3f, orn_speed = 1;   /* ornaments: every n-th note (0: by chance), speed x (1 = a 1/32 at 96 bpm) */
+    float glide_ms = 0; uint8_t glide_iv = 0; int8_t micro[5] = { 0, 0, 0, 0, 0 };   /* glides (iv: 0 every move, 1 steps <= 2 semitones, 2 leaps >= 5); cents per chord degree */
     Voice() { for (int i = 0; i < MAX_COLS; i++) { acc[i] = 70; grid[i] = (int8_t)(i % 3); } }
 };
-struct Bass { uint32_t mask = 0; uint8_t mode = HOLD, pedal = 0, note = 38; };   /* pedal: 0 key root, 1 key fifth, 2 note */
+struct Bass { uint32_t mask = 0; uint8_t mode = HOLD, pedal = 0, note = 38; uint8_t approach = AP_CHROMATIC, before = 1, wrate = 4; };   /* walk: before = beats before the bar's end that approach the next chord; wrate in sixteenths */   /* pedal: 0 key root, 1 key fifth, 2 note */
 struct Over { bool used = false; Voice v[NVOICE]; Bass bass; uint8_t blend = 0, when = INSIDE; uint64_t zone = 0; };
 static const int MOTIF_MAX = 8, CHAIN_MAX = 16;
 enum Basis { CHORD_DEG, SCALE_DEG };

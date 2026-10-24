@@ -276,6 +276,9 @@ body.composing-grown #ls-panel { display: none; }   /* the listener's sheet: the
 /* the inspector (B): every setting; the scope's own lit with x, the rest dimmed with where they come from */
 .cd-insp { background: var(--panel); border: 1px solid var(--bdr); border-radius: 2px; padding: var(--s-3); display: flex; flex-direction: column; gap: 5px; min-height: 0; overflow: hidden; }
 .cd-ih { display: flex; align-items: baseline; gap: var(--s-2); flex: none; }
+.cd-up { flex: none; padding: 0 var(--s-1); border: 0; background: none; color: var(--lamp); font: var(--t-xs) var(--font-mono); letter-spacing: 0; text-transform: none; white-space: nowrap; }
+.cd-up:hover { color: var(--accent); }
+.cd-lane .cd-name { cursor: pointer; }
 .cd-ih h3 { margin: 0; flex: 1; min-width: 0; font: 400 1.3rem/1 var(--font-display); letter-spacing: 0; text-transform: none; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cd-clear { padding: 3px var(--s-2); }
 .cd-isub.wrap { white-space: normal; line-height: 1.4; }
@@ -297,6 +300,10 @@ body.composing-grown #ls-panel { display: none; }   /* the listener's sheet: the
 .cd-row2 .cd-seg { width: 100%; }
 .cd-row2 .cd-seg button { padding: 2px; }
 .cd-row2.wide { grid-template-columns: 3.4rem minmax(0, 1fr); height: 26px; }
+.cd-row2.wide.rs { grid-template-columns: 3.4rem minmax(0, 1fr) 1rem; }   /* composition 4: a full-line row's × */
+/* a menu has no value to show: its select takes that column too (composition 4: "Tintinnabuli", "Pointillist", "by chance" read whole) */
+.cd-row2:has(> .cd-ctl > select) > .cd-ctl { grid-column: span 2; }
+.cd-row2:has(> .cd-ctl > select) > .cd-v { display: none; }
 .cd-row2.wide .cd-seg button { padding: 5px 2px; letter-spacing: 0; }
 .cd-reset { padding: 0 4px; border: 0; background: none; color: var(--ink); letter-spacing: 0; font-size: var(--t-xs); line-height: 1; }
 .cd-reset:hover { background: var(--raised); color: var(--lamp); }
@@ -339,8 +346,69 @@ body.composing-grown #ls-panel { display: none; }   /* the listener's sheet: the
 .cd-insp.tighter .cd-presets button, .cd-insp.tighter .cd-itools button { padding-top: 2px; padding-bottom: 2px; }
 .cd-insp.tighter .cd-ieb { margin-top: 2px; }
 .cd-insp.tighter .cd-accs { height: 14px; }
+.cd-note { margin: 0; font: var(--t-xs) var(--font-mono); color: var(--faint); line-height: 1.3; min-width: 0; overflow-wrap: anywhere; }
+.cd-note button { padding: 0; border: 0; background: none; color: var(--lamp); font: inherit; letter-spacing: 0; text-transform: none; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.cd-note button:hover { color: var(--accent); }
 .cd-insp.tightest .cd-rolehint { display: none; }
 .cd-ieb .cd-reset { letter-spacing: var(--track-meta); text-transform: uppercase; }
+/* snug and tiny (composition 4): past tightest - rows and dials a little smaller, then the sub-line goes */
+.cd-insp.snug { gap: 1px; }
+.cd-insp.snug .cd-row2 { height: 16px; }
+.cd-insp.snug .cd-row2.wide { height: 19px; }
+.cd-insp.snug .cd-row2.wide .cd-seg button, .cd-insp.snug .cd-vtabs button { padding-top: 1px; padding-bottom: 1px; }
+.cd-insp.snug .cd-ieb, .cd-insp.snug .cd-orn, .cd-insp.snug .cd-foldsum { margin-top: 1px; }
+.cd-insp.tiny .cd-ih + .cd-isub { display: none; }
+.cd-insp.snug .cd-mdial { width: 18px; height: 18px; }
+.cd-insp.snug .cd-mdial::after { top: 1px; height: 7px; transform-origin: 50% 8px; }
+.cd-insp.snug .cd-mk input { width: 18px; height: 18px; margin-left: -9px; }
+.cd-insp.snug .cd-vsvg { height: 28px; }
+
+/* composition 4 (the approved mock, design/compose/styles-mock.html): the deeper styles' editors, ornaments & glides, the ornament mark.
+   The voice's own rows sit in one holder (.cd-vrows) so that, with the ornaments section open and no room left, they fold into one line. */
+.cd-vrows, .cd-fx { display: contents; }
+.cd-insp.fold .cd-vrows { display: none; }
+.cd-orn, .cd-foldsum { display: flex; align-items: center; gap: var(--s-2); width: 100%; margin: 4px 0 0; padding: 0; border: 0; border-radius: 0; background: none; color: var(--ink);
+  font: var(--t-xs) var(--font-mono); letter-spacing: var(--track-eyebrow); text-transform: uppercase; text-align: left; flex: none; }
+.cd-orn::after, .cd-foldsum::after { content: ""; order: 1; flex: 1; height: 1px; background: var(--bdr); }
+.cd-orn .cd-chev, .cd-foldsum .cd-chev { order: 2; letter-spacing: 0; color: var(--faint); }
+.cd-orn:hover, .cd-orn:hover .cd-chev, .cd-foldsum:hover, .cd-foldsum:hover .cd-chev { color: var(--lamp); background: none; }
+.cd-orn[aria-expanded="false"], .cd-foldsum { color: var(--faint); }
+.cd-odot { width: 7px; height: 7px; border-radius: 50%; background: var(--lamp); flex: none; }
+.cd-foldsum { display: none; }
+.cd-insp.fold .cd-foldsum { display: flex; }
+.cd-ieb:has(+ .cd-micro), .cd-ieb:has(+ .cd-vrow) { flex: none; }
+/* the two-handle range: two native sliders on one track, only their thumbs take the pointer */
+.cd-range { --l: 0; --h: 1; position: relative; display: block; width: 100%; height: 16px; }
+.cd-range::before { content: ""; position: absolute; left: 0; right: 0; top: 7px; height: 3px; border-radius: 999px; background: color-mix(in oklch, var(--ink) 13%, transparent); }
+.cd-range i { position: absolute; top: 7px; height: 3px; background: var(--accent);
+  left: calc(5.5px + (100% - 11px) * var(--l)); right: calc(5.5px + (100% - 11px) * (1 - var(--h))); }
+.cd .cd-range input { position: absolute; left: 0; top: 0; width: 100%; height: 16px; margin: 0; background: none; pointer-events: none; }
+.cd .cd-range input::-webkit-slider-runnable-track { background: none; }
+.cd .cd-range input::-webkit-slider-thumb { pointer-events: auto; cursor: pointer; }
+.cd .cd-range input:focus-visible::-webkit-slider-thumb { background: var(--lamp); box-shadow: 0 0 0 4px color-mix(in oklch, var(--lamp) 30%, transparent); }
+/* micro-tuning: five dials, set ones lit */
+.cd-micro { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: var(--s-1); flex: none; }
+.cd-mk { position: relative; display: flex; flex-direction: column; align-items: center; gap: 1px; font: var(--t-xs) var(--font-mono); color: var(--faint); }
+.cd-mk b { font-weight: 400; color: var(--dim); font-variant-numeric: tabular-nums; }
+.cd-mk.set b { color: var(--lamp); }
+.cd-mk small { font-size: var(--t-xs); }
+.cd-mdial { position: relative; width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid var(--hairline); cursor: ns-resize; touch-action: none; }
+.cd-mdial::after { content: ""; position: absolute; left: 50%; top: 2px; width: 2px; height: 8px; margin-left: -1px; border-radius: 1px; background: var(--ink); transform-origin: 50% 9px; transform: rotate(var(--a, 0deg)); }
+.cd-mk.set .cd-mdial { border-color: var(--lamp); }
+.cd-mdial:hover { border-color: var(--accent); }
+.cd-mk input { position: absolute; left: 50%; top: 0; width: 22px; height: 22px; margin: 0 0 0 -11px; opacity: 0; pointer-events: none; }
+.cd-mk:has(input:focus-visible) .cd-mdial { outline: 2px solid var(--lamp); outline-offset: 2px; }
+.cd-micro.inh .cd-mk { opacity: .6; }
+/* the chorale's voicing: three little staves, the chosen one lit */
+.cd-vrow { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s-1); flex: none; }
+.cd-vrow.inh { opacity: .6; }
+.cd-vbtn { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 4px 0 3px; background: var(--sunk); color: var(--faint); letter-spacing: .02em; text-transform: none; }
+.cd-vbtn span { font: var(--t-xs) var(--font-mono); }
+.cd-vsvg { display: block; height: 46px; width: auto; }
+.cd-vbtn.on, .cd-vbtn[aria-pressed="true"] { color: var(--ink); background: var(--sunk); border-color: var(--lamp); box-shadow: 0 0 0 1px var(--lamp); }
+.cd-vbtn.on .cd-vsvg { color: var(--lamp); }
+/* an ornament, a glide or a micro-tuning on this chord: a small ~ */
+.cd-cell.orn::before { content: "~"; position: absolute; right: 5px; top: 3px; font: var(--t-xs)/1 var(--font-mono); color: var(--lamp); }
 
 /* C-5: a route with no chords */
 .cd-empty { grid-column: 1 / -1; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: var(--s-2); padding: var(--s-4) var(--s-6);
@@ -363,6 +431,7 @@ body.composing-grown #ls-panel { display: none; }   /* the listener's sheet: the
   .cd-bars .cd-n { display: inline; }
   .cd-bars button { padding: 7px 5px; }
   .cd-row2 { grid-template-columns: 4.8rem minmax(0, 1fr) 2.8rem 3.4rem; }
+  .cd-row2.wide .cd-seg button { padding-left: 0; padding-right: 0; }   /* "half steps", "by the 5th" read whole in a third of the line */
   .cd-cell span { display: none; }      /* a cell is ~35px: the picture says the style, the tooltip the word */
   .cd-cell { justify-content: center; }
   .cd-edhint, .cd-edh:has(.cd-edh2) { display: none; }   /* the roll keeps the height: the chips say what the chain is */

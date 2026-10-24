@@ -4,17 +4,20 @@
 (function (root) {
   var VOICES = ["voice", "sect", "v3"];
   var STYLES = [{ id: "free", label: "Free" }, { id: "arpeggio", label: "Arpeggio" }, { id: "pedal", label: "Pedal" },
-                { id: "strum", label: "Strum" }, { id: "euclid", label: "Euclidean" }, { id: "swells", label: "Swells" }];
+                { id: "strum", label: "Strum" }, { id: "euclid", label: "Euclidean" }, { id: "swells", label: "Swells" },
+                { id: "ostinato", label: "Ostinato" }, { id: "chorale", label: "Chorale" }, { id: "tintinnabuli", label: "Tintinnabuli" }, { id: "pointillist", label: "Pointillist" }];
   var ROLES = [{ id: "accomp", label: "on" }, { id: "melody", label: "melody" }, { id: "off", label: "off" }];
   /* composition 2: the chain's operations (core/composer.hpp Op) */
   var OPS = [{ id: "repeat", label: "repeat" }, { id: "seq", label: "sequence", arg: { min: -7, max: 7, def: 1 } }, { id: "invert", label: "invert" },
              { id: "retro", label: "retrograde" }, { id: "augment", label: "augment" }, { id: "diminish", label: "diminish" },
              { id: "fragment", label: "fragment", arg: { min: 1, max: 8, def: 2 } }, { id: "cadence", label: "cadence" }];
   var RATES = ["16n", "8n", "8n.", "4n", "4n.", "2n", "2n.", "1n"];
+  function opts(ids) { return ids.map(function (i) { return { id: i, label: i }; }); }
+  var RATE_OPTS = opts(RATES);
   var COMMON = [
     { k: "style", label: "style", kind: "menu", options: STYLES, def: "free" },
     { k: "role", label: "role", kind: "menu", options: ROLES, def: "accomp" },
-    { k: "rate", label: "rate", kind: "menu", options: RATES.map(function (r) { return { id: r, label: r }; }), def: "8n" },
+    { k: "rate", label: "rate", kind: "menu", options: RATE_OPTS, def: "8n" },
     { k: "lo", label: "lowest", kind: "knob", min: 24, max: 96, step: 1, def: 48, fmt: "note" },
     { k: "hi", label: "highest", kind: "knob", min: 36, max: 108, step: 1, def: 84, fmt: "note" },
     { k: "len", label: "length", kind: "knob", min: 0.05, max: 1, step: 0.05, def: 0.9, fmt: "pct" },
@@ -41,9 +44,33 @@
              { k: "release", label: "release", kind: "knob", min: 0.01, max: 0.95, step: 0.01, def: 0.4, fmt: "pct" },
              { k: "peak", label: "level", kind: "knob", min: 0, max: 1, step: 0.05, def: 0.8, fmt: "pct" }]
   };
-  var BASS = [{ k: "mode", label: "bass", kind: "menu", options: [{ id: "hold", label: "holds the root" }, { id: "pedal", label: "pedal" }, { id: "off", label: "off" }], def: "hold" },
+  /* composition 4 (core/composer.cpp voice_of; every default is the core's struct default). Ostinato plays as an arpeggio: the same grid
+     and accents kinds - its grid is the core's own 0 1 2 0 1 2 ... */
+  FIELDS.ostinato = [{ k: "grid", label: "pattern", kind: "grid", def: [0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0] },
+                     { k: "acc", label: "accents", kind: "accents", def: FIELDS.arpeggio[2].def.slice() },
+                     { k: "refit", label: "refit", kind: "menu", options: opts(["degree", "transpose"]), def: "degree" }];
+  FIELDS.chorale = [{ k: "voicing", label: "voicing", kind: "menu", options: opts(["close", "open", "drop2"]), def: "close" },
+                    { k: "voices", label: "voices", kind: "knob", min: 2, max: 6, step: 1, def: 4 },
+                    { k: "restrike", label: "restrike", kind: "menu", options: RATE_OPTS, def: "1n" },
+                    { k: "strict", label: "strictness", kind: "knob", min: 0, max: 1, step: 0.05, def: 1, fmt: "pct" }];
+  FIELDS.tintinnabuli = [{ k: "answers", label: "answers voice", kind: "knob", min: 0, max: 2, step: 1, def: 0 },
+                         { k: "tmode", label: "tone", kind: "menu", options: opts(["above", "below", "alt"]), def: "below" }];
+  FIELDS.pointillist = [{ k: "silence", label: "silence", kind: "range", min: 0, max: 8, step: 0.05, def: [0.25, 1.5], fmt: "s" },
+                        { k: "plen", label: "note length", kind: "knob", min: 0.03, max: 2, step: 0.01, def: 0.15, fmt: "s" }];
+  /* ornaments, glides and micro-tuning: a field group (not a style's) that any voice's inspector shows, whatever its style */
+  var ORNAMENTS = [{ k: "orn", label: "ornament", kind: "menu", options: opts(["none", "grace", "trill", "mordent", "slide"]), def: "none" },
+                   { k: "orn_every", label: "every nth note", kind: "knob", min: 0, max: 8, step: 1, def: 0 },
+                   { k: "orn_prob", label: "chance", kind: "knob", min: 0, max: 1, step: 0.05, def: 0.3, fmt: "pct" },
+                   { k: "orn_speed", label: "speed", kind: "knob", min: 0.5, max: 2, step: 0.05, def: 1, fmt: "x" },
+                   { k: "glide", label: "glide", kind: "knob", min: 0, max: 400, step: 5, def: 0, fmt: "ms" },
+                   { k: "glide_iv", label: "glide on", kind: "menu", options: opts(["all", "steps", "leaps"]), def: "all" },
+                   { k: "micro", label: "micro-tuning", kind: "micro", min: -50, max: 50, step: 1, def: [0, 0, 0, 0, 0] }];
+  var BASS = [{ k: "mode", label: "bass", kind: "menu", options: [{ id: "hold", label: "holds the root" }, { id: "pedal", label: "pedal" }, { id: "off", label: "off" }, { id: "walk", label: "walks" }], def: "hold" },
               { k: "pedal", label: "pedal note", kind: "menu", options: [{ id: "root", label: "key root" }, { id: "fifth", label: "key fifth" }, { id: "fixed", label: "fixed" }], def: "root" },
-              { k: "note", label: "fixed note", kind: "knob", min: 12, max: 72, step: 1, def: 38, fmt: "note" }];
+              { k: "note", label: "fixed note", kind: "knob", min: 12, max: 72, step: 1, def: 38, fmt: "note" },
+              { k: "approach", label: "approach", kind: "menu", options: opts(["chromatic", "scale", "fifth"]), def: "chromatic" },
+              { k: "before", label: "beats before", kind: "knob", min: 1, max: 4, step: 1, def: 1 },
+              { k: "wrate", label: "walk rate", kind: "menu", options: RATE_OPTS, def: "4n" }];
   function clone(x) { return JSON.parse(JSON.stringify(x)); }
   function voiceDefaults() { return { style: "free", role: "accomp", rate: "8n", lo: 48, hi: 84, len: 0.9, variation: 0 }; }
   function defaults() {
@@ -91,9 +118,20 @@
     if (!Object.keys(o[voice]).length) { delete o[voice]; }
     if (emptyOver(o)) { delete comp.over[scope.kind][key(scope)]; }
   }
+  /* every layer over the route (chord, section, zone) that sets one of these keys for the voice - the count per layer kind */
+  function keyLayers(comp, voice, k) {
+    var out = { chord: 0, section: 0, zone: 0 };
+    Object.keys(out).forEach(function (kind) { Object.keys(comp.over[kind]).forEach(function (id) { var v = comp.over[kind][id][voice]; if (v && v[k] !== undefined) { out[kind]++; } }); });
+    return out;
+  }
+  /* "apply to all": the route's value then plays everywhere - one clearValue per layer, so the empty ones go too */
+  function clearKeyEverywhere(comp, voice, ks) {
+    [].concat(ks).forEach(function (k) { ["chord", "section", "zone"].forEach(function (kind) { Object.keys(comp.over[kind]).forEach(function (id) {
+      clearValue(comp, { kind: kind, i: +id, id: id }, voice, k); }); }); });
+  }
   function clearScope(comp, scope) { if (scope.kind !== "route") { delete comp.over[scope.kind][key(scope)]; } }
   function fieldDef(k, style) {
-    var searchList = COMMON.concat(BASS);
+    var searchList = COMMON.concat(BASS, ORNAMENTS);
     if (style && FIELDS[style]) { searchList = searchList.concat(FIELDS[style]); }
     Object.keys(FIELDS).forEach(function (s) { if (!style || s !== style) { searchList = searchList.concat(FIELDS[s]); } });
     for (var i = 0; i < searchList.length; i++) { if (searchList[i].k === k) { return searchList[i].def; } }
@@ -110,7 +148,7 @@
         var o = comp.over.section[String(b.id)]; if (o && o[voice]) { Object.keys(o[voice]).forEach(function (k) { base[k] = o[voice][k]; from[k] = "section"; }); } });
     }
     var style = own.style || base.style || "free";
-    var keys = voice === "bass" ? BASS.map(function (f) { return f.k; }) : COMMON.concat(FIELDS[style] || []).map(function (f) { return f.k; });
+    var keys = voice === "bass" ? BASS.map(function (f) { return f.k; }) : COMMON.concat(FIELDS[style] || [], ORNAMENTS).map(function (f) { return f.k; });
     keys.forEach(function (k) {
       var v;
       if (own[k] !== undefined) { v = own[k]; source[k] = "here"; }
@@ -550,8 +588,8 @@
   }
   function label(id) { for (var i = 0; i < STYLES.length; i++) { if (STYLES[i].id === id) { return STYLES[i].label; } } return id; }
   function summary(comp) { return VOICES.map(function (v) { return comp[v].role === "off" ? "Off" : comp[v].role === "melody" ? "Motif" : label(comp[v].style); }).join(" · "); }
-  var api = { VOICES: VOICES, STYLES: STYLES, ROLES: ROLES, OPS: OPS, motifDefault: motifDefault, motifStep: motifStep, setMotif: setMotif, setChain: setChain, chainAt: chainAt, RATES: RATES, FIELDS: FIELDS, BASS: BASS, defaults: defaults, TEMPLATES: TEMPLATES,
-    scopeObj: scopeObj, setValue: setValue, clearValue: clearValue, clearScope: clearScope, effective: effective, cell: cell,
+  var api = { VOICES: VOICES, STYLES: STYLES, ROLES: ROLES, OPS: OPS, motifDefault: motifDefault, motifStep: motifStep, setMotif: setMotif, setChain: setChain, chainAt: chainAt, RATES: RATES, FIELDS: FIELDS, ORNAMENTS: ORNAMENTS, BASS: BASS, defaults: defaults, TEMPLATES: TEMPLATES,
+    scopeObj: scopeObj, setValue: setValue, clearValue: clearValue, keyLayers: keyLayers, clearKeyEverywhere: clearKeyEverywhere, clearScope: clearScope, effective: effective, cell: cell,
     bands: bands, history: history, summary: summary, clone: clone, label: label,
     RELATIONS: RELATIONS, addRelation: addRelation, setRelation: setRelation, removeRelation: removeRelation, relationsAt: relationsAt, links: links,
     PRESETS: PRESETS, FORMS: FORMS, NCHORD: NCHORD, formSpans: formSpans, generate: generate, roll: roll };
