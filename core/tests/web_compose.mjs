@@ -882,6 +882,38 @@ try {
     await ev(`document.querySelector('#cd-insp .cd-note[data-fk="note:rel"] button').click(), 0`); await sleep(400);
     check("its link selects the relation chip", await ev("!!document.querySelector('#cd-relrow .cd-rchip.on, #cd-relrow .cd-rchip[aria-pressed=\"true\"]') || /relation|canon|answer|hocket|hetero|motion|unison|density/i.test(document.getElementById('cd-insp-title').textContent)"), await ev("document.getElementById('cd-insp-title').textContent"));
   }
+  /* composition 4: the way back to the route - Esc, the title's "the route" link, a lane's voice name */
+  {
+    const title = () => ev("document.getElementById('cd-insp-title').textContent");
+    const styleOf = (v) => ev(`__fa.routePatch(${R}).comp.${v}.style`);
+    const VKEY = { "voice 1": "voice", "voice 2": "sect", "voice 3": "v3" };
+    const viaStyle = async (label, want) => {
+      const t = await title(); const v = VKEY[t.slice(0, 7).toLowerCase()];
+      check(label + ": the title reads the route", t === want, t);
+      const sp = await spillOf(); check(label + ": one screen", sp.length === 0, sp.slice(0, 5));
+      await pick("style", "strum"); await sleep(350);
+      check(label + ": a style edit writes comp." + v + ".style", (await styleOf(v)) === "strum", await styleOf(v));
+      await key("z", "KeyZ", 2);
+    };
+    await ev("document.querySelector('#cd-lanes .cd-lane[data-voice=\"sect\"] .cd-cell').click(), 0"); await sleep(300);
+    check("a chord is selected: the title carries its up link", /chord 1$/.test(await title()) && !!(await ev("document.querySelector('#cd-insp .cd-ih .cd-up')")), await title());
+    const upSize = await ev("parseFloat(getComputedStyle(document.querySelector('#cd-insp .cd-up')).fontSize) >= parseFloat(getComputedStyle(document.querySelector('#cd-insp .cd-isub')).fontSize) - 0.5");
+    check("the up link is no smaller than --t-xs", upSize, null);
+    await ev("document.querySelector('#cd-insp .cd-up').click(), 0"); await sleep(300);
+    await viaStyle("the title's link", "Voice 2 · the route");
+    await ev("document.querySelector('#cd-lanes .cd-lane[data-voice=\"sect\"] .cd-cell').click(), 0"); await sleep(300);
+    await ev("document.querySelector('#cd-lanes .cd-lane[data-voice=\"v3\"] .cd-name').click(), 0"); await sleep(300);
+    await viaStyle("a lane's voice name", "Voice 3 · the route");
+    await ev("document.querySelector('#cd-lanes .cd-lane[data-voice=\"voice\"] .cd-cell').click(), 0"); await sleep(300);
+    await key("Escape", "Escape"); await sleep(300);
+    check("Esc on a chord: the dock stays, the route is selected", (await ev("FsComposeDock.isOpen()")) && /the route$/.test(await title()), await title());
+    await ev("document.querySelector('#cd-lanes .cd-lane[data-voice=\"sect\"] .cd-cell').click(), 0"); await sleep(300);
+    await ev("document.querySelector('#compose-dock .cd-icon[aria-label=\"Grow the dock\"]').click(), 0"); await sleep(600);
+    await key("Escape", "Escape"); await sleep(300);
+    await viaStyle("grown, Esc", "Voice 2 · the route");
+    await key("Escape", "Escape"); await sleep(400);
+    check("Esc on the route closes the dock", !(await ev("FsComposeDock.isOpen()")), null);
+  }
   /* desk only: a phone's patch panel has no Compose */
   await s.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(600);
   await ev(`fsListen.select(${R}), __fa.openPatchPanel(), 0`); await sleep(600);

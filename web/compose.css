@@ -276,6 +276,9 @@ body.composing-grown #ls-panel { display: none; }   /* the listener's sheet: the
 /* the inspector (B): every setting; the scope's own lit with x, the rest dimmed with where they come from */
 .cd-insp { background: var(--panel); border: 1px solid var(--bdr); border-radius: 2px; padding: var(--s-3); display: flex; flex-direction: column; gap: 5px; min-height: 0; overflow: hidden; }
 .cd-ih { display: flex; align-items: baseline; gap: var(--s-2); flex: none; }
+.cd-up { flex: none; padding: 0 var(--s-1); border: 0; background: none; color: var(--lamp); font: var(--t-xs) var(--font-mono); letter-spacing: 0; text-transform: none; white-space: nowrap; }
+.cd-up:hover { color: var(--accent); }
+.cd-lane .cd-name { cursor: pointer; }
 .cd-ih h3 { margin: 0; flex: 1; min-width: 0; font: 400 1.3rem/1 var(--font-display); letter-spacing: 0; text-transform: none; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cd-clear { padding: 3px var(--s-2); }
 .cd-isub.wrap { white-space: normal; line-height: 1.4; }

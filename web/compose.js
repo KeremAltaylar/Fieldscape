@@ -323,6 +323,7 @@
       var r = el("div", "cd-row cd-lane" + (v === "bass" ? " bass" : "")); r.dataset.voice = v;
       var nm = el("span", "cd-name"), nl = el("span", "cd-nl", NAME[v]), sub = laneSub(v); nm.appendChild(nl);
       nm.appendChild(el("small", sub === "Melody · motif" ? "mel" : null, sub)); r.appendChild(nm);
+      nm.title = "Edit " + NAME[v] + "’s route settings"; nm.addEventListener("click", function () { voice = v; pick({ kind: "route" }); });
       if (v !== "bass" && !grown) {   /* Show layers: what each layer says for this voice, chord by chord (on the name's line: the lane keeps its height) */
         var lb = el("button", "cd-layers", "layers"); lb.type = "button"; lb.dataset.fk = "layers:" + v; lb.setAttribute("aria-pressed", String(lay === v));
         lb.title = "Show what the zone, chord, section and route each say for " + NAME[v] + ", the one that plays lit";
@@ -606,6 +607,7 @@
     var h = el("h3", null, title); h.id = "cd-insp-title"; ih.appendChild(h);
     if (sel.kind !== "route") { var cl = el("button", "ghost cd-clear", "clear"); cl.type = "button"; cl.title = "Clear " + scopeName(sel) + "’s settings";
       cl.disabled = !changes(sel).length; cl.addEventListener("click", function () { M.clearScope(comp, sel); commit(); }); ih.appendChild(cl); }
+    if (sel.kind !== "route") { var up = el("button", "ghost cd-up", "↑ the route"); up.type = "button"; up.dataset.fk = "up"; up.title = "Back to the voice’s route settings (Esc)"; up.addEventListener("click", function () { pick({ kind: "route" }); }); ih.insertBefore(up, ih.children[1] || null); }
     w.appendChild(ih);
     var sub;
     if (sel.kind === "chord") { var own = Object.keys(ownOf(sel, voice) || {}).length;
@@ -1021,7 +1023,9 @@
     var roll = on(t, "#cd-motif .cd-mcell, #cd-motif .cd-mnote"), step = on(t, "#compose-dock .cd-step"), rel = on(t, "#compose-dock .cd-rchip, #compose-dock .cd-link");
     var page = !t || t === document || t === document.body || t === document.documentElement;
     if (e.key === "Escape" && relMenu) { e.preventDefault(); e.stopPropagation(); relMenu = false; want = ["#cd-addrel"]; render(); return; }
-    if (e.key === "Escape") { if (field && !on(t, "#compose-dock")) { return; } e.preventDefault(); e.stopPropagation(); back(); return; }
+    if (e.key === "Escape") { if (field && !on(t, "#compose-dock")) { return; } e.preventDefault(); e.stopPropagation();
+      if (sel.kind !== "route" || gen) { pick({ kind: "route" }); return; }   /* anything but the route: back up to it first; Esc on the route closes the dock */
+      back(); return; }
     if (field) { return; }
     if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "z") { e.preventDefault(); if (e.shiftKey) { redo(); } else { undo(); } return; }
     if (e.ctrlKey || e.metaKey || e.altKey || !ctx.chords.length) { return; }
