@@ -74,7 +74,7 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
     var chordStep by mutableStateOf(-1)
     /** the morph cells shown (the Cells button); each route opens them as its patch says (morph.cells), as the web does */
     var cells by mutableStateOf(false)
-    /** What a point's card shows (its feature's properties). mode: stretch, rhythm, grains or silent. */
+    /** What a point's card shows (its feature's properties). mode: stretch, rhythm, grains, melody or silent. */
     data class PointInfo(val id: String, val name: String, val note: String, val mode: String, val lon: Double, val lat: Double,
                          val peaks: DoubleArray, val duration: Double, val recorded: String?, val path: String?, val sounds: Boolean,
                          /** a rhythm point's four originals (slot, file name, storage path), and the point's photos (storage paths) */
@@ -195,7 +195,7 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
                   windowSamples = 2.0.pow((7 + 10 * px.optDouble("fft", 0.7).coerceIn(0.0, 1.0)).roundToInt().toDouble()),  // pxBufsize
                   brightest = (if (centroid.isNaN()) 2000.0 else centroid).times(2.2).coerceIn(600.0, 14000.0),
                   path = p.optString("storage_path").ifEmpty { null },
-                  sounds = p.optBoolean("has_audio") && mode != "hits" && mode != "grains",
+                  sounds = p.optBoolean("has_audio") && mode != "hits" && mode != "grains" && mode != "melody",
                   track = q.optString("track_path").ifEmpty { null },
                   sound = q.toString())
         }
@@ -209,7 +209,7 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
             val c = g.getJSONArray("coordinates"); val p = f.getJSONObject("properties")
             val a = p.optJSONObject("audio") ?: JSONObject()
             val m = p.optString("audio_mode", ""); val has = p.optBoolean("has_audio")
-            val mode = when { m == "hits" -> "rhythm"; m == "grains" -> "grains"; has -> "stretch"; else -> "silent" }
+            val mode = when { m == "hits" -> "rhythm"; m == "grains" -> "grains"; m == "melody" -> "melody"; has -> "stretch"; else -> "silent" }
             val pk = a.optJSONArray("peaks")
             val id = p.optString("id")
             val hj = p.optJSONObject("hits")

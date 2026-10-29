@@ -33,7 +33,7 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
     struct Row: Identifiable, Equatable { let id: String, name: String; let level: Double, dist: Double; let phase: Phase }
     /* what a point's card shows (its feature's properties) */
     struct PointInfo {
-        let id, name, note, mode: String      /* mode: "stretch", "rhythm", "grains", or "silent" */
+        let id, name, note, mode: String      /* mode: "stretch", "rhythm", "grains", "melody", or "silent" */
         let lon, lat: Double
         let peaks: [Double], duration: Double, recorded: String?
         let path: String?, sounds: Bool
@@ -207,7 +207,7 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
                          shape: (q["shape"] as? [String: Any]).flatMap { try? JSONSerialization.data(withJSONObject: $0) }.map { String(decoding: $0, as: UTF8.self) } ?? "",
                          brightest: max(600, min(14000, (((p["audio"] as? [String: Any])?["centroid_hz"] as? Double) ?? 2000) * 2.2)),
                          path: p["storage_path"] as? String,
-                         sounds: (p["has_audio"] as? Bool ?? false) && mode != "hits" && mode != "grains",
+                         sounds: (p["has_audio"] as? Bool ?? false) && mode != "hits" && mode != "grains" && mode != "melody",
                          track: q["track_path"] as? String,
                          sound: (try? JSONSerialization.data(withJSONObject: q)).map { String(decoding: $0, as: UTF8.self) } ?? "{}")
         }
@@ -219,7 +219,7 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
                   let p = f["properties"] as? [String: Any], let id = p["id"] as? String else { continue }
             let a = p["audio"] as? [String: Any] ?? [:]
             let m = p["audio_mode"] as? String, has = p["has_audio"] as? Bool ?? false
-            let mode = m == "hits" ? "rhythm" : m == "grains" ? "grains" : has ? "stretch" : "silent"
+            let mode = m == "hits" ? "rhythm" : m == "grains" ? "grains" : m == "melody" ? "melody" : has ? "stretch" : "silent"
             let hits = p["hits"] as? [String: Any] ?? [:]
             let slots: [(slot: String, name: String, path: String)] = ["low", "mid", "high", "rand"].compactMap { k in
                 guard let h = hits[k] as? [String: Any], let sp = h["storage_path"] as? String else { return nil }
@@ -324,7 +324,7 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
         /* the playing patch's bed: bed.on and how many voices (BED.maxVoices) */
         let voices = min(Core.slots - (core.test ? 1 : 0), sound.bedVoices)
         let k = Int(fs_pick_voices(&dist, &radius, &eligible, Int32(n), Int32(voices), 0, &picked))
-        /* Listen: a stretch point here, alone; a rhythm or grains point is soloed inside the piece (RouteSound) */
+        /* Listen: a stretch point here, alone; a rhythm, grains or melody point is soloed inside the piece (RouteSound) */
         let soloAny = solo.flatMap { id in points.firstIndex { $0.id == id } }
         let soloIndex = soloAny.flatMap { points[$0].sounds ? $0 : nil }
         let soloBeat = soloAny != nil && soloIndex == nil
