@@ -869,6 +869,46 @@ int main() {
         assert(st.find("\"rows\":[]") != std::string::npos && st.find("\"beats\":[]") != std::string::npos);
         fs_engine_destroy(e);
     }
+    {   /* the live mixer and the playback choice (fs_engine_mixer / fs_engine_playback): the cards' mute and solo
+           never reached the core (Kerem, 2026-10-29: "Solo and mute doesnt work properly"). One source per build,
+           so each case is that source on or silent. */
+        auto render = [&](bool route, bool point, const char *mute, const char *solo, int playback) {
+            fs_engine *e = fs_engine_create(SR, B);
+            if (route) fs_engine_upsert(e, "{\"type\":\"Feature\",\"geometry\":{\"type\":\"LineString\",\"coordinates\":[[29.0,41.0],[29.002,41.0]]},"
+                "\"properties\":{\"id\":\"r1\",\"kind\":\"route\",\"name\":\"R\",\"patch\":{\"version\":17,\"prog\":[{\"r\":0,\"q\":\"m9\"}],"
+                "\"bed\":{\"on\":false},\"sect\":{\"on\":false},\"zones\":{\"on\":false},\"v3\":{\"on\":false}}}}");
+            if (point) fs_engine_upsert(e, "{\"type\":\"Feature\",\"geometry\":{\"type\":\"Point\",\"coordinates\":[29.001,41.0]},"
+                "\"properties\":{\"id\":\"s1\",\"kind\":\"point\",\"name\":\"S\",\"has_audio\":true,\"storage_path\":\"s1.webm\",\"sound\":{\"radius\":200}}}");
+            fs_engine_mixer(e, mute, solo); fs_engine_playback(e, playback);
+            const int n = 48000 * 4;
+            std::string need = fs_engine_step(e, 29.001, 41.0);
+            size_t at = need.find("S ");
+            if (point) { assert(at != std::string::npos); 
+                std::vector<float> nz = noise_src(4, 0.3f, 11); short *pcm = fs_alloc_i16(n);
+                for (int i = 0; i < n; i++) pcm[i] = (short)(nz[i] * 32767);
+                fs_engine_source(e, 'S', need[at + 2] - '0', 0, "s1", 1, n, pcm); }
+            double en = 0;
+            for (int b = 0; b < (int)(5.0 * SR / B); b++) {
+                if (b % 40 == 0) fs_engine_step(e, 29.001, 41.0);
+                fs_engine_process(e, B);
+                if (b > (int)(1.5 * SR / B)) { const float *l = fs_engine_out(e, 0); for (int k = 0; k < B; k++) en += (double)l[k] * l[k]; }
+            }
+            fs_engine_destroy(e);
+            return en;
+        };
+        const double R = render(true, false, "", "", 0), P = render(false, true, "", "", 0);
+        const double r_mute = render(true, false, "route", "", 0), r_pts = render(true, false, "", "", 2), r_solo = render(true, false, "", "s1", 0),
+                     r_both = render(true, false, "s1", "route", 1);
+        const double p_mute = render(false, true, "s1", "", 0), p_rts = render(false, true, "", "", 1), p_solo = render(false, true, "", "route", 0),
+                     p_self = render(false, true, "x\ns1", "s1", 0), p_on = render(false, true, "route", "s1\nx", 2);
+        std::printf("mixer: route %.2e (muted %.1e, points only %.1e, s1 soloed %.1e, routes only + soloed %.2e) | "
+                    "point %.2e (muted %.1e, routes only %.1e, route soloed %.1e, muted+soloed %.1e, soloed points-only %.2e)\n",
+                    R, r_mute, r_pts, r_solo, r_both, P, p_mute, p_rts, p_solo, p_self, p_on);
+        assert(R > 1e-3 && P > 1e-3);
+        for (double q : { r_mute, r_pts, r_solo }) assert(q < R * 1e-4);
+        for (double q : { p_mute, p_rts, p_solo, p_self }) assert(q < P * 1e-4);   /* mute wins over solo */
+        assert(r_both > R * 0.5 && p_on > P * 0.5);
+    }
     {   /* a setter's unpublished point: its recording is on this device, not yet on the server (no storage_path).
            It must still be asked for - it sat on "Preparing" forever (Kerem, 2026-09-27). */
         fs_engine *e = fs_engine_create(SR, B);

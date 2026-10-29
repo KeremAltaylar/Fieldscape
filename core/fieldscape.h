@@ -176,6 +176,7 @@ void fs_piece_rhythm_config(fs_device *d, int handle, const char *rhythm_json); 
 /* the morph cells: 7 doubles a cell (shape, voice, dest, seed, value, per second, phase) into out, at most max;
    the piece's clock, the chord root pc, and whether the patch shows them on load. -1: no route playing */
 int fs_piece_morphs(fs_device *d, double *out, int max, double *clock, int *root, int *shown);
+void fs_piece_route_gate(fs_device *d, float g);   /* the route's synths and zones on (1) or resting (0), ramped 350 ms */
 void fs_piece_solo(fs_device *d, int handle);   /* Listen on a rhythm point: it alone, the route and other points resting (-1: all) */
 int fs_piece_chord_notes(fs_device *d, float *notes5, float *root);   /* the chord playing, MIDI, root first; -1 none */
 /* The tuning a route plays in when its patch does not say (0 equal - the default - or 1 just).
@@ -276,6 +277,11 @@ int fs_engine_route(fs_engine *e);
 /* Listen: that point (stretch or rhythm) alone at its full level from any distance, the route's synths and every
    other point resting; "" lets go. The next fs_engine_step applies it. */
 void fs_engine_solo(fs_engine *e, const char *id);
+/* The live mixer (the cards' mute / solo, not saved): ids one per line; "route" is the route's own sound.
+   Mute wins over solo; with anything soloed only what is soloed plays. Heard at the next step. */
+void fs_engine_mixer(fs_engine *e, const char *mute, const char *solo);
+/* What plays: 0 routes and points, 1 routes only (with their sections and zones), 2 points only. */
+void fs_engine_playback(fs_engine *e, int mode);
 /* Sample harmony 3c: a role's recording and its analysis for the engine's route sound (lab mode). role 0 voice,
    1 second voice, 2 third voice; the page sends the walker's route's samples when that route changes. */
 void fs_engine_role_source(fs_engine *e, int role, int channels, long long frames, const float *const *pcm);

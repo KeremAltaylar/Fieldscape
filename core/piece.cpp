@@ -639,6 +639,7 @@ struct Inbox {
     bool character = false; double centroid = 2000, onsets = 1;
     int zones[8]; int nzones = 0;
     bool solo_set = false; int solo_v = -1;    /* Listen on a rhythm point: that handle alone (-1: everything) */
+    bool gate_set = false; float gate_v = 1;   /* the mixer / playback choice on the route's own sound (0 or 1) */
     struct ROp { int op = 0; RhythmCfg cfg; bool grains = false; bool gain = false; float g = 0; Src src[4]; bool src_set[4] = {}; Trk trk[4]; bool trk_set[4] = {}; } r[FS_MAX_VOICES];
     RoleRec rrec[3]; bool rrec_set[3] = {};   /* role recordings for the audio thread (3a) */
     std::vector<short *> trash;       /* buffers the audio thread let go of */
@@ -1137,6 +1138,7 @@ struct Piece : Device {
     Ctl synth_level;
     Ctl route_solo;                   /* 0 while a rhythm point is soloed: the route's synths and zones rest */
     int solo = -1;
+    float route_gate = 1;             /* fs_piece_route_gate: muted, or soloed away, or "points only" */
     struct OneShot { SimpleSynth s; NoiseSynth ns; bool noise = false; double free_at = 0; } shots[6];
     Rhythm rh[FS_MAX_VOICES];
     std::vector<short *> my_trash;
@@ -2704,9 +2706,10 @@ struct Piece : Device {
         in.nzones = 0;
         if (in.solo_set) {
             in.solo_set = false; solo = in.solo_v;
-            route_solo.p.linearRampTo(solo >= 0 ? 0 : 1, 0.35, now);
+            route_solo.p.linearRampTo(solo >= 0 ? 0 : route_gate, 0.35, now);
             for (int h = 0; h < FS_MAX_VOICES; h++) if (rh[h].used && !rh[h].dying) rh[h].gain.p.linearRampTo(rhythm_level(rh[h], h), 0.35, now);
         }
+        if (in.gate_set) { in.gate_set = false; route_gate = in.gate_v; route_solo.p.linearRampTo(solo >= 0 ? 0 : route_gate, 0.35, now); }
         for (int h = 0; h < FS_MAX_VOICES; h++) {
             auto &op = in.r[h]; Rhythm &R = rh[h];
             if (op.op == 1) {
@@ -3380,6 +3383,11 @@ int fs_piece_chord_notes(fs_device *d, float *notes, float *root) {
     for (int i = 0; i < p->in.chord_n; i++) notes[i] = p->in.chord_notes[i];
     if (root) *root = p->in.chord_root_midi;
     return p->in.chord_n;
+}
+void fs_piece_route_gate(fs_device *d, float g) {
+    Piece *p = P(d); if (!p) return;
+    std::lock_guard<std::mutex> lk(p->mu); sweep(p);
+    p->in.gate_set = true; p->in.gate_v = g > 0 ? 1.0f : 0.0f;
 }
 void fs_piece_solo(fs_device *d, int h) {
     Piece *p = P(d); if (!p) return;

@@ -152,6 +152,10 @@ class FieldscapeEngine extends AudioWorkletProcessor {
           const id = this.bytes(Uint8Array.from(m.id + "", (ch) => ch.charCodeAt(0)));
           x.fs_engine_solo(this.e, id);
           x.free(id);
+        } else if (m.type === "mixer" && x.fs_engine_mixer) {   /* the cards' mute / solo and the playback choice */
+          const mu = this.bytes(m.mute), so = this.bytes(m.solo);   /* UTF-8 bytes from the page */
+          x.fs_engine_mixer(this.e, mu, so); x.fs_engine_playback(this.e, m.playback | 0);
+          x.free(mu); x.free(so);
         } else if (m.type === "role") {           /* 3c lab mode: a role's recording (as FieldscapeCore) */
           const n = m.channels[0].length, ptrs = x.malloc(4 * m.channels.length), bufs = m.channels.map(() => x.malloc(4 * n));
           if (!ptrs || bufs.some((p) => !p)) { bufs.forEach((p) => p && x.free(p)); if (ptrs) { x.free(ptrs); } this.port.postMessage({ type: "error", message: "role: out of memory" }); return; }

@@ -81,6 +81,17 @@ struct fs_engine {
     std::string route_name;
     std::string zones_sent;           /* the inside-set last given to the piece */
     std::string solo;                 /* Listen: that point alone ("" none) */
+    std::vector<std::string> mute_ids, solo_ids;   /* the live mixer (fs_engine_mixer); "route" is the route */
+    int playback = 0;                 /* 0 both, 1 routes only, 2 points only */
+    float route_gate_sent = 1;
+    /* 1 if this source is heard through the mixer and the playback choice, else 0 */
+    float gate(const std::string &id, bool route) const {
+        if (playback == (route ? 2 : 1)) return 0;
+        for (auto &m : mute_ids) if (m == id) return 0;
+        if (solo_ids.empty()) return 1;
+        for (auto &m : solo_ids) if (m == id) return 1;
+        return 0;
+    }
     std::string watch; double watch_ms = 0;   /* 8a: the point whose panel is open - its level for the meter */
     double now() const { return (double)frames / sr; }
 };
@@ -361,7 +372,7 @@ const char *fs_engine_step(fs_engine *e, double lon, double lat) {
             if (p.sounds) e->loads += "S " + std::to_string(s) + " " + p.id + " " + p.path + "\n";
         }
         Slot &sl = e->slot[s];
-        sl.earned = (float)fs_point_gain(dp[picked[i]], p.radius, p.gain);
+        sl.earned = (float)fs_point_gain(dp[picked[i]], p.radius, p.gain) * (sp >= 0 ? 1 : e->gate(p.id, false));
         fs_mix_set_gain(e->mix, s, sl.loaded ? sl.earned : 0);
         fs_mix_set_lowpass(e->mix, s, (float)(300 + (p.brightest - 300) * fs_point_proximity(dp[picked[i]], p.radius)), 350);
     }
@@ -406,8 +417,10 @@ const char *fs_engine_step(fs_engine *e, double lon, double lat) {
                 /* no path yet: a setter's draft, its recording on this device (the page finds it by id) */
                 if (b.have[s]) e->loads += "R " + std::to_string(h) + " " + std::to_string(s) + " " + b.id + " " + b.paths[s] + "\n";
         }
-        fs_piece_rhythm_gain(e->piece, e->handle[b.id], (float)fs_point_gain(bd[bp[i]], b.radius, b.gain));
+        fs_piece_rhythm_gain(e->piece, e->handle[b.id], (float)fs_point_gain(bd[bp[i]], b.radius, b.gain) * (sb >= 0 ? 1 : e->gate(b.id, false)));
     }
+    {   const float rg = e->gate("route", true);
+        if (rg != e->route_gate_sent) { fs_piece_route_gate(e->piece, rg); e->route_gate_sent = rg; } }
     fs_piece_solo(e->piece, sb >= 0 && e->handle.count(e->beats[sb].id) ? e->handle[e->beats[sb].id] : -1);
     /* what the screen shows */
     /* the route underfoot (its sound crossfades in over 1.5 s), named only within the leash */
@@ -508,6 +521,15 @@ int fs_engine_point(fs_engine *e, float *out, int max) {
 float *fs_engine_out(fs_engine *e, int ch) { return fs_mix_out(e->mix, ch); }
 const char *fs_engine_state(fs_engine *e) { return e->state.c_str(); }
 void fs_engine_solo(fs_engine *e, const char *id) { e->solo = id ? id : ""; }
+static std::vector<std::string> lines(const char *s) {
+    std::vector<std::string> v; std::string cur;
+    for (const char *c = s ? s : ""; ; c++) {
+        if (*c == '\n' || !*c) { if (!cur.empty()) v.push_back(cur); cur.clear(); if (!*c) break; } else cur += *c;
+    }
+    return v;
+}
+void fs_engine_mixer(fs_engine *e, const char *mute, const char *solo) { e->mute_ids = lines(mute); e->solo_ids = lines(solo); }
+void fs_engine_playback(fs_engine *e, int mode) { e->playback = mode >= 0 && mode <= 2 ? mode : 0; }
 void fs_engine_role_source(fs_engine *e, int role, int channels, long long frames, const float *const *pcm) { fs_piece_role_source(e->piece, role, channels, frames, pcm); }
 void fs_engine_role_analysis(fs_engine *e, int role, const char *json) { fs_piece_role_analysis(e->piece, role, json); }
 int fs_engine_roles(fs_engine *e, float *out, int max_notes) { return fs_piece_roles(e->piece, out, max_notes); }

@@ -5741,7 +5741,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var nodes = [ppHeading("This point",
       "A stream carries further than a nest. These belong to the point, so every point on a " +
       "route can differ.")];
-    SOUND_FIELDS.forEach(function (fl) { nodes.push(buildSoundRow(fl, q, commitQ)); });
+    /* A stretch point reaches 4x (+12 dB): field recordings can sit far under the synths and the rhythm
+       (Kerem, 2026-10-29). The mix's -1 dBFS limiter still guards the output. */
+    var stretch = f.properties.audio_mode !== "hits" && f.properties.audio_mode !== "grains" && !f.properties.hits;
+    SOUND_FIELDS.forEach(function (fl) {
+      if (stretch && fl.k === "gain") { fl = Object.assign({}, fl, { max: 4 }); }
+      nodes.push(buildSoundRow(fl, q, commitQ));
+    });
     if (f.properties.has_audio || f.properties.hits) { nodes.push(pointShapeRow(f, q, commitQ)); }
     return nodes;
   }
@@ -8473,6 +8479,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var enc = new TextEncoder(), feats = visible();
       node.port.postMessage({ type: "places", bytes: enc.encode(JSON.stringify({ type: "FeatureCollection", features: places })) });
       node.port.postMessage({ type: "features", bytes: enc.encode(JSON.stringify({ type: "FeatureCollection", features: feats })) });
+      coreMixer();
       core.sent = {};
       feats.forEach(function (f) { core.sent[f.properties.id] = JSON.stringify(f); });
       keepAwake(true);
@@ -10273,7 +10280,26 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   /* Heard at the moment of the click rather than at the next proximity tick: each voice keeps
      the level its distance earned (base), and the mixer only scales it. */
+  /* What plays (each person's own choice, on this device): 0 routes and points, 1 routes only (their sections
+     and zones too), 2 points only (Kerem, 2026-10-29). */
+  var playback = 0;
+  try { playback = Math.max(0, Math.min(2, +(localStorage.getItem("fs.playback") || 0) || 0)); } catch (e) { playback = 0; }
+  function setPlayback(m) {
+    playback = m;
+    try { localStorage.setItem("fs.playback", String(m)); } catch (e) { /* private mode: this visit only */ }
+    applyMixer();
+  }
+  /* The sound comes from the core now: the mixer and the playback choice go to it (they reached only the old
+     graph below, so mute and solo did nothing - Kerem, 2026-10-29). */
+  function coreMixer() {
+    if (!core || !core.node) { return; }
+    var on = function (m) { return Object.keys(m).filter(function (k) { return m[k]; }).join("\n"); };
+    var enc = new TextEncoder();
+    core.node.port.postMessage({ type: "mixer", mute: enc.encode(on(mixer.mute)), solo: enc.encode(on(mixer.solo)), playback: playback });
+    coreMove();
+  }
   function applyMixer() {
+    coreMixer();
     if (!bed) { return; }
     if (bed.synth) {
       bed.synth.gain.rampTo((bed.synthLevel === undefined ? 1 : bed.synthLevel) * mixLevel(mixer, MIX_ROUTE), BED.fade);
@@ -14986,6 +15012,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         });
         changed();
       },
+      /* what plays: 0 routes and points, 1 routes only, 2 points only (each person's own, on this device) */
+      playback: function () { return playback; },
+      setPlayback: function (m) { setPlayback(m); changed(); },
       /* Listen: that point alone, from anywhere (fs_engine_solo); null lets go. The core engine only. */
       canListen: function () { return !!CORE; },
       listen: function (id) {
