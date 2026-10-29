@@ -64,6 +64,8 @@ object Core {
     @JvmStatic external fun pieceMorphs(): DoubleArray
     /** Listen on a rhythm or grains point (its id; "" lets go); applied at the next pieceStep. */
     @JvmStatic external fun pieceSolo(id: String)
+    /** Plays: 0 both, 1 routes only, 2 points only (the route's gate now; the points at the next pieceStep). */
+    @JvmStatic external fun piecePlayback(mode: Int)
     /** The point card's player (core/devices/play.cpp): load with loadInterleaved(SLOTS, ...). */
     @JvmStatic external fun rawPlay(on: Boolean)
     @JvmStatic external fun rawSeek(f: Double)

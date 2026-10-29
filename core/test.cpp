@@ -869,6 +869,52 @@ int main() {
         assert(st.find("\"rows\":[]") != std::string::npos && st.find("\"beats\":[]") != std::string::npos);
         fs_engine_destroy(e);
     }
+    {   /* original / stretched and original / grains (Kerem, 2026-10-29: "the stretch and the original sound will be two playbacks
+           and I can use a mix ... and fuse them"): at 0 the recording as it was, at 1 as before, equal power between */
+        const int n = (int)(3 * SR);
+        std::vector<float> src(n); { uint32_t sd = 9; for (int i = 0; i < n; i++) { sd = sd * 1664525u + 1013904223u; src[i] = 0.3f * (((int)(sd >> 8) - 8388608) / 8388608.0f); } }
+        const float *sp[1] = { src.data() };
+        auto stretch = [&](float mix, std::vector<float> &o) {
+            fs_device *d = fs_create("stretch"); fs_prepare(d, SR, B);
+            const int pm = fs_param_count(d) - 1;       /* "mix", the last */
+            fs_set_param(d, 0, 0.5f); fs_set_param(d, pm, mix); fs_set_source(d, 1, n, sp);
+            o.clear(); for (int b = 0; b < (int)(4.0 * SR / B); b++) { fs_process(d, B); const float *l = fs_out(d, 0); o.insert(o.end(), l, l + B); }
+            fs_destroy(d);
+        };
+        auto db = [](const std::vector<float> &x, size_t a) { double e = 0; for (size_t i = a; i < x.size(); i++) e += (double)x[i] * x[i]; return 10 * std::log10(e / (x.size() - a) + 1e-30); };
+        std::vector<float> o0, o5, o1;
+        stretch(0, o0); stretch(0.5f, o5); stretch(1, o1);
+        double worst = 0; for (int i = 0; i < n - (int)(0.03 * SR); i++) worst = std::fmax(worst, std::fabs(o0[i] - src[i]));
+        /* past the loop point: the region's start again, crossfaded in (no step) */
+        double jump = 0, srcjump = 0;
+        {   /* a sine whose loop does not close (220.7 Hz): a plain wrap steps up to 0.6; the crossfade keeps it near the sine's own */
+            std::vector<float> keep(src); for (int i = 0; i < n; i++) src[i] = 0.3f * (float)std::sin(2 * 3.141592653589793 * 220.7 * i / SR);
+            std::vector<float> os; stretch(0, os);
+            for (size_t i = n - 2000; i < (size_t)n + 2000; i++) jump = std::fmax(jump, std::fabs(os[i] - os[i - 1]));
+            for (int i = 1; i < n; i++) srcjump = std::fmax(srcjump, std::fabs(src[i] - src[i - 1]));
+            src = keep;
+        }
+        const size_t a = (size_t)(1.0 * SR);
+        std::printf("stretch mix: original %.2e from the recording, its loop point's largest step %.3f (the recording's %.3f); "
+                    "levels 0 %.1f, 0.5 %.1f, 1 %.1f dB\n", worst, jump, srcjump, db(o0, a), db(o5, a), db(o1, a));
+        assert(worst < 1e-6 && jump <= srcjump * 1.5);
+        assert(std::fabs(db(o5, a) - 0.5 * (db(o0, a) + db(o1, a))) < 1.5);   /* equal power: no dip at 50/50 */
+        /* grains with no grains drawn (pulses 0): only the original sounds, and only when the mix lets it */
+        std::vector<short> pcm(n); for (int i = 0; i < n; i++) pcm[i] = (short)(src[i] * 32767);
+        auto grains = [&](const char *cfg) {
+            fs_device *pc = fs_create("piece"); fs_prepare(pc, SR, B);
+            const int r = fs_piece_add_route(pc, "{\"version\":17,\"prog\":[{\"r\":0,\"q\":\"m7\"}],\"voice\":{\"on\":false},\"sect\":{\"on\":false},\"v3\":{\"on\":false},\"bed\":{\"on\":false},\"zones\":{\"on\":false}}");
+            const int h = fs_piece_rhythm_add(pc, cfg, 1);
+            short *p = fs_alloc_i16(n); std::memcpy(p, pcm.data(), sizeof(short) * n);
+            fs_piece_rhythm_source(pc, h, 0, 1, n, p); fs_piece_rhythm_gain(pc, h, 1);
+            std::vector<float> o;
+            for (int b = 0; b < (int)(3.0 * SR / B); b++) { fs_piece_walk(pc, r, 0.3, 0); fs_process(pc, B); const float *l = fs_out(pc, 0); o.insert(o.end(), l, l + B); }
+            fs_destroy(pc); return db(o, a);
+        };
+        const double g1 = grains("{\"grains\":{\"pulses\":0}}"), g0 = grains("{\"grains\":{\"pulses\":0,\"mix\":0}}"), gh = grains("{\"grains\":{\"pulses\":0,\"mix\":0.5}}");
+        std::printf("grains mix: no grains drawn - mix 1 %.1f dB, 0.5 %.1f dB, 0 %.1f dB\n", g1, gh, g0);
+        assert(g1 < g0 - 30 && g0 > -40 && std::fabs(gh - (g0 - 3.01)) < 0.75);   /* mix 1: what pulses 0 still lets through, as before */
+    }
     {   /* the live mixer and the playback choice (fs_engine_mixer / fs_engine_playback): the cards' mute and solo
            never reached the core (Kerem, 2026-10-29: "Solo and mute doesnt work properly"). One source per build,
            so each case is that source on or silent. */

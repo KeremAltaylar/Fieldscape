@@ -326,7 +326,7 @@ static void patch_of(const Json *p, Patch &P, GainMemo *memo = nullptr) {
 /* ------------------------------------------------------------------ rhythm (rhythmOf) */
 static const char *const HIT_SLOTS[4] = { "low", "mid", "high", "rand" };
 struct HitCfg { int pulses, rotate; double gain, pitch, crush, drive; Div delayDiv; double delayFb, delayWet, stretch; };
-struct GrainCfg { double pulses, rotate, offset, grain, count, spread, scatter, gain, pitch, vary, roam, attack, decay, sustain, release; };
+struct GrainCfg { double pulses, rotate, offset, grain, count, spread, scatter, gain, pitch, vary, roam, attack, decay, sustain, release, mix = 1; };
 struct Combo { int pulses, rotate; };
 struct RhythmCfg {
     bool on = true; int steps = 64; Div div; double gain = 0.85, idiom = 0.35; int sentence_bars = 8; double follow = 0;
@@ -420,7 +420,8 @@ static void rhythm_of(const Json *j, RhythmCfg &r, Rng &rnd) {
     if (std::isnan(attack)) attack = 0.04;
     r.g = GrainCfg{ g ? g->n("pulses", 11) : 11, g ? g->n("rotate", 0) : 0, g ? g->n("offset", 0.15) : 0.15, g ? g->n("grain", 90) : 90,
         g ? g->n("count", 6) : 6, g ? g->n("spread", 0.5) : 0.5, g ? g->n("scatter", 0.25) : 0.25, g ? g->n("gain", 0.85) : 0.85,
-        g ? g->n("pitch", 0) : 0, g ? g->n("vary", 0.35) : 0.35, g ? g->n("roam", 1) : 1, attack, decay, sustain, release };
+        g ? g->n("pitch", 0) : 0, g ? g->n("vary", 0.35) : 0.35, g ? g->n("roam", 1) : 1, attack, decay, sustain, release,
+        g ? std::max(0.0, std::min(1.0, g->n("mix", 1))) : 1 };
 }
 
 static void euclid(int k, int n, bool *out) {
@@ -627,6 +628,7 @@ struct Rhythm {
     ChordRes cr;                      /* 8c */
     Eq5 eq;                           /* Test 15: the point's EQ, after its ringing, before its level */
     int pk_done = 0;                  /* Test 15: the grains recording's peak track, frames analysed so far */
+    double opos = 0; float mix_s = -1;   /* 2026-10-29: the original beside the grains - its play head, the mix as heard */
 };
 
 /* ------------------------------------------------------------------ the device */
@@ -2714,7 +2716,7 @@ struct Piece : Device {
             auto &op = in.r[h]; Rhythm &R = rh[h];
             if (op.op == 1) {
                 R.used = true; R.dying = false; R.cfg = op.cfg; R.grains = op.grains; for (auto &k : R.trk) k = Trk{};
-                R.lvl = 0; R.gmi = R.gmn = 0; R.cr = ChordRes();
+                R.lvl = 0; R.gmi = R.gmn = 0; R.cr = ChordRes(); R.opos = 0; R.mix_s = -1;
                 R.eq.init(sr); for (int k = 0; k < 5; k++) R.eq.set(k, R.cfg.eq[k][0], R.cfg.eq[k][1], R.cfg.eq[k][2]);
                 R.tick = 0; R.step = 0; R.live = false; R.bars = 0; R.sentence_idx = 0; R.fx_ready = false;
                 R.gain.init(0);
@@ -2921,6 +2923,32 @@ struct Piece : Device {
                     bl[i] += yl[i] * (1 - w) + dl_[i] * w; br[i] += yr[i] * (1 - w) + dr_[i] * w;
                 }
             }
+        }
+        /* 2026-10-29: the recording as it was, at normal speed, beside the grains (Kerem: "fuse them") - 0 all original, 1 all
+           grains (the default), equal power; looped with a 20 ms crossfade over the loop point; at the grains' own level. Both go on
+           into the chord's ringing and the point's EQ, as one sound. */
+        if (R.grains && R.gsrc.data && R.gsrc.frames > 64) {
+            const float m = (float)R.cfg.g.mix;
+            if (R.mix_s < 0) R.mix_s = m;
+            if (!(m >= 1 && R.mix_s >= 0.9999f)) {
+                const Src &S = R.gsrc; const long long len = S.frames, xf = std::min<long long>((long long)(0.02 * sr), len / 4);
+                const float k = 1.0f - std::exp(-1.0f / (0.05f * (float)sr)), lv = (float)R.cfg.g.gain;
+                long long i = (long long)R.opos; if (i < 0 || i >= len) i = 0;
+                for (int t = 0; t < n; t++) {
+                    float l, r; src_read(S, (double)i, l, r);
+                    const long long tail = len - i;
+                    if (tail <= xf) {
+                        float l2, r2; src_read(S, (double)(xf - tail), l2, r2);
+                        const double x = 1.0 - (double)tail / xf; const float gi = (float)std::sin(1.5707963267948966 * x), go = (float)std::cos(1.5707963267948966 * x);
+                        l = l * go + l2 * gi; r = r * go + r2 * gi;
+                    }
+                    if (++i >= len) i = xf;
+                    R.mix_s += (m - R.mix_s) * k;
+                    const float gw = std::sin(1.5707963f * R.mix_s), gd = std::cos(1.5707963f * R.mix_s) * lv;
+                    bl[t] = bl[t] * gw + l * gd; br[t] = br[t] * gw + r * gd;
+                }
+                R.opos = (double)i;
+            } else R.mix_s = 1;
         }
         /* 8c; and hits too (Kerem 2026-10-13: unpitched hits ring the chord as grains do) */
         if ((R.cfg.resonate > 0 || R.cr.res > 1e-4) && (H.ntones > 0 || R.cr.sig != -1)) chord_res(R, bl, br, n);

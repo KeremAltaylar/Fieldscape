@@ -100,6 +100,15 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
         val pos = lastPos ?: id?.let { pointInfo[it] }?.let { it.lon to it.lat } ?: return
         step(pos.first, pos.second, moved = lastPos != null)
     }
+    /** Plays (Layers sheet): 0 both, 1 routes only, 2 points only. Each listener's own, kept on the device. */
+    private val prefs = context.getSharedPreferences("fieldscape", Context.MODE_PRIVATE)
+    var playback by mutableStateOf(prefs.getInt("fs.playback", 0))
+    fun play(mode: Int) {
+        playback = mode
+        prefs.edit().putInt("fs.playback", mode).apply()
+        Core.piecePlayback(mode)
+        lastPos?.let { step(it.first, it.second, moved = false) }
+    }
     /** The card's player: a point's recording as it was made. The walk rests while it plays. */
     var rawId by mutableStateOf<String?>(null)
     var rawPlaying by mutableStateOf(false)
@@ -191,6 +200,7 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
                   sound = q.toString())
         }
         Core.pieceStart(features.toString())
+        Core.piecePlayback(playback)
         /* every point's card, and the routes with their patches */
         for (i in 0 until fs.length()) {
             val f = fs.getJSONObject(i)
@@ -275,7 +285,7 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
         val soloBeat = soloAny != null && soloIndex == null
         Core.pieceSolo(if (soloBeat) solo!! else "")
         val chosen = soloIndex?.let { listOf(it) } ?: Core.pickVoices(dist, radius, eligible, voices, false).toList()
-        val rest = rawPlaying || soloBeat                                  /* the card's player rests the walk */
+        val rest = rawPlaying || soloBeat || playback == 1                              /* the card's player rests the walk */
         val want = chosen.map { points[it].id }.toSet()
         for ((id, slot) in slotOf.toMap()) if (id !in want) {                // left: fade, free after the ramp
             Core.gain(slot, 0f)

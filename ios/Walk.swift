@@ -95,6 +95,14 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
         if let pos = lastPos { step(lon: pos.0, lat: pos.1, acc: 0, moved: false) }
         else if let id, let q = pointInfo[id] { step(lon: q.lon, lat: q.lat, acc: 0, moved: false) }
     }
+    /* Plays (Layers sheet): 0 both, 1 routes only, 2 points only. Each listener's own, kept on the device. */
+    @Published var playback = UserDefaults.standard.integer(forKey: "fs.playback") {
+        didSet {
+            UserDefaults.standard.set(playback, forKey: "fs.playback")
+            sound.playback = playback
+            if let pos = lastPos { step(lon: pos.0, lat: pos.1, acc: 0, moved: false) }
+        }
+    }
     /* The card's player: a recording as it was made (a point's, or one of a rhythm point's four), keyed
        "id" or "id#slot". The walk rests while it plays. */
     @Published var rawId: String? = nil
@@ -161,6 +169,7 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
         self.sound = RouteSound(core: core)
         super.init()
         sound.walk = self
+        sound.playback = playback   /* the saved choice, once at the start */
         loc.delegate = self
         loc.desiredAccuracy = kCLLocationAccuracyBest
         loc.distanceFilter = 2
@@ -321,7 +330,7 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
         let soloBeat = soloAny != nil && soloIndex == nil
         let chosen = soloIndex.map { [$0] } ?? picked.prefix(k).map { Int($0) }
         /* the card's player rests the walk; Listen rests everything but its point */
-        let rest = rawPlaying || soloBeat
+        let rest = rawPlaying || soloBeat || playback == 1
         let want = Set(chosen.map { points[$0].id })
 
         for (id, slot) in slotOf where !want.contains(id) {                /* left: fade, free after the ramp */

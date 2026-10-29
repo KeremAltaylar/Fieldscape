@@ -107,5 +107,35 @@ try {
   const g4 = await hear(pg);
   check("points only: the point sounds", g4 > -50, g4);
   await plays(0);
+
+  /* original · stretch and original · grains: a row in each panel, one screen still, and the fused point heard */
+  const panel = async (id, label) => {
+    await ev(`fsListen.select(${JSON.stringify(id)}), 0`); await sleep(900);
+    await ev("document.querySelector('#ls-card #f-rhythm').click(), 0"); await sleep(1500);
+    return ev(`(function(){ var r = [].filter.call(document.querySelectorAll('#rp-body label, #rp-body .pprow'), function (x) { return /${label}/.test(x.textContent); })[0];
+      var i = r && r.querySelector('input[type=range]'); return JSON.stringify({ has: !!i, value: i ? +i.value : null, scroll: document.documentElement.scrollHeight - innerHeight }); })()`);
+  };
+  const ps1 = JSON.parse(await panel(sid, "original · stretch"));
+  check("the stretch panel has original · stretch, at 0 · 100 for a point made before", ps1.has && ps1.value === 1, ps1);
+  check("the stretch panel still fits one screen", ps1.scroll === 0, ps1);
+  await ev(`(function(){ var r = [].filter.call(document.querySelectorAll('#rp-body label, #rp-body .pprow'), function (x) { return /original · stretch/.test(x.textContent); })[0];
+    var i = r.querySelector('input[type=range]'); i.value = 0.5; i.dispatchEvent(new Event('input', { bubbles: true })); i.dispatchEvent(new Event('change', { bubbles: true })); })(), 0`);
+  await sleep(600);
+  check("set to 50 · 50, it is saved on the point", await ev(`__fa.features().filter(function (f) { return f.properties.id === ${JSON.stringify(sid)}; })[0].properties.sound.shape.mix`) === 0.5, null);
+  await ev("document.querySelector('#rp-close, #rhythmpanel .ppclose') && document.querySelector('#rp-close, #rhythmpanel .ppclose').click(), 0"); await sleep(400);
+  await ev("fsListen.select(null), 0"); await sleep(300);
+  await walkHear(ps);
+  const s5 = await hear(ps);
+  check("fused 50 · 50, it sounds at the level it had (equal power)", Math.abs(s5 - s0) < 4, [s0, s5]);
+  const pg1 = JSON.parse(await panel(gid, "original · grains"));
+  check("the grains panel has original · grains, at 0 · 100", pg1.has && pg1.value === 1, pg1);
+  check("the grains panel still fits one screen", pg1.scroll === 0, pg1);
+  /* a phone: the Time tab (where original · stretch sits) does not scroll */
+  await s.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true }); await sleep(1200);
+  await panel(sid, "original · stretch");
+  const ph = JSON.parse(await ev(`(function(){ var b = [].filter.call(document.querySelectorAll('#rp-body .pptabs button'), function (x) { return x.textContent === "Time"; })[0]; if (b) b.click();
+    var over = [].map.call(document.querySelectorAll('#rp-body *'), function (e) { return e.scrollHeight - e.clientHeight > 1 && getComputedStyle(e).overflowY !== 'visible' ? e.className + ':' + (e.scrollHeight - e.clientHeight) : null; }).filter(Boolean);
+    return JSON.stringify({ tab: !!b, over: over, page: document.documentElement.scrollHeight - innerHeight }); })()`));
+  check("on a phone the Time tab fits without scrolling", ph.tab && ph.over.length === 0 && ph.page === 0, ph);
 } finally { ch.kill(); }
 process.exit(failed ? 1 : 0);

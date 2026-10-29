@@ -49,6 +49,8 @@ final class RouteSound {
     }
     private(set) var rhythmNames: [String] = []
     private var soloHandle: Int32 = -1
+    /* Plays: 0 both, 1 routes only (every point rests), 2 points only (the route rests) */
+    var playback = 0 { didSet { fs_piece_route_gate(piece, playback == 2 ? 0 : 1) } }
 
     init(core: Core) {
         self.core = core
@@ -217,7 +219,7 @@ final class RouteSound {
                 handle[b.id] = h
                 load(b, h)
             }
-            if let h = handle[b.id] { fs_piece_rhythm_gain(piece, h, Float(j == soloJ ? b.gain : fs_point_gain(bd[j], b.radius, b.gain))) }
+            if let h = handle[b.id] { fs_piece_rhythm_gain(piece, h, playback == 1 ? 0 : Float(j == soloJ ? b.gain : fs_point_gain(bd[j], b.radius, b.gain))) }
         }
         let h = soloJ.flatMap { handle[beats[$0].id] } ?? -1
         if h != soloHandle { soloHandle = h; fs_piece_solo(piece, h) }

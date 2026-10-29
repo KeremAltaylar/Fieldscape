@@ -5654,6 +5654,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     { k: "pitch", label: "pitch", min: -24, max: 24, step: 1,
       fmt: function (v) { return (v > 0 ? "+" : "") + v + " st"; } },
     { k: "gain", label: "level", min: 0, max: 1, step: 0.05 },
+    /* 2026-10-29: the recording as it was beside the grains, fused (Kerem) */
+    { k: "mix", label: "original · grains", min: 0, max: 1, step: 0.05,
+      fmt: function (v) { return Math.round((1 - v) * 100) + " · " + Math.round(v * 100); },
+      hint: "the recording at its own speed, looped, beside the grains: 100 · 0 is only the original, 0 · 100 only the grains" },
     { k: "vary", label: "vary", min: 0, max: 1, step: 0.02, fmt: pctFmt,
       hint: "changes each burst's size, number, spread, level, envelope and pitch (by whole semitones)" }
   ];
@@ -6421,13 +6425,17 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (!q.shape) { q.shape = {}; }
     var sh = q.shape, SHD = { transpose: 0, tune: 0, focus: 0.5, partials: 8, layers: 0, harmony: 0.5, glide: 2,
                               drift: 0, blur: 0, width: 1, start: 0, end: 1, follow: 0, resonate: 0, body: 0, low: 0, depth: 0,
-                              sing: 0, contour: 0.5 };
+                              sing: 0, contour: 0.5, mix: 1 };
     Object.keys(SHD).forEach(function (k) { if (sh[k] === undefined) { sh[k] = SHD[k]; } });
     var colStretch = [
       heading("Time", "The stretch itself, and the part of the recording it reads."),
       R({ label: "stretch", k: "stretch", min: 0, max: 1, step: 0.005, def: 0,
         fmt: function (v) { return fx.x(Math.pow(1024, v)); },
         hint: "×1 plays at the recording's own speed; ×1024 is the longest" }, q),
+      /* 2026-10-29: the recording as it was beside the stretch, fused (Kerem) - equal power, so 50 · 50 does not dip */
+      R({ label: "original · stretch", k: "mix", min: 0, max: 1, step: 0.05, def: 1,
+        fmt: function (v) { return Math.round((1 - v) * 100) + " · " + Math.round(v * 100); },
+        hint: "the recording at its own speed, looped, beside the stretch: 100 · 0 is only the original, 0 · 100 only the stretch" }, sh),
       /* Capped at 0.9 (hop 65536, a 2.7 s window): measured in Chrome, larger overran the render quantum. */
       R({ label: "fft size", k: "fft", min: 0, max: 0.9, step: 0.01, def: 0.7,
         fmt: function (v) { return String(pxBufsize(v)); },
@@ -10802,7 +10810,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function defaultGrains() {
     return {
       pulses: 11, rotate: 0, offset: 0.15, grain: 90, count: 6,
-      spread: 0.5, scatter: 0.25, gain: 0.85, pitch: 0, vary: 0.35, roam: 1,
+      spread: 0.5, scatter: 0.25, gain: 0.85, pitch: 0, vary: 0.35, roam: 1, mix: 1,
       /* Attack, decay and release are fractions of the grain rather than milliseconds,
          because grain size is varied per hit — a fixed 20ms attack is the whole envelope
          on a 30ms grain and a click on a 400ms one. Sustain is a level, not a time; the

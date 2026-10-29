@@ -338,6 +338,7 @@ struct Walker {
     fs_sections *sections = nullptr;
     std::vector<std::string> rhythm_names;
     std::string route_name;
+    int playback = 0;                         /* Plays: 0 both, 1 routes only, 2 points only */
     std::string solo; int solo_handle = -1;   /* Listen on a rhythm point (its id), and its handle in the piece */
     std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
 };
@@ -497,7 +498,7 @@ JNIEXPORT jstring JNICALL FN(pieceStep)(JNIEnv *env, jclass, jdouble lon, jdoubl
                                                   (s < b.tracks.size() && !b.tracks[s].empty() ? b.tracks[s] : "-") + "\n";
             }
         }
-        fs_piece_rhythm_gain(E->piece, W->handle[b.id], (float)(picked[i] == solo_j ? b.gain : fs_point_gain(bd[picked[i]], b.radius, b.gain)));
+        fs_piece_rhythm_gain(E->piece, W->handle[b.id], W->playback == 1 ? 0.0f : (float)(picked[i] == solo_j ? b.gain : fs_point_gain(bd[picked[i]], b.radius, b.gain)));
     }
     int sh = solo_j >= 0 && W->handle.count(W->beats[solo_j].id) ? W->handle[W->beats[solo_j].id] : -1;
     if (sh != W->solo_handle) { W->solo_handle = sh; fs_piece_solo(E->piece, sh); }
@@ -683,6 +684,12 @@ JNIEXPORT jdoubleArray JNICALL FN(pieceMorphs)(JNIEnv *env, jclass) {
 }
 /* Listen on a rhythm or grains point: its id, or "" to let go; the next pieceStep applies it. */
 JNIEXPORT void JNICALL FN(pieceSolo)(JNIEnv *env, jclass, jstring id) { if (W) W->solo = jstr(env, id); }
+/* Plays: 0 both, 1 routes only (every point rests), 2 points only (the route rests); the points follow at the next pieceStep, the route now. */
+JNIEXPORT void JNICALL FN(piecePlayback)(JNIEnv *, jclass, jint mode) {
+    if (!W) return;
+    W->playback = mode;
+    fs_piece_route_gate(E->piece, mode == 2 ? 0.0f : 1.0f);
+}
 JNIEXPORT jstring JNICALL FN(pieceRoute)(JNIEnv *env, jclass) { return env->NewStringUTF(W ? W->route_name.c_str() : ""); }
 JNIEXPORT jstring JNICALL FN(pieceRhythms)(JNIEnv *env, jclass) {
     std::string o;
