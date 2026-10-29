@@ -285,7 +285,7 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
         val soloBeat = soloAny != null && soloIndex == null
         Core.pieceSolo(if (soloBeat) solo!! else "")
         val chosen = soloIndex?.let { listOf(it) } ?: Core.pickVoices(dist, radius, eligible, voices, false).toList()
-        val rest = rawPlaying || soloBeat || playback == 1                              /* the card's player rests the walk */
+        val rest = rawPlaying || soloBeat || (playback == 1 && soloIndex == null)                              /* the card's player rests the walk */
         val want = chosen.map { points[it].id }.toSet()
         for ((id, slot) in slotOf.toMap()) if (id !in want) {                // left: fade, free after the ramp
             Core.gain(slot, 0f)

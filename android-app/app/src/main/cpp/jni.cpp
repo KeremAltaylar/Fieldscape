@@ -498,7 +498,7 @@ JNIEXPORT jstring JNICALL FN(pieceStep)(JNIEnv *env, jclass, jdouble lon, jdoubl
                                                   (s < b.tracks.size() && !b.tracks[s].empty() ? b.tracks[s] : "-") + "\n";
             }
         }
-        fs_piece_rhythm_gain(E->piece, W->handle[b.id], W->playback == 1 ? 0.0f : (float)(picked[i] == solo_j ? b.gain : fs_point_gain(bd[picked[i]], b.radius, b.gain)));
+        fs_piece_rhythm_gain(E->piece, W->handle[b.id], W->playback == 1 && picked[i] != solo_j ? 0.0f : (float)(picked[i] == solo_j ? b.gain : fs_point_gain(bd[picked[i]], b.radius, b.gain)));
     }
     int sh = solo_j >= 0 && W->handle.count(W->beats[solo_j].id) ? W->handle[W->beats[solo_j].id] : -1;
     if (sh != W->solo_handle) { W->solo_handle = sh; fs_piece_solo(E->piece, sh); }

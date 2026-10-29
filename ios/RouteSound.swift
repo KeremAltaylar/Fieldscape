@@ -219,7 +219,7 @@ final class RouteSound {
                 handle[b.id] = h
                 load(b, h)
             }
-            if let h = handle[b.id] { fs_piece_rhythm_gain(piece, h, playback == 1 ? 0 : Float(j == soloJ ? b.gain : fs_point_gain(bd[j], b.radius, b.gain))) }
+            if let h = handle[b.id] { fs_piece_rhythm_gain(piece, h, playback == 1 && j != soloJ ? 0 : Float(j == soloJ ? b.gain : fs_point_gain(bd[j], b.radius, b.gain))) }
         }
         let h = soloJ.flatMap { handle[beats[$0].id] } ?? -1
         if h != soloHandle { soloHandle = h; fs_piece_solo(piece, h) }

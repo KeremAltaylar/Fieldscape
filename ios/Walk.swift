@@ -330,7 +330,7 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
         let soloBeat = soloAny != nil && soloIndex == nil
         let chosen = soloIndex.map { [$0] } ?? picked.prefix(k).map { Int($0) }
         /* the card's player rests the walk; Listen rests everything but its point */
-        let rest = rawPlaying || soloBeat || playback == 1
+        let rest = rawPlaying || soloBeat || (playback == 1 && soloIndex == nil)
         let want = Set(chosen.map { points[$0].id })
 
         for (id, slot) in slotOf where !want.contains(id) {                /* left: fade, free after the ramp */
