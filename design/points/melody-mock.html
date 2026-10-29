@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Melody mock</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;500&family=Newsreader:opsz,wght@6..72,300;6..72,400;6..72,500&family=Courier+Prime:wght@400;700&display=swap" rel="stylesheet">
+<style>
+/* The fourth point device, Melody - its panel's mock (C-13), for Kerem's approval before it is built.
+   The same frame as Stretch, Rhythm and Grains: the recording across the top, then This point, The line, The slices, The note.
+   Tokens: Design System/Tokens.md, as index.html mirrors them. */
+:root {
+  --sunk: oklch(18% 0.012 162); --ground: oklch(24% 0.014 162); --panel: oklch(28% 0.015 162); --raised: oklch(33% 0.016 162);
+  --hairline: oklch(36% 0.016 162);
+  --ink: oklch(92.5% 0.006 150); --dim: oklch(78% 0.011 150); --faint: oklch(71% 0.013 150);
+  --accent: oklch(83% 0.040 138); --lamp: oklch(88% 0.085 140);
+  --bdr: color-mix(in oklch, var(--accent) 16%, transparent);
+  --font-display: "Cormorant Garamond", Georgia, serif; --font-body: "Newsreader", Georgia, serif; --font-mono: "Courier Prime", ui-monospace, monospace;
+  --t-xs: 0.72rem; --t-sm: 0.78rem; --t-base: 1.0625rem; --t-md: 1.15rem; --t-lg: clamp(1.5rem, 2.4vw, 1.9rem);
+  --track-meta: 0.18em; --track-eyebrow: 0.28em;
+  --s-1: 0.25rem; --s-2: 0.5rem; --s-3: 0.75rem; --s-4: 1rem; --s-5: 1.5rem; --s-6: 2rem;
+}
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; background: oklch(14% 0.01 162); color: var(--ink); font-family: var(--font-body); -webkit-font-smoothing: antialiased; }
+.sheet { padding: var(--s-6); display: flex; flex-direction: column; gap: var(--s-5); align-items: center; }
+.cap { width: 1440px; display: flex; align-items: baseline; gap: var(--s-4); }
+.cap h1 { margin: 0; font: 400 var(--t-lg)/1 var(--font-display); }
+.cap p { margin: 0; font-size: var(--t-sm); color: var(--faint); max-width: 90ch; line-height: 1.5; }
+.cap b { color: var(--dim); font-weight: 500; }
+.screen { position: relative; width: 1440px; height: 900px; overflow: hidden; background: var(--ground); box-shadow: 0 0 0 1px var(--hairline); }
+
+/* the panel's frame, as the Grains panel draws it */
+.hd { display: flex; align-items: center; gap: var(--s-4); height: 68px; padding: 0 var(--s-4); border-bottom: 1px solid var(--hairline); }
+.hd h2 { margin: 0; font: 600 1.2rem/1 var(--font-display); letter-spacing: 0.01em; }
+.hd .lvl { margin-left: auto; display: flex; align-items: center; gap: var(--s-2); font: 400 var(--t-xs) var(--font-mono); letter-spacing: var(--track-meta); color: var(--faint); }
+.hd .lvl i { display: block; width: 110px; height: 4px; border-radius: 2px; background: linear-gradient(90deg, var(--accent) 46%, var(--raised) 46%); }
+.btn { font: 400 var(--t-sm) var(--font-body); color: var(--ink); background: var(--panel); border: 1px solid var(--hairline); border-radius: 6px; padding: 0.7rem 0.9rem; }
+.btn.dim { color: var(--faint); }
+.modes { display: flex; gap: 0; margin-left: var(--s-4); border: 1px solid var(--hairline); border-radius: 6px; overflow: hidden; }
+.modes span { font: 400 var(--t-sm) var(--font-body); padding: 0.45rem 0.8rem; color: var(--dim); border-right: 1px solid var(--hairline); }
+.modes span:last-child { border-right: 0; }
+.modes span.on { background: var(--raised); color: var(--ink); }
+.modes span.new::after { content: "new"; margin-left: 0.4rem; font: 400 0.6rem var(--font-mono); letter-spacing: var(--track-meta); color: var(--lamp); vertical-align: 0.1rem; }
+.body { padding: var(--s-3) var(--s-4); }
+.eb { display: flex; align-items: center; gap: var(--s-3); margin: var(--s-4) 0 var(--s-2); font: 400 var(--t-xs) var(--font-mono); letter-spacing: var(--track-eyebrow); text-transform: uppercase; color: var(--dim); }
+.eb::after { content: ""; flex: 1; height: 1px; background: var(--hairline); }
+.eb small { order: 2; font-size: var(--t-xs); letter-spacing: 0.04em; text-transform: none; color: var(--faint); }
+.eb small + ::after { order: 1; }
+
+/* the recording, its slices drawn over it */
+.wave { position: relative; height: 104px; background: var(--panel); border: 1px solid var(--hairline); border-radius: 2px; overflow: hidden; }
+.wave svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.slice { position: absolute; top: 0; bottom: 0; border-left: 1px solid var(--lamp); background: color-mix(in oklch, var(--lamp) 9%, transparent); }
+.slice b { position: absolute; top: 4px; left: 4px; font: 700 var(--t-xs) var(--font-mono); color: var(--lamp); }
+.slice.play { background: color-mix(in oklch, var(--lamp) 22%, transparent); }
+.cols { display: grid; grid-template-columns: 1fr 1.35fr 1fr 1fr; gap: var(--s-5); }
+.row { display: grid; grid-template-columns: 1fr 26px 70px; align-items: center; gap: var(--s-2); min-height: 26px; font-size: 0.86rem; }
+.row .v { font: 400 var(--t-sm) var(--font-mono); text-align: right; color: var(--ink); }
+.knob { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--dim); border-bottom-color: transparent; transform: rotate(var(--a, 0deg)); }
+.sel { grid-column: 2 / 4; font: 400 var(--t-sm) var(--font-mono); background: var(--sunk); border: 1px solid var(--hairline); border-radius: 4px; padding: 2px 6px; }
+.pill { grid-column: 2 / 4; text-align: center; font-size: var(--t-sm); background: color-mix(in oklch, var(--accent) 30%, var(--raised)); border-radius: 999px; padding: 3px; }
+.eq { grid-column: 2 / 4; height: 26px; border: 1px solid var(--hairline); display: grid; place-items: center; }
+.eq i { width: 60%; height: 1px; background: var(--dim); }
+
+/* the line: 16 steps; a note is a lit cell at its chord degree; under it, which slice plays it, and its octave */
+.grid { display: grid; grid-template-columns: 34px repeat(16, 1fr); gap: 3px; margin-top: var(--s-2); }
+.grid .k { font: 400 var(--t-xs) var(--font-mono); color: var(--faint); align-self: center; }
+.grid .c { height: 17px; background: var(--raised); border-radius: 1px; }
+.grid .c.beat { background: color-mix(in oklch, var(--ink) 9%, var(--raised)); }
+.grid .c.on { background: var(--accent); }
+.grid .c.on.now { background: var(--lamp); box-shadow: 0 0 0 1px var(--lamp); }
+.grid .s { height: 18px; font: 700 0.66rem/18px var(--font-mono); text-align: center; color: var(--sunk); background: var(--dim); border-radius: 2px; }
+.grid .s.off { background: transparent; color: var(--faint); font-weight: 400; }
+.grid .o { font: 400 0.62rem var(--font-mono); text-align: center; color: var(--faint); }
+.hint { margin: var(--s-2) 0 0; font-size: var(--t-sm); color: var(--faint); line-height: 1.45; }
+.wide { width: 100%; margin-top: var(--s-2); padding: 0.35rem; text-align: center; font-size: var(--t-sm); border: 1px solid var(--hairline); border-radius: 4px; }
+.pop { position: absolute; z-index: 2; width: 220px; padding: var(--s-3); background: var(--panel); border: 1px solid var(--bdr); border-radius: 6px; box-shadow: 0 10px 30px oklch(10% 0.01 162 / 0.6); }
+.pop h4 { margin: 0 0 var(--s-2); font: 400 var(--t-xs) var(--font-mono); letter-spacing: var(--track-meta); color: var(--dim); text-transform: uppercase; }
+.seg { display: grid; grid-template-columns: repeat(var(--n), 1fr); border: 1px solid var(--hairline); border-radius: 4px; overflow: hidden; margin-bottom: var(--s-2); }
+.seg span { text-align: center; font: 400 var(--t-xs) var(--font-mono); padding: 4px 0; color: var(--dim); border-right: 1px solid var(--hairline); }
+.seg span:last-child { border-right: 0; }
+.seg span.on { background: var(--raised); color: var(--ink); }
+
+/* the slices: each with the pitch it was heard at */
+.sl { display: grid; grid-template-columns: 22px 1fr auto; gap: var(--s-2); align-items: center; min-height: 24px; font-size: 0.84rem; }
+.sl b { font: 700 var(--t-xs) var(--font-mono); color: var(--sunk); background: var(--dim); border-radius: 2px; text-align: center; }
+.sl span { color: var(--dim); }
+.sl em { font: 400 var(--t-xs) var(--font-mono); font-style: normal; color: var(--ink); }
+.sl em.un { color: var(--faint); }
+
+/* the note's envelope, as the grain envelope draws it */
+.env { height: 96px; margin-top: var(--s-2); }
+
+/* the phone */
+.phone { width: 390px; height: 844px; background: var(--ground); box-shadow: 0 0 0 1px var(--hairline); overflow: hidden; position: relative; }
+.phone .hd { height: 56px; }
+.phone .hd h2 { font-size: 1.05rem; }
+.tabs { display: flex; border-bottom: 1px solid var(--hairline); }
+.tabs span { flex: 1; text-align: center; padding: 0.6rem 0; font-size: var(--t-sm); color: var(--dim); }
+.tabs span.on { color: var(--ink); box-shadow: inset 0 -2px 0 var(--accent); }
+.phone .wave { height: 72px; }
+.phone .grid { grid-template-columns: 26px repeat(16, 1fr); gap: 2px; }
+.phone .grid .c { height: 22px; }
+.states { width: 1440px; display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--s-4); }
+.st { background: var(--ground); box-shadow: 0 0 0 1px var(--hairline); padding: var(--s-4); }
+.st h4 { margin: 0 0 var(--s-2); font: 400 var(--t-xs) var(--font-mono); letter-spacing: var(--track-eyebrow); text-transform: uppercase; color: var(--dim); }
+.row2 { width: 1440px; display: flex; gap: var(--s-5); align-items: flex-start; }
+.notes { flex: 1; font-size: var(--t-sm); color: var(--dim); line-height: 1.6; }
+.notes b { color: var(--ink); font-weight: 500; }
+.notes li { margin-bottom: var(--s-2); }
+</style>
+</head>
+<body>
+<div class="sheet">
+  <div class="cap"><h1>Melody</h1><p>The fourth point device. The recording is cut into <b>up to 8 slices</b> at its onsets; a <b>16-step line</b> at the route's tempo plays a slice on each lit step, <b>re-pitched to a chord degree</b> of the chord under the walker. The line follows the chords as you walk.</p></div>
+
+  <div class="screen" id="desk">
+    <div class="hd">
+      <h2>Sound · Melody · Point 12</h2>
+      <div class="modes"><span>Stretch</span><span>Rhythm</span><span>Grains</span><span class="on new">Melody</span></div>
+      <div class="lvl">LEVEL <i></i></div>
+      <span class="btn dim">Compose</span><span class="btn">Reset to default</span><span class="btn">Close</span>
+    </div>
+    <div class="body">
+      <div class="eb">The recording<small>2.0 s · 8 slices at its onsets · lit is the slice playing</small></div>
+      <div class="wave" id="wave"></div>
+      <div class="cols">
+        <div>
+          <div class="eb">This point</div>
+          <div class="row"><span>carries</span><i class="knob" style="--a:-60deg"></i><span class="v">140 m</span></div>
+          <div class="row"><span>level</span><i class="knob" style="--a:20deg"></i><span class="v">0.90</span></div>
+          <div class="row"><span>zone</span><i class="knob" style="--a:-80deg"></i><span class="v">25 m</span></div>
+          <div class="row"><span>eq</span><span class="eq"><i></i></span></div>
+        </div>
+        <div style="position:relative">
+          <div class="eb">The line<small>a note is a lit cell at its chord degree</small></div>
+          <div class="row"><span>melody</span><span class="pill">on</span></div>
+          <div class="row"><span>step length</span><span class="sel">1/16 &nbsp;·&nbsp; 0.21 s</span></div>
+          <div class="grid" id="grid"></div>
+          <div class="hint">Click a column to place its note; the chip under it is the slice that plays it, the mark its octave. Click a lit cell for its slice and octave.</div>
+          <div class="wide">Generate a line</div>
+          <div class="pop" style="left: 150px; top: 205px">
+            <h4>Step 6 · the 5th</h4>
+            <div class="seg" style="--n:4"><span>1</span><span>2</span><span class="on">3</span><span>4</span></div>
+            <div class="seg" style="--n:4"><span>5</span><span>6</span><span>7</span><span>8</span></div>
+            <div class="seg" style="--n:3"><span>−1 oct</span><span class="on">0</span><span>+1 oct</span></div>
+            <div class="seg" style="--n:2"><span class="on">accent off</span><span>accent</span></div>
+          </div>
+        </div>
+        <div>
+          <div class="eb">The slices<small>heard at</small></div>
+          <div class="row"><span>slices</span><i class="knob" style="--a:60deg"></i><span class="v">8</span></div>
+          <div class="row"><span>sensitivity</span><i class="knob" style="--a:0deg"></i><span class="v">50 %</span></div>
+          <div class="sl"><b>1</b><span>0.00 s</span><em>A3 · 221 Hz</em></div>
+          <div class="sl"><b>2</b><span>0.25 s</span><em>C4 · 262 Hz</em></div>
+          <div class="sl"><b>3</b><span>0.49 s</span><em>A3 · 219 Hz</em></div>
+          <div class="sl"><b>4</b><span>0.74 s</span><em class="un">unpitched · moves by interval</em></div>
+          <div class="sl"><b>5</b><span>0.99 s</span><em>E4 · 331 Hz</em></div>
+          <div class="sl"><b>6</b><span>1.24 s</span><em>D4 · 293 Hz</em></div>
+          <div class="sl"><b>7</b><span>1.49 s</span><em>A3 · 220 Hz</em></div>
+          <div class="sl"><b>8</b><span>1.74 s</span><em class="un">unpitched · moves by interval</em></div>
+        </div>
+        <div>
+          <div class="eb">The note</div>
+          <div class="row"><span>register</span><span class="sel">C3 – C5</span></div>
+          <div class="row"><span>note length</span><i class="knob" style="--a:10deg"></i><span class="v">80 %</span></div>
+          <div class="row"><span>vary</span><i class="knob" style="--a:-40deg"></i><span class="v">25 %</span></div>
+          <div class="row"><span>original · melody</span><i class="knob" style="--a:130deg"></i><span class="v">0 · 100</span></div>
+          <div class="row"><span>resonate</span><i class="knob" style="--a:-130deg"></i><span class="v">0 %</span></div>
+          <div class="row"><span>body</span><span class="sel">String</span></div>
+          <div class="eb" style="margin-top:var(--s-3)">The note's envelope<small>5 ms · 60 % · 40 %</small></div>
+          <svg class="env" viewBox="0 0 300 96" preserveAspectRatio="none">
+            <line x1="0" y1="90" x2="300" y2="90" stroke="var(--faint)" stroke-dasharray="2 3" stroke-width="1"/>
+            <polyline points="4,90 10,10 120,36 210,36 296,90" fill="none" stroke="var(--accent)" stroke-width="1.6"/>
+            <circle cx="10" cy="10" r="5" fill="var(--accent)"/><circle cx="120" cy="36" r="5" fill="var(--accent)"/><circle cx="296" cy="90" r="5" fill="var(--accent)"/>
+          </svg>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row2">
+    <div class="phone">
+      <div class="hd"><h2>Melody · Point 12</h2><span class="btn" style="margin-left:auto">Close</span></div>
+      <div class="tabs"><span>Point</span><span class="on">Line</span><span>Slices</span><span>Note</span></div>
+      <div class="body">
+        <div class="wave" id="wave2"></div>
+        <div class="eb">The line</div>
+        <div class="row"><span>melody</span><span class="pill">on</span></div>
+        <div class="row"><span>step length</span><span class="sel">1/16 · 0.21 s</span></div>
+        <div class="grid" id="grid2"></div>
+        <div class="wide">Generate a line</div>
+      </div>
+    </div>
+    <ol class="notes">
+      <li><b>Where it sits:</b> a fourth choice beside Stretch · Rhythm · Grains on the point's card; switching costs nothing, it reads the same recording.</li>
+      <li><b>The slices</b> are found when the recording is attached (on the page, kept in the point, so the apps read the same ones). <b>slices</b> sets how many (2–8), <b>sensitivity</b> how readily an onset counts. Each slice is heard at its own pitch; an unpitched slice (a knock, a breath) moves by the chord's intervals instead.</li>
+      <li><b>In tune:</b> a note is a chord degree (root · 3 · 5 · 7 · 9) of the chord under the walker, in the register's range, so the same line re-voices itself on each chord of the route. A slice plays like a sampler: higher is also shorter.</li>
+      <li><b>vary</b> moves a note to a neighbouring chord tone or another slice now and then, seeded, as the other devices vary. <b>original · melody</b> is the same fuse knob as Stretch and Grains.</li>
+      <li><b>A new Melody point</b> starts with a generated line, so it sounds the moment it is chosen. Every setting is in the shared core, so the website and both apps play it alike.</li>
+    </ol>
+  </div>
+
+  <div class="states">
+    <div class="st"><h4>Empty · no recording</h4><div class="wave" style="height:64px;display:grid;place-items:center;color:var(--faint);font-size:var(--t-sm)">Record or upload a sound, and its slices appear here.</div></div>
+    <div class="st"><h4>Loading · finding slices</h4><div class="wave" style="height:64px;display:grid;place-items:center;color:var(--dim);font-size:var(--t-sm)">Finding its onsets…</div></div>
+    <div class="st"><h4>One onset only</h4><div class="wave" style="height:64px;display:grid;place-items:center;color:var(--dim);font-size:var(--t-sm);text-align:center;padding:0 var(--s-3)">One slice: a steady sound. It plays as one note, re-pitched per step.</div></div>
+    <div class="st"><h4>Off a route</h4><p class="hint" style="margin:0">No chord in reach: the line keeps the last chord it heard (D minor before any), as Stretch and Grains do.</p></div>
+  </div>
+</div>
+<script>
+/* the recording: decaying events at irregular spacing, the slices over them */
+function wave(id, h) {
+  var el = document.getElementById(id), w = 1400, pts = [], on = [0, 0.125, 0.245, 0.37, 0.495, 0.62, 0.745, 0.87];
+  for (var x = 0; x < w; x++) { var t = x / w, a = 0; on.forEach(function (o) { if (t >= o) { a = Math.max(a, Math.exp(-(t - o) * 40)); } }); pts.push(a * (0.6 + 0.4 * Math.abs(Math.sin(x * 1.7)))); }
+  var d = "M0," + h / 2; pts.forEach(function (a, x) { d += " L" + x + "," + (h / 2 - a * h * 0.42); }); for (var x2 = w - 1; x2 >= 0; x2--) { d += " L" + x2 + "," + (h / 2 + pts[x2] * h * 0.42); }
+  el.innerHTML = '<svg viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none"><path d="' + d + 'Z" fill="oklch(62% 0.03 140)"/></svg>' +
+    on.map(function (o, i) { return '<div class="slice' + (i === 2 ? " play" : "") + '" style="left:' + (o * 100) + '%;width:' + (12.5) + '%"><b>' + (i + 1) + '</b></div>'; }).join("");
+}
+wave("wave", 104); wave("wave2", 72);
+/* the line: degree per step (-1 rest), slice per step, octave per step */
+var DEG = [0, -1, 2, -1, 1, 2, -1, 3, 0, -1, 2, 4, -1, 1, -1, 2], SL = [1, 0, 3, 0, 2, 3, 0, 5, 1, 0, 7, 6, 0, 2, 0, 3], OC = [0, 0, 0, 0, 0, 0, 0, 0, -1, 0, 0, 1, 0, 0, 0, 0];
+function grid(id) {
+  var g = document.getElementById(id), html = "";
+  ["9", "7", "5", "3", "root"].forEach(function (lab, ri) {
+    var d = 4 - ri; html += '<span class="k">' + lab + '</span>';
+    for (var s = 0; s < 16; s++) { html += '<span class="c' + (s % 4 === 0 ? " beat" : "") + (DEG[s] === d ? " on" + (s === 5 ? " now" : "") : "") + '"></span>'; }
+  });
+  html += '<span class="k">slice</span>'; for (var s2 = 0; s2 < 16; s2++) { html += '<span class="s' + (DEG[s2] < 0 ? " off" : "") + '">' + (DEG[s2] < 0 ? "·" : SL[s2]) + '</span>'; }
+  html += '<span class="k">oct</span>'; for (var s3 = 0; s3 < 16; s3++) { html += '<span class="o">' + (DEG[s3] < 0 ? "" : OC[s3] > 0 ? "+1" : OC[s3] < 0 ? "−1" : "") + '</span>'; }
+  g.innerHTML = html;
+}
+grid("grid"); grid("grid2");
+</script>
+</body>
+</html>
