@@ -328,7 +328,7 @@
     var kids = [cardHead(q.mode.toUpperCase(), q.dist !== null ? metres(q.dist) + " away" : null, photos),
                 h("h2", { class: "ls-cardtitle", text: q.name })];
     if (q.note) { kids.push(note([q.note])); }
-    if (q.mode === "stretch" || q.mode === "grains") {
+    if (q.mode === "stretch" || q.mode === "grains" || q.mode === "melody") {
       var c = h("canvas", { class: "ls-wave", "aria-hidden": "true", "data-peaks": q.id });
       kids.push(c);
       kids.push(h("p", { class: "ls-meta", text: [q.recorded ? "Recorded " + q.recorded : "", q.duration ? clock(q.duration) : ""].filter(Boolean).join(" · ") }));

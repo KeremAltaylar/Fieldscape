@@ -915,6 +915,42 @@ int main() {
         std::printf("grains mix: no grains drawn - mix 1 %.1f dB, 0.5 %.1f dB, 0 %.1f dB\n", g1, gh, g0);
         assert(g1 < g0 - 30 && g0 > -40 && std::fabs(gh - (g0 - 3.01)) < 0.75);   /* mix 1: what pulses 0 still lets through, as before */
     }
+    {   /* Melody (2026-10-29): a slice heard at A3 (220 Hz), every step on a chord degree of D minor 7 in the register C3-C5 -
+           the line sounds the chord's notes, not the slice's own; a rest is silent; the original mix still fuses */
+        const int n = (int)(1.0 * SR); short *pcm = fs_alloc_i16(n);
+        for (int i = 0; i < n; i++) pcm[i] = (short)(12000 * std::sin(2 * 3.141592653589793 * 220.0 * i / SR));
+        auto mel = [&](const char *cfg) {
+            fs_device *pc = fs_create("piece"); fs_prepare(pc, SR, B);
+            const int r = fs_piece_add_route(pc, "{\"version\":17,\"key\":50,\"tempo\":90,\"prog\":[{\"r\":0,\"q\":\"m7\"}],\"voice\":{\"on\":false},\"sect\":{\"on\":false},\"v3\":{\"on\":false},\"bed\":{\"on\":false},\"zones\":{\"on\":false},\"rfx\":{\"drive\":0,\"delayWet\":0,\"revWet\":0,\"cutoff\":20000}}");
+            const int h = fs_piece_rhythm_add(pc, cfg, 2);
+            short *q = fs_alloc_i16(n); std::memcpy(q, pcm, sizeof(short) * n);
+            fs_piece_rhythm_source(pc, h, 0, 1, n, q); fs_piece_rhythm_gain(pc, h, 1);
+            std::vector<float> o;
+            for (int b = 0; b < (int)(6.0 * SR / B); b++) { fs_piece_walk(pc, r, 0.3, 0); fs_process(pc, B); const float *l = fs_out(pc, 0); o.insert(o.end(), l, l + B); }
+            fs_destroy(pc); return o;
+        };
+        auto goertzel = [&](const std::vector<float> &x, double f) {
+            double best = 0;   /* the strongest within a quarter tone (the root's exact pitch is the route's tuning) */
+            for (double c = -50; c <= 50; c += 10) {
+                const double w = 2 * 3.141592653589793 * f * std::pow(2.0, c / 1200) / SR, k = 2 * std::cos(w); double s1 = 0, s2 = 0;
+                for (size_t i = x.size() / 3; i < x.size(); i++) { const double s0 = x[i] + k * s1 - s2; s2 = s1; s1 = s0; }
+                best = std::fmax(best, s1 * s1 + s2 * s2 - k * s1 * s2);
+            }
+            return best;
+        };
+        auto line = [](int d, const char *more) {
+            static char b[1400]; std::string st;
+            for (int i = 0; i < 16; i++) st += std::string(i ? "," : "") + "[" + std::to_string(i % 2 ? -1 : d) + ",0,0,0]";
+            std::snprintf(b, sizeof b, "{\"div\":\"8n\",\"melody\":{\"steps\":[%s],\"slices\":[[0,0.5,220]],\"lo\":48,\"hi\":72,\"gate\":0.9,\"vary\":0%s}}", st.c_str(), more);
+            return std::string(b);
+        };
+        const auto root = mel(line(0, "").c_str()), fifth = mel(line(2, "").c_str()), rest = mel(line(-1, "").c_str());
+        const double d3 = goertzel(root, 146.83), a3 = goertzel(root, 220.0), a3f = goertzel(fifth, 220.0), d3f = goertzel(fifth, 146.83);
+        double er = 0, eo = 0; for (float x : rest) er += (double)x * x; for (float x : root) eo += (double)x * x;
+        std::printf("melody: root steps - D3 %.2e vs A3 (the slice's own) %.2e; fifth steps - A3 %.2e vs D3 %.2e; rests %.1e\n", d3, a3, a3f, d3f, er);
+        assert(d3 > 20 * a3 && a3f > 20 * d3f && er < 1e-3 * eo);   /* the rests: only the route's own faint floor (-57 dB) */
+        std::free(pcm);
+    }
     {   /* the live mixer and the playback choice (fs_engine_mixer / fs_engine_playback): the cards' mute and solo
            never reached the core (Kerem, 2026-10-29: "Solo and mute doesnt work properly"). One source per build,
            so each case is that source on or silent. */

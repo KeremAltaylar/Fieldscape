@@ -1258,6 +1258,32 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 .rpat i.on, .rpat i.on.beat { background: var(--accent); }
 .rpat i.on { background: var(--accent); }
 .rpat i.now { outline: 1px solid var(--lamp); }
+/* Melody's line: five chord degrees over sixteen steps, the slice and octave of each note under it (design/points/melody-mock.html) */
+.melwrap { position: relative; }
+.melgrid { display: grid; grid-template-columns: 2.4rem repeat(16, minmax(0, 1fr)); gap: 2px; margin: var(--s-2) 0 var(--s-1); max-width: 30rem; }
+.melgrid .mk { font: 400 var(--t-xs) var(--font-mono); color: var(--faint); align-self: center; }
+#rp-body .melgrid .mc { height: 15px; padding: 0; border: 0; border-radius: 1px; background: color-mix(in oklch, var(--ink) 10%, transparent); cursor: pointer; }
+#rp-body .melgrid .mc.beat { background: color-mix(in oklch, var(--ink) 18%, transparent); }
+#rp-body .melgrid .mc.on { background: var(--accent); }
+#rp-body .melgrid .mc.acc { box-shadow: inset 0 0 0 1px var(--lamp); }
+#rp-body .melgrid .mc:hover { outline: 1px solid var(--dim); }
+#rp-body .melgrid .mc:focus-visible { outline: 2px solid var(--lamp); outline-offset: 1px; }
+#rp-body .melgrid .ms { font: 700 0.62rem/15px var(--font-mono); text-align: center; color: var(--sunk); background: var(--dim); border-radius: 2px; }
+#rp-body .melgrid .ms.off { background: transparent; color: var(--faint); font-weight: 400; }
+#rp-body .melgrid .mo { font: 400 0.6rem var(--font-mono); text-align: center; color: var(--faint); min-height: 0.8rem; }
+.melpop { position: absolute; z-index: 5; width: 220px; padding: var(--s-3); background: var(--panel); border: 1px solid var(--hairline); border-radius: 6px;
+  box-shadow: 0 10px 30px oklch(10% 0.01 162 / 0.6); }
+.melpop h4 { margin: 0 0 var(--s-2); font: 400 var(--t-xs) var(--font-mono); letter-spacing: var(--track-meta); text-transform: uppercase; color: var(--dim); }
+.melseg { display: grid; grid-template-columns: repeat(var(--n), 1fr); border: 1px solid var(--hairline); border-radius: 4px; overflow: hidden; margin-bottom: var(--s-2); }
+#rp-body .melseg button { font: 400 var(--t-xs) var(--font-mono); padding: 4px 0; color: var(--dim); background: none; border: 0; border-right: 1px solid var(--hairline); cursor: pointer; }
+#rp-body .melseg button:last-child { border-right: 0; }
+#rp-body .melseg button[aria-pressed="true"] { background: var(--raised); color: var(--ink); }
+#rp-body .melpop .ghost { width: 100%; }
+.melsl { display: grid; grid-template-columns: 1.4rem 1fr auto; gap: var(--s-2); align-items: center; min-height: 1.45rem; font-size: var(--t-sm); }
+.melsl b { font: 700 var(--t-xs) var(--font-mono); color: var(--sunk); background: var(--dim); border-radius: 2px; text-align: center; }
+.melsl span { color: var(--dim); }
+.melsl em { font: 400 var(--t-xs) var(--font-mono); font-style: normal; color: var(--ink); }
+.melsl em.un { color: var(--faint); }
 .rpempty {
   display: flex; flex-direction: column; gap: var(--s-2);
   max-width: 40rem; padding: var(--s-5) 0;
@@ -1876,6 +1902,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
                   title="Four hits, sequenced into a rhythm in tempo with the route">Rhythm</button>
           <button type="button" data-amode="grains" aria-pressed="false"
                   title="One recording, granulated into a rhythm in tempo with the route">Grains</button>
+          <button type="button" data-amode="melody" aria-pressed="false"
+                  title="One recording, cut into slices and played as a melody on the route's chords, in tempo">Melody</button>
         </div>
         <div id="hitgrid" hidden></div>
         <input type="file" id="hit-file" accept="audio/*,.wav,.aif,.aiff,.caf" hidden>
@@ -5445,13 +5473,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function renderAudioMode(f) {
     var isPoint = f && f.properties.kind === "point";
     var am = f && f.properties.audio_mode;
-    var mode = (am === "hits" || am === "grains") ? am : "soundscape";
+    var mode = (am === "hits" || am === "grains" || am === "melody") ? am : "soundscape";
     var wrap = $(".recmode");
     if (wrap) { wrap.hidden = !isPoint; }
     /* Every point has a presence to set, so the panel opens for all of them; what changes is
        whether it also has four hits to sequence. */
     $("#f-rhythm").hidden = !isPoint;
-    $("#f-rhythm").textContent = (mode === "hits" || mode === "grains")
+    $("#f-rhythm").textContent = (mode === "hits" || mode === "grains" || mode === "melody")
       ? "Sound & rhythm" : "Sound";
     if (wrap) {
       wrap.querySelectorAll("button").forEach(function (b) {
@@ -5679,10 +5707,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   /* What the card calls each mode. The stored values stay as they were ("soundscape", "hits"),
      so nothing already recorded or published needs migrating; only the words changed
      (Kerem, 2026-09-19: Soundscape becomes Stretch, 4 hits becomes Rhythm). */
-  var MODE_LABEL = { soundscape: "Stretch", hits: "Rhythm", grains: "Grains" };
+  var MODE_LABEL = { soundscape: "Stretch", hits: "Rhythm", grains: "Grains", melody: "Melody" };
   function modeOf(f) {
     var m = f.properties.audio_mode;
-    return m === "hits" || m === "grains" ? m : "soundscape";
+    return m === "hits" || m === "grains" || m === "melody" ? m : "soundscape";
   }
 
   /* ---- The frame the three sound panels share with the route's patch ----
@@ -5747,7 +5775,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       "route can differ.")];
     /* A stretch point reaches 4x (+12 dB): field recordings can sit far under the synths and the rhythm
        (Kerem, 2026-10-29). The mix's -1 dBFS limiter still guards the output. */
-    var stretch = f.properties.audio_mode !== "hits" && f.properties.audio_mode !== "grains" && !f.properties.hits;
+    var stretch = modeOf(f) === "soundscape" && !f.properties.hits;
     SOUND_FIELDS.forEach(function (fl) {
       if (stretch && fl.k === "gain") { fl = Object.assign({}, fl, { max: 4 }); }
       nodes.push(buildSoundRow(fl, q, commitQ));
@@ -5763,12 +5791,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var mode = modeOf(f), o = mode === "soundscape" ? q : rhythmOf(f);
     var commit = mode === "soundscape" ? commitQ : function () { claimEdit(f); save(); };
     var row = document.createElement("div"); row.className = "pprow ppshape-row";
-    var name = document.createElement("span"); name.textContent = mode === "grains" ? "eq" : "eq · envelope"; row.appendChild(name);
+    var name = document.createElement("span"); name.textContent = mode === "grains" || mode === "melody" ? "eq" : "eq · envelope"; row.appendChild(name);
     row.appendChild(document.createElement("i"));
     var put = function (k) { return function (v) { if (v) { o[k] = v; } else { delete o[k]; } commit(); }; };
     var aria = "this point";
     shapeButtons(row, { key: "pt", aria: aria, get: function () { return o.eq || null; }, set: put("eq") },
-      mode === "grains" ? null : {
+      mode === "grains" || mode === "melody" ? null : {
         key: "pt", aria: aria, ownLabel: "None",
         ownHint: mode === "soundscape" ? "no envelope: the chord glides in" : "no envelope: each hit plays out",
         ownText: mode === "soundscape" ? "none · the chord glides" : "none · each hit plays out",
@@ -5920,6 +5948,293 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     grainWaveStart();
   }
 
+  /* ---- Melody, the fourth device (Kerem, 2026-10-29: "a melodic sample sequencer in tune with the route") ----
+     The recording cut into up to eight slices at its onsets; a 16-step line plays a slice on each lit step, re-pitched by the
+     core to a degree of the chord under the walker (design/points/melody-mock.html). The slices are found here, once, and
+     kept in the point (rhythm.melody.slices: [start s, length s, Hz heard at - 0 unpitched]), so the apps read the same ones. */
+  var MEL_DEG = ["root", "3", "5", "7", "9"];
+  var MEL_LINE = [[0, 0, 0, 1], [-1, 0, 0, 0], [2, 2, 0, 0], [-1, 0, 0, 0], [1, 1, 0, 0], [2, 2, 0, 0], [-1, 0, 0, 0], [3, 4, 0, 0],
+                  [0, 0, 0, 1], [-1, 0, 0, 0], [2, 6, 0, 0], [4, 5, 0, 0], [-1, 0, 0, 0], [1, 1, 0, 0], [-1, 0, 0, 0], [2, 2, 0, 0]];
+  function defaultMelody() {
+    return { steps: MEL_LINE.map(function (s) { return s.slice(); }), slices: [], count: 8, sens: 0.5, lo: "48", gate: 0.8, vary: 0.25,
+             attack: 0.02, decay: 0.2, sustain: 0.6, release: 0.4, gain: 0.85, mix: 1 };
+  }
+  function melodyOf(r) {
+    if (!r.melody) { r.melody = defaultMelody(); }
+    var m = r.melody, d = defaultMelody();
+    Object.keys(d).forEach(function (k) { if (m[k] === undefined) { m[k] = d[k]; } });
+    if (["36", "48", "60"].indexOf(String(m.lo)) < 0) { m.lo = "48"; }
+    m.lo = String(m.lo);   /* a select's value; the core reads "48" as 48 */
+    m.hi = +m.lo + 24;
+    return m;
+  }
+  /* Onsets: the rise of the log energy every 512 samples, above a threshold the sensitivity sets, never into near-silence,
+     80 ms apart at least; the strongest `count` kept, in time order. Each slice runs to the next onset (at most 1.5 s). */
+  function findSlices(x, sr, count, sens) {
+    var hop = 512, n = Math.floor(x.length / hop), e = new Float32Array(n), emax = -1e9, i, k;
+    for (i = 0; i < n; i++) { var s = 0; for (k = 0; k < hop; k++) { var v = x[i * hop + k]; s += v * v; } e[i] = Math.log(1e-9 + s / hop); emax = Math.max(emax, e[i]); }
+    var nov = new Float32Array(n), mean = 0, sd = 0;
+    for (i = 1; i < n; i++) { nov[i] = Math.max(0, e[i] - e[i - 1]); mean += nov[i]; }
+    mean /= Math.max(1, n - 1);
+    for (i = 1; i < n; i++) { sd += (nov[i] - mean) * (nov[i] - mean); }
+    sd = Math.sqrt(sd / Math.max(1, n - 1));
+    var thr = mean + (2.5 - 2 * sens) * sd, gap = Math.ceil(0.08 * sr / hop), cand = [];
+    /* a recording that starts on a sound: its first frame rises from silence (nothing came before it to rise from) */
+    if (n > 1 && e[0] > emax - 7) { nov[0] = Math.max(nov[1], thr) + 1e-3; }
+    for (i = 0; i < n - 1; i++) {
+      if (nov[i] > thr && (i === 0 || nov[i] >= nov[i - 1]) && nov[i] >= nov[i + 1] && e[i] > emax - 7) { cand.push(i); }
+    }
+    cand.sort(function (a, b) { return nov[b] - nov[a]; });
+    var pick = [];
+    cand.forEach(function (c) { if (pick.length < count && pick.every(function (p) { return Math.abs(p - c) >= gap; })) { pick.push(c); } });
+    if (!pick.length) { pick.push(0); }
+    pick.sort(function (a, b) { return a - b; });
+    var dur = x.length / sr;
+    return pick.map(function (p, j) {
+      var at = p * hop / sr, end = j + 1 < pick.length ? pick[j + 1] * hop / sr : dur;
+      var len = Math.max(0.05, Math.min(1.5, end - at));
+      return [+at.toFixed(3), +Math.min(len, dur - at).toFixed(3), slicePitch(x, sr, Math.floor((at + 0.02) * sr))];
+    });
+  }
+  /* The pitch a slice is heard at: normalised autocorrelation over 2048 samples, 60 Hz to 1 kHz; the shortest lag within 90 %
+     of the best (no octave below); under 0.6 it is unpitched (0), and the core moves it by the chord's intervals instead. */
+  function slicePitch(x, sr, a) {
+    var W = 2048, minL = Math.floor(sr / 1000), maxL = Math.min(W, Math.floor(sr / 60)), e0 = 0, k, L;
+    if (a < 0 || a + W + maxL > x.length) { return 0; }
+    for (k = 0; k < W; k++) { e0 += x[a + k] * x[a + k]; }
+    if (e0 < 1e-6) { return 0; }
+    var r = new Float32Array(maxL + 1), best = 0;
+    for (L = minL; L <= maxL; L++) {
+      var c = 0, e1 = 0;
+      for (k = 0; k < W; k++) { var y = x[a + k + L]; c += x[a + k] * y; e1 += y * y; }
+      r[L] = c / Math.sqrt(e0 * e1 + 1e-12); best = Math.max(best, r[L]);
+    }
+    if (best < 0.6) { return 0; }
+    for (L = minL + 1; L < maxL; L++) {
+      if (r[L] >= 0.9 * best && r[L] >= r[L - 1] && r[L] >= r[L + 1]) { return Math.round(sr / L * 10) / 10; }
+    }
+    return 0;
+  }
+  /* The point's slices, found from its recording when they are missing or the recording changed (sig: its length) */
+  var melBusy = {};
+  function ensureSlices(f, force) {
+    var id = f.properties.id, m = melodyOf(rhythmOf(f)), sig = (f.properties.audio || {}).duration_s || 0;
+    if (!f.properties.has_audio || melBusy[id] || (!force && m.slices.length && m.sig === sig)) { return; }
+    melBusy[id] = true; delete m.failed;
+    audioBlob(id, remotePath(id)).then(function (blob) {
+      if (!blob) { throw new Error("no recording"); }
+      return blob.arrayBuffer();
+    }).then(function (buf) {
+      return new OfflineAudioContext(1, 1, 44100).decodeAudioData(buf);
+    }).then(function (ab) {
+      var x = ab.getChannelData(0);
+      if (ab.numberOfChannels > 1) { var y = ab.getChannelData(1), z = new Float32Array(x.length); for (var i = 0; i < x.length; i++) { z[i] = 0.5 * (x[i] + y[i]); } x = z; }
+      m.slices = findSlices(x, ab.sampleRate, Math.max(1, Math.min(8, m.count | 0)), m.sens);
+      m.sig = sig;
+      m.steps.forEach(function (s) { if (s[1] >= m.slices.length) { s[1] = s[1] % m.slices.length; } });
+      claimEdit(f); save();
+    }).catch(function () { m.failed = true; }).then(function () {
+      delete melBusy[id];
+      if (selected === id && !$("#rhythmpanel").hidden && modeOf(f) === "melody") { renderRhythmPanel(); }
+    });
+  }
+  /* A line to start from: a walk over the chord's tones, about two notes in three, the downbeats accented */
+  function generateLine(m) {
+    var ns = Math.max(1, m.slices.length), d = Math.floor(Math.random() * 3), dens = 0.5 + Math.random() * 0.3;
+    m.steps = [];
+    for (var i = 0; i < 16; i++) {
+      if (i % 4 !== 0 && Math.random() > dens) { m.steps.push([-1, 0, 0, 0]); continue; }
+      d = Math.max(0, Math.min(4, d + [-2, -1, -1, 1, 1, 2][Math.floor(Math.random() * 6)]));
+      m.steps.push([d, Math.floor(Math.random() * ns), Math.random() < 0.12 ? (Math.random() < 0.5 ? -1 : 1) : 0, i % 8 === 0 ? 1 : 0]);
+    }
+  }
+  var MEL_SLICE_FIELDS = [
+    { k: "count", label: "slices", min: 1, max: 8, step: 1, def: 8, hint: "how many slices are cut from the recording, at its strongest onsets" },
+    { k: "sens", label: "sensitivity", min: 0, max: 1, step: 0.05, def: 0.5, fmt: pctFmt, hint: "how readily a rise in level counts as an onset" }
+  ];
+  var MEL_NOTE_FIELDS = [
+    { k: "lo", label: "register", options: function () { return ["36", "48", "60"]; },
+      fmt: function (v) { return { 36: "C2 – C4", 48: "C3 – C5", 60: "C4 – C6" }[v]; },
+      hint: "the two octaves the line's notes fold into; a step's octave mark moves it out of them" },
+    { k: "gate", label: "note length", min: 0.05, max: 1, step: 0.05, def: 0.8, fmt: pctFmt, hint: "how much of its step a note lasts (a slice that ends sooner ends sooner)" },
+    { k: "vary", label: "vary", min: 0, max: 1, step: 0.05, def: 0.25, fmt: pctFmt, hint: "now and then a note moves to a neighbouring chord tone, or another slice plays it" },
+    { k: "gain", label: "level", min: 0, max: 1, step: 0.05, def: 0.85 },
+    { k: "mix", label: "original · melody", min: 0, max: 1, step: 0.05, def: 1,
+      fmt: function (v) { return Math.round((1 - v) * 100) + " · " + Math.round(v * 100); },
+      hint: "the recording at its own speed, looped, beside the line: 100 · 0 is only the original, 0 · 100 only the melody" }
+  ];
+  function melNoteName(hz) {
+    var mi = Math.round(69 + 12 * Math.log2(hz / 440));
+    return ["C", "C♯", "D", "E♭", "E", "F", "F♯", "G", "A♭", "A", "B♭", "B"][((mi % 12) + 12) % 12] + (Math.floor(mi / 12) - 1);
+  }
+  function renderMelodyPanel(f, r, body, commitQ) {
+    var point = pointColumn(f, soundOf(f), commitQ);
+    if (!f.properties.has_audio) {
+      soundColumns(body, "melody", [
+        { title: "Point", nodes: point },
+        { title: "Melody", span: 3, nodes: [soundEmpty("No recording attached yet.",
+          "This point is set to Melody. Attach one recording on its card, and its slices appear here: a 16-step line plays them " +
+          "on the chords of the route, in tempo. The same file works as a Stretch or Grains if you change your mind.")] }
+      ], 4);
+      return;
+    }
+    var m = melodyOf(r);
+    var commitR = function () { claimEdit(f); save(); };
+    var waiting = !m.slices.length && !m.failed;
+    if (!m.slices.length) { ensureSlices(f, false); }
+
+    var whead = document.createElement("div"); whead.className = "pphead";
+    whead.appendChild(ppHeading("The recording"));
+    var meta = document.createElement("span"); meta.className = "ppmeta";
+    var dur = (f.properties.audio || {}).duration_s;
+    meta.textContent = m.failed ? "its recording could not be read on this device" : waiting ? "finding its onsets…" :
+      (dur ? fmtLongDuration(dur) + " · " : "") + (m.slices.length === 1 ? "one slice: a steady sound, one note re-pitched per step" : m.slices.length + " slices at its onsets · lit is the slice playing");
+    whead.appendChild(meta); body.appendChild(whead);
+    var wave = document.createElement("canvas"); wave.className = "grainwave melwave";
+    wave.title = "The recording, its slices numbered; a slice lights as it plays.";
+    body.appendChild(wave);
+    if (soundTabbed() && innerHeight < 500) { wave.classList.add("short"); whead.hidden = true; }
+
+    var line = [ppHeading("The line", "A note is a lit cell at its chord degree; under it, the slice that plays it and its octave")];
+    line.push(buildRhythmRow({ k: "on", label: "melody", toggle: true }, r, commitR));
+    line.push(buildRhythmRow(RHYTHM_FIELDS[2], r, commitR));
+    var wrap = document.createElement("div"); wrap.className = "melwrap";
+    var grid = document.createElement("div"); grid.className = "melgrid";
+    var pop = document.createElement("div"); pop.className = "melpop"; pop.hidden = true;
+    wrap.appendChild(grid); wrap.appendChild(pop);
+    line.push(wrap);
+    var drawGrid, openPop;
+    drawGrid = function () {
+      grid.textContent = "";
+      var label = function (t) { var k = document.createElement("span"); k.className = "mk"; k.textContent = t; grid.appendChild(k); };
+      for (var d = 4; d >= 0; d--) {
+        label(MEL_DEG[d]);
+        for (var i = 0; i < 16; i++) {
+          (function (d, i) {
+            var st = m.steps[i], on = st[0] === d;
+            var b = document.createElement("button"); b.type = "button";
+            b.className = "mc" + (i % 4 === 0 ? " beat" : "") + (on ? " on" : "") + (on && st[3] ? " acc" : "");
+            b.setAttribute("aria-label", "step " + (i + 1) + ", " + MEL_DEG[d] + (on ? ", slice " + (st[1] + 1) : ""));
+            b.setAttribute("aria-pressed", String(on));
+            b.addEventListener("click", function (ev) {
+              if (on) { openPop(i, ev.currentTarget); return; }
+              st[0] = d; pop.hidden = true; commitR(); drawGrid();
+            });
+            grid.appendChild(b);
+          })(d, i);
+        }
+      }
+      label("slice");
+      m.steps.forEach(function (st) { var c = document.createElement("span"); c.className = "ms" + (st[0] < 0 ? " off" : ""); c.textContent = st[0] < 0 ? "·" : String(st[1] + 1); grid.appendChild(c); });
+      label("oct");
+      m.steps.forEach(function (st) { var c = document.createElement("span"); c.className = "mo"; c.textContent = st[0] < 0 || !st[2] ? "" : st[2] > 0 ? "+1" : "−1"; grid.appendChild(c); });
+    };
+    openPop = function (i, at) {
+      var st = m.steps[i], ns = Math.max(1, m.slices.length);
+      pop.textContent = "";
+      var h = document.createElement("h4"); h.textContent = "Step " + (i + 1) + " · the " + MEL_DEG[st[0]]; pop.appendChild(h);
+      var seg = function (items, cur, set) {
+        var g = document.createElement("div"); g.className = "melseg"; g.style.setProperty("--n", Math.min(4, items.length));
+        items.forEach(function (it) {
+          var b = document.createElement("button"); b.type = "button"; b.textContent = it[1]; b.setAttribute("aria-pressed", String(it[0] === cur));
+          b.addEventListener("click", function () { set(it[0]); commitR(); drawGrid(); openPop(i, grid.children[1 + (4 - st[0]) * 17 + i]); });
+          g.appendChild(b);
+        });
+        pop.appendChild(g);
+      };
+      var sl = []; for (var k = 0; k < ns; k++) { sl.push([k, String(k + 1)]); }
+      seg(sl, st[1], function (v) { st[1] = v; });
+      seg([[-1, "−1 oct"], [0, "0"], [1, "+1 oct"]], st[2], function (v) { st[2] = v; });
+      seg([[0, "accent off"], [1, "accent"]], st[3] ? 1 : 0, function (v) { st[3] = v; });
+      var rest = document.createElement("button"); rest.type = "button"; rest.className = "ghost"; rest.textContent = "Make it a rest";
+      rest.addEventListener("click", function () { st[0] = -1; commitR(); pop.hidden = true; drawGrid(); });
+      pop.appendChild(rest);
+      var wb = wrap.getBoundingClientRect(), cb = at.getBoundingClientRect();
+      pop.style.left = Math.max(0, Math.min(wb.width - 220, cb.left - wb.left - 100)) + "px";
+      pop.style.top = (cb.bottom - wb.top + 6) + "px";
+      pop.hidden = false;
+    };
+    var closePop = function (ev) {
+      if (!pop.isConnected) { document.removeEventListener("pointerdown", closePop, true); return; }
+      if (!pop.hidden && !pop.contains(ev.target) && !grid.contains(ev.target)) { pop.hidden = true; }
+    };
+    document.addEventListener("pointerdown", closePop, true);
+    drawGrid();
+    var hint = document.createElement("p"); hint.className = "hint";
+    hint.textContent = "Click a cell to place that step's note; click a lit cell for its slice, octave and accent.";
+    line.push(hint);
+    var gen = document.createElement("button"); gen.type = "button"; gen.className = "ghost"; gen.textContent = "Generate a line";
+    gen.title = "A walk over the chord's tones, two notes in three";
+    gen.addEventListener("click", function () { generateLine(m); commitR(); pop.hidden = true; drawGrid(); toast("A new line"); });
+    var acts = document.createElement("div"); acts.className = "ppactions"; acts.style.marginTop = "var(--s-2)"; acts.appendChild(gen);
+    line.push(acts);
+
+    var slices = [ppHeading("The slices", "Found at the recording's onsets; each heard at its own pitch")];
+    var again = null;
+    MEL_SLICE_FIELDS.forEach(function (fl) {
+      slices.push(buildRhythmRow(fl, m, function () {
+        clearTimeout(again); again = setTimeout(function () { ensureSlices(f, true); }, 400);   /* found again once the knob rests */
+      }));
+    });
+    m.slices.forEach(function (s, i) {
+      var row = document.createElement("div"); row.className = "melsl";
+      var b = document.createElement("b"); b.textContent = String(i + 1);
+      var t = document.createElement("span"); t.textContent = (+s[0]).toFixed(2) + " s";
+      var p = document.createElement("em");
+      if (s[2] > 0) { p.textContent = melNoteName(s[2]) + " · " + Math.round(s[2]) + " Hz"; }
+      else { p.textContent = "unpitched · moves by interval"; p.className = "un"; }
+      row.appendChild(b); row.appendChild(t); row.appendChild(p); slices.push(row);
+    });
+
+    var noteCol = [ppHeading("The note", "Where the line's notes sit, how long they last, and how the line varies")];
+    MEL_NOTE_FIELDS.forEach(function (fl) { noteCol.push(buildRhythmRow(fl, m, commitR)); });
+    if (r.resonate === undefined) { r.resonate = 0; }
+    r.body = String(r.body || 0);
+    RESONATE_FIELDS.forEach(function (fl) {
+      noteCol.push(buildRhythmRow(fl.k === "resonate" ? Object.assign({}, fl, { hint: "the notes ring the chord's notes: 0 = dry, 100 % = only the ringing" }) : fl, r, commitR));
+    });
+    var D = defaultMelody();
+    var menv = envGraph({ key: "melody", aria: "every note", lin: true, label: "envelope",
+      get: function () { return [m.attack, m.decay, m.sustain, m.release]; },
+      own: function () { return [D.attack, D.decay, D.sustain, D.release]; },
+      set: function (e) { m.attack = e[0]; m.decay = e[1]; m.sustain = e[2]; m.release = e[3]; commitR(); } });
+    menv.title = "Every note's shape, as fractions of the note. Drag the points; double-click one to put it back.";
+    noteCol.push(menv);
+
+    soundColumns(body, "melody", [
+      { title: "Point", nodes: point },
+      { title: "Line", nodes: line },
+      { title: "Slices", nodes: slices },
+      { title: "Note", nodes: noteCol, split: 6 }
+    ]);
+    grainWaveStart();
+  }
+  /* The recording with its slices, and the slice playing lit (the core's marks: where each note read, for how long) */
+  function melodyWaveDraw(cv, f) {
+    var w = cv.clientWidth, h = cv.clientHeight;
+    if (!w || !h) { return; }
+    var dpr = Math.min(2, window.devicePixelRatio || 1);
+    if (cv.width !== Math.round(w * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
+    var ctx = cv.getContext("2d");
+    if (!ctx) { return; }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, w, h);
+    var m = melodyOf(rhythmOf(f)), dur = (f.properties.audio || {}).duration_s || 0, peaks = (f.properties.audio || {}).peaks;
+    if (peaks && peaks.length) { paintWave(ctx, peaks, w, h, "rgba(186,206,181,0.45)"); }
+    else { ctx.fillStyle = "rgba(186,206,181,0.25)"; ctx.fillRect(0, h / 2, w, 1); }
+    var lit = {};
+    if (core && core.point && core.watch === f.properties.id && dur) {
+      core.point.grains.forEach(function (q) { if (q.age < 0.25) { m.slices.forEach(function (s, i) { if (Math.abs(q.pos * dur - s[0]) < 0.02) { lit[i] = true; } }); } });
+    }
+    ctx.font = "700 11px 'Courier Prime', monospace";
+    m.slices.forEach(function (s, i) {
+      if (!dur) { return; }
+      var x = s[0] / dur * w, sw = s[1] / dur * w;
+      ctx.fillStyle = lit[i] ? "rgba(214,236,206,0.22)" : "rgba(214,236,206,0.07)"; ctx.fillRect(x, 0, sw, h);
+      ctx.fillStyle = "rgba(214,236,206,0.85)"; ctx.fillRect(Math.round(x), 0, 1, h);
+      ctx.fillText(String(i + 1), x + 4, 13);
+    });
+  }
+
   /* ---- The recording, and where the grains are biting it ----
      A granular sampler without this is a set of numbers and a noise. The waveform says what
      is in the file, the band says which part of it the offset and roam can reach, and the
@@ -6057,6 +6372,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     }
     gwRAF = requestAnimationFrame(grainWaveTick);
     if (document.hidden) { return; }
+    var mw = document.querySelector("#rp-body .melwave"), mf = feature(selected);
+    if (mw) { if (mf) { melodyWaveDraw(mw, mf); } return; }
     grainWaveDraw();
   }
   function grainWaveStart() {
@@ -6096,6 +6413,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var commitQ = function () { claimEdit(f); save(); updateBed(); redrawZones(); };
 
     if (f.properties.audio_mode === "grains") { renderGrainPanel(f, r, body, commitQ); return; }
+    if (f.properties.audio_mode === "melody") { renderMelodyPanel(f, r, body, commitQ); return; }
     if (f.properties.audio_mode !== "hits") {
       renderSoundscapePanel(f, q, commitQ, body);
       return;
@@ -8769,7 +9087,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         if (!line) { return; }
         var w = line.split(" "), kind = w[0], index = +w[1];
         var sub = kind === "R" ? +w[2] : 0, id = w[kind === "R" ? 3 : 2], path = w[kind === "R" ? 4 : 3];
-        var key = kind === "R" && !(feature(id) && feature(id).properties.audio_mode === "grains") ? id + "#" + HIT_SLOTS[sub] : id;
+        var key = kind === "R" && !(feature(id) && (feature(id).properties.audio_mode === "grains" || feature(id).properties.audio_mode === "melody")) ? id + "#" + HIT_SLOTS[sub] : id;
         if (core.pending[line]) { return; }
         /* the engine that asked: lab mode can replace it while this downloads (3c), and the answer is then for no one */
         var eng = core;
@@ -14958,7 +15276,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         var f = feature(id);
         if (!f || f.geometry.type !== "Point") { return null; }
         var q = f.properties, a = q.audio || {};
-        var mode = q.audio_mode === "hits" ? "rhythm" : q.audio_mode === "grains" ? "grains" : q.has_audio ? "stretch" : "silent";
+        var mode = q.audio_mode === "hits" ? "rhythm" : q.audio_mode === "grains" ? "grains" : q.audio_mode === "melody" ? "melody" : q.has_audio ? "stretch" : "silent";
         return { id: id, name: label(f), note: q.note || "", mode: mode, lon: f.geometry.coordinates[0], lat: f.geometry.coordinates[1],
                  dist: pacer && pacer.pos ? segment(pacer.pos, f.geometry.coordinates) : null,
                  peaks: a.peaks || null, duration: a.duration_s || 0,

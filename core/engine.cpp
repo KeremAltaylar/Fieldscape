@@ -48,7 +48,7 @@ struct Point {                        /* a soundscape recording: a stretch voice
     std::string sound = "{}";         /* Test 15: properties.sound as JSON, for its eq and env (fs_point_sound) */
 };
 struct Spot { std::string icon; double lon, lat, radius, zoneR, centroid, onsets; bool audio, plain; fs_zone_state zone{}; std::string id; bool comp_in = false; };
-struct Beat { std::string id, name; double lon, lat, radius, gain; bool grains; std::string json; std::vector<std::string> paths; std::vector<char> have; };
+struct Beat { std::string id, name; double lon, lat, radius, gain; int grains;   /* 0 hits, 1 grains, 2 melody */ std::string json; std::vector<std::string> paths; std::vector<char> have; };
 struct Park { std::string name; std::vector<std::vector<double>> rings; double area; };
 struct Slot {
     fs_device *dev = nullptr;
@@ -201,11 +201,11 @@ static void upsert_one(fs_engine *e, const Json *f) {
         std::max(600.0, std::min(14000.0, (centroid > 0 ? centroid : 2000) * 2.2)),
         (float)(q ? q->n("stretch", 0) : 0), (float)(std::pow(2.0, std::round(7 + 10 * fft)) / e->sr),   /* pxBufsize */
         (float)(q ? q->n("grit", 0) : 0), (float)(px && px->flag("freeze", false) ? 1 : 0), (float)(px ? px->n("onset", 0) : 0),
-        audio && mode != "hits" && mode != "grains" };
+        audio && mode != "hits" && mode != "grains" && mode != "melody" };
     { const Json *sh = q ? q->get("shape") : nullptr; if (sh) P.shape = dump(sh); }   /* Fieldscape's own shaping */
     if (q) P.sound = dump(q);
     Spot S{ p->s("icon", ""), lon, lat, radius, q ? q->n("zoneR", 25) : 25, a ? a->n("centroid_hz", 0) : 0,
-            a ? a->n("onset_rate", -1) : -1, audio, !audio && !has_hits && mode != "hits" && mode != "grains" };
+            a ? a->n("onset_rate", -1) : -1, audio, !audio && !has_hits && mode != "hits" && mode != "grains" && mode != "melody" };
     S.id = id;
 
     int pi = find_id(e->points, id);
@@ -225,10 +225,11 @@ static void upsert_one(fs_engine *e, const Json *f) {
     int si = find_id(e->spots, id);
     if (si < 0) e->spots.push_back(S); else { S.zone = e->spots[si].zone; e->spots[si] = S; }
 
-    bool beat = (mode == "hits" && has_hits) || (mode == "grains" && audio);
-    Beat Bt{ id, name, lon, lat, radius, gain, mode == "grains", dump(p->get("rhythm")),
-             mode == "grains" ? std::vector<std::string>{ p->s("storage_path", "") } : slots,
-             mode == "grains" ? std::vector<char>{ 1 } : have };
+    const bool whole = mode == "grains" || mode == "melody";   /* the point's one recording, not its hits */
+    bool beat = (mode == "hits" && has_hits) || (whole && audio);
+    Beat Bt{ id, name, lon, lat, radius, gain, mode == "melody" ? 2 : mode == "grains" ? 1 : 0, dump(p->get("rhythm")),
+             whole ? std::vector<std::string>{ p->s("storage_path", "") } : slots,
+             whole ? std::vector<char>{ 1 } : have };
     int bi = find_id(e->beats, id);
     if (!beat) { if (bi >= 0) { drop_beat(e, id); e->beats.erase(e->beats.begin() + bi); } return; }
     if (bi < 0) { e->beats.push_back(Bt); return; }
