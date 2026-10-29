@@ -116,6 +116,7 @@ struct PointCard: View {
                     note(on ? "Playing this point alone, as Fieldscape transforms it, from wherever you are. The rest waits."
                             : q.sounds ? "Its recording stretched into a slow, changing bed, on the route's chord - heard from wherever you are."
                             : q.mode == "rhythm" ? "Its recordings played as a rhythm in the route's tempo - heard from wherever you are."
+                            : q.mode == "melody" ? "Its recording played as a melody in the route's tempo - heard from wherever you are."
                             : "Its recording cut into grains in the route's tempo - heard from wherever you are.")
                     HStack(spacing: T.s2) {
                         CardButton(title: on ? "Stop listening" : "Listen", primary: !on, action: { walk.listen(on ? nil : id) }, system: on ? "stop.fill" : "play.fill")

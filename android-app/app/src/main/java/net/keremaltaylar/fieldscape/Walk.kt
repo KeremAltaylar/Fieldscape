@@ -74,7 +74,7 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
     var chordStep by mutableStateOf(-1)
     /** the morph cells shown (the Cells button); each route opens them as its patch says (morph.cells), as the web does */
     var cells by mutableStateOf(false)
-    /** What a point's card shows (its feature's properties). mode: stretch, rhythm, grains or silent. */
+    /** What a point's card shows (its feature's properties). mode: stretch, rhythm, grains, melody or silent. */
     data class PointInfo(val id: String, val name: String, val note: String, val mode: String, val lon: Double, val lat: Double,
                          val peaks: DoubleArray, val duration: Double, val recorded: String?, val path: String?, val sounds: Boolean,
                          /** a rhythm point's four originals (slot, file name, storage path), and the point's photos (storage paths) */
@@ -99,6 +99,15 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
         solo = id
         val pos = lastPos ?: id?.let { pointInfo[it] }?.let { it.lon to it.lat } ?: return
         step(pos.first, pos.second, moved = lastPos != null)
+    }
+    /** Plays (Layers sheet): 0 both, 1 routes only, 2 points only. Each listener's own, kept on the device. */
+    private val prefs = context.getSharedPreferences("fieldscape", Context.MODE_PRIVATE)
+    var playback by mutableStateOf(prefs.getInt("fs.playback", 0))
+    fun play(mode: Int) {
+        playback = mode
+        prefs.edit().putInt("fs.playback", mode).apply()
+        Core.piecePlayback(mode)
+        lastPos?.let { step(it.first, it.second, moved = false) }
     }
     /** The card's player: a point's recording as it was made. The walk rests while it plays. */
     var rawId by mutableStateOf<String?>(null)
@@ -186,11 +195,12 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
                   windowSamples = 2.0.pow((7 + 10 * px.optDouble("fft", 0.7).coerceIn(0.0, 1.0)).roundToInt().toDouble()),  // pxBufsize
                   brightest = (if (centroid.isNaN()) 2000.0 else centroid).times(2.2).coerceIn(600.0, 14000.0),
                   path = p.optString("storage_path").ifEmpty { null },
-                  sounds = p.optBoolean("has_audio") && mode != "hits" && mode != "grains",
+                  sounds = p.optBoolean("has_audio") && mode != "hits" && mode != "grains" && mode != "melody",
                   track = q.optString("track_path").ifEmpty { null },
                   sound = q.toString())
         }
         Core.pieceStart(features.toString())
+        Core.piecePlayback(playback)
         /* every point's card, and the routes with their patches */
         for (i in 0 until fs.length()) {
             val f = fs.getJSONObject(i)
@@ -199,7 +209,7 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
             val c = g.getJSONArray("coordinates"); val p = f.getJSONObject("properties")
             val a = p.optJSONObject("audio") ?: JSONObject()
             val m = p.optString("audio_mode", ""); val has = p.optBoolean("has_audio")
-            val mode = when { m == "hits" -> "rhythm"; m == "grains" -> "grains"; has -> "stretch"; else -> "silent" }
+            val mode = when { m == "hits" -> "rhythm"; m == "grains" -> "grains"; m == "melody" -> "melody"; has -> "stretch"; else -> "silent" }
             val pk = a.optJSONArray("peaks")
             val id = p.optString("id")
             val hj = p.optJSONObject("hits")
@@ -275,7 +285,7 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
         val soloBeat = soloAny != null && soloIndex == null
         Core.pieceSolo(if (soloBeat) solo!! else "")
         val chosen = soloIndex?.let { listOf(it) } ?: Core.pickVoices(dist, radius, eligible, voices, false).toList()
-        val rest = rawPlaying || soloBeat                                  /* the card's player rests the walk */
+        val rest = rawPlaying || soloBeat || (playback == 1 && soloIndex == null)                              /* the card's player rests the walk */
         val want = chosen.map { points[it].id }.toSet()
         for ((id, slot) in slotOf.toMap()) if (id !in want) {                // left: fade, free after the ramp
             Core.gain(slot, 0f)

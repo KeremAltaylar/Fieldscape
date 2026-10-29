@@ -762,11 +762,14 @@ static const fs_param STRETCH_PARAMS[] = {
     { "env_s", "Envelope sustain", "", 0.0f, 1.0f, 1.0f },
     { "env_r", "Envelope release", "s", 0.01f, 12.0f, 1.0f },
     { "env_on", "Envelope on", "", 0.0f, 1.0f, 0.0f },
+    /* 2026-10-29: the recording as it was, at normal speed, beside the stretch - 0 all original, 1 all stretched (the
+       default: every point made before sounds as it did). Equal power, so 50/50 does not dip (Kerem: "fuse them"). */
+    { "mix", "Original / stretched", "", 0.0f, 1.0f, 1.0f },
 };
 enum { P_STRETCH, P_WINDOW, P_FREEZE, P_ONSET, P_WIDTH, P_SHAPE, P_SEED,
        P_TRANSPOSE, P_TUNE, P_FOCUS, P_PARTIALS, P_LAYERS, P_HARMONY, P_GLIDE, P_DRIFT, P_BLUR, P_START, P_END,
        P_CHORD0, P_ROOT = P_CHORD0 + 5, P_FOLLOW, P_RESONATE, P_BODY, P_LOW, P_DEPTH, P_SING, P_CONTOUR,
-       P_ENV_A, P_ENV_D, P_ENV_S, P_ENV_R, P_ENV_ON, P_COUNT };
+       P_ENV_A, P_ENV_D, P_ENV_S, P_ENV_R, P_ENV_ON, P_MIX, P_COUNT };
 
 struct Stretch : Device {
     float value[P_COUNT];
@@ -779,6 +782,7 @@ struct Stretch : Device {
     long long fade = 0;              /* samples since the incoming voice started */
     std::vector<float> tmp[2];
     float cached_window = -1; int cached_n = 0;
+    double dpos = 0; float mix_s = -1;   /* the original's play head (frames), and the mix as heard (smoothed) */
 
     Stretch() { for (int i = 0; i < P_COUNT; i++) value[i] = STRETCH_PARAMS[i].def; }
     void *cast(const char *kind) override { return std::strcmp(kind, "stretch") ? nullptr : this; }
@@ -861,7 +865,7 @@ struct Stretch : Device {
         const int nmax = window_size((int)std::floor(STRETCH_PARAMS[P_WINDOW].max * sr));
         for (auto &x : v) { x.reserve(nmax, sr); x.src = &src; }
         for (auto &t : tmp) t.assign(max_block, 0.0f);
-        active = 0; fading = false;
+        active = 0; fading = false; dpos = 0; mix_s = -1;
         v[0].start(target_n(), value[P_SHAPE] >= 0.5f, 0.0, voice_seed(), controls());
     }
 
@@ -887,7 +891,46 @@ struct Stretch : Device {
         st.wraps = v[active].wraps;
     }
 
+    /* The original beside the stretch: the same region of the same recording, looped at normal speed, with a
+       20 ms equal-power crossfade over the loop point so the wrap does not click. */
+    float raw(int ch, long long i) const { return src.s16[0] ? src.s16[ch][i] * (1.0f / 32768.0f) : src.ch[ch][i]; }
+    void original(float *l, float *r, int n) {
+        const int len = src.len;
+        double s0 = value[P_START] < 0 ? 0 : value[P_START] > 1 ? 1 : value[P_START], s1 = value[P_END] < 0 ? 0 : value[P_END] > 1 ? 1 : value[P_END];
+        if (s1 < s0) std::swap(s0, s1);
+        long long r0 = (long long)std::floor(s0 * len), r1 = (long long)std::ceil(s1 * len);
+        if (r1 > len) r1 = len;
+        const long long rl = r1 - r0, xf = std::min<long long>((long long)(0.02 * sr), rl / 4);
+        if (!len || rl < 8) { std::fill(l, l + n, 0.0f); std::fill(r, r + n, 0.0f); return; }
+        long long i = (long long)dpos; if (i < r0 || i >= r1) i = r0;
+        for (int k = 0; k < n; k++) {
+            float a = raw(0, i), b = raw(1, i);
+            const long long tail = r1 - i;                  /* inside the last xf frames: fade in the region's start */
+            if (tail <= xf && xf > 0) {
+                const double x = 1.0 - (double)tail / xf, gi = std::sin(1.5707963267948966 * x), go = std::cos(1.5707963267948966 * x);
+                const long long j = r0 + (xf - tail);
+                a = (float)(a * go + raw(0, j) * gi); b = (float)(b * go + raw(1, j) * gi);
+            }
+            l[k] = a; r[k] = b;
+            if (++i >= r1) i = r0 + xf;                     /* the start's first xf frames were heard in the fade */
+        }
+        dpos = (double)i;
+    }
     void process(int n) override {
+        render_stretch(n);
+        const float m = value[P_MIX] < 0 ? 0 : value[P_MIX] > 1 ? 1 : value[P_MIX];
+        if (mix_s < 0) mix_s = m;
+        if (m >= 1 && mix_s >= 0.9999f) { mix_s = 1; return; }     /* all stretched: the original is not read at all */
+        original(tmp[0].data(), tmp[1].data(), n);
+        const float k = 1.0f - std::exp(-1.0f / (0.05f * (float)sr));   /* 50 ms: a turned knob glides, no zipper */
+        for (int i = 0; i < n; i++) {
+            mix_s += (m - mix_s) * k;
+            const float gw = std::sin(1.5707963f * mix_s), gd = std::cos(1.5707963f * mix_s);
+            out[0][i] = out[0][i] * gw + tmp[0][i] * gd;
+            out[1][i] = out[1][i] * gw + tmp[1][i] * gd;
+        }
+    }
+    void render_stretch(int n) {
         env_step(n);
         const Controls c = controls();
         Voice &a = v[active], &b = v[active ^ 1];
@@ -920,7 +963,7 @@ Device *make_stretch() { return new Stretch(); }
 /* The host's side of the shaping, shared by the web engine and both apps' walks, so every platform
    reads a point the same way. The shaping's own names (properties.sound.shape); anything missing
    takes the parameter's default, which is dry (A-8). */
-static const char *const SHAPE_KEYS[] = { "transpose", "tune", "focus", "partials", "layers", "harmony", "glide", "drift", "blur", "start", "end", "width", "follow", "resonate", "body", "low", "depth", "sing", "contour" };
+static const char *const SHAPE_KEYS[] = { "transpose", "tune", "focus", "partials", "layers", "harmony", "glide", "drift", "blur", "start", "end", "width", "follow", "resonate", "body", "low", "depth", "sing", "contour", "mix" };
 static int stretch_param(const char *id) { for (int i = 0; i < P_COUNT; i++) if (!std::strcmp(STRETCH_PARAMS[i].id, id)) return i; return -1; }
 
 extern "C" void fs_stretch_shape(fs_device *d, const char *shape_json) {

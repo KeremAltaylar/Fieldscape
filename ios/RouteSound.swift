@@ -11,7 +11,7 @@ final class RouteSound {
         var zone = fs_zone_state()
         var compIn = false
     }
-    private struct Beat { let id: String, name: String, lon: Double, lat: Double, radius: Double, gain: Double, grains: Bool, json: String, paths: [String?], tracks: [String?] }
+    private struct Beat { let id: String, name: String, lon: Double, lat: Double, radius: Double, gain: Double, kind: Int32, json: String, paths: [String?], tracks: [String?] }
     /* 6b: each route's sampler voices - a voice's sample and its analysis (patch.<voice>.sample), nil none */
     private var routeRoles: [[(path: String, ana: String?)?]] = []
     /* the route whose samples were asked for, its generation (a route change), voices holding a sample - under vlock: a sample
@@ -49,6 +49,8 @@ final class RouteSound {
     }
     private(set) var rhythmNames: [String] = []
     private var soloHandle: Int32 = -1
+    /* Plays: 0 both, 1 routes only (every point rests), 2 points only (the route rests) */
+    var playback = 0 { didSet { fs_piece_route_gate(piece, playback == 2 ? 0 : 1) } }
 
     init(core: Core) {
         self.core = core
@@ -137,13 +139,13 @@ final class RouteSound {
                 let radius = (q["radius"] as? Double) ?? 140, gain = (q["gain"] as? Double) ?? 0.9
                 spots.append(Spot(icon: p["icon"] as? String ?? "", lon: c[0], lat: c[1], radius: radius, zoneR: (q["zoneR"] as? Double) ?? 25,
                                   centroid: (a["centroid_hz"] as? Double) ?? 0, onsets: (a["onset_rate"] as? Double) ?? -1,
-                                  audio: hasAudio, plain: !hasAudio && !hasHits && mode != "hits" && mode != "grains",
+                                  audio: hasAudio, plain: !hasAudio && !hasHits && mode != "hits" && mode != "grains" && mode != "melody",
                                   id: p["id"] as? String ?? ""))
                 let id = p["id"] as? String ?? UUID().uuidString, name = p["name"] as? String ?? "Unnamed point"
                 if mode == "hits" && hasHits {
-                    beats.append(Beat(id: id, name: name, lon: c[0], lat: c[1], radius: radius, gain: gain, grains: false, json: RouteSound.json(p["rhythm"]), paths: slots, tracks: hitTracks))
-                } else if mode == "grains" && hasAudio {
-                    beats.append(Beat(id: id, name: name, lon: c[0], lat: c[1], radius: radius, gain: gain, grains: true, json: RouteSound.json(p["rhythm"]), paths: [p["storage_path"] as? String], tracks: [q["track_path"] as? String]))
+                    beats.append(Beat(id: id, name: name, lon: c[0], lat: c[1], radius: radius, gain: gain, kind: 0, json: RouteSound.json(p["rhythm"]), paths: slots, tracks: hitTracks))
+                } else if (mode == "grains" || mode == "melody") && hasAudio {
+                    beats.append(Beat(id: id, name: name, lon: c[0], lat: c[1], radius: radius, gain: gain, kind: mode == "melody" ? 2 : 1, json: RouteSound.json(p["rhythm"]), paths: [p["storage_path"] as? String], tracks: [q["track_path"] as? String]))
                 }
             }
         }
@@ -212,12 +214,12 @@ final class RouteSound {
         for j in chosen {
             let b = beats[j]
             if handle[b.id] == nil {
-                let h = fs_piece_rhythm_add(piece, b.json, b.grains ? 1 : 0)
+                let h = fs_piece_rhythm_add(piece, b.json, b.kind)
                 if h < 0 { continue }
                 handle[b.id] = h
                 load(b, h)
             }
-            if let h = handle[b.id] { fs_piece_rhythm_gain(piece, h, Float(j == soloJ ? b.gain : fs_point_gain(bd[j], b.radius, b.gain))) }
+            if let h = handle[b.id] { fs_piece_rhythm_gain(piece, h, playback == 1 && j != soloJ ? 0 : Float(j == soloJ ? b.gain : fs_point_gain(bd[j], b.radius, b.gain))) }
         }
         let h = soloJ.flatMap { handle[beats[$0].id] } ?? -1
         if h != soloHandle { soloHandle = h; fs_piece_solo(piece, h) }

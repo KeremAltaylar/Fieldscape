@@ -323,7 +323,7 @@ namespace {
 struct Walker {
     std::string zones_sent;           /* the inside-set last given to the piece */
     struct Spot { std::string icon; double lon, lat, radius, zoneR, centroid, onsets; bool audio, plain; fs_zone_state zone{}; std::string id; bool comp_in = false; };
-    struct Beat { std::string id, name; double lon, lat, radius, gain; bool grains; std::string json; std::vector<std::string> paths, tracks; };
+    struct Beat { std::string id, name; double lon, lat, radius, gain; int kind;   /* 0 hits, 1 grains, 2 melody */ std::string json; std::vector<std::string> paths, tracks; };
     /* 6b: a route's sampler voices - each voice's sample and its analysis (patch.<voice>.sample), "" none */
     struct RoleSpec { std::string path, ana; };
     std::vector<std::array<RoleSpec, 3>> route_roles;
@@ -338,6 +338,7 @@ struct Walker {
     fs_sections *sections = nullptr;
     std::vector<std::string> rhythm_names;
     std::string route_name;
+    int playback = 0;                         /* Plays: 0 both, 1 routes only, 2 points only */
     std::string solo; int solo_handle = -1;   /* Listen on a rhythm point (its id), and its handle in the piece */
     std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
 };
@@ -401,11 +402,11 @@ JNIEXPORT void JNICALL FN(pieceStart)(JNIEnv *env, jclass, jstring features) {
             bool audio = p->flag("has_audio", false);
             double lon = c->at(0)->num, lat = c->at(1)->num, radius = q ? q->n("radius", 140) : 140, gain = q ? q->n("gain", 0.9) : 0.9;
             W->spots.push_back({ p->s("icon", ""), lon, lat, radius, q ? q->n("zoneR", 25) : 25, a ? a->n("centroid_hz", 0) : 0,
-                                 a ? a->n("onset_rate", -1) : -1, audio, !audio && !has_hits && mode != "hits" && mode != "grains" });
+                                 a ? a->n("onset_rate", -1) : -1, audio, !audio && !has_hits && mode != "hits" && mode != "grains" && mode != "melody" });
             std::string id = p->s("id", ""), name = p->s("name", "Unnamed point");
             W->spots.back().id = id;
-            if (mode == "hits" && has_hits) W->beats.push_back({ id, name, lon, lat, radius, gain, false, dump(p->get("rhythm")), slots, tracks });
-            else if (mode == "grains" && audio) W->beats.push_back({ id, name, lon, lat, radius, gain, true, dump(p->get("rhythm")), { p->s("storage_path", "") },
+            if (mode == "hits" && has_hits) W->beats.push_back({ id, name, lon, lat, radius, gain, 0, dump(p->get("rhythm")), slots, tracks });
+            else if ((mode == "grains" || mode == "melody") && audio) W->beats.push_back({ id, name, lon, lat, radius, gain, mode == "melody" ? 2 : 1, dump(p->get("rhythm")), { p->s("storage_path", "") },
                                                                      { q ? q->s("track_path", "") : "" } });
         }
     }
@@ -488,7 +489,7 @@ JNIEXPORT jstring JNICALL FN(pieceStep)(JNIEnv *env, jclass, jdouble lon, jdoubl
         const auto &b = W->beats[picked[i]];
         W->rhythm_names.push_back(b.name);
         if (!W->handle.count(b.id)) {
-            int h = fs_piece_rhythm_add(E->piece, b.json.c_str(), b.grains);
+            int h = fs_piece_rhythm_add(E->piece, b.json.c_str(), b.kind);
             if (h < 0) continue;
             W->handle[b.id] = h;
             for (size_t s = 0; s < b.paths.size(); s++) {
@@ -497,7 +498,7 @@ JNIEXPORT jstring JNICALL FN(pieceStep)(JNIEnv *env, jclass, jdouble lon, jdoubl
                                                   (s < b.tracks.size() && !b.tracks[s].empty() ? b.tracks[s] : "-") + "\n";
             }
         }
-        fs_piece_rhythm_gain(E->piece, W->handle[b.id], (float)(picked[i] == solo_j ? b.gain : fs_point_gain(bd[picked[i]], b.radius, b.gain)));
+        fs_piece_rhythm_gain(E->piece, W->handle[b.id], W->playback == 1 && picked[i] != solo_j ? 0.0f : (float)(picked[i] == solo_j ? b.gain : fs_point_gain(bd[picked[i]], b.radius, b.gain)));
     }
     int sh = solo_j >= 0 && W->handle.count(W->beats[solo_j].id) ? W->handle[W->beats[solo_j].id] : -1;
     if (sh != W->solo_handle) { W->solo_handle = sh; fs_piece_solo(E->piece, sh); }
@@ -681,8 +682,14 @@ JNIEXPORT jdoubleArray JNICALL FN(pieceMorphs)(JNIEnv *env, jclass) {
     env->SetDoubleArrayRegion(a, 0, len, o);
     return a;
 }
-/* Listen on a rhythm or grains point: its id, or "" to let go; the next pieceStep applies it. */
+/* Listen on a rhythm, grains or melody point: its id, or "" to let go; the next pieceStep applies it. */
 JNIEXPORT void JNICALL FN(pieceSolo)(JNIEnv *env, jclass, jstring id) { if (W) W->solo = jstr(env, id); }
+/* Plays: 0 both, 1 routes only (every point rests), 2 points only (the route rests); the points follow at the next pieceStep, the route now. */
+JNIEXPORT void JNICALL FN(piecePlayback)(JNIEnv *, jclass, jint mode) {
+    if (!W) return;
+    W->playback = mode;
+    fs_piece_route_gate(E->piece, mode == 2 ? 0.0f : 1.0f);
+}
 JNIEXPORT jstring JNICALL FN(pieceRoute)(JNIEnv *env, jclass) { return env->NewStringUTF(W ? W->route_name.c_str() : ""); }
 JNIEXPORT jstring JNICALL FN(pieceRhythms)(JNIEnv *env, jclass) {
     std::string o;

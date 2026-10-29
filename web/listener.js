@@ -263,6 +263,12 @@
         return h("button", { type: "button", "data-ls-base": b[0], "aria-pressed": String(s.base === b[0]),
                              on: { click: function () { L.setBase(b[0]); buildView(); } } }, [b[1]]);
       })),
+      /* what plays: the routes' music (their sections and zones too), the points, or both (Kerem, 2026-10-29) */
+      h("p", { class: "ls-eyebrow", text: "Plays" }),
+      h("div", { class: "ls-seg", role: "group", "aria-label": "What plays" }, [[0, "Both"], [1, "Routes"], [2, "Points"]].map(function (b) {
+        return h("button", { type: "button", "data-ls-playback": String(b[0]), "aria-pressed": String(L.playback() === b[0]),
+                             on: { click: function () { L.setPlayback(b[0]); buildView(); } } }, [b[1]]);
+      })),
       h("div", { class: "ls-list" }, [
         toggle("Park boundary", s.boundary, L.setBoundary, { "data-ls-layer": "boundary" }),
         toggle("Zones", s.zones, function (v) { L.setLayer("zones", v); }, { "data-ls-layer": "zones" }),
@@ -322,7 +328,7 @@
     var kids = [cardHead(q.mode.toUpperCase(), q.dist !== null ? metres(q.dist) + " away" : null, photos),
                 h("h2", { class: "ls-cardtitle", text: q.name })];
     if (q.note) { kids.push(note([q.note])); }
-    if (q.mode === "stretch" || q.mode === "grains") {
+    if (q.mode === "stretch" || q.mode === "grains" || q.mode === "melody") {
       var c = h("canvas", { class: "ls-wave", "aria-hidden": "true", "data-peaks": q.id });
       kids.push(c);
       kids.push(h("p", { class: "ls-meta", text: [q.recorded ? "Recorded " + q.recorded : "", q.duration ? clock(q.duration) : ""].filter(Boolean).join(" · ") }));

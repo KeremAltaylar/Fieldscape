@@ -158,6 +158,8 @@ struct LayersSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: T.s3) {
             SheetTitle(title: "Map") { sheet = .walk }
+            eyebrow("Plays")
+            Segmented(items: [(0, "Both"), (1, "Routes"), (2, "Points")], value: $walk.playback)
             eyebrow("Base map")
             Segmented(items: MapState.Base.allCases.map { ($0, $0.rawValue) }, value: $map.base)
             eyebrow("Park boundary")

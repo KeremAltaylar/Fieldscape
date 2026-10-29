@@ -326,13 +326,23 @@ static void patch_of(const Json *p, Patch &P, GainMemo *memo = nullptr) {
 /* ------------------------------------------------------------------ rhythm (rhythmOf) */
 static const char *const HIT_SLOTS[4] = { "low", "mid", "high", "rand" };
 struct HitCfg { int pulses, rotate; double gain, pitch, crush, drive; Div delayDiv; double delayFb, delayWet, stretch; };
-struct GrainCfg { double pulses, rotate, offset, grain, count, spread, scatter, gain, pitch, vary, roam, attack, decay, sustain, release; };
+struct GrainCfg { double pulses, rotate, offset, grain, count, spread, scatter, gain, pitch, vary, roam, attack, decay, sustain, release, mix = 1; };
 struct Combo { int pulses, rotate; };
+/* 2026-10-29, the fourth device (Melody): a 16-step line of slices of the recording, each re-pitched to a degree of the chord
+   under the walker. A step: its chord degree (-1 a rest; 0 root .. 4 the 9th), its slice, its octave, an accent. A slice:
+   where it starts and how long it is (s), the pitch it was heard at (Hz; 0 unpitched - it moves by the chord's intervals). */
+struct MelStep { int d = -1, s = 0, o = 0; bool acc = false; };
+struct MelSlice { double at = 0, len = 0, hz = 0; };
+struct MelCfg {
+    MelStep st[16]; MelSlice sl[8]; int ns = 0;
+    int lo = 48, hi = 72;             /* the register (MIDI): a chord tone folds into it */
+    double gate = 0.8, vary = 0.25, attack = 0.02, decay = 0.2, sustain = 0.6, release = 0.4, gain = 0.85, mix = 1;   /* the envelope: fractions of the note, as a grain's */
+};
 struct RhythmCfg {
     bool on = true; int steps = 64; Div div; double gain = 0.85, idiom = 0.35; int sentence_bars = 8; double follow = 0;
     double resonate = 0; int body = 0;   /* 8c: grains rung by the chord (0 String, 1 Tube, 2 Bell) */
     double eq[5][3] = {}; double env[4] = {}; bool env_on = false;   /* Test 15: the point's EQ; each hit's note envelope */
-    HitCfg v[4]; GrainCfg g; Combo sentence[4][4]; bool has_sentence = false;
+    HitCfg v[4]; GrainCfg g; MelCfg m; Combo sentence[4][4]; bool has_sentence = false;
 };
 
 /* ------------------------------------------------------------------ random: one stream */
@@ -420,7 +430,36 @@ static void rhythm_of(const Json *j, RhythmCfg &r, Rng &rnd) {
     if (std::isnan(attack)) attack = 0.04;
     r.g = GrainCfg{ g ? g->n("pulses", 11) : 11, g ? g->n("rotate", 0) : 0, g ? g->n("offset", 0.15) : 0.15, g ? g->n("grain", 90) : 90,
         g ? g->n("count", 6) : 6, g ? g->n("spread", 0.5) : 0.5, g ? g->n("scatter", 0.25) : 0.25, g ? g->n("gain", 0.85) : 0.85,
-        g ? g->n("pitch", 0) : 0, g ? g->n("vary", 0.35) : 0.35, g ? g->n("roam", 1) : 1, attack, decay, sustain, release };
+        g ? g->n("pitch", 0) : 0, g ? g->n("vary", 0.35) : 0.35, g ? g->n("roam", 1) : 1, attack, decay, sustain, release,
+        g ? std::max(0.0, std::min(1.0, g->n("mix", 1))) : 1 };
+    const Json *m = j ? j->get("melody") : nullptr;
+    MelCfg M;
+    {   /* the page's starting line (index.html MEL_LINE): a point switched to Melody plays before its panel is ever opened */
+        static const int L[16][4] = { {0,0,0,1},{-1,0,0,0},{2,2,0,0},{-1,0,0,0},{1,1,0,0},{2,2,0,0},{-1,0,0,0},{3,4,0,0},
+                                      {0,0,0,1},{-1,0,0,0},{2,6,0,0},{4,5,0,0},{-1,0,0,0},{1,1,0,0},{-1,0,0,0},{2,2,0,0} };
+        for (int i = 0; i < 16; i++) M.st[i] = MelStep{ L[i][0], L[i][1], L[i][2], L[i][3] != 0 };
+    }
+    if (m) {
+        auto cl = [](double x, double a, double b) { return x < a ? a : x > b ? b : x; };
+        const Json *st = m->get("steps");
+        for (int i = 0; i < 16 && st; i++) {
+            const Json *x = st->at(i); if (!x) break;
+            M.st[i] = MelStep{ (int)cl(x->at(0) ? x->at(0)->num : -1, -1, 4), (int)cl(x->at(1) ? x->at(1)->num : 0, 0, 7),
+                               (int)cl(x->at(2) ? x->at(2)->num : 0, -1, 1), x->at(3) && x->at(3)->num > 0 };
+        }
+        const Json *sl = m->get("slices");
+        for (int i = 0; i < 8 && sl; i++) {
+            const Json *x = sl->at(i); if (!x) break;
+            M.sl[i] = MelSlice{ std::max(0.0, x->at(0) ? x->at(0)->num : 0), std::max(0.0, x->at(1) ? x->at(1)->num : 0), std::max(0.0, x->at(2) ? x->at(2)->num : 0) };
+            M.ns = i + 1;
+        }
+        { const Json *lo = m->get("lo"); M.lo = (int)cl(lo ? (lo->kind == Json::NUM ? lo->num : std::atof(m->s("lo", "48").c_str())) : 48, 24, 96); }   /* the page's select keeps "48" */
+        M.hi = M.lo + 24;
+        M.gate = cl(m->n("gate", 0.8), 0.05, 1); M.vary = cl(m->n("vary", 0.25), 0, 1);
+        M.attack = cl(m->n("attack", 0.02), 0, 1); M.decay = cl(m->n("decay", 0.2), 0, 1); M.sustain = cl(m->n("sustain", 0.6), 0, 1); M.release = cl(m->n("release", 0.4), 0, 1);
+        M.gain = cl(m->n("gain", 0.85), 0, 1); M.mix = cl(m->n("mix", 1), 0, 1);
+    }
+    r.m = M;
 }
 
 static void euclid(int k, int n, bool *out) {
@@ -613,6 +652,8 @@ struct Trk { const float *tf = nullptr, *tc = nullptr; int n = 0; double hop = 0
 struct Rhythm {
     bool used = false, dying = false; double free_at = 0;
     bool grains = false;
+    bool melody = false;              /* Melody: a grains point's voices and recording, its own line (grains is true too) */
+    int mstep = 0;                    /* Melody: the step of its line playing next (0..15, whatever the rhythm's steps) */
     RhythmCfg cfg;
     Ctl gain;
     float host_g = 0;                 /* the level the walk last gave it, before any solo */
@@ -627,6 +668,7 @@ struct Rhythm {
     ChordRes cr;                      /* 8c */
     Eq5 eq;                           /* Test 15: the point's EQ, after its ringing, before its level */
     int pk_done = 0;                  /* Test 15: the grains recording's peak track, frames analysed so far */
+    double opos = 0; float mix_s = -1;   /* 2026-10-29: the original beside the grains - its play head, the mix as heard */
 };
 
 /* ------------------------------------------------------------------ the device */
@@ -639,7 +681,8 @@ struct Inbox {
     bool character = false; double centroid = 2000, onsets = 1;
     int zones[8]; int nzones = 0;
     bool solo_set = false; int solo_v = -1;    /* Listen on a rhythm point: that handle alone (-1: everything) */
-    struct ROp { int op = 0; RhythmCfg cfg; bool grains = false; bool gain = false; float g = 0; Src src[4]; bool src_set[4] = {}; Trk trk[4]; bool trk_set[4] = {}; } r[FS_MAX_VOICES];
+    bool gate_set = false; float gate_v = 1;   /* the mixer / playback choice on the route's own sound (0 or 1) */
+    struct ROp { int op = 0; RhythmCfg cfg; bool grains = false; bool melody = false; bool gain = false; float g = 0; Src src[4]; bool src_set[4] = {}; Trk trk[4]; bool trk_set[4] = {}; } r[FS_MAX_VOICES];
     RoleRec rrec[3]; bool rrec_set[3] = {};   /* role recordings for the audio thread (3a) */
     std::vector<short *> trash;       /* buffers the audio thread let go of */
     bool freed[FS_MAX_VOICES] = {};
@@ -1137,6 +1180,7 @@ struct Piece : Device {
     Ctl synth_level;
     Ctl route_solo;                   /* 0 while a rhythm point is soloed: the route's synths and zones rest */
     int solo = -1;
+    float route_gate = 1;             /* fs_piece_route_gate: muted, or soloed away, or "points only" */
     struct OneShot { SimpleSynth s; NoiseSynth ns; bool noise = false; double free_at = 0; } shots[6];
     Rhythm rh[FS_MAX_VOICES];
     std::vector<short *> my_trash;
@@ -2545,6 +2589,45 @@ struct Piece : Device {
             if (on_note) on_note(note_ctx, 20, rate, off, at, 0);
         }
     }
+    /* Melody: one step of the line - its slice, re-pitched to its chord degree folded into the register, sampler-style (higher
+       is shorter), under the note's envelope. vary moves a note to a neighbouring chord tone or another slice now and then. */
+    void fire_melody(Rhythm &R, double time, double step_secs, int at) {
+        const MelCfg &m = R.cfg.m; const Src &b = R.gsrc;
+        if (!b.data || b.frames < 64) return;
+        MelStep st = m.st[at & 15];
+        if (st.d < 0) return;
+        const double v = m.vary;
+        if (v > 0) {
+            if (rnd() < v * 0.5) st.d = std::max(0, std::min(4, st.d + (rnd() < 0.5 ? -1 : 1)));
+            if (m.ns > 1 && rnd() < v * 0.3) st.s = (int)(rnd() * m.ns) % m.ns;
+        }
+        static const int DM[5] = { 62, 65, 69, 72, 76 };   /* off every route, before any chord: D minor, as the stretch keeps */
+        const int nt = H.ntones > 0 ? H.ntones : 5; const int *tones = H.ntones > 0 ? H.tones : DM;
+        int t = tones[st.d % nt] + 12 * (st.d / nt);
+        while (t < m.lo) t += 12;
+        while (t > m.hi) t -= 12;
+        t += 12 * st.o;
+        const double dur = (double)b.frames / sr;
+        MelSlice sl = m.ns > 0 ? m.sl[std::min(st.s, m.ns - 1)] : MelSlice{ 0, dur, 0 };
+        if (sl.at >= dur) sl.at = 0;
+        if (sl.len <= 0 || sl.at + sl.len > dur) sl.len = dur - sl.at;
+        double ref;   /* the slice's own note; unpitched, the chord's root in the register (so it moves by the chord's intervals) */
+        if (sl.hz > 0) ref = 69 + 12 * std::log2(sl.hz / 440);
+        else { ref = tones[0]; while (ref < m.lo) ref += 12; while (ref > m.hi) ref -= 12; }
+        while (t - ref > 24) t -= 12;   /* a slice far from the register: the chord tone moved by octaves toward it, so the 4x */
+        while (ref - t > 24) t += 12;   /* limit below never bends a note off the chord */
+        const double rate = std::max(0.25, std::min(4.0, std::pow(2.0, (t - ref) / 12)));
+        const double len = std::max(0.02, std::min(m.gate * step_secs, sl.len / rate));
+        GrainV *gv = nullptr;
+        for (auto &x : R.gv) if (!x.on) { gv = &x; break; }
+        if (!gv) return;
+        double a = std::max(0.002, m.attack * len), d = std::max(0.002, m.decay * len), rel = std::max(0.004, m.release * len);   /* every stage floored, as a grain's: no step to the sustain */
+        if (a + d + rel > len) { const double k = len / (a + d + rel); a *= k; d *= k; rel *= k; }
+        const double w = m.gain * (st.acc ? 1.4 : 1) * (1 + (rnd() - 0.5) * v * 0.3);
+        *gv = GrainV{ true, sl.at * sr, rate, time, a, d, std::max(0.0, len - a - d - rel), m.sustain, w, len };
+        R.gm[R.gmi] = { time, dur > 0 ? sl.at / dur : 0, dur > 0 ? std::min(1.0, sl.len / dur) : 0 }; R.gmi = (R.gmi + 1) % 96; R.gmn = std::min(96, R.gmn + 1);
+        if (on_note) on_note(note_ctx, 30, 440 * std::pow(2.0, (t - 69) / 12.0), at, time, 0);
+    }
     static double stretch_rate(double a) { a = a < 0 ? 0 : (a > 1 ? 1 : a); return 1 - a * 0.85; }
     void rhythm_step(double time) {
         for (auto &R : rh) {
@@ -2568,6 +2651,7 @@ struct Piece : Device {
             int steps = std::max(1, std::min(64, r.steps));
             int at = R.step % steps;
             R.step = (R.step + 1) % steps;
+            if (R.melody) { fire_melody(R, time, div_seconds(r.div, patch.tempo) * stride, R.mstep); R.mstep = (R.mstep + 1) & 15; continue; }
             if (R.grains) {
                 const GrainCfg &g = r.g;
                 if (g.pulses > 0 && euclid_at(std::min((int)g.pulses, steps), steps, (int)g.rotate, at))
@@ -2704,14 +2788,15 @@ struct Piece : Device {
         in.nzones = 0;
         if (in.solo_set) {
             in.solo_set = false; solo = in.solo_v;
-            route_solo.p.linearRampTo(solo >= 0 ? 0 : 1, 0.35, now);
+            route_solo.p.linearRampTo(solo >= 0 ? 0 : route_gate, 0.35, now);
             for (int h = 0; h < FS_MAX_VOICES; h++) if (rh[h].used && !rh[h].dying) rh[h].gain.p.linearRampTo(rhythm_level(rh[h], h), 0.35, now);
         }
+        if (in.gate_set) { in.gate_set = false; route_gate = in.gate_v; route_solo.p.linearRampTo(solo >= 0 ? 0 : route_gate, 0.35, now); }
         for (int h = 0; h < FS_MAX_VOICES; h++) {
             auto &op = in.r[h]; Rhythm &R = rh[h];
             if (op.op == 1) {
-                R.used = true; R.dying = false; R.cfg = op.cfg; R.grains = op.grains; for (auto &k : R.trk) k = Trk{};
-                R.lvl = 0; R.gmi = R.gmn = 0; R.cr = ChordRes();
+                R.used = true; R.dying = false; R.cfg = op.cfg; R.grains = op.grains; R.melody = op.melody; R.mstep = 0; for (auto &k : R.trk) k = Trk{};
+                R.lvl = 0; R.gmi = R.gmn = 0; R.cr = ChordRes(); R.opos = 0; R.mix_s = -1;
                 R.eq.init(sr); for (int k = 0; k < 5; k++) R.eq.set(k, R.cfg.eq[k][0], R.cfg.eq[k][1], R.cfg.eq[k][2]);
                 R.tick = 0; R.step = 0; R.live = false; R.bars = 0; R.sentence_idx = 0; R.fx_ready = false;
                 R.gain.init(0);
@@ -2918,6 +3003,32 @@ struct Piece : Device {
                     bl[i] += yl[i] * (1 - w) + dl_[i] * w; br[i] += yr[i] * (1 - w) + dr_[i] * w;
                 }
             }
+        }
+        /* 2026-10-29: the recording as it was, at normal speed, beside the grains (Kerem: "fuse them") - 0 all original, 1 all
+           grains (the default), equal power; looped with a 20 ms crossfade over the loop point; at the grains' own level. Both go on
+           into the chord's ringing and the point's EQ, as one sound. */
+        if (R.grains && R.gsrc.data && R.gsrc.frames > 64) {
+            const float m = (float)(R.melody ? R.cfg.m.mix : R.cfg.g.mix);
+            if (R.mix_s < 0) R.mix_s = m;
+            if (!(m >= 1 && R.mix_s >= 0.9999f)) {
+                const Src &S = R.gsrc; const long long len = S.frames, xf = std::min<long long>((long long)(0.02 * sr), len / 4);
+                const float k = 1.0f - std::exp(-1.0f / (0.05f * (float)sr)), lv = (float)(R.melody ? R.cfg.m.gain : R.cfg.g.gain);
+                long long i = (long long)R.opos; if (i < 0 || i >= len) i = 0;
+                for (int t = 0; t < n; t++) {
+                    float l, r; src_read(S, (double)i, l, r);
+                    const long long tail = len - i;
+                    if (tail <= xf) {
+                        float l2, r2; src_read(S, (double)(xf - tail), l2, r2);
+                        const double x = 1.0 - (double)tail / xf; const float gi = (float)std::sin(1.5707963267948966 * x), go = (float)std::cos(1.5707963267948966 * x);
+                        l = l * go + l2 * gi; r = r * go + r2 * gi;
+                    }
+                    if (++i >= len) i = xf;
+                    R.mix_s += (m - R.mix_s) * k;
+                    const float gw = std::sin(1.5707963f * R.mix_s), gd = std::cos(1.5707963f * R.mix_s) * lv;
+                    bl[t] = bl[t] * gw + l * gd; br[t] = br[t] * gw + r * gd;
+                }
+                R.opos = (double)i;
+            } else R.mix_s = 1;
         }
         /* 8c; and hits too (Kerem 2026-10-13: unpitched hits ring the chord as grains do) */
         if ((R.cfg.resonate > 0 || R.cr.res > 1e-4) && (H.ntones > 0 || R.cr.sig != -1)) chord_res(R, bl, br, n);
@@ -3297,7 +3408,7 @@ int fs_piece_rhythm_add(fs_device *d, const char *rhythm_json, int grains) {
         p->busy[h] = true;
         auto &op = p->in.r[h];
         rhythm_of(j.kind == Json::OBJ ? &j : nullptr, op.cfg, p->main_rnd);   /* rhythmOf's sentence draw */
-        op.op = 1; op.grains = grains != 0; op.gain = false;
+        op.op = 1; op.grains = grains != 0; op.melody = grains == 2; op.gain = false;
         for (auto &s : op.src_set) s = false;
         for (auto &s : op.trk_set) s = false;
         return h;
@@ -3380,6 +3491,11 @@ int fs_piece_chord_notes(fs_device *d, float *notes, float *root) {
     for (int i = 0; i < p->in.chord_n; i++) notes[i] = p->in.chord_notes[i];
     if (root) *root = p->in.chord_root_midi;
     return p->in.chord_n;
+}
+void fs_piece_route_gate(fs_device *d, float g) {
+    Piece *p = P(d); if (!p) return;
+    std::lock_guard<std::mutex> lk(p->mu); sweep(p);
+    p->in.gate_set = true; p->in.gate_v = g > 0 ? 1.0f : 0.0f;
 }
 void fs_piece_solo(fs_device *d, int h) {
     Piece *p = P(d); if (!p) return;

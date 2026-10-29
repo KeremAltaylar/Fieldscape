@@ -155,6 +155,8 @@ fun ChordStrip(r: Walk.RouteInfo, active: Int, modifier: Modifier = Modifier) {
 fun LayersSheet(walk: Walk, map: MapUi, onSheet: (Sheet) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(T.s3)) {
         SheetTitle("Map") { onSheet(Sheet.Walk) }
+        Eyebrow("Plays")
+        Segmented(listOf(0 to "Both", 1 to "Routes", 2 to "Points"), walk.playback, { walk.play(it) }, Modifier.fillMaxWidth())
         Eyebrow("Base map")
         Segmented(MapUi.Base.entries.map { it to it.label }, map.base, { map.base = it }, Modifier.fillMaxWidth())
         Eyebrow("Park boundary")

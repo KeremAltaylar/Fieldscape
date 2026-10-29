@@ -869,6 +869,133 @@ int main() {
         assert(st.find("\"rows\":[]") != std::string::npos && st.find("\"beats\":[]") != std::string::npos);
         fs_engine_destroy(e);
     }
+    {   /* original / stretched and original / grains (Kerem, 2026-10-29: "the stretch and the original sound will be two playbacks
+           and I can use a mix ... and fuse them"): at 0 the recording as it was, at 1 as before, equal power between */
+        const int n = (int)(3 * SR);
+        std::vector<float> src(n); { uint32_t sd = 9; for (int i = 0; i < n; i++) { sd = sd * 1664525u + 1013904223u; src[i] = 0.3f * (((int)(sd >> 8) - 8388608) / 8388608.0f); } }
+        const float *sp[1] = { src.data() };
+        auto stretch = [&](float mix, std::vector<float> &o) {
+            fs_device *d = fs_create("stretch"); fs_prepare(d, SR, B);
+            const int pm = fs_param_count(d) - 1;       /* "mix", the last */
+            fs_set_param(d, 0, 0.5f); fs_set_param(d, pm, mix); fs_set_source(d, 1, n, sp);
+            o.clear(); for (int b = 0; b < (int)(4.0 * SR / B); b++) { fs_process(d, B); const float *l = fs_out(d, 0); o.insert(o.end(), l, l + B); }
+            fs_destroy(d);
+        };
+        auto db = [](const std::vector<float> &x, size_t a) { double e = 0; for (size_t i = a; i < x.size(); i++) e += (double)x[i] * x[i]; return 10 * std::log10(e / (x.size() - a) + 1e-30); };
+        std::vector<float> o0, o5, o1;
+        stretch(0, o0); stretch(0.5f, o5); stretch(1, o1);
+        double worst = 0; for (int i = 0; i < n - (int)(0.03 * SR); i++) worst = std::fmax(worst, std::fabs(o0[i] - src[i]));
+        /* past the loop point: the region's start again, crossfaded in (no step) */
+        double jump = 0, srcjump = 0;
+        {   /* a sine whose loop does not close (220.7 Hz): a plain wrap steps up to 0.6; the crossfade keeps it near the sine's own */
+            std::vector<float> keep(src); for (int i = 0; i < n; i++) src[i] = 0.3f * (float)std::sin(2 * 3.141592653589793 * 220.7 * i / SR);
+            std::vector<float> os; stretch(0, os);
+            for (size_t i = n - 2000; i < (size_t)n + 2000; i++) jump = std::fmax(jump, std::fabs(os[i] - os[i - 1]));
+            for (int i = 1; i < n; i++) srcjump = std::fmax(srcjump, std::fabs(src[i] - src[i - 1]));
+            src = keep;
+        }
+        const size_t a = (size_t)(1.0 * SR);
+        std::printf("stretch mix: original %.2e from the recording, its loop point's largest step %.3f (the recording's %.3f); "
+                    "levels 0 %.1f, 0.5 %.1f, 1 %.1f dB\n", worst, jump, srcjump, db(o0, a), db(o5, a), db(o1, a));
+        assert(worst < 1e-6 && jump <= srcjump * 1.5);
+        assert(std::fabs(db(o5, a) - 0.5 * (db(o0, a) + db(o1, a))) < 1.5);   /* equal power: no dip at 50/50 */
+        /* grains with no grains drawn (pulses 0): only the original sounds, and only when the mix lets it */
+        std::vector<short> pcm(n); for (int i = 0; i < n; i++) pcm[i] = (short)(src[i] * 32767);
+        auto grains = [&](const char *cfg) {
+            fs_device *pc = fs_create("piece"); fs_prepare(pc, SR, B);
+            const int r = fs_piece_add_route(pc, "{\"version\":17,\"prog\":[{\"r\":0,\"q\":\"m7\"}],\"voice\":{\"on\":false},\"sect\":{\"on\":false},\"v3\":{\"on\":false},\"bed\":{\"on\":false},\"zones\":{\"on\":false}}");
+            const int h = fs_piece_rhythm_add(pc, cfg, 1);
+            short *p = fs_alloc_i16(n); std::memcpy(p, pcm.data(), sizeof(short) * n);
+            fs_piece_rhythm_source(pc, h, 0, 1, n, p); fs_piece_rhythm_gain(pc, h, 1);
+            std::vector<float> o;
+            for (int b = 0; b < (int)(3.0 * SR / B); b++) { fs_piece_walk(pc, r, 0.3, 0); fs_process(pc, B); const float *l = fs_out(pc, 0); o.insert(o.end(), l, l + B); }
+            fs_destroy(pc); return db(o, a);
+        };
+        const double g1 = grains("{\"grains\":{\"pulses\":0}}"), g0 = grains("{\"grains\":{\"pulses\":0,\"mix\":0}}"), gh = grains("{\"grains\":{\"pulses\":0,\"mix\":0.5}}");
+        std::printf("grains mix: no grains drawn - mix 1 %.1f dB, 0.5 %.1f dB, 0 %.1f dB\n", g1, gh, g0);
+        assert(g1 < g0 - 30 && g0 > -40 && std::fabs(gh - (g0 - 3.01)) < 0.75);   /* mix 1: what pulses 0 still lets through, as before */
+    }
+    {   /* Melody (2026-10-29): a slice heard at A3 (220 Hz), every step on a chord degree of D minor 7 in the register C3-C5 -
+           the line sounds the chord's notes, not the slice's own; a rest is silent; the original mix still fuses */
+        const int n = (int)(1.0 * SR); short *pcm = fs_alloc_i16(n);
+        for (int i = 0; i < n; i++) pcm[i] = (short)(12000 * std::sin(2 * 3.141592653589793 * 220.0 * i / SR));
+        auto mel = [&](const char *cfg) {
+            fs_device *pc = fs_create("piece"); fs_prepare(pc, SR, B);
+            const int r = fs_piece_add_route(pc, "{\"version\":17,\"key\":50,\"tempo\":90,\"prog\":[{\"r\":0,\"q\":\"m7\"}],\"voice\":{\"on\":false},\"sect\":{\"on\":false},\"v3\":{\"on\":false},\"bed\":{\"on\":false},\"zones\":{\"on\":false},\"rfx\":{\"drive\":0,\"delayWet\":0,\"revWet\":0,\"cutoff\":20000}}");
+            const int h = fs_piece_rhythm_add(pc, cfg, 2);
+            short *q = fs_alloc_i16(n); std::memcpy(q, pcm, sizeof(short) * n);
+            fs_piece_rhythm_source(pc, h, 0, 1, n, q); fs_piece_rhythm_gain(pc, h, 1);
+            std::vector<float> o;
+            for (int b = 0; b < (int)(6.0 * SR / B); b++) { fs_piece_walk(pc, r, 0.3, 0); fs_process(pc, B); const float *l = fs_out(pc, 0); o.insert(o.end(), l, l + B); }
+            fs_destroy(pc); return o;
+        };
+        auto goertzel = [&](const std::vector<float> &x, double f) {
+            double best = 0;   /* the strongest within a quarter tone (the root's exact pitch is the route's tuning) */
+            for (double c = -50; c <= 50; c += 10) {
+                const double w = 2 * 3.141592653589793 * f * std::pow(2.0, c / 1200) / SR, k = 2 * std::cos(w); double s1 = 0, s2 = 0;
+                for (size_t i = x.size() / 3; i < x.size(); i++) { const double s0 = x[i] + k * s1 - s2; s2 = s1; s1 = s0; }
+                best = std::fmax(best, s1 * s1 + s2 * s2 - k * s1 * s2);
+            }
+            return best;
+        };
+        auto line = [](int d, const char *more) {
+            static char b[1400]; std::string st;
+            for (int i = 0; i < 16; i++) st += std::string(i ? "," : "") + "[" + std::to_string(i % 2 ? -1 : d) + ",0,0,0]";
+            std::snprintf(b, sizeof b, "{\"div\":\"8n\",\"melody\":{\"steps\":[%s],\"slices\":[[0,0.5,220]],\"lo\":48,\"hi\":72,\"gate\":0.9,\"vary\":0%s}}", st.c_str(), more);
+            return std::string(b);
+        };
+        const auto root = mel(line(0, "").c_str()), fifth = mel(line(2, "").c_str()), rest = mel(line(-1, "").c_str());
+        const double d3 = goertzel(root, 146.83), a3 = goertzel(root, 220.0), a3f = goertzel(fifth, 220.0), d3f = goertzel(fifth, 146.83);
+        double er = 0, eo = 0; for (float x : rest) er += (double)x * x; for (float x : root) eo += (double)x * x;
+        std::printf("melody: root steps - D3 %.2e vs A3 (the slice's own) %.2e; fifth steps - A3 %.2e vs D3 %.2e; rests %.1e\n", d3, a3, a3f, d3f, er);
+        assert(d3 > 20 * a3 && a3f > 20 * d3f && er < 1e-3 * eo);   /* the rests: only the route's own faint floor (-57 dB) */
+        /* final review I1: a point switched to Melody whose panel was never opened (no line, no slices) plays the starting line */
+        const auto bare = mel("{\"div\":\"8n\"}"); double eb = 0; for (float x : bare) eb += (double)x * x;
+        std::printf("melody: never opened %.1f dB of the root line\n", 10 * std::log10(eb / eo + 1e-30));
+        assert(eb > 0.05 * eo);
+        std::free(pcm);
+    }
+    {   /* the live mixer and the playback choice (fs_engine_mixer / fs_engine_playback): the cards' mute and solo
+           never reached the core (Kerem, 2026-10-29: "Solo and mute doesnt work properly"). One source per build,
+           so each case is that source on or silent. */
+        auto render = [&](bool route, bool point, const char *mute, const char *solo, int playback) {
+            fs_engine *e = fs_engine_create(SR, B);
+            if (route) fs_engine_upsert(e, "{\"type\":\"Feature\",\"geometry\":{\"type\":\"LineString\",\"coordinates\":[[29.0,41.0],[29.002,41.0]]},"
+                "\"properties\":{\"id\":\"r1\",\"kind\":\"route\",\"name\":\"R\",\"patch\":{\"version\":17,\"prog\":[{\"r\":0,\"q\":\"m9\"}],"
+                "\"bed\":{\"on\":false},\"sect\":{\"on\":false},\"zones\":{\"on\":false},\"v3\":{\"on\":false}}}}");
+            if (point) fs_engine_upsert(e, "{\"type\":\"Feature\",\"geometry\":{\"type\":\"Point\",\"coordinates\":[29.001,41.0]},"
+                "\"properties\":{\"id\":\"s1\",\"kind\":\"point\",\"name\":\"S\",\"has_audio\":true,\"storage_path\":\"s1.webm\",\"sound\":{\"radius\":200}}}");
+            fs_engine_mixer(e, mute, solo); fs_engine_playback(e, playback);
+            const int n = 48000 * 4;
+            std::string need = fs_engine_step(e, 29.001, 41.0);
+            size_t at = need.find("S ");
+            if (point && playback == 1) assert(at == std::string::npos);   /* routes only: a point is not even downloaded */
+            else if (point) { assert(at != std::string::npos); 
+                std::vector<float> nz = noise_src(4, 0.3f, 11); short *pcm = fs_alloc_i16(n);
+                for (int i = 0; i < n; i++) pcm[i] = (short)(nz[i] * 32767);
+                fs_engine_source(e, 'S', need[at + 2] - '0', 0, "s1", 1, n, pcm); }
+            double en = 0;
+            for (int b = 0; b < (int)(5.0 * SR / B); b++) {
+                if (b % 40 == 0) fs_engine_step(e, 29.001, 41.0);
+                fs_engine_process(e, B);
+                if (b > (int)(1.5 * SR / B)) { const float *l = fs_engine_out(e, 0); for (int k = 0; k < B; k++) en += (double)l[k] * l[k]; }
+            }
+            fs_engine_destroy(e);
+            return en;
+        };
+        const double R = render(true, false, "", "", 0), P = render(false, true, "", "", 0);
+        const double r_mute = render(true, false, "route", "", 0), r_pts = render(true, false, "", "", 2), r_solo = render(true, false, "", "s1", 0),
+                     r_both = render(true, false, "s1", "route", 1);
+        const double p_mute = render(false, true, "s1", "", 0), p_rts = render(false, true, "", "", 1), p_solo = render(false, true, "", "route", 0),
+                     p_self = render(false, true, "x\ns1", "s1", 0), p_on = render(false, true, "route", "s1\nx", 2);
+        std::printf("mixer: route %.2e (muted %.1e, points only %.1e, s1 soloed %.1e, routes only + soloed %.2e) | "
+                    "point %.2e (muted %.1e, routes only %.1e, route soloed %.1e, muted+soloed %.1e, soloed points-only %.2e)\n",
+                    R, r_mute, r_pts, r_solo, r_both, P, p_mute, p_rts, p_solo, p_self, p_on);
+        assert(R > 1e-3 && P > 1e-3);
+        for (double q : { r_mute, r_pts, r_solo }) assert(q < R * 1e-4);
+        for (double q : { p_mute, p_rts, p_solo, p_self }) assert(q < P * 1e-4);   /* mute wins over solo */
+        assert(r_both > R * 0.5 && p_on > P * 0.5);
+    }
     {   /* a setter's unpublished point: its recording is on this device, not yet on the server (no storage_path).
            It must still be asked for - it sat on "Preparing" forever (Kerem, 2026-09-27). */
         fs_engine *e = fs_engine_create(SR, B);

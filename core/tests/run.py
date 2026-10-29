@@ -28,6 +28,8 @@ def build():
     with open(os.path.join(BUILD, "package.json"), "w") as f:
         f.write('{"type": "commonjs"}')  # the repo's package.json says "module"; em++ output is CommonJS
     env = dict(os.environ)
+    if env.get("FS_PREBUILT"):   # built on the Mac mini by tools/mac-tests.sh (Smart App Control blocks wasm-ld here, 2026-10-29)
+        return {n: ["node", os.path.join(BUILD, n + ".js")] for n in ("core_test", "composer_test", "stretch_test")}
     native = "CXX" in env
     if native:
         cxx, flags, ext = [env["CXX"]], ["-std=c++17", "-O2", "-Wall", "-Wextra"], ".exe" if os.name == "nt" else ""

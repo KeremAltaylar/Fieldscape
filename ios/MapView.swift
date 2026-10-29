@@ -308,7 +308,7 @@ struct MapView: UIViewRepresentable {
                 /* Test 16: a badge per kind of point, so the plain dot means only you */
                 ["id": "point-dot", "type": "symbol", "source": "features",
                  "filter": ["==", ["geometry-type"], "Point"],
-                 "layout": ["icon-image": ["case", ["==", ["get", "audio_mode"], "hits"], "mk-rhythm", ["==", ["get", "audio_mode"], "grains"], "mk-grains",
+                 "layout": ["icon-image": ["case", ["==", ["get", "audio_mode"], "hits"], "mk-rhythm", ["in", ["get", "audio_mode"], ["literal", ["grains", "melody"]]], "mk-grains",
                                            ["==", ["get", "has_audio"], true], "mk-stretch", "mk-silent"],
                             "icon-size": ["interpolate", ["linear"], ["zoom"], 10, 0.55, 14, 1.0],
                             "icon-allow-overlap": true, "icon-ignore-placement": true]]

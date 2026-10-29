@@ -48,7 +48,7 @@ struct Point {                        /* a soundscape recording: a stretch voice
     std::string sound = "{}";         /* Test 15: properties.sound as JSON, for its eq and env (fs_point_sound) */
 };
 struct Spot { std::string icon; double lon, lat, radius, zoneR, centroid, onsets; bool audio, plain; fs_zone_state zone{}; std::string id; bool comp_in = false; };
-struct Beat { std::string id, name; double lon, lat, radius, gain; bool grains; std::string json; std::vector<std::string> paths; std::vector<char> have; };
+struct Beat { std::string id, name; double lon, lat, radius, gain; int grains;   /* 0 hits, 1 grains, 2 melody */ std::string json; std::vector<std::string> paths; std::vector<char> have; };
 struct Park { std::string name; std::vector<std::vector<double>> rings; double area; };
 struct Slot {
     fs_device *dev = nullptr;
@@ -81,6 +81,17 @@ struct fs_engine {
     std::string route_name;
     std::string zones_sent;           /* the inside-set last given to the piece */
     std::string solo;                 /* Listen: that point alone ("" none) */
+    std::vector<std::string> mute_ids, solo_ids;   /* the live mixer (fs_engine_mixer); "route" is the route */
+    int playback = 0;                 /* 0 both, 1 routes only, 2 points only */
+    float route_gate_sent = 1;
+    /* 1 if this source is heard through the mixer and the playback choice, else 0 */
+    float gate(const std::string &id, bool route) const {
+        if (playback == (route ? 2 : 1)) return 0;
+        for (auto &m : mute_ids) if (m == id) return 0;
+        if (solo_ids.empty()) return 1;
+        for (auto &m : solo_ids) if (m == id) return 1;
+        return 0;
+    }
     std::string watch; double watch_ms = 0;   /* 8a: the point whose panel is open - its level for the meter */
     double now() const { return (double)frames / sr; }
 };
@@ -190,11 +201,11 @@ static void upsert_one(fs_engine *e, const Json *f) {
         std::max(600.0, std::min(14000.0, (centroid > 0 ? centroid : 2000) * 2.2)),
         (float)(q ? q->n("stretch", 0) : 0), (float)(std::pow(2.0, std::round(7 + 10 * fft)) / e->sr),   /* pxBufsize */
         (float)(q ? q->n("grit", 0) : 0), (float)(px && px->flag("freeze", false) ? 1 : 0), (float)(px ? px->n("onset", 0) : 0),
-        audio && mode != "hits" && mode != "grains" };
+        audio && mode != "hits" && mode != "grains" && mode != "melody" };
     { const Json *sh = q ? q->get("shape") : nullptr; if (sh) P.shape = dump(sh); }   /* Fieldscape's own shaping */
     if (q) P.sound = dump(q);
     Spot S{ p->s("icon", ""), lon, lat, radius, q ? q->n("zoneR", 25) : 25, a ? a->n("centroid_hz", 0) : 0,
-            a ? a->n("onset_rate", -1) : -1, audio, !audio && !has_hits && mode != "hits" && mode != "grains" };
+            a ? a->n("onset_rate", -1) : -1, audio, !audio && !has_hits && mode != "hits" && mode != "grains" && mode != "melody" };
     S.id = id;
 
     int pi = find_id(e->points, id);
@@ -214,10 +225,11 @@ static void upsert_one(fs_engine *e, const Json *f) {
     int si = find_id(e->spots, id);
     if (si < 0) e->spots.push_back(S); else { S.zone = e->spots[si].zone; e->spots[si] = S; }
 
-    bool beat = (mode == "hits" && has_hits) || (mode == "grains" && audio);
-    Beat Bt{ id, name, lon, lat, radius, gain, mode == "grains", dump(p->get("rhythm")),
-             mode == "grains" ? std::vector<std::string>{ p->s("storage_path", "") } : slots,
-             mode == "grains" ? std::vector<char>{ 1 } : have };
+    const bool whole = mode == "grains" || mode == "melody";   /* the point's one recording, not its hits */
+    bool beat = (mode == "hits" && has_hits) || (whole && audio);
+    Beat Bt{ id, name, lon, lat, radius, gain, mode == "melody" ? 2 : mode == "grains" ? 1 : 0, dump(p->get("rhythm")),
+             whole ? std::vector<std::string>{ p->s("storage_path", "") } : slots,
+             whole ? std::vector<char>{ 1 } : have };
     int bi = find_id(e->beats, id);
     if (!beat) { if (bi >= 0) { drop_beat(e, id); e->beats.erase(e->beats.begin() + bi); } return; }
     if (bi < 0) { e->beats.push_back(Bt); return; }
@@ -322,7 +334,8 @@ const char *fs_engine_step(fs_engine *e, double lon, double lat) {
     for (size_t i = 0; i < np; i++) {
         d[i] = fs_geo_distance(lon, lat, e->points[i].lon, e->points[i].lat); rad[i] = e->points[i].radius;
         /* Test 15: a point at level 0 is not picked - silent for certain, its FFTs not run, its bed voice free for one that sounds */
-        el[i] = e->points[i].sounds && e->points[i].gain > 0 && (!soloing || (int)i == sp); dp[i] = (int)i == sp ? 0 : d[i];
+        el[i] = e->points[i].sounds && e->points[i].gain > 0 && (!soloing || (int)i == sp) && (e->playback != 1 || (int)i == sp);   /* routes only: not picked, not downloaded */
+        dp[i] = (int)i == sp ? 0 : d[i];
     }
     int voices = std::min(SLOTS, fs_piece_bed_voices(e->piece));
     int k = fs_pick_voices(dp.data(), rad.data(), el.data(), (int)np, voices, 0, picked.data());
@@ -361,7 +374,7 @@ const char *fs_engine_step(fs_engine *e, double lon, double lat) {
             if (p.sounds) e->loads += "S " + std::to_string(s) + " " + p.id + " " + p.path + "\n";
         }
         Slot &sl = e->slot[s];
-        sl.earned = (float)fs_point_gain(dp[picked[i]], p.radius, p.gain);
+        sl.earned = (float)fs_point_gain(dp[picked[i]], p.radius, p.gain) * (sp >= 0 ? 1 : e->gate(p.id, false));
         fs_mix_set_gain(e->mix, s, sl.loaded ? sl.earned : 0);
         fs_mix_set_lowpass(e->mix, s, (float)(300 + (p.brightest - 300) * fs_point_proximity(dp[picked[i]], p.radius)), 350);
     }
@@ -386,7 +399,7 @@ const char *fs_engine_step(fs_engine *e, double lon, double lat) {
     std::vector<double> bd(nb), br(nb); std::vector<unsigned char> bel(nb, 1); std::vector<int> bp(std::max<size_t>(nb, 1));
     for (size_t i = 0; i < nb; i++) {
         bd[i] = (int)i == sb ? 0 : fs_geo_distance(lon, lat, e->beats[i].lon, e->beats[i].lat); br[i] = e->beats[i].radius;
-        bel[i] = !soloing || (int)i == sb;
+        bel[i] = (!soloing || (int)i == sb) && (e->playback != 1 || (int)i == sb);
     }
     int kb = fs_pick_voices(bd.data(), br.data(), bel.data(), (int)nb, std::min(FS_MAX_VOICES, std::max(fs_piece_bed_voices(e->piece), 1)), 1, bp.data());
     std::map<std::string, bool> bwant;
@@ -406,8 +419,10 @@ const char *fs_engine_step(fs_engine *e, double lon, double lat) {
                 /* no path yet: a setter's draft, its recording on this device (the page finds it by id) */
                 if (b.have[s]) e->loads += "R " + std::to_string(h) + " " + std::to_string(s) + " " + b.id + " " + b.paths[s] + "\n";
         }
-        fs_piece_rhythm_gain(e->piece, e->handle[b.id], (float)fs_point_gain(bd[bp[i]], b.radius, b.gain));
+        fs_piece_rhythm_gain(e->piece, e->handle[b.id], (float)fs_point_gain(bd[bp[i]], b.radius, b.gain) * (sb >= 0 ? 1 : e->gate(b.id, false)));
     }
+    {   const float rg = e->gate("route", true);
+        if (rg != e->route_gate_sent) { fs_piece_route_gate(e->piece, rg); e->route_gate_sent = rg; } }
     fs_piece_solo(e->piece, sb >= 0 && e->handle.count(e->beats[sb].id) ? e->handle[e->beats[sb].id] : -1);
     /* what the screen shows */
     /* the route underfoot (its sound crossfades in over 1.5 s), named only within the leash */
@@ -508,6 +523,15 @@ int fs_engine_point(fs_engine *e, float *out, int max) {
 float *fs_engine_out(fs_engine *e, int ch) { return fs_mix_out(e->mix, ch); }
 const char *fs_engine_state(fs_engine *e) { return e->state.c_str(); }
 void fs_engine_solo(fs_engine *e, const char *id) { e->solo = id ? id : ""; }
+static std::vector<std::string> lines(const char *s) {
+    std::vector<std::string> v; std::string cur;
+    for (const char *c = s ? s : ""; ; c++) {
+        if (*c == '\n' || !*c) { if (!cur.empty()) v.push_back(cur); cur.clear(); if (!*c) break; } else cur += *c;
+    }
+    return v;
+}
+void fs_engine_mixer(fs_engine *e, const char *mute, const char *solo) { e->mute_ids = lines(mute); e->solo_ids = lines(solo); }
+void fs_engine_playback(fs_engine *e, int mode) { e->playback = mode >= 0 && mode <= 2 ? mode : 0; }
 void fs_engine_role_source(fs_engine *e, int role, int channels, long long frames, const float *const *pcm) { fs_piece_role_source(e->piece, role, channels, frames, pcm); }
 void fs_engine_role_analysis(fs_engine *e, int role, const char *json) { fs_piece_role_analysis(e->piece, role, json); }
 int fs_engine_roles(fs_engine *e, float *out, int max_notes) { return fs_piece_roles(e->piece, out, max_notes); }
