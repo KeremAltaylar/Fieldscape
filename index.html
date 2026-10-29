@@ -6016,7 +6016,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     return 0;
   }
   /* The point's slices, found from its recording when they are missing or the recording changed (sig: its length) */
-  var melBusy = {};
+  var melBusy = {}, melPop = null, melGrid = null, melPopListen = false;
   function ensureSlices(f, force) {
     var id = f.properties.id, m = melodyOf(rhythmOf(f)), sig = (f.properties.audio || {}).duration_s || 0;
     if (!f.properties.has_audio || melBusy[id] || (!force && m.slices.length && m.sig === sig)) { return; }
@@ -6081,7 +6081,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var m = melodyOf(r);
     var commitR = function () { claimEdit(f); save(); };
     var waiting = !m.slices.length && !m.failed;
-    if (!m.slices.length) { ensureSlices(f, false); }
+    ensureSlices(f, false);   /* none yet, or the recording changed since they were found */
 
     var whead = document.createElement("div"); whead.className = "pphead";
     whead.appendChild(ppHeading("The recording"));
@@ -6154,11 +6154,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       pop.style.top = (cb.bottom - wb.top + 6) + "px";
       pop.hidden = false;
     };
-    var closePop = function (ev) {
-      if (!pop.isConnected) { document.removeEventListener("pointerdown", closePop, true); return; }
-      if (!pop.hidden && !pop.contains(ev.target) && !grid.contains(ev.target)) { pop.hidden = true; }
-    };
-    document.addEventListener("pointerdown", closePop, true);
+    /* one listener for the panel's life: the last render's popover is the one it closes */
+    melPop = pop; melGrid = grid;
+    if (!melPopListen) {
+      melPopListen = true;
+      document.addEventListener("pointerdown", function (ev) {
+        if (melPop && melPop.isConnected && !melPop.hidden && !melPop.contains(ev.target) && !melGrid.contains(ev.target)) { melPop.hidden = true; }
+      }, true);
+    }
     drawGrid();
     var hint = document.createElement("p"); hint.className = "hint";
     hint.textContent = "Click a cell to place that step's note; click a lit cell for its slice, octave and accent.";

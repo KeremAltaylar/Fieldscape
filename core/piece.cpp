@@ -434,6 +434,11 @@ static void rhythm_of(const Json *j, RhythmCfg &r, Rng &rnd) {
         g ? std::max(0.0, std::min(1.0, g->n("mix", 1))) : 1 };
     const Json *m = j ? j->get("melody") : nullptr;
     MelCfg M;
+    {   /* the page's starting line (index.html MEL_LINE): a point switched to Melody plays before its panel is ever opened */
+        static const int L[16][4] = { {0,0,0,1},{-1,0,0,0},{2,2,0,0},{-1,0,0,0},{1,1,0,0},{2,2,0,0},{-1,0,0,0},{3,4,0,0},
+                                      {0,0,0,1},{-1,0,0,0},{2,6,0,0},{4,5,0,0},{-1,0,0,0},{1,1,0,0},{-1,0,0,0},{2,2,0,0} };
+        for (int i = 0; i < 16; i++) M.st[i] = MelStep{ L[i][0], L[i][1], L[i][2], L[i][3] != 0 };
+    }
     if (m) {
         auto cl = [](double x, double a, double b) { return x < a ? a : x > b ? b : x; };
         const Json *st = m->get("steps");
@@ -2609,12 +2614,14 @@ struct Piece : Device {
         double ref;   /* the slice's own note; unpitched, the chord's root in the register (so it moves by the chord's intervals) */
         if (sl.hz > 0) ref = 69 + 12 * std::log2(sl.hz / 440);
         else { ref = tones[0]; while (ref < m.lo) ref += 12; while (ref > m.hi) ref -= 12; }
+        while (t - ref > 24) t -= 12;   /* a slice far from the register: the chord tone moved by octaves toward it, so the 4x */
+        while (ref - t > 24) t += 12;   /* limit below never bends a note off the chord */
         const double rate = std::max(0.25, std::min(4.0, std::pow(2.0, (t - ref) / 12)));
         const double len = std::max(0.02, std::min(m.gate * step_secs, sl.len / rate));
         GrainV *gv = nullptr;
         for (auto &x : R.gv) if (!x.on) { gv = &x; break; }
         if (!gv) return;
-        double a = std::max(0.002, m.attack * len), d = m.decay * len, rel = std::max(0.004, m.release * len);
+        double a = std::max(0.002, m.attack * len), d = std::max(0.002, m.decay * len), rel = std::max(0.004, m.release * len);   /* every stage floored, as a grain's: no step to the sustain */
         if (a + d + rel > len) { const double k = len / (a + d + rel); a *= k; d *= k; rel *= k; }
         const double w = m.gain * (st.acc ? 1.4 : 1) * (1 + (rnd() - 0.5) * v * 0.3);
         *gv = GrainV{ true, sl.at * sr, rate, time, a, d, std::max(0.0, len - a - d - rel), m.sustain, w, len };

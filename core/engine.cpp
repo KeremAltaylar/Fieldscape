@@ -334,7 +334,8 @@ const char *fs_engine_step(fs_engine *e, double lon, double lat) {
     for (size_t i = 0; i < np; i++) {
         d[i] = fs_geo_distance(lon, lat, e->points[i].lon, e->points[i].lat); rad[i] = e->points[i].radius;
         /* Test 15: a point at level 0 is not picked - silent for certain, its FFTs not run, its bed voice free for one that sounds */
-        el[i] = e->points[i].sounds && e->points[i].gain > 0 && (!soloing || (int)i == sp); dp[i] = (int)i == sp ? 0 : d[i];
+        el[i] = e->points[i].sounds && e->points[i].gain > 0 && (!soloing || (int)i == sp) && (e->playback != 1 || (int)i == sp);   /* routes only: not picked, not downloaded */
+        dp[i] = (int)i == sp ? 0 : d[i];
     }
     int voices = std::min(SLOTS, fs_piece_bed_voices(e->piece));
     int k = fs_pick_voices(dp.data(), rad.data(), el.data(), (int)np, voices, 0, picked.data());
@@ -398,7 +399,7 @@ const char *fs_engine_step(fs_engine *e, double lon, double lat) {
     std::vector<double> bd(nb), br(nb); std::vector<unsigned char> bel(nb, 1); std::vector<int> bp(std::max<size_t>(nb, 1));
     for (size_t i = 0; i < nb; i++) {
         bd[i] = (int)i == sb ? 0 : fs_geo_distance(lon, lat, e->beats[i].lon, e->beats[i].lat); br[i] = e->beats[i].radius;
-        bel[i] = !soloing || (int)i == sb;
+        bel[i] = (!soloing || (int)i == sb) && (e->playback != 1 || (int)i == sb);
     }
     int kb = fs_pick_voices(bd.data(), br.data(), bel.data(), (int)nb, std::min(FS_MAX_VOICES, std::max(fs_piece_bed_voices(e->piece), 1)), 1, bp.data());
     std::map<std::string, bool> bwant;

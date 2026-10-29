@@ -949,6 +949,10 @@ int main() {
         double er = 0, eo = 0; for (float x : rest) er += (double)x * x; for (float x : root) eo += (double)x * x;
         std::printf("melody: root steps - D3 %.2e vs A3 (the slice's own) %.2e; fifth steps - A3 %.2e vs D3 %.2e; rests %.1e\n", d3, a3, a3f, d3f, er);
         assert(d3 > 20 * a3 && a3f > 20 * d3f && er < 1e-3 * eo);   /* the rests: only the route's own faint floor (-57 dB) */
+        /* final review I1: a point switched to Melody whose panel was never opened (no line, no slices) plays the starting line */
+        const auto bare = mel("{\"div\":\"8n\"}"); double eb = 0; for (float x : bare) eb += (double)x * x;
+        std::printf("melody: never opened %.1f dB of the root line\n", 10 * std::log10(eb / eo + 1e-30));
+        assert(eb > 0.05 * eo);
         std::free(pcm);
     }
     {   /* the live mixer and the playback choice (fs_engine_mixer / fs_engine_playback): the cards' mute and solo
@@ -965,7 +969,8 @@ int main() {
             const int n = 48000 * 4;
             std::string need = fs_engine_step(e, 29.001, 41.0);
             size_t at = need.find("S ");
-            if (point) { assert(at != std::string::npos); 
+            if (point && playback == 1) assert(at == std::string::npos);   /* routes only: a point is not even downloaded */
+            else if (point) { assert(at != std::string::npos); 
                 std::vector<float> nz = noise_src(4, 0.3f, 11); short *pcm = fs_alloc_i16(n);
                 for (int i = 0; i < n; i++) pcm[i] = (short)(nz[i] * 32767);
                 fs_engine_source(e, 'S', need[at + 2] - '0', 0, "s1", 1, n, pcm); }

@@ -4,7 +4,8 @@
 # Smart App Control blocks emsdk's wasm-ld.exe on this PC (2026-10-29); same compiler and flags as run.py's em++ build.
 set -e
 MAC=appdevcla@192.168.1.105 KEY=~/.ssh/fieldscape_mac
-tar czf - core | ssh -i $KEY $MAC 'rm -rf ~/fsw/core && mkdir -p ~/fsw/build/stretch-tests && cd ~/fsw && tar xzf - &&
+rm -f build/stretch-tests/core_test.* build/stretch-tests/composer_test.* build/stretch-tests/stretch_test.*
+tar czf - core | ssh -i $KEY $MAC 'rm -rf ~/fsw/core ~/fsw/build/stretch-tests && mkdir -p ~/fsw/build/stretch-tests && cd ~/fsw && tar xzf - &&
   export PATH=~/pybin:$PATH && . ~/emsdk/emsdk_env.sh >/dev/null 2>&1 &&
   em++ -std=c++17 -O1 -DFS_TEST_O1 -sNODERAWFS=1 -sALLOW_MEMORY_GROWTH=1 -sSTACK_SIZE=1048576 core/core.cpp core/mix.cpp core/place.cpp core/webm.cpp core/sections.cpp core/resample.cpp core/analysis.cpp core/bench.cpp core/composer.cpp core/piece.cpp core/engine.cpp core/devices/*.cpp core/test.cpp -o build/stretch-tests/core_test.js &&
   em++ -std=c++17 -O1 -DFS_TEST_O1 -sNODERAWFS=1 -sALLOW_MEMORY_GROWTH=1 -sSTACK_SIZE=1048576 core/core.cpp core/mix.cpp core/place.cpp core/webm.cpp core/sections.cpp core/resample.cpp core/analysis.cpp core/bench.cpp core/composer.cpp core/piece.cpp core/engine.cpp core/devices/*.cpp core/tests/composer_test.cpp -o build/stretch-tests/composer_test.js &&
