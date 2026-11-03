@@ -765,11 +765,13 @@ static const fs_param STRETCH_PARAMS[] = {
     /* 2026-10-29: the recording as it was, at normal speed, beside the stretch - 0 all original, 1 all stretched (the
        default: every point made before sounds as it did). Equal power, so 50/50 does not dip (Kerem: "fuse them"). */
     { "mix", "Original / stretched", "", 0.0f, 1.0f, 1.0f },
+    /* 2026-11-03, the fifth device (Recording): the recording plainly, whole, looped - no stretch run at all (Kerem: "nothing fancy") */
+    { "plain", "Plain recording", "", 0.0f, 1.0f, 0.0f },
 };
 enum { P_STRETCH, P_WINDOW, P_FREEZE, P_ONSET, P_WIDTH, P_SHAPE, P_SEED,
        P_TRANSPOSE, P_TUNE, P_FOCUS, P_PARTIALS, P_LAYERS, P_HARMONY, P_GLIDE, P_DRIFT, P_BLUR, P_START, P_END,
        P_CHORD0, P_ROOT = P_CHORD0 + 5, P_FOLLOW, P_RESONATE, P_BODY, P_LOW, P_DEPTH, P_SING, P_CONTOUR,
-       P_ENV_A, P_ENV_D, P_ENV_S, P_ENV_R, P_ENV_ON, P_MIX, P_COUNT };
+       P_ENV_A, P_ENV_D, P_ENV_S, P_ENV_R, P_ENV_ON, P_MIX, P_PLAIN, P_COUNT };
 
 struct Stretch : Device {
     float value[P_COUNT];
@@ -898,6 +900,7 @@ struct Stretch : Device {
         const int len = src.len;
         double s0 = value[P_START] < 0 ? 0 : value[P_START] > 1 ? 1 : value[P_START], s1 = value[P_END] < 0 ? 0 : value[P_END] > 1 ? 1 : value[P_END];
         if (s1 < s0) std::swap(s0, s1);
+        if (value[P_PLAIN] >= 0.5f) { s0 = 0; s1 = 1; }    /* Recording: the whole of it */
         long long r0 = (long long)std::floor(s0 * len), r1 = (long long)std::ceil(s1 * len);
         if (r1 > len) r1 = len;
         const long long rl = r1 - r0, xf = std::min<long long>((long long)(0.02 * sr), rl / 4);
@@ -917,6 +920,7 @@ struct Stretch : Device {
         dpos = (double)i;
     }
     void process(int n) override {
+        if (value[P_PLAIN] >= 0.5f) { original(out[0].data(), out[1].data(), n); mix_s = 0; return; }   /* Recording: only the recording */
         render_stretch(n);
         const float m = value[P_MIX] < 0 ? 0 : value[P_MIX] > 1 ? 1 : value[P_MIX];
         if (mix_s < 0) mix_s = m;
@@ -963,7 +967,7 @@ Device *make_stretch() { return new Stretch(); }
 /* The host's side of the shaping, shared by the web engine and both apps' walks, so every platform
    reads a point the same way. The shaping's own names (properties.sound.shape); anything missing
    takes the parameter's default, which is dry (A-8). */
-static const char *const SHAPE_KEYS[] = { "transpose", "tune", "focus", "partials", "layers", "harmony", "glide", "drift", "blur", "start", "end", "width", "follow", "resonate", "body", "low", "depth", "sing", "contour", "mix" };
+static const char *const SHAPE_KEYS[] = { "transpose", "tune", "focus", "partials", "layers", "harmony", "glide", "drift", "blur", "start", "end", "width", "follow", "resonate", "body", "low", "depth", "sing", "contour", "mix", "plain" };
 static int stretch_param(const char *id) { for (int i = 0; i < P_COUNT; i++) if (!std::strcmp(STRETCH_PARAMS[i].id, id)) return i; return -1; }
 
 extern "C" void fs_stretch_shape(fs_device *d, const char *shape_json) {

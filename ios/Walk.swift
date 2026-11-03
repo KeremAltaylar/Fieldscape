@@ -33,7 +33,7 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
     struct Row: Identifiable, Equatable { let id: String, name: String; let level: Double, dist: Double; let phase: Phase }
     /* what a point's card shows (its feature's properties) */
     struct PointInfo {
-        let id, name, note, mode: String      /* mode: "stretch", "rhythm", "grains", "melody", or "silent" */
+        let id, name, note, mode: String      /* mode: "stretch", "rhythm", "grains", "melody", "recording", or "silent" */
         let lon, lat: Double
         let peaks: [Double], duration: Double, recorded: String?
         let path: String?, sounds: Bool
@@ -219,7 +219,7 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
                   let p = f["properties"] as? [String: Any], let id = p["id"] as? String else { continue }
             let a = p["audio"] as? [String: Any] ?? [:]
             let m = p["audio_mode"] as? String, has = p["has_audio"] as? Bool ?? false
-            let mode = m == "hits" ? "rhythm" : m == "grains" ? "grains" : m == "melody" ? "melody" : has ? "stretch" : "silent"
+            let mode = m == "hits" ? "rhythm" : m == "grains" ? "grains" : m == "melody" ? "melody" : m == "plain" && has ? "recording" : has ? "stretch" : "silent"
             let hits = p["hits"] as? [String: Any] ?? [:]
             let slots: [(slot: String, name: String, path: String)] = ["low", "mid", "high", "rand"].compactMap { k in
                 guard let h = hits[k] as? [String: Any], let sp = h["storage_path"] as? String else { return nil }

@@ -107,6 +107,7 @@ fun PointCard(walk: Walk, map: MapUi, id: String, close: () -> Unit, photos: () 
             val on = walk.solo == id
             Eyebrow("Fieldscape's sound · this point alone")
             Note(if (on) "Playing this point alone, as Fieldscape transforms it, from wherever you are. The rest waits."
+                 else if (q.mode == "recording") "Its recording as it was made, looped - heard from wherever you are."
                  else if (q.sounds) "Its recording stretched into a slow, changing bed, on the route's chord - heard from wherever you are."
                  else if (q.mode == "rhythm") "Its recordings played as a rhythm in the route's tempo - heard from wherever you are."
                  else if (q.mode == "melody") "Its recording played as a melody in the route's tempo - heard from wherever you are."

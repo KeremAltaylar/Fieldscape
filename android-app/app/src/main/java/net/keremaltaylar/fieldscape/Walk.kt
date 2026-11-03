@@ -209,7 +209,7 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
             val c = g.getJSONArray("coordinates"); val p = f.getJSONObject("properties")
             val a = p.optJSONObject("audio") ?: JSONObject()
             val m = p.optString("audio_mode", ""); val has = p.optBoolean("has_audio")
-            val mode = when { m == "hits" -> "rhythm"; m == "grains" -> "grains"; m == "melody" -> "melody"; has -> "stretch"; else -> "silent" }
+            val mode = when { m == "hits" -> "rhythm"; m == "grains" -> "grains"; m == "melody" -> "melody"; m == "plain" && has -> "recording"; has -> "stretch"; else -> "silent" }
             val pk = a.optJSONArray("peaks")
             val id = p.optString("id")
             val hj = p.optJSONObject("hits")
