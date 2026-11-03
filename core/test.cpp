@@ -876,7 +876,7 @@ int main() {
         const float *sp[1] = { src.data() };
         auto stretch = [&](float mix, std::vector<float> &o) {
             fs_device *d = fs_create("stretch"); fs_prepare(d, SR, B);
-            const int pm = fs_param_count(d) - 1;       /* "mix", the last */
+            const int pm = fs_param_count(d) - 2;       /* "mix", before "plain" */
             fs_set_param(d, 0, 0.5f); fs_set_param(d, pm, mix); fs_set_source(d, 1, n, sp);
             o.clear(); for (int b = 0; b < (int)(4.0 * SR / B); b++) { fs_process(d, B); const float *l = fs_out(d, 0); o.insert(o.end(), l, l + B); }
             fs_destroy(d);
@@ -899,6 +899,18 @@ int main() {
                     "levels 0 %.1f, 0.5 %.1f, 1 %.1f dB\n", worst, jump, srcjump, db(o0, a), db(o5, a), db(o1, a));
         assert(worst < 1e-6 && jump <= srcjump * 1.5);
         assert(std::fabs(db(o5, a) - 0.5 * (db(o0, a) + db(o1, a))) < 1.5);   /* equal power: no dip at 50/50 */
+        {   /* Recording (2026-11-03): plain is the recording itself, whole - whatever the stretch, the mix or a region say */
+            fs_device *d = fs_create("stretch"); fs_prepare(d, SR, B);
+            const int np = fs_param_count(d) - 1;
+            fs_set_param(d, 0, 0.7f); fs_set_param(d, np - 1, 1.0f); fs_set_param(d, np, 1.0f);
+            fs_stretch_shape(d, "{\"start\":0.3,\"end\":0.6,\"tune\":1,\"plain\":1}");
+            fs_set_source(d, 1, n, sp);
+            double w = 0; size_t k = 0;
+            for (int b = 0; b < (int)(2.0 * SR / B); b++) { fs_process(d, B); const float *l = fs_out(d, 0); for (int i = 0; i < B; i++, k++) if (k < (size_t)n - 2000) w = std::fmax(w, std::fabs(l[i] - src[k])); }
+            fs_destroy(d);
+            std::printf("plain: the recording itself, from its start, within %.1e\n", w);
+            assert(w < 1e-6);
+        }
         /* grains with no grains drawn (pulses 0): only the original sounds, and only when the mix lets it */
         std::vector<short> pcm(n); for (int i = 0; i < n; i++) pcm[i] = (short)(src[i] * 32767);
         auto grains = [&](const char *cfg) {

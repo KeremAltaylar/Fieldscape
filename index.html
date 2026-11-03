@@ -1904,6 +1904,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
                   title="One recording, granulated into a rhythm in tempo with the route">Grains</button>
           <button type="button" data-amode="melody" aria-pressed="false"
                   title="One recording, cut into slices and played as a melody on the route's chords, in tempo">Melody</button>
+          <button type="button" data-amode="plain" aria-pressed="false"
+                  title="One recording, played as it was made, looped">Recording</button>
         </div>
         <div id="hitgrid" hidden></div>
         <input type="file" id="hit-file" accept="audio/*,.wav,.aif,.aiff,.caf" hidden>
@@ -5473,7 +5475,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function renderAudioMode(f) {
     var isPoint = f && f.properties.kind === "point";
     var am = f && f.properties.audio_mode;
-    var mode = (am === "hits" || am === "grains" || am === "melody") ? am : "soundscape";
+    var mode = (am === "hits" || am === "grains" || am === "melody" || am === "plain") ? am : "soundscape";
     var wrap = $(".recmode");
     if (wrap) { wrap.hidden = !isPoint; }
     /* Every point has a presence to set, so the panel opens for all of them; what changes is
@@ -5560,6 +5562,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       if (!f || f.properties.kind !== "point") { return; }
       claimEdit(f);
       f.properties.audio_mode = b.dataset.amode;
+      /* Recording (2026-11-03): the core's stretch plays it plainly; every host passes sound.shape, so the switch lives there */
+      var q = soundOf(f); if (!q.shape) { q.shape = {}; }
+      if (b.dataset.amode === "plain") { q.shape.plain = 1; } else { delete q.shape.plain; }
       commit();
       renderAudioMode(f);
       renderDetail();
@@ -5707,10 +5712,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   /* What the card calls each mode. The stored values stay as they were ("soundscape", "hits"),
      so nothing already recorded or published needs migrating; only the words changed
      (Kerem, 2026-09-19: Soundscape becomes Stretch, 4 hits becomes Rhythm). */
-  var MODE_LABEL = { soundscape: "Stretch", hits: "Rhythm", grains: "Grains", melody: "Melody" };
+  var MODE_LABEL = { soundscape: "Stretch", hits: "Rhythm", grains: "Grains", melody: "Melody", plain: "Recording" };
   function modeOf(f) {
     var m = f.properties.audio_mode;
-    return m === "hits" || m === "grains" || m === "melody" ? m : "soundscape";
+    return m === "hits" || m === "grains" || m === "melody" || m === "plain" ? m : "soundscape";
   }
 
   /* ---- The frame the three sound panels share with the route's patch ----
@@ -5775,7 +5780,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       "route can differ.")];
     /* A stretch point reaches 4x (+12 dB): field recordings can sit far under the synths and the rhythm
        (Kerem, 2026-10-29). The mix's -1 dBFS limiter still guards the output. */
-    var stretch = modeOf(f) === "soundscape" && !f.properties.hits;
+    var stretch = (modeOf(f) === "soundscape" || modeOf(f) === "plain") && !f.properties.hits;
     SOUND_FIELDS.forEach(function (fl) {
       if (stretch && fl.k === "gain") { fl = Object.assign({}, fl, { max: 4 }); }
       nodes.push(buildSoundRow(fl, q, commitQ));
@@ -5788,15 +5793,15 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      the grain's own, in its column. */
   var POINT_ENV_OWN = { soundscape: [0.5, 1, 1, 1.5], hits: [0.005, 0.25, 0.5, 0.3] };
   function pointShapeRow(f, q, commitQ) {
-    var mode = modeOf(f), o = mode === "soundscape" ? q : rhythmOf(f);
-    var commit = mode === "soundscape" ? commitQ : function () { claimEdit(f); save(); };
+    var mode = modeOf(f), own = mode === "soundscape" || mode === "plain", o = own ? q : rhythmOf(f);
+    var commit = own ? commitQ : function () { claimEdit(f); save(); };
     var row = document.createElement("div"); row.className = "pprow ppshape-row";
-    var name = document.createElement("span"); name.textContent = mode === "grains" || mode === "melody" ? "eq" : "eq · envelope"; row.appendChild(name);
+    var name = document.createElement("span"); name.textContent = mode === "grains" || mode === "melody" || mode === "plain" ? "eq" : "eq · envelope"; row.appendChild(name);
     row.appendChild(document.createElement("i"));
     var put = function (k) { return function (v) { if (v) { o[k] = v; } else { delete o[k]; } commit(); }; };
     var aria = "this point";
     shapeButtons(row, { key: "pt", aria: aria, get: function () { return o.eq || null; }, set: put("eq") },
-      mode === "grains" || mode === "melody" ? null : {
+      mode === "grains" || mode === "melody" || mode === "plain" ? null : {
         key: "pt", aria: aria, ownLabel: "None",
         ownHint: mode === "soundscape" ? "no envelope: the chord glides in" : "no envelope: each hit plays out",
         ownText: mode === "soundscape" ? "none · the chord glides" : "none · each hit plays out",
@@ -6238,6 +6243,44 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     });
   }
 
+  /* ---- Recording, the fifth device (Kerem, 2026-11-03: "a plain soundscape recording ... nothing fancy") ----
+     The recording as it was made, whole, looped, at the point's level and reach: the point's own column and its waveform. */
+  function renderPlainPanel(f, q, commitQ, body) {
+    var point = pointColumn(f, q, commitQ);
+    if (q.shape && !q.shape.plain) { q.shape.plain = 1; }   /* set to Recording before the switch kept it in step */
+    if (!f.properties.has_audio) {
+      soundColumns(body, "plain", [
+        { title: "Point", nodes: point },
+        { title: "Recording", span: 3, nodes: [soundEmpty("No recording attached yet.",
+          "This point is set to Recording. Attach a recording on its card, and it plays as it was made, looped, as you walk " +
+          "near it. The same file works as a Stretch, Grains or Melody if you change your mind.")] }
+      ], 4);
+      return;
+    }
+    var head = document.createElement("div"); head.className = "pphead";
+    head.appendChild(ppHeading("The recording"));
+    var meta = document.createElement("span"); meta.className = "ppmeta";
+    var a = f.properties.audio || {};
+    meta.textContent = (a.duration_s ? fmtLongDuration(a.duration_s) + " \u00b7 " : "") + "played as it was made, looped";
+    head.appendChild(meta); body.appendChild(head);
+    var cv = document.createElement("canvas"); cv.className = "grainwave plainwave";
+    cv.title = "The recording, as it plays.";
+    body.appendChild(cv);
+    var note = soundEmpty("Plays as it was made.", "No stretch, no chord, no rhythm: the recording itself, whole and looped, " +
+      "louder as you come near. Its level reaches +12 dB, and its EQ is in This point.");
+    soundColumns(body, "plain", [
+      { title: "Point", nodes: point },
+      { title: "Recording", span: 3, nodes: [note] }
+    ], 4);
+    requestAnimationFrame(function () {
+      var w = cv.clientWidth, h = cv.clientHeight, dpr = Math.min(2, window.devicePixelRatio || 1), ctx = cv.getContext("2d");
+      if (!w || !h || !ctx) { return; }
+      cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      if (a.peaks && a.peaks.length) { paintWave(ctx, a.peaks, w, h, "rgba(186,206,181,0.55)"); }
+      else { ctx.fillStyle = "rgba(186,206,181,0.25)"; ctx.fillRect(0, h / 2, w, 1); }
+    });
+  }
+
   /* ---- The recording, and where the grains are biting it ----
      A granular sampler without this is a set of numbers and a noise. The waveform says what
      is in the file, the band says which part of it the offset and roam can reach, and the
@@ -6417,6 +6460,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
     if (f.properties.audio_mode === "grains") { renderGrainPanel(f, r, body, commitQ); return; }
     if (f.properties.audio_mode === "melody") { renderMelodyPanel(f, r, body, commitQ); return; }
+    if (f.properties.audio_mode === "plain") { renderPlainPanel(f, q, commitQ, body); return; }
     if (f.properties.audio_mode !== "hits") {
       renderSoundscapePanel(f, q, commitQ, body);
       return;
@@ -15279,7 +15323,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         var f = feature(id);
         if (!f || f.geometry.type !== "Point") { return null; }
         var q = f.properties, a = q.audio || {};
-        var mode = q.audio_mode === "hits" ? "rhythm" : q.audio_mode === "grains" ? "grains" : q.audio_mode === "melody" ? "melody" : q.has_audio ? "stretch" : "silent";
+        var mode = q.audio_mode === "hits" ? "rhythm" : q.audio_mode === "grains" ? "grains" : q.audio_mode === "melody" ? "melody" : q.audio_mode === "plain" && q.has_audio ? "recording" : q.has_audio ? "stretch" : "silent";
         return { id: id, name: label(f), note: q.note || "", mode: mode, lon: f.geometry.coordinates[0], lat: f.geometry.coordinates[1],
                  dist: pacer && pacer.pos ? segment(pacer.pos, f.geometry.coordinates) : null,
                  peaks: a.peaks || null, duration: a.duration_s || 0,
