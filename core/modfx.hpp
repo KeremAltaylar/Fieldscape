@@ -211,6 +211,39 @@ inline void cfg_of(const Json *j, Cfg &c) {
 struct Live { float v[32]; };   /* 0-3 lfo phase, 4-7 lfo value, 8 env, 9-11 reserved (0), 12 chord, 13-21 module levels,
                                    22 in, 23 out, 24-31 each slot's destination now (0-1) */
 
+/* A row's value <-> 0-1 on its taper (the matrix adds amt x source there). CUBIC: v = max x^3, x in -1..1. */
+inline float norm_of(const ParamDef &p, float v) {
+    if (p.taper == EXP) return std::log(v / p.min) / std::log(p.max / p.min);
+    if (p.taper == CUBIC) return 0.5f * (1 + std::cbrt(v / p.max));
+    return (v - p.min) / (p.max - p.min);
+}
+inline float value_of(const ParamDef &p, float n) {
+    n = std::fmin(1.0f, std::fmax(0.0f, n));
+    float v = p.taper == EXP ? p.min * std::pow(p.max / p.min, n) : p.taper == CUBIC ? p.max * (2 * n - 1) * (2 * n - 1) * (2 * n - 1) : p.min + n * (p.max - p.min);
+    return std::fmin(p.max, std::fmax(p.min, v));
+}
+/* A seeded hash of (s, k) -> 0..1 (steps, drift, chord). */
+inline float rnd(uint32_t s, int64_t k) {
+    uint32_t x = s ^ ((uint32_t)k * 0x85EBCA6Bu) ^ ((uint32_t)(k >> 32) * 0xC2B2AE35u);
+    x ^= x >> 16; x *= 0x7FEB352Du; x ^= x >> 15; x *= 0x846CA68Bu; x ^= x >> 16;
+    return (float)(x >> 8) / 16777216.0f;
+}
+/* An LFO's value (-1..1) at unwrapped phase t (periods). sine tri square: 0 1 0 -1 at 0 .25 .5 .75; up/down ramps;
+   square's edges are w periods each side of 0 and .5 (5 ms in all); steps: a seeded value per period; drift: from one
+   period's value to the next on a smoothstep. */
+inline float wave(int shape, double t, double w, uint32_t s) {
+    const double k = std::floor(t), p = t - k;
+    switch (shape) {
+    case 1: return (float)(p < 0.25 ? 4 * p : p < 0.75 ? 2 - 4 * p : 4 * p - 4);
+    case 2: return (float)(2 * p - 1);
+    case 3: return (float)(1 - 2 * p);
+    case 4: { const double q = p < 0.5 ? p : p - 0.5; return (float)((p < 0.5 ? 1 : -1) * std::fmin(1.0, std::fmin(q, 0.5 - q) / std::fmax(w, 1e-9))); }
+    case 5: return 2 * rnd(s, (int64_t)k) - 1;
+    case 6: { const float u = (float)(p * p * (3 - 2 * p)), a = rnd(s, (int64_t)k), b = rnd(s, (int64_t)k + 1); return 2 * (a + (b - a) * u) - 1; }
+    default: return (float)std::sin(2 * PI * p);
+    }
+}
+
 /* A linear ramp: reaches its target exactly, so a mix of 0 is exactly 0 (the skip and the silence depend on it). */
 struct Ramp {
     float cur = 0, tgt = 0, step = 1;
@@ -326,7 +359,17 @@ struct Engine {
     float sL[128], sR[128];                          /* the input, non-finite samples zeroed */
     static constexpr double TP_WOW = 0.02 / (2 * 3.141592653589793 * 0.4), TP_FLUTTER = 0.004 / (2 * 3.141592653589793 * 7.3);   /* seconds of swing for +-2 %, +-0.4 % */
 
-    Engine() { cfg_defaults(cfg); std::memcpy(sm, cfg.v, sizeof sm); }
+    /* The modulators: base is the stored settings, cfg the same with each row the matrix aims at resolved (base +
+       sum of amt x source on the row's taper, clamped) once a block - so cfg.v is every smoother's target and the
+       modules read nothing else (one writer). LFOs are -1..1 from the transport (never accumulated), env and chord 0..1.
+       echo.time is a division (no destination); space.size changes by 100 ms cross-fades, so a source on it is
+       sampled about every 100 ms (up to ~200 ms late), not swept. */
+    Cfg base;
+    uint32_t seed = 0x6D2B79F5u;                     /* steps, drift, chord: the same walk sounds the same */
+    float lfo_ph[4] = {}, lfo_v[4] = {}, env = 0, ch_v = 0, ch_tgt = 0, slot_v[8] = {};
+    int ch_seen = 0; bool mix_mod = false;           /* mix_mod: a slot aims at a mix row (idle() must not stop it) */
+
+    Engine() { cfg_defaults(cfg); base = cfg; std::memcpy(sm, cfg.v, sizeof sm); }
     void init(double rate) {
         sr = rate;
         for (auto &m : mix) m.step = (float)(1 / (0.03 * sr));
@@ -350,8 +393,15 @@ struct Engine {
         reset();
     }
     void apply(const Cfg &c) {
-        cfg = c;
-        for (int m = 0; m < NMOD; m++) mix[m].tgt = c.v[mix_row(m)];
+        base = cfg = c; mix_mod = false;
+        for (auto &s : c.mods) if (valid(s) && s.amt != 0 && mix_row(PARAMS[s.dst].mod) == s.dst) mix_mod = true;
+        resolve();
+    }
+    /* LFO i's value at the transport position b (its phase, 0-1, to *ph). */
+    float lfo_at(int i, double b, float *ph = nullptr) const {
+        const LfoCfg &l = base.lfo[i]; const double d = div_beats(l.rate), t = b / d + l.phase;
+        if (ph) *ph = (float)(t - std::floor(t));
+        return wave(l.shape, t, 0.0025 * tempo / (60 * d), seed + 0x9E3779B9u * (uint32_t)(i + 1));
     }
     void clock(double b, double pos) { bpm = b; beats = pos; if (b > 0) tempo = b; }   /* bpm 0 holds the transport (the tests' LFO freeze) */
     /* The caller bumps `serial` on every chord change: Comb glides (80 ms) only on a new serial; new notes under the
@@ -373,18 +423,45 @@ struct Engine {
     /* Nothing on, or the tail under -80 dB for 0.5 s - plus, while they run, the echo's delay and Cloud's longest gap and
        reach back (a repeat or a grain may still be on its way). From then on, while the input stays exactly 0 (and Cloud
        is not frozen), the output is exactly 0. */
-    bool idle() const { return all_off() || quiet >= hold; }
+    bool idle() const { return (all_off() && !mix_mod) || quiet >= hold; }
     void reset() {
         for (int m = 0; m < NMOD; m++) { clear(m); dirty[m] = true; mix[m].cur = 0; lvl[m] = 0; }
         quiet = 0; lvl_in = lvl_out = 0;
+        env = 0; ch_seen = chord_serial; ch_v = ch_tgt = rnd(seed ^ 0xC4D0u, chord_serial);
     }
     void live(Live &out) const {
-        std::memset(out.v, 0, sizeof out.v);         /* 0-8, 12, 24-31: the modulators (Task 6) */
+        std::memset(out.v, 0, sizeof out.v);
+        for (int i = 0; i < 4; i++) { out.v[i] = lfo_ph[i]; out.v[4 + i] = lfo_v[i]; }
+        out.v[8] = env_v(); out.v[12] = ch_v;
         for (int m = 0; m < NMOD; m++) out.v[13 + m] = lvl[m];
         out.v[22] = lvl_in; out.v[23] = lvl_out;
+        for (int s = 0; s < 8; s++) out.v[24 + s] = slot_v[s];
     }
 
 private:
+    static bool valid(const Slot &s) { return s.src >= 0 && s.src < NSRC && s.dst >= 0 && s.dst < NPARAM && PARAMS[s.dst].cont; }
+    float env_v() const { return std::fmin(1.0f, base.env_s * env); }
+    /* Once a block, before anything reads cfg: the sources at the block's start, then resolve. env follows the block's
+       input peak (attack/release one-poles); chord glides to its new seeded value at most the range in 200 ms. */
+    void modulate(float pin, int n) {
+        env += (float)(1 - std::exp(-n / ((pin > env ? base.env_a : base.env_r) * 0.001 * sr))) * (pin - env);
+        if (chord_serial != ch_seen) { ch_seen = chord_serial; ch_tgt = rnd(seed ^ 0xC4D0u, chord_serial); }
+        const float st = (float)(n / (0.2 * sr));
+        ch_v = ch_v < ch_tgt ? std::fmin(ch_tgt, ch_v + st) : std::fmax(ch_tgt, ch_v - st);
+        for (int i = 0; i < 4; i++) lfo_v[i] = lfo_at(i, beats, &lfo_ph[i]);
+        resolve();
+    }
+    void resolve() {
+        std::memcpy(cfg.v, base.v, sizeof cfg.v);
+        const float src[NSRC] = { lfo_v[0], lfo_v[1], lfo_v[2], lfo_v[3], env_v(), ch_v };
+        float off[64]; uint64_t hit = 0;
+        for (const Slot &s : base.mods)
+            if (valid(s)) { if (!(hit >> s.dst & 1)) off[s.dst] = 0; hit |= 1ull << s.dst; off[s.dst] += s.amt * src[s.src]; }
+        for (int i = 0; i < NPARAM; i++)
+            if (hit >> i & 1) { off[i] = std::fmin(1.0f, std::fmax(0.0f, norm_of(PARAMS[i], base.v[i]) + off[i])); cfg.v[i] = value_of(PARAMS[i], off[i]); }
+        for (int s = 0; s < 8; s++) slot_v[s] = valid(base.mods[s]) ? off[base.mods[s].dst] : 0;
+        for (int m = 0; m < NMOD; m++) mix[m].tgt = cfg.v[mix_row(m)];
+    }
     bool all_off() const { for (auto &m : mix) if (!m.off()) return false; return true; }
     void block(const float *rawL, const float *rawR, float *wetL, float *wetR, int n) {
         float pin = 0, pout = 0; bool silent = true;
@@ -395,6 +472,7 @@ private:
         }
         const float *inL = sL, *inR = sR;
         lvl_in = pin;
+        modulate(pin, n);
         float reach = 0;                             /* Cloud: the longest gap between onsets, the furthest a grain reads back */
         if (!mix[CLOUD].off())
             reach = 1.25f / cfg.v[R_CL_DENS] + std::fmin(2.5f, 2 * cfg.v[R_CL_SCATTER]

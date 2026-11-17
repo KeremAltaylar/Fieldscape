@@ -1327,7 +1327,185 @@ static void test_tail() {
     std::printf(" onset after idle vs after 0.1 s: %+.2f dB\n", a - b);
 }
 
+/* ---- Task 6: the modulators and the matrix ---- */
+
+/* One block of silence through e at (bpm, b); its live read. */
+static mfx::Live step(mfx::Engine &e, double bpm, double b, int kind = 5) {
+    static Sig s(5); s.kind = kind;
+    float iL[128], iR[128], wL[128], wR[128];
+    for (int i = 0; i < 128; i++) s.next(iL[i], iR[i]);
+    e.clock(bpm, b); e.process(iL, iR, wL, wR, 128);
+    mfx::Live l; e.live(l); return l;
+}
+
+static void test_lfo() {
+    using namespace mfx;
+    Cfg c; cfg_defaults(c); std::strcpy(c.lfo[0].rate, "4n");
+    Engine e; e.init(SR); e.apply(c); e.clock(120, 0);
+    /* sample-exact: 4n at 120 bpm crosses zero upward every 0.5 s (24000 samples) */
+    long last = 0; int cross = 0; long worst = 0; float prev = e.lfo_at(0, 0);
+    for (long n = 1; n <= 100L * 24000 + 10; n++) {
+        const float v = e.lfo_at(0, n * 2.0 / SR);
+        if (prev < 0 && v >= 0) { if (cross++) worst = std::max(worst, std::labs(n - last - 24000)); last = n; }
+        prev = v;
+    }
+    check("lfo: 100 cycles, upward crossings every 24000 samples +-1", cross >= 100 && worst <= 1);
+    /* through the engine: the live phase per block, 50 s at 120 bpm; crossings from the wraps */
+    double b = 0, t_first = -1, t_last = 0, pph = 0; int wraps = 0;
+    for (long blk = 0; blk < (long)(50 * SR / 128); blk++) {
+        Live l = step(e, 120, b);
+        const double ph = l.v[0];
+        if (blk && ph < pph) {
+            const double t = ((blk - 1) + (1 - pph) / (ph + 1 - pph)) * 128 / SR;
+            if (t_first < 0) t_first = t; t_last = t; wraps++;
+        }
+        pph = ph; b += 128 / SR * 2;
+    }
+    const double err = 100 * std::fabs((t_last - t_first) / (wraps - 1) / 0.5 - 1);
+    check("lfo: tempo error 0.00 %", wraps >= 99 && err < 0.005);
+    /* a tempo change mid-run: no phase jump beyond one block's worth (at the faster tempo) */
+    Engine f; f.init(SR); f.apply(c); b = 0; double jump = 0; pph = -1;
+    for (int blk = 0; blk < 750; blk++) {
+        const double bpm = blk < 375 ? 120 : 90;
+        Live l = step(f, bpm, b);
+        if (pph >= 0) { double d = l.v[0] - pph; d -= std::floor(d + 0.5); jump = std::fmax(jump, std::fabs(d)); }
+        pph = l.v[0]; b += 128 / SR * bpm / 60;
+    }
+    check("lfo: tempo change 120 -> 90, no jump > one block", jump <= 128 / SR * 2 + 1e-6);
+    /* the shapes at phase 0, 0.25, 0.5, 0.75 (the lfo's phase offset, transport frozen at 0) */
+    static const float EXPECT[5][4] = { { 0, 1, 0, -1 }, { 0, 1, 0, -1 }, { -1, -0.5f, 0, 0.5f }, { 1, 0.5f, 0, -0.5f }, { 0, 1, 0, -1 } };
+    bool shapes = true; float stp[2][4];
+    for (int sh = 0; sh < NSHAPE; sh++)
+        for (int q = 0; q < 4; q++) {
+            Cfg k = c; k.lfo[0].shape = (uint8_t)sh; k.lfo[0].phase = q * 0.25f;
+            for (int run = 0; run < 2; run++) {
+                Engine g; g.init(SR); g.apply(k);
+                Live l = step(g, 0, 0);
+                const float v = l.v[4];
+                if (sh < 5) shapes = shapes && near(v, EXPECT[sh][q], 1e-5) && near(l.v[0], q * 0.25, 1e-6);
+                if (sh == 5) stp[run][q] = v;
+            }
+        }
+    check("lfo: sine tri up down square at 0 .25 .5 .75", shapes);
+    check("lfo: steps holds for the period, the same on a second run", stp[0][0] == stp[0][1] && stp[0][1] == stp[0][2] && stp[0][2] == stp[0][3]
+          && !std::memcmp(stp[0], stp[1], sizeof stp[0]) && std::fabs(stp[0][0]) <= 1);
+    /* steps: a new value next period; drift: continuous and within -1..1 */
+    Cfg k = c; k.lfo[0].shape = 5; Engine g; g.init(SR); g.apply(k); g.clock(120, 0);
+    bool held = true, moved = false; const float s0 = g.lfo_at(0, 0);
+    for (int i = 0; i < 1000; i++) held = held && g.lfo_at(0, i / 1000.0) == s0;
+    for (int p = 1; p < 8; p++) moved = moved || g.lfo_at(0, p) != s0;
+    check("lfo: steps holds 1000 points of a period and changes in the next ones", held && moved);
+    k.lfo[0].shape = 6; g.apply(k); float dmax = 0, lo = 1, hi = -1, pv = g.lfo_at(0, 0);
+    for (int i = 1; i <= 10000; i++) { const float v = g.lfo_at(0, i / 1000.0); dmax = std::fmax(dmax, std::fabs(v - pv)); lo = std::fmin(lo, v); hi = std::fmax(hi, v); pv = v; }
+    check("lfo: drift continuous (step <= 0.01 at 1/1000 period), within -1..1, moves", dmax <= 0.01f && lo >= -1 && hi <= 1 && hi - lo > 0.2f);
+    std::printf("fx lfo: 4n at 120 bpm crossings every 24000 +-%ld samples (%d), engine tempo error %.4f %%, tempo change jump %.5f (block %.5f); "
+                "steps %.3f; drift %.3f..%.3f, max step %.4f\n", worst, cross, err, jump, 128 / SR * 2, stp[0][0], lo, hi, dmax);
+}
+
+static void test_env() {
+    using namespace mfx;
+    struct Case { float a, r; } cases[] = { { 10, 300 }, { 100, 1000 } };
+    std::printf("fx env:");
+    for (auto &k : cases) {
+        Cfg c; cfg_defaults(c); c.env_a = k.a; c.env_r = k.r;
+        Engine e; e.init(SR); e.apply(c);
+        std::vector<float> v; double b = 0;
+        const int on = (int)(0.5 * SR / 128), off = on + (int)(1.5 * SR / 128), end = off + (int)(4 * SR / 128);
+        for (int blk = 0; blk < end; blk++) { Live l = step(e, 90, b, blk >= on && blk < off ? 3 : 5); v.push_back(l.v[8]); b += 128 / SR * 1.5; }
+        const float plat = v[off - 1];
+        int rise = -1, fall = -1;
+        for (int i = on; i < off && rise < 0; i++) if (v[i] >= 0.9f * plat) rise = i - on + 1;
+        for (int i = off; i < end && fall < 0; i++) if (v[i] <= 0.1f * plat) fall = i - off + 1;
+        const double tr = rise * 128 / SR * 1000, tf = fall * 128 / SR * 1000;
+        check("env: rises to 90 % within attack x 3", rise > 0 && tr <= 3 * k.a + 128 / SR * 1000);
+        check("env: falls to 10 % within release x 3", fall > 0 && tf <= 3 * k.r + 128 / SR * 1000);
+        check("env: plateau = the burst's peak x sens (0.5)", near(plat, 0.5, 0.02));
+        check("env: silence before the burst reads 0", v[on - 1] == 0);
+        std::printf(" attack %.0f -> 90 %% in %.1f ms, release %.0f -> 10 %% in %.1f ms, plateau %.3f;", k.a, tr, k.r, tf, plat);
+    }
+    std::printf("\n");
+}
+
+static void test_matrix() {
+    using namespace mfx;
+    Cfg c = with({ { "echo.mix", 1 }, { "phase.hz", 100 } });
+    c.lfo[0].phase = 0.25f;                          /* sine at its top: lfo1 = 1 while the transport is frozen */
+    c.mods[0] = { S_LFO1, (int16_t)R_EC_FB, 0.2f }; c.mods[1] = { S_LFO1, (int16_t)R_EC_FB, 0.1f };
+    c.mods[2] = { S_LFO1, (int16_t)R_PH_HZ, -1 };   c.mods[3] = { S_LFO1, (int16_t)R_SH_MODE, 1 };
+    c.mods[4] = { S_CHORD, (int16_t)R_VW_POS, 1 };
+    Engine e; e.init(SR); e.apply(c);
+    Live l = step(e, 0, 0);
+    const float fb = 0.45f + 0.3f * 0.98f;
+    check("matrix: two slots on echo.fb sum (base + 0.3 of the range)", near(e.cfg.v[R_EC_FB], fb, 1e-4) && near(l.v[24], fb / 0.98f, 1e-4) && l.v[24] == l.v[25]);
+    check("matrix: the stored base never changes", e.base.v[R_EC_FB] == 0.45f);
+    check("matrix: amt -1 at the minimum stays clamped", e.cfg.v[R_PH_HZ] == 100 && l.v[26] == 0);
+    check("matrix: a slot on a switch row is ignored", e.cfg.v[R_SH_MODE] == 0 && l.v[27] == 0);
+    check("matrix: live 24-31 = each slot's destination now (0-1)", near(l.v[28], e.cfg.v[R_VW_POS] / 4, 1e-5) && l.v[29] == 0 && l.v[31] == 0);
+    /* chord: changes only when the serial changes, gliding at most 200 ms across the range */
+    const float c0 = l.v[12], m1[5] = { 50, 53, 57, 60, -1 }, m2[5] = { 52, 55, 59, -1, -1 };
+    e.chord(m1, 50, 0); for (int i = 0; i < 200; i++) l = step(e, 0, 0);
+    const bool same = l.v[12] == c0;
+    e.chord(m2, 52, 1); Live l1 = step(e, 0, 0);
+    const bool glided = std::fabs(l1.v[12] - c0) <= 128 / (0.2 * SR) + 1e-6;
+    for (int i = 0; i < 100; i++) l1 = step(e, 0, 0);
+    check("matrix: chord holds under new notes, same serial", same);
+    check("matrix: chord moves on a new serial, gliding", l1.v[12] != c0 && glided && near(e.cfg.v[R_VW_POS], 4 * l1.v[12], 1e-4));
+    Engine e2; e2.init(SR); e2.apply(c); e2.chord(m2, 52, 1); Live l2 = step(e2, 0, 0); for (int i = 0; i < 100; i++) l2 = step(e2, 0, 0);
+    check("matrix: chord is seeded (same serial, same value)", l2.v[12] == l1.v[12]);
+    /* a mix row modulated from 0: the engine is not idle */
+    Cfg m = with({}); m.lfo[0].phase = 0.25f; m.mods[0] = { S_LFO1, (int16_t)param_of("echo.mix"), 1 };
+    Engine e3; e3.init(SR); e3.apply(m);
+    check("matrix: a slot on a mix row keeps the engine awake", !e3.idle());
+    float pk = 0; Sig s(1); std::vector<float> y; play(e3, s, 48000, &y, false, 0);   /* the echo repeats 0.625 s later (72 bpm) */
+    for (float v : y) pk = std::fmax(pk, std::fabs(v));
+    check("matrix: lfo -> echo.mix from 0 sounds", pk > 0.01f);
+    std::printf("fx matrix: echo.fb 0.45 + 0.2 + 0.1 of range -> %.4f; phase.hz at min - 1 -> %.0f; switch slot ignored; chord %.3f -> %.3f on serial 1\n",
+                e.cfg.v[R_EC_FB], e.cfg.v[R_PH_HZ], c0, l1.v[12]);
+}
+
+/* Review Focus 4 (no walk sources): an LFO-free preset, env -> echo.fb, steady pink for 60 s: the level holds and
+   nothing drifts to an extreme. Then the click metric on a slot's amt 0 -> 1 and back. */
+static void test_hold() {
+    using namespace mfx;
+    Cfg c = with({ { "echo.mix", 1 } }); c.mods[0] = { S_ENV, (int16_t)R_EC_FB, 0.3f };
+    Engine e; e.init(SR); e.apply(c);
+    Sig s(1); double b = 0; std::vector<double> db; std::vector<float> fbs;
+    for (int sec = 0; sec < 60; sec++) {
+        std::vector<float> y; play(e, s, (int)SR, &y, false, 90, &b);
+        db.push_back(rms_db(y)); fbs.push_back(e.cfg.v[R_EC_FB]);
+    }
+    double mean = 0; for (int i = 10; i < 60; i++) mean += db[i] / 50;
+    double dev = 0, h1 = 0, h2 = 0; float flo = 1, fhi = 0;
+    for (int i = 10; i < 60; i++) {
+        dev = std::fmax(dev, std::fabs(db[i] - mean)); flo = std::fmin(flo, fbs[i]); fhi = std::fmax(fhi, fbs[i]);
+        (i < 35 ? h1 : h2) += fbs[i] / 25.0;
+    }
+    check("hold: 60 s steady pink, env -> echo.fb: level within +-1 dB", dev <= 1);
+    check("hold: echo.fb above its base, below its max, no trend (halves' means within 0.01)", flo > 0.45f && fhi < 0.97f && std::fabs(h1 - h2) <= 0.01);
+    std::printf("fx hold: env -> echo.fb 0.3, 60 s pink: level %.2f dB max deviation, echo.fb %.3f..%.3f (block peaks), halves %.4f / %.4f\n", dev, flo, fhi, h1, h2);
+    /* onsets */
+    struct D { const char *dst, *mixk; float base; };
+    static const D DS[] = { { "phase.hz", "phase.mix", -1 }, { "echo.fb", "echo.mix", -1 }, { "vowel.pos", "vowel.mix", -1 }, { "echo.mix", "echo.mix", 0.3f } };
+    double worst = 0;
+    for (auto &d : DS)
+        for (int kind = 0; kind < 2; kind++) {
+            Cfg a = with({ { d.mixk, d.base < 0 ? 1 : d.base } }); std::strcpy(a.lfo[0].rate, "4m"); a.lfo[0].phase = 0.25f;
+            a.mods[0] = { S_LFO1, (int16_t)param_of(d.dst), 0 };
+            Cfg z = a; z.mods[0].amt = 1;
+            const bool pi = d.base >= 0;
+            const double r = std::fmax(click_of(a, z, kind, pi), click_of(z, a, kind, pi));
+            check("modclicks: a slot's amt 0 -> 1 and back <= 4", r <= 4);
+            worst = std::fmax(worst, r);
+            std::printf("  modclick %-9s %s %.2f\n", d.dst, kind ? "pink" : "sine", r);
+        }
+    std::printf("fx modclicks: lfo1 amt 0 <-> 1 on phase.hz, echo.fb, vowel.pos, echo.mix: worst %.2f\n", worst);
+}
+
 int main() {
+    test_lfo();
+    test_env();
+    test_matrix();
+    test_hold();
     test_table();
     test_div();
     test_parse();
