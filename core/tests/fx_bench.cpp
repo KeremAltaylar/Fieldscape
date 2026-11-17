@@ -36,7 +36,7 @@ static Engine *fresh(const Cfg &c) {
 /* 20 s of pink (or silence) through c: mean % of realtime (a second engine, the whole loop timed once: a timer call
    from wasm costs ~0.4 us, as much as an idle block), p50/p99/p99.9/max block (each block timed), after the first
    second. The input cycles through 32 blocks of pink (32 KB, in cache, as a host's fresh block is) */
-static void cost(const char *name, const Cfg &c, bool silent, double pct_limit, bool gate = true) {
+static void cost(const char *name, const Cfg &c, bool silent, double pct_limit, bool gate = true, int sub = N) {   /* sub: frames a call (the piece calls 32) */
     static const int RING = 32;
     static std::vector<float> inL, inR;
     if (inL.empty()) { Pink p; inL.resize(RING * N); inR.resize(RING * N); for (int i = 0; i < RING * N; i++) { inL[i] = p.next(); inR[i] = p.next(); } }
@@ -47,15 +47,15 @@ static void cost(const char *name, const Cfg &c, bool silent, double pct_limit, 
     std::vector<double> ms;
     for (int k = 0; k < BLOCKS; k++) {
         const double t0 = now_ms();
-        e->process(L + k % RING * N, R + k % RING * N, wL, wR, N);
+        for (int o = 0; o < N; o += sub) e->process(L + k % RING * N + o, R + k % RING * N + o, wL + o, wR + o, sub);
         const double t = now_ms() - t0;
         if (k >= SKIP) ms.push_back(t);
     }
     delete e;
     e = fresh(c);
-    for (int k = 0; k < SKIP; k++) e->process(L + k % RING * N, R + k % RING * N, wL, wR, N);
+    for (int k = 0; k < SKIP; k++) for (int o = 0; o < N; o += sub) e->process(L + k % RING * N + o, R + k % RING * N + o, wL + o, wR + o, sub);
     const double t0 = now_ms();
-    for (int k = SKIP; k < BLOCKS; k++) e->process(L + k % RING * N, R + k % RING * N, wL, wR, N);
+    for (int k = SKIP; k < BLOCKS; k++) for (int o = 0; o < N; o += sub) e->process(L + k % RING * N + o, R + k % RING * N + o, wL + o, wR + o, sub);
     const double pct = 100 * (now_ms() - t0) / ((BLOCKS - SKIP) * N * 1000.0 / SR);
     delete e;
     std::sort(ms.begin(), ms.end());
@@ -117,6 +117,8 @@ int main(int argc, char **argv) {
     cost("typical", typ, false, 3.0);
     cost("typical+modmix", tmm, false, 3.0);
     cost("all", all, false, 8.0);
+    cost("typical@32", typ, false, 3.0, false, 32);   /* as the piece calls it: 32 frames at a time (info) */
+    cost("all@32", all, false, 8.0, false, 32);
     /* each module of a case alone, at that case's settings and slots (not a budget: where the cost is) */
     for (const Cfg *b : { &typ, &all })
         for (int m = 0; m < NMOD; m++) {

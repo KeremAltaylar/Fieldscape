@@ -1148,6 +1148,19 @@ static void test_echo() {
     std::printf("\nfx echo: tone level range %.2f dB, centroid %.0f..%.0f Hz; mix err %.2g\n", lmax - lmin, cmin, cmax, lin);
 }
 
+/* Task 8 (carried): the echo's shifter settles exactly - shift back to 0, its glide snaps and the Hilbert stops */
+static void test_shift_snap() {
+    using namespace mfx;
+    Engine e; e.init(SR); e.apply(with({ { "echo.mix", 1 }, { "echo.shift", 50 } }));
+    Sig s(0); double b = 0;
+    play(e, s, (int)SR, nullptr, false, 90, &b);
+    const bool on = e.ec_hon;
+    e.apply(with({ { "echo.mix", 1 } }));
+    play(e, s, (int)(2 * SR), nullptr, false, 90, &b);
+    std::printf("fx echo shift: Hilbert on at 50 Hz %d, off 2 s after shift 0 %d\n", (int)on, (int)!e.ec_hon);
+    check("echo: shift back to 0 -> the shifter's Hilbert stops", on && !e.ec_hon);
+}
+
 static void test_space() {
     using namespace mfx;
     std::printf("fx space: RT60 measured:");
@@ -1572,6 +1585,7 @@ int main() {
     test_cloud();
     test_levels();
     test_echo();
+    test_shift_snap();
     test_space();
     test_frame();
     test_stable();

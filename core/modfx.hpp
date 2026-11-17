@@ -600,7 +600,10 @@ private:
     float glide(int row) { return sm[row] += sk1 * (cfg.v[row] - sm[row]); }
     float glide16(int row) { return sm[row] += sk * (cfg.v[row] - sm[row]); }
     float glide100(int row) { return sm[row] += sk100 * (cfg.v[row] - sm[row]); }
-    float glide_cap(int row, float cap) { return sm[row] += hi(-cap, lo(cap, sk1 * (cfg.v[row] - sm[row]))); }   /* glide, at most cap a sample */
+    float glide_cap(int row, float cap) {            /* glide, at most cap a sample; snaps when within 1e-6 (else it never lands) */
+        const float d = cfg.v[row] - sm[row];
+        return sm[row] = std::fabs(d) < 1e-6f ? cfg.v[row] : sm[row] + hi(-cap, lo(cap, sk1 * d));
+    }
     /* A frequency glided in octaves, per 16, at most 20 octaves a second: a 5-octave jump takes 250 ms, not one step of
        brightness (the click metric weighs f^2; a filter opening faster than ~2 octaves in 50 ms reads as a click). */
     float glide_oct(int row, float k) {
