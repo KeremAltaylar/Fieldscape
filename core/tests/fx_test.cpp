@@ -79,7 +79,10 @@ static void test_table() {
         && R_TP_FLUTTER == param_of("tape.flutter") && R_TP_DRIVE == param_of("tape.drive") && R_TP_TONE == param_of("tape.tone")
         && R_CL_SIZE == param_of("cloud.size") && R_CL_DENS == param_of("cloud.dens") && R_CL_PITCH == param_of("cloud.pitch")
         && R_CL_SPRAY == param_of("cloud.spray") && R_CL_SCATTER == param_of("cloud.scatter") && R_CL_REV == param_of("cloud.rev")
-        && R_CL_FREEZE == param_of("cloud.freeze"));
+        && R_CL_FREEZE == param_of("cloud.freeze") && R_EC_TIME == param_of("echo.time") && R_EC_FB == param_of("echo.fb")
+        && R_EC_TONE == param_of("echo.tone") && R_EC_SHIFT == param_of("echo.shift") && R_EC_WOBBLE == param_of("echo.wobble")
+        && R_EC_SPREAD == param_of("echo.spread") && R_SP_SIZE == param_of("space.size") && R_SP_DECAY == param_of("space.decay")
+        && R_SP_DAMP == param_of("space.damp") && R_SP_MOD == param_of("space.mod"));
     int e = param_of("echo.fb");
     check("table: param_of round-trips", e >= 0 && !std::strcmp(PARAMS[e].key, "echo.fb"));
     check("table: unknown -1", param_of("nope.x") == -1 && param_of("echo") == -1 && param_of("") == -1);
@@ -229,45 +232,35 @@ static void test_silent() {
     std::printf("fx silent: 2 s pink noise through the defaults -> wet 0.0f every sample, idle; a mix on sounds, off gives 0 again\n");
 }
 
-/* wet = chain - prod(1 - mix) * in: with the pass-through stubs (f(x) = x) the wet is (1 - prod(1 - mix)) * in, so one
-   module's wet is linear in its mix and no untouched input reaches the return. Task 2's first real module must assert
-   wet == mix * f(x) for itself (its own output scaled linearly by its mix). */
-static float worst(mfx::Engine &e, float expect, int frames, int n) {
-    Pink p; float iL[512], iR[512], wL[512], wR[512], err = 0;
-    for (int done = 0; done < frames; done += n) {
-        for (int i = 0; i < n; i++) { iL[i] = p.next(); iR[i] = p.next(); }
-        e.process(iL, iR, wL, wR, n);
-        for (int i = 0; i < n; i++) err = std::fmax(err, std::fmax(std::fabs(wL[i] - expect * iL[i]), std::fabs(wR[i] - expect * iR[i])));
-    }
-    return err;
-}
+/* Chunking: n 300 (128 + 128 + 44) gives the same sound as n 100 (Echo and Space on): no overrun, no skipped
+   samples. Each module's own linearity in its mix (wet = mix * f(x)) is checked in its test. */
 static void test_linear() {
     using namespace mfx;
     Cfg c; cfg_defaults(c);
-    c.v[param_of("echo.mix")] = 0.5f;
-    Engine e; e.init(48000); e.apply(c);
-    worst(e, 0, 4800, 128);                                   /* past the 30 ms ramp */
-    float e1 = worst(e, 0.5f, 48000, 128);
-    check("linear: one stub at mix 0.5 -> wet == 0.5 in", e1 < 1e-6f);
-    c.v[param_of("echo.mix")] = 0.25f; e.apply(c);
-    worst(e, 0, 4800, 128);
-    float e2 = worst(e, 0.25f, 48000, 128);
-    check("linear: mix 0.25 -> wet == 0.25 in", e2 < 1e-6f);
-    c.v[param_of("space.mix")] = 0.5f; e.apply(c);
-    worst(e, 0, 4800, 128);
-    float e3 = worst(e, 1 - 0.75f * 0.5f, 48000, 128);
-    check("linear: two stubs 0.25, 0.5 -> wet == (1 - 0.75 * 0.5) in", e3 < 1e-6f);
-    Engine f; f.init(48000); f.apply(c);
-    worst(f, 0, 4800, 300);                                   /* n > 128: chunked, no overrun */
-    float e4 = worst(f, 1 - 0.75f * 0.5f, 48000 - 48000 % 300, 300);
-    check("chunks: n 300 gives the same", e4 < 1e-6f);
-    std::printf("fx linear: stub wet = (1 - prod(1 - mix)) * in, max error %.2g %.2g %.2g, n 300 %.2g\n", e1, e2, e3, e4);
+    c.v[param_of("echo.mix")] = 0.25f; c.v[param_of("space.mix")] = 0.5f;
+    float iL[300], iR[300], wL[300], wR[300];
+    Engine a, b; a.init(48000); b.init(48000); a.apply(c); b.apply(c);
+    Pink pa, pb; double sa = 0, sb = 0, d = 0; bool fin = true;
+    for (int done = 0; done < 48000 * 2; done += 300) {
+        for (int i = 0; i < 300; i++) { iL[i] = pa.next(); iR[i] = pa.next(); }
+        a.process(iL, iR, wL, wR, 300);
+        for (int i = 0; i < 300; i++) { sa += (double)wL[i] * wL[i]; fin = fin && std::isfinite(wL[i]) && std::isfinite(wR[i]); }
+    }
+    for (int done = 0; done < 48000 * 2; done += 300)
+        for (int o = 0; o < 300; o += 100) {
+            for (int i = 0; i < 100; i++) { iL[i] = pb.next(); iR[i] = pb.next(); }
+            b.process(iL, iR, wL, wR, 100);
+            for (int i = 0; i < 100; i++) sb += (double)wL[i] * wL[i];
+        }
+    d = 10 * std::log10(sa / sb);
+    check("chunks: n 300 and n 100 finite and the same level (0.1 dB)", fin && std::fabs(d) <= 0.1);
+    std::printf("fx linear: n 300 vs n 100, echo 0.25 + space 0.5: level difference %.3f dB\n", d);
 }
 
 /* ---- Task 2: Shift, Phase, Vowel ---- */
 static const double SR = 48000, TAU = 6.283185307179586;
 
-/* A sound source the tests feed, stereo: 0 a 220 Hz sine at -12 dBFS, 1 pink noise (x g), 2 white noise, 3 a 1 kHz sine
+/* A sound source the tests feed, stereo: 0 a 220 Hz sine at -12 dBFS, 1 pink noise (x g), 2 white noise (x g: g 2 is 0 dBFS), 3 a 1 kHz sine
    at -6 dBFS, 4 a sine at hz and amp, 5 silence, 6 an impulse train (1 kHz, 0.5), 7 a rising chirp (200 -> 1600 Hz
    in 1.5 s, again), 8 a time code (left 0.05 x seconds, right 0.5: left / right x 10 is the time it was played). */
 struct Sig {
@@ -282,8 +275,8 @@ struct Sig {
         if (kind == 4) { l = r = (float)(amp * std::sin(TAU * hz * n++ / SR)); return; }
         if (kind == 5) { l = r = 0; return; }
         if (kind == 1) { l = g * pl.next(); r = g * pr.next(); return; }
-        w ^= w << 13; w ^= w >> 17; w ^= w << 5; l = (float)w / 4294967296.0f - 0.5f;
-        w ^= w << 13; w ^= w >> 17; w ^= w << 5; r = (float)w / 4294967296.0f - 0.5f;
+        w ^= w << 13; w ^= w >> 17; w ^= w << 5; l = g * ((float)w / 4294967296.0f - 0.5f);
+        w ^= w << 13; w ^= w >> 17; w ^= w << 5; r = g * ((float)w / 4294967296.0f - 0.5f);
     }
 };
 
@@ -317,14 +310,14 @@ static double click_ratio(const std::vector<float> &y, double post_s = 0.05) {
     return a > 0 ? b / a : (b > 0 ? 1e9 : 0);
 }
 /* From `from`, settle 1 s, then 500 ms recorded, then `to` and 50 ms: the ratio. */
-static double click_of(const mfx::Cfg &from, const mfx::Cfg &to, int kind, bool plus_in) {
+static double click_of(const mfx::Cfg &from, const mfx::Cfg &to, int kind, bool plus_in, double post = 0.05) {
     mfx::Engine e; e.init(SR); e.apply(from);
     Sig s(kind); std::vector<float> y; double beats = 0;
     play(e, s, (int)SR, nullptr, plus_in, 90, &beats);
     play(e, s, (int)(0.5 * SR), &y, plus_in, 90, &beats);
     e.apply(to);
-    play(e, s, (int)(0.05 * SR) + 128, &y, plus_in, 90, &beats);
-    return click_ratio(y);
+    play(e, s, (int)(post * SR) + 128, &y, plus_in, 90, &beats);
+    return click_ratio(y, post);
 }
 
 /* Radix-2 FFT, in place. */
@@ -963,7 +956,7 @@ static void test_levels() {
 static void test_clicks() {
     using namespace mfx;
     struct M { Mod mod; bool back; };
-    static const M MODS[] = { { SHIFT, false }, { PHASE, false }, { VOWEL, false }, { SWARM, true }, { COMB, true }, { TAPE, true } };
+    static const M MODS[] = { { SHIFT, false }, { PHASE, false }, { VOWEL, false }, { SWARM, true }, { COMB, true }, { TAPE, true }, { ECHO, true }, { SPACE, true } };
     double worst = 0; std::string wk;
     for (const M &md : MODS)
         for (int i = 0; i < NPARAM; i++) {
@@ -989,8 +982,275 @@ static void test_clicks() {
                 if (std::fmax(r, rb) > worst) { worst = std::fmax(r, rb); wk = p.key; }
             }
         }
-    std::printf("fx clicks: all six modules - every parameter min -> max (swarm/comb/tape also back), mix 0 -> 1 -> 0, sine and pink: worst %.2f (%s)\n",
+    std::printf("fx clicks: eight modules - every parameter min -> max (swarm/comb/tape/echo/space also back), mix 0 -> 1 -> 0, sine and pink: worst %.2f (%s)\n",
                 worst, wk.c_str());
+}
+
+/* ---- Task 5: Echo, Space, stability ---- */
+
+/* Plays the given input through e (128 at a time, 90 bpm from beat 0). */
+static void feed(mfx::Engine &e, const std::vector<float> &iL, const std::vector<float> &iR, std::vector<float> &oL, std::vector<float> &oR) {
+    oL.assign(iL.size(), 0.0f); oR.assign(iL.size(), 0.0f); double b = 0;
+    for (size_t o = 0; o + 128 <= iL.size(); o += 128) {
+        e.clock(90, b); b += 128 / SR * 1.5;
+        e.process(&iL[o], &iR[o], &oL[o], &oR[o], 128);
+    }
+}
+static double win_energy(const std::vector<float> &y, long c, long h) {
+    double s = 1e-30;
+    for (long i = c - h; i <= c + h; i++) if (i >= 0 && i < (long)y.size()) s += (double)y[i] * y[i];
+    return s;
+}
+/* The power centroid (Hz) of y[from, from + N) (rectangular: an echo of an impulse lies inside it). */
+static double centroid_at(const std::vector<float> &y, long from, int N) {
+    std::vector<double> re(N), im(N, 0.0);
+    for (int i = 0; i < N; i++) re[i] = y[from + i];
+    fft(re, im);
+    double num = 0, den = 0;
+    for (int k = 1; k < N / 2; k++) { double p = re[k] * re[k] + im[k] * im[k]; num += k * SR / N * p; den += p; }
+    return num / den;
+}
+/* The strongest frequency within +-30 Hz of f in y[from, from + len), zero-padded to 2^16, refined by a parabola on dB. */
+static double peak_hz(const std::vector<float> &y, long from, int len, double f) {
+    const int N = 1 << 16; std::vector<double> re(N, 0.0), im(N, 0.0);
+    for (int i = 0; i < len; i++) re[i] = y[from + i] * (0.5 - 0.5 * std::cos(TAU * i / len));
+    fft(re, im);
+    int lo = (int)((f - 30) * N / SR), hi = (int)((f + 30) * N / SR), b = lo;
+    auto P = [&](int k) { return 10 * std::log10(re[k] * re[k] + im[k] * im[k] + 1e-300); };
+    for (int k = lo; k <= hi; k++) if (P(k) > P(b)) b = k;
+    const double a = P(b - 1), c = P(b), d = P(b + 1), den = a - 2 * c + d;
+    return (b + (den != 0 ? 0.5 * (a - d) / den : 0)) * SR / N;
+}
+/* RT60 (Schroeder, -5 to -35 dB, x2) of the stereo tail l, r. */
+static double rt60_of(const std::vector<float> &l, const std::vector<float> &r) {
+    std::vector<double> edc(l.size() + 1, 0.0);
+    for (size_t i = l.size(); i-- > 0;) edc[i] = edc[i + 1] + (double)l[i] * l[i] + (double)r[i] * r[i];
+    const size_t i0 = (size_t)(0.01 * SR); double t5 = -1, t35 = -1;
+    for (size_t i = i0; i < l.size(); i++) {
+        double db = 10 * std::log10(edc[i] / edc[i0] + 1e-300);
+        if (t5 < 0 && db <= -5) t5 = i / SR;
+        if (t35 < 0 && db <= -35) { t35 = i / SR; break; }
+    }
+    return t35 > 0 && t5 >= 0 ? 2 * (t35 - t5) : -1;
+}
+
+static void test_echo() {
+    using namespace mfx;
+    const long T0 = 4800, D = 16000;     /* the impulse after the 10 ms cold-start fade; 8n at 90 bpm = 1/3 s */
+    auto ecfg = [](std::initializer_list<std::pair<const char *, float>> kv) {
+        Cfg c = with(kv); c.v[param_of("echo.time")] = 0.5f; std::strcpy(c.rate[ECHO], "8n"); return c;
+    };
+    auto impulse = [&](const Cfg &c, int reps, std::vector<float> &l, std::vector<float> &r) {
+        Engine e; e.init(SR); e.apply(c);
+        size_t N = (size_t)(T0 + D * reps + 4000); N = (N + 127) / 128 * 128;
+        std::vector<float> iL(N, 0.0f), iR(N, 0.0f); iL[T0] = iR[T0] = 0.5f;
+        feed(e, iL, iR, l, r);
+    };
+    std::vector<float> l, r;
+    const float fb = 0.6f;
+    impulse(ecfg({ { "echo.mix", 1 }, { "echo.fb", fb }, { "echo.spread", 0 } }), 6, l, r);
+    long pk = T0 + D - 200;
+    for (long i = T0 + D - 200; i <= T0 + D + 200; i++) if (std::fabs(l[i]) > std::fabs(l[pk])) pk = i;
+    check("echo: 8n at 90 bpm -> the first repeat at 16000 +-2 samples", std::labs(pk - (T0 + D)) <= 2);
+    const double e1 = win_energy(l, T0 + D, 8); double werr = 0;
+    std::printf("fx echo: first repeat at +%ld samples; repeat k vs fb^(k-1) (dB):", pk - T0);
+    for (int k = 2; k <= 6; k++) {
+        double db = 10 * std::log10(win_energy(l, T0 + k * D, 8) / e1), want = 20 * std::log10(std::pow(fb, k - 1));
+        werr = std::fmax(werr, std::fabs(db - want)); std::printf(" %d: %+.2f", k, db - want);
+    }
+    check("echo: repeat k is fb^(k-1) x the first, +-1 dB (k 2-6, tone 0)", werr <= 1);
+
+    /* shift +10: a 100 ms 1 kHz burst; repeat k's partial at 1000 + 10 k Hz */
+    {
+        Engine e; e.init(SR); e.apply(ecfg({ { "echo.mix", 1 }, { "echo.fb", 0.7f }, { "echo.spread", 0 }, { "echo.shift", 10 } }));
+        const long B = 4800, BL = 4800; size_t N = (size_t)(B + 5 * D + 8000); N = (N + 127) / 128 * 128;
+        std::vector<float> iL(N, 0.0f), iR;
+        for (long i = 0; i < BL; i++) iL[B + i] = (float)(0.5 * (0.5 - 0.5 * std::cos(TAU * i / BL)) * std::sin(TAU * 1000 * i / SR));
+        iR = iL; feed(e, iL, iR, l, r);
+        double worst = 0; std::printf("\nfx echo: shift +10, repeat partials (Hz):");
+        for (int k = 1; k <= 4; k++) {
+            double f = peak_hz(l, B + k * D - 400, (int)BL + 800, 1000 + 10 * k);
+            worst = std::fmax(worst, std::fabs(f - (1000 + 10 * k))); std::printf(" %d: %.2f", k, f);
+        }
+        check("echo: shift +10 -> repeat k's partial at 1000 + 10 k Hz +-2 (k 1-4)", worst <= 2);
+    }
+    /* tone: -1 darkens every repeat, +1 thins every repeat */
+    auto cents = [&](float tone) {
+        impulse(ecfg({ { "echo.mix", 1 }, { "echo.fb", 0.8f }, { "echo.spread", 0 }, { "echo.tone", tone } }), 5, l, r);
+        std::vector<double> c;
+        for (int k = 1; k <= 5; k++) c.push_back(centroid_at(l, T0 + k * D - 64, 2048));
+        return c;
+    };
+    auto dk = cents(-1), th = cents(1);
+    bool fall = true, rise = true;
+    std::printf("\nfx echo: centroid by repeat, tone -1:");
+    for (size_t k = 0; k < dk.size(); k++) { std::printf(" %.0f", dk[k]); if (k) fall = fall && dk[k] < dk[k - 1]; }
+    std::printf("; tone +1:");
+    for (size_t k = 0; k < th.size(); k++) { std::printf(" %.0f", th[k]); if (k) rise = rise && th[k] > th[k - 1]; }
+    check("echo: tone -1 -> each repeat darker (centroid falls)", fall);
+    check("echo: tone +1 -> each repeat thinner (centroid rises)", rise);
+    /* spread 1: the repeats alternate sides */
+    impulse(ecfg({ { "echo.mix", 1 }, { "echo.fb", 0.6f }, { "echo.spread", 1 } }), 4, l, r);
+    bool alt = true; std::printf("\nfx echo: spread 1, L-R by repeat (dB):");
+    for (int k = 1; k <= 4; k++) {
+        double el = win_energy(l, T0 + k * D, 8), er = win_energy(r, T0 + k * D, 8), d = 10 * std::log10(el / er);
+        alt = alt && (k % 2 ? d >= 20 : d <= -20); std::printf(" %d: %+.0f", k, d);
+    }
+    check("echo: spread 1 -> repeats alternate sides (>= 20 dB)", alt);
+    /* time 8n -> 4n glides (and back): no click, no zipper over the whole glide (1 s) */
+    double tw = 0;
+    std::printf("\nfx echo: time glide click:");
+    for (int kind = 0; kind < 2; kind++) {
+        Cfg a = ecfg({ { "echo.mix", 1 } }), b = a; b.v[param_of("echo.time")] = 1; std::strcpy(b.rate[ECHO], "4n");
+        double x = click_of(a, b, kind, false, 1.0), y = click_of(b, a, kind, false, 1.0);
+        tw = std::fmax(tw, std::fmax(x, y)); std::printf(" %s 8n->4n %.2f 4n->8n %.2f", kind ? "pink" : "sine", x, y);
+    }
+    check("echo: time 8n <-> 4n glides (click metric over 1 s <= 4)", tw <= 4);
+    /* A-18: tone moves the spectrum, not the level */
+    double lmin = 1e9, lmax = -1e9, cmin = 1e9, cmax = 0;
+    std::printf("\nfx echo: tone level/centroid:");
+    for (float t : { -1.0f, -0.5f, 0.0f, 0.5f, 1.0f }) {
+        Engine e; e.init(SR); e.apply(with({ { "echo.mix", 1 }, { "echo.tone", t } }));
+        Sig s(1); play(e, s, 2 * (int)SR, nullptr);
+        std::vector<float> y, in; play(e, s, 4 * (int)SR, &y, false, 90, nullptr, nullptr, &in);
+        double lv = rms_db(y) - rms_db(in), cen = centroid(power(y));
+        lmin = std::fmin(lmin, lv); lmax = std::fmax(lmax, lv); cmin = std::fmin(cmin, cen); cmax = std::fmax(cmax, cen);
+        std::printf(" %+.1f: %.2f/%.0f", t, lv, cen);
+    }
+    check("echo: level within 3 dB across tone", lmax - lmin <= 3);
+    check("echo: tone moves the centroid >= 30 %", (cmax - cmin) / cmax >= 0.3);
+    double lin = mix_linearity(with({ { "echo.mix", 1 }, { "echo.fb", 0.6f }, { "echo.shift", 30 }, { "echo.wobble", 0.5f }, { "echo.tone", -0.5f } }), "echo.mix");
+    check("echo: wet at mix 0.37 == 0.37 x wet at mix 1", lin < 1e-5);
+    std::printf("\nfx echo: tone level range %.2f dB, centroid %.0f..%.0f Hz; mix err %.2g\n", lmax - lmin, cmin, cmax, lin);
+}
+
+static void test_space() {
+    using namespace mfx;
+    std::printf("fx space: RT60 measured:");
+    for (float d : { 1.0f, 4.0f, 20.0f }) {
+        Engine e; e.init(SR); e.apply(with({ { "space.mix", 1 }, { "space.decay", d } }));
+        Sig s(1); play(e, s, 2 * (int)SR, nullptr);
+        s.kind = 5; std::vector<float> l, r; play(e, s, (int)((1.5 * d + 1) * SR), &l, false, 90, nullptr, &r);
+        double rt = rt60_of(l, r);
+        check("space: RT60 within 20 % of decay (1, 4, 20 s)", rt > 0 && std::fabs(rt / d - 1) <= 0.2);
+        std::printf(" %.0f s -> %.2f s;", d, rt);
+    }
+    /* the room fix's held D3: no pitch falls into a hole */
+    auto sine = [](double hz) {
+        Engine e; e.init(SR); e.apply(with({ { "space.mix", 1 } }));
+        Sig s(4); s.hz = hz; s.amp = 0.25; play(e, s, 6 * (int)SR, nullptr);
+        std::vector<float> y; play(e, s, 4 * (int)SR, &y);
+        return rms_db(y);
+    };
+    const double d3 = sine(146.83), a3 = sine(220);
+    check("space: held 147 Hz within 6 dB of 220 Hz", std::fabs(d3 - a3) <= 6);
+    std::printf("\nfx space: held sine wet level (dB): 147 Hz %.2f, 220 Hz %.2f; others:", d3, a3);
+    for (double hz : { 110.0, 165.0, 196.0, 262.0, 294.0, 440.0 }) std::printf(" %.0f: %.2f", hz, sine(hz));
+    /* A-18: damp moves the spectrum, not the level; size holds the level */
+    double lmin = 1e9, lmax = -1e9, cmin = 1e9, cmax = 0;
+    std::printf("\nfx space: damp level/centroid:");
+    for (float dp : { 500.0f, 1000.0f, 2000.0f, 4000.0f, 8000.0f, 16000.0f }) {
+        Engine e; e.init(SR); e.apply(with({ { "space.mix", 1 }, { "space.damp", dp } }));
+        Sig s(1); play(e, s, 3 * (int)SR, nullptr);
+        std::vector<float> y, in; play(e, s, 4 * (int)SR, &y, false, 90, nullptr, nullptr, &in);
+        double lv = rms_db(y) - rms_db(in), cen = centroid(power(y));
+        lmin = std::fmin(lmin, lv); lmax = std::fmax(lmax, lv); cmin = std::fmin(cmin, cen); cmax = std::fmax(cmax, cen);
+        std::printf(" %.0f: %.2f/%.0f", dp, lv, cen);
+    }
+    check("space: level within 3 dB across damp", lmax - lmin <= 3);
+    check("space: damp moves the centroid >= 30 %", (cmax - cmin) / cmax >= 0.3);
+    double smin = 1e9, smax = -1e9;
+    std::printf("\nfx space: size level:");
+    for (float sz : { 0.2f, 0.4f, 0.7f, 1.0f }) {
+        double lv = level_rel(with({ { "space.mix", 1 }, { "space.size", sz } }), 1);
+        smin = std::fmin(smin, lv); smax = std::fmax(smax, lv); std::printf(" %.1f: %.2f", sz, lv);
+    }
+    check("space: level within 3 dB across size", smax - smin <= 3);
+    double lin = mix_linearity(with({ { "space.mix", 1 }, { "space.mod", 1 } }), "space.mix");
+    check("space: wet at mix 0.37 == 0.37 x wet at mix 1", lin < 1e-5);
+    std::printf("\nfx space: damp level range %.2f dB, centroid %.0f..%.0f Hz; size level range %.2f dB; mix err %.2g\n",
+                lmax - lmin, cmin, cmax, smax - smin, lin);
+}
+
+/* Review Focus 3: everything on, the feedback at its edges, white noise at 0 dBFS for 120 s; then NaN. */
+static void scan(const std::vector<float> &l, const std::vector<float> &r, bool &fin, float &pk) {
+    for (size_t i = 0; i < l.size(); i++) {
+        fin = fin && std::isfinite(l[i]) && std::isfinite(r[i]);
+        pk = std::fmax(pk, std::fmax(std::fabs(l[i]), std::fabs(r[i])));
+    }
+}
+static void test_stable() {
+    using namespace mfx;
+    {   /* Task 2's carried case: Shift alone, fb 0.9 at hz 0 (its 30 ms comb rings +20 dB) */
+        Engine e; e.init(SR); e.apply(with({ { "shift.mix", 1 }, { "shift.fb", 0.9f } }));
+        Sig s(2); s.g = 2; bool fin = true; float pk = 0; std::vector<float> l, r;
+        for (int sec = 0; sec < 20; sec++) { l.clear(); r.clear(); play(e, s, (int)SR, &l, false, 90, nullptr, &r); scan(l, r, fin, pk); }
+        check("stable: shift fb 0.9 at hz 0, white 0 dBFS 20 s: finite, |out| <= 8", fin && pk <= 8);
+        std::printf("fx stable: shift alone fb 0.9 hz 0, 20 s white 0 dBFS: peak %.2f\n", pk);
+    }
+    Cfg c = with({ { "shift.mix", 1 }, { "swarm.mix", 1 }, { "phase.mix", 1 }, { "comb.mix", 1 }, { "vowel.mix", 1 }, { "cloud.mix", 1 },
+                   { "tape.mix", 1 }, { "echo.mix", 1 }, { "space.mix", 1 }, { "echo.fb", 0.98f }, { "shift.fb", 0.9f }, { "space.decay", 60 } });
+    Engine e; e.init(SR); e.apply(c);
+    Sig s(2); s.g = 2; bool fin = true; float pk = 0; double beats = 0; std::vector<float> l, r;
+    for (int sec = 0; sec < 120; sec++) { l.clear(); r.clear(); play(e, s, (int)SR, &l, false, 90, &beats, &r); scan(l, r, fin, pk); }
+    check("stable: all nine at mix 1, echo fb 0.98, shift fb 0.9, decay 60, white 0 dBFS 120 s: every sample finite", fin);
+    check("stable: ... |out| <= 8", pk <= 8);
+    /* a NaN in the input: the copy f runs the same input without it */
+    Engine f = e; Sig t = s; double bf = beats;
+    float iL[128], iR[128], jL[128], jR[128], wL[128], wR[128], vL[128], vR[128];
+    for (int i = 0; i < 128; i++) { s.next(iL[i], iR[i]); t.next(jL[i], jR[i]); }
+    iL[5] = NAN; iR[70] = NAN; iL[71] = INFINITY;
+    e.clock(90, beats); f.clock(90, bf); beats += 128 / SR * 1.5; bf = beats;
+    e.process(iL, iR, wL, wR, 128); f.process(jL, jR, vL, vR, 128);
+    bool fin1 = true; for (int i = 0; i < 128; i++) fin1 = fin1 && std::isfinite(wL[i]) && std::isfinite(wR[i]);
+    std::vector<float> a, ar, b, br; fin = true;
+    play(e, s, 3 * (int)SR, &a, false, 90, &beats, &ar); play(f, t, 3 * (int)SR, &b, false, 90, &bf, &br); scan(a, ar, fin, pk);
+    a.clear(); b.clear(); play(e, s, (int)SR, &a, false, 90, &beats); play(f, t, (int)SR, &b, false, 90, &bf);
+    const double rec = rms_db(a) - rms_db(b);
+    check("stable: NaN in the input -> that block finite", fin1);
+    check("stable: ... every block after finite", fin);
+    check("stable: ... 3 s later within 1 dB of the run without it", std::fabs(rec) <= 1);
+    /* a NaN from inside a module resets that module only: the output finite within one block, the mix still sounding */
+    struct Inj { const char *name; std::vector<float> *buf; };
+    Inj inj[] = { { "echo", &e.ec_dl[0].buf }, { "space", &e.sp_dl[3].buf }, { "shift", &e.sh_dl[1].buf } };
+    bool ok = true;
+    std::printf("fx stable: 120 s peak %.2f; NaN in the input: 3-4 s after vs without %+.3f dB; inside:", pk, rec);
+    for (auto &q : inj) {
+        std::fill(q.buf->begin(), q.buf->end(), NAN);
+        bool fq = true; float pq = 0; a.clear(); ar.clear();
+        play(e, s, 128, &a, false, 90, &beats, &ar); scan(a, ar, fq, pq);
+        a.clear(); ar.clear(); float p2 = 0; play(e, s, (int)(0.5 * SR), &a, false, 90, &beats, &ar); scan(a, ar, fq, p2);
+        ok = ok && fq && p2 > 0.01f;
+        std::printf(" %s %s (then peak %.2f)", q.name, fq ? "finite" : "NOT FINITE", p2);
+    }
+    check("stable: a NaN inside echo/space/shift -> finite within one block, the mix still sounds", ok);
+    std::printf("\n");
+}
+
+/* The input stops: idle() within decay + 6 s, then exact 0 out. */
+static void test_tail() {
+    using namespace mfx;
+    struct Case { const char *name; Cfg c; double decay; };
+    Case cases[] = {
+        { "echo + space", with({ { "echo.mix", 1 }, { "space.mix", 1 } }), 4 },
+        { "all nine", with({ { "shift.mix", 1 }, { "swarm.mix", 1 }, { "phase.mix", 1 }, { "comb.mix", 1 }, { "vowel.mix", 1 }, { "cloud.mix", 1 },
+                             { "tape.mix", 1 }, { "echo.mix", 1 }, { "space.mix", 1 } }), 4 },
+        { "space decay 20", with({ { "space.mix", 1 }, { "space.decay", 20 } }), 20 },
+    };
+    std::printf("fx tail: idle after the input stops:");
+    for (auto &k : cases) {
+        Engine e; e.init(SR); e.apply(k.c);
+        Sig s(1); play(e, s, 3 * (int)SR, nullptr);
+        s.kind = 5; double t = 0;
+        while (!e.idle() && t < k.decay + 20) { play(e, s, 128, nullptr); t += 128 / SR; }
+        bool zero = true;
+        std::vector<float> l, r; play(e, s, 3 * (int)SR, &l, false, 90, nullptr, &r);
+        for (size_t i = 0; i < l.size(); i++) zero = zero && l[i] == 0 && r[i] == 0 && !std::signbit(l[i]) && !std::signbit(r[i]);
+        check("tail: idle within decay + 6 s", e.idle() && t <= k.decay + 6);
+        check("tail: then exactly 0 out", zero && e.idle());
+        std::printf(" %s %.2f s (decay %.0f)%s;", k.name, t, k.decay, zero ? "" : " NOT ZERO");
+    }
+    std::printf("\n");
 }
 
 int main() {
@@ -1007,6 +1267,10 @@ int main() {
     test_comb();
     test_cloud();
     test_levels();
+    test_echo();
+    test_space();
+    test_stable();
+    test_tail();
     test_clicks();
     if (failed) { std::printf("fx FAILED: %d checks\n", failed); return 1; }
     std::printf("fx ok\n");

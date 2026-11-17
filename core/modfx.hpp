@@ -82,7 +82,9 @@ enum Row { R_SH_HZ = 1, R_SH_MODE = 2, R_SH_FB = 3, R_SW_RATE = 5, R_SW_DEPTH = 
            R_SW_ZERO = 10, R_PH_STAGES = 12, R_PH_HZ = 13, R_PH_SPAN = 14, R_PH_RATE = 15, R_PH_FB = 16,
            R_CB_TUNE = 18, R_CB_HZ = 19, R_CB_DECAY = 20, R_CB_DAMP = 21, R_CB_DETUNE = 22, R_VW_POS = 24, R_VW_Q = 25, R_VW_SIZE = 26,
            R_CL_SIZE = 28, R_CL_DENS = 29, R_CL_PITCH = 30, R_CL_SPRAY = 31, R_CL_SCATTER = 32, R_CL_REV = 33, R_CL_FREEZE = 34,
-           R_TP_WOW = 36, R_TP_FLUTTER = 37, R_TP_DRIVE = 38, R_TP_TONE = 39 };   /* the PARAMS rows the modules read (test_table checks them) */
+           R_TP_WOW = 36, R_TP_FLUTTER = 37, R_TP_DRIVE = 38, R_TP_TONE = 39,
+           R_EC_TIME = 41, R_EC_FB = 42, R_EC_TONE = 43, R_EC_SHIFT = 44, R_EC_WOBBLE = 45, R_EC_SPREAD = 46,
+           R_SP_SIZE = 48, R_SP_DECAY = 49, R_SP_DAMP = 50, R_SP_MOD = 51 };   /* the PARAMS rows the modules read (test_table checks them) */
 inline constexpr const char *MOD_NAMES[NMOD] = { "shift", "swarm", "phase", "comb", "vowel", "cloud", "tape", "echo", "space" };
 inline constexpr const char *SRC_NAMES[NSRC] = { "lfo1", "lfo2", "lfo3", "lfo4", "env", "chord" };
 inline constexpr const char *LFO_SHAPES[] = { "sine", "tri", "up", "down", "square", "steps", "drift" };
@@ -217,6 +219,10 @@ struct Ramp {
 };
 
 inline float flush(float x) { return std::fabs(x) < 1e-25f ? 0.0f : x; }
+/* Linear to 1, then bends to at most 2 (slope continuous): a feedback loop's safety, not a drive. */
+inline float sclip(float x) { const float a = std::fabs(x); return a <= 1 ? x : std::copysign(1 + std::tanh(a - 1), x); }
+/* The engine's last stage: linear to 4 (+12 dBFS), then bends to at most 8; nothing the modules make ever passes 8. */
+inline float guard(float x) { const float a = std::fabs(x); return a <= 4 ? x : std::copysign(4 + 4 * std::tanh((a - 4) / 4), x); }
 
 /* A-18: Comb, Vowel and Tape hold their level - output gain = the slow (400 ms) in/out RMS ratio, within +-12 dB.
    Each mean square rises at 10 ms (falls at 400), as an AGC's attack: a timbre move that brings a tone onto a
@@ -298,6 +304,23 @@ struct Engine {
     struct Grain { double d = 0; float dd = 0, g = 0; int k = 0, len = 0; double c = 1, s = 0, cr = 1, sr = 0; };
     tone::DelayLine cl_dl[2]; Grain cl_g[8]; double cl_ph = 1; float cl_j = 1, cl_fz = 0; uint32_t cl_rng = 1; int cl_R = 96000, cl_fill = 0;
     static constexpr uint32_t CL_SEED = 0x9E3779B9u; static constexpr double CL_S0 = 0.002;
+    /* Echo: one line a side (4 s and the wobble), the delay glide (ec_g per 16, ec_d per sample), the tilt's low-pass,
+       the in-loop shifter (its own Hilbert pair) and the wobble */
+    tone::DelayLine ec_dl[2]; Hilbert ec_hil; float ec_g = 1, ec_d = 1, ec_lp[2] = {}, ec_w[2] = {}, ec_a = 0.12f, ec_tcap = 4e-5f, ec_scap = 0.02f; double ec_ph = 0, ec_wp = 0;
+    static constexpr double EC_MAX = 4, EC_WOB = 0.002, EC_WOB_HZ = 0.53, EC_TILT = 1000, EC_TONE_RATE = 2, EC_SHIFT_RATE = 800;   /* tone a second, Hz a second */
+    static constexpr float EC_SPEED = 0.3f, EC_MK_DARK = 1.9f / 6.0206f, EC_MK_THIN = 5.3f / 6.0206f;   /* glide speed; tone's make-up, octaves of gain at -1 / +1 */
+    /* Space: eight lines, their size glide (sp_sz per 16, sp_szd per sample), damping, gains at the last 16, the slow
+       sines (rad), two input all-passes a side */
+    tone::DelayLine sp_dl[8], sp_ap[2][2]; float sp_sz = 0.7f, sp_szd = 0.7f, sp_lp[8] = {}, sp_hp[2] = {}, sp_h = 0.002f, sp_m[8] = {}, sp_g[8] = {}, sp_c = 0.5f, sp_out = 0.1f;
+    double sp_ph[8] = {};
+    static constexpr float SP_LEN[8] = { 1087, 1283, 1481, 1699, 1907, 2129, 2351, 2579 };
+    static constexpr double SP_HZ[8] = { 0.13, 0.19, 0.23, 0.29, 0.17, 0.31, 0.37, 0.41 };
+    static constexpr int SP_AP[2] = { 142, 379 };
+    static constexpr double SP_GAIN = 0.5, SP_LOW = 30;   /* the output's scale; the input's low cut, Hz at size 1 (/ size) */
+    double tempo = 72;                               /* the last running tempo (clock(0, ...) holds the transport, not the echo) */
+    float k10 = 0.002f;                              /* 10 ms per sample: a delay glide's corners rounded */
+    int hold = 24000;                                /* quiet frames before idle (see idle) */
+    float sL[128], sR[128];                          /* the input, non-finite samples zeroed */
     static constexpr double TP_WOW = 0.02 / (2 * 3.141592653589793 * 0.4), TP_FLUTTER = 0.004 / (2 * 3.141592653589793 * 7.3);   /* seconds of swing for +-2 %, +-0.4 % */
 
     Engine() { cfg_defaults(cfg); std::memcpy(sm, cfg.v, sizeof sm); }
@@ -315,13 +338,20 @@ struct Engine {
         for (auto &l : tp_dl) l.init((int)(2 * (TP_WOW + TP_FLUTTER) * sr) + 8);
         cl_R = (int)(2 * sr);
         for (auto &l : cl_dl) l.init(cl_R + (int)(0.5 * sr) + 8);
+        k10 = (float)(1 - std::exp(-1 / (0.01 * sr)));
+        ec_a = (float)(1 - std::exp(-2 * PI * EC_TILT / sr));
+        ec_tcap = (float)(EC_TONE_RATE / sr); ec_scap = (float)(EC_SHIFT_RATE / sr);
+        for (auto &l : ec_dl) l.init((int)((EC_MAX + EC_WOB) * sr) + 8);
+        for (auto &l : sp_dl) l.init((int)((SP_LEN[7] + 8) * sr / 48000) + 8);
+        for (auto &s : sp_ap) for (int k = 0; k < 2; k++) s[k].init((int)(SP_AP[k] * sr / 48000) + 2);
+        hold = (int)(0.5 * sr);
         reset();
     }
     void apply(const Cfg &c) {
         cfg = c;
         for (int m = 0; m < NMOD; m++) mix[m].tgt = c.v[mix_row(m)];
     }
-    void clock(double b, double pos) { bpm = b; beats = pos; }   /* bpm 0 holds the transport (the tests' LFO freeze) */
+    void clock(double b, double pos) { bpm = b; beats = pos; if (b > 0) tempo = b; }   /* bpm 0 holds the transport (the tests' LFO freeze) */
     /* The caller bumps `serial` on every chord change: Comb glides (80 ms) only on a new serial; new notes under the
        same serial jump the combs. */
     void chord(const float *midi5, float root, int serial) {
@@ -338,8 +368,10 @@ struct Engine {
         }
         lvl_in = pin; lvl_out = pout;
     }
-    /* Nothing on, or the tail under -80 dB for 0.5 s. */
-    bool idle() const { return all_off() || quiet >= (int)(0.5 * sr); }
+    /* Nothing on, or the tail under -80 dB for 0.5 s - plus, while they run, the echo's delay and Cloud's longest gap and
+       reach back (a repeat or a grain may still be on its way). From then on, while the input stays exactly 0 (and Cloud
+       is not frozen), the output is exactly 0. */
+    bool idle() const { return all_off() || quiet >= hold; }
     void reset() {
         for (int m = 0; m < NMOD; m++) { clear(m); dirty[m] = true; mix[m].cur = 0; lvl[m] = 0; }
         quiet = 0; lvl_in = lvl_out = 0;
@@ -352,10 +384,28 @@ struct Engine {
 
 private:
     bool all_off() const { for (auto &m : mix) if (!m.off()) return false; return true; }
-    void block(const float *inL, const float *inR, float *wetL, float *wetR, int n) {
-        float pin = 0, pout = 0;
-        for (int i = 0; i < n; i++) pin = std::fmax(pin, std::fmax(std::fabs(inL[i]), std::fabs(inR[i])));
+    void block(const float *rawL, const float *rawR, float *wetL, float *wetR, int n) {
+        float pin = 0, pout = 0; bool silent = true;
+        for (int i = 0; i < n; i++) {                /* a NaN or inf in the input is 0 to the engine (finite input: unchanged) */
+            sL[i] = std::isfinite(rawL[i]) ? rawL[i] : 0.0f; sR[i] = std::isfinite(rawR[i]) ? rawR[i] : 0.0f;
+            pin = std::fmax(pin, std::fmax(std::fabs(sL[i]), std::fabs(sR[i])));
+            silent = silent && sL[i] == 0 && sR[i] == 0;
+        }
+        const float *inL = sL, *inR = sR;
         lvl_in = pin;
+        float reach = 0;                             /* Cloud: the longest gap between onsets, the furthest a grain reads back */
+        if (!mix[CLOUD].off())
+            reach = 1.25f / cfg.v[R_CL_DENS] + std::fmin(2.5f, 2 * cfg.v[R_CL_SCATTER]
+                  + 0.001f * cfg.v[R_CL_SIZE] * std::exp2(std::fabs(cfg.v[R_CL_PITCH]) / 12) * (cfg.v[R_CL_SPRAY] > 0 ? 2 : 1));
+        hold = (int)(0.5 * sr) + (mix[ECHO].off() ? 0 : (int)(ec_g + EC_WOB * sr)) + (int)(reach * sr);
+        const bool frozen = !mix[CLOUD].off() && cfg.v[R_CL_FREEZE] >= 0.5f;
+        if (!all_off() && silent && quiet >= hold && !frozen) {   /* the tail is over: exact 0, the modules cleared before they next run */
+            std::memset(wetL, 0, sizeof(float) * n); std::memset(wetR, 0, sizeof(float) * n);
+            for (int m = 0; m < NMOD; m++) { lvl[m] = 0; dirty[m] = true; mix[m].cur = mix[m].tgt; }
+            lvl_out = 0; quiet += n;
+            beats += n * bpm / 60 / sr;
+            return;
+        }
         if (all_off()) {
             std::memset(wetL, 0, sizeof(float) * n); std::memset(wetR, 0, sizeof(float) * n);
             for (int m = 0; m < NMOD; m++) { lvl[m] = 0; dirty[m] = true; }
@@ -375,6 +425,12 @@ private:
                 warm[m] += n;
             }
             run(m, yL, yR, n);
+            bool bad = false;
+            for (int i = 0; i < n; i++) bad = bad || !std::isfinite(yL[i]) || !std::isfinite(yR[i]);
+            if (bad) {                               /* a non-finite sample: this module starts over, 0 for the block */
+                clear(m); warm[m] = 0;
+                std::memset(yL, 0, sizeof(float) * n); std::memset(yR, 0, sizeof(float) * n);
+            }
             float pk = 0;
             for (int i = 0; i < n; i++) {
                 float k = mix[m].next();
@@ -386,7 +442,7 @@ private:
         }
         for (int i = 0; i < n; i++) {
             float g = keep[i];
-            wetL[i] = g == 1 ? 0.0f : xL[i] - g * inL[i]; wetR[i] = g == 1 ? 0.0f : xR[i] - g * inR[i];   /* exact +0 */
+            wetL[i] = g == 1 ? 0.0f : guard(xL[i] - g * inL[i]); wetR[i] = g == 1 ? 0.0f : guard(xR[i] - g * inR[i]);   /* exact +0 */
             if (wetL[i] == 0) wetL[i] = 0.0f;
             if (wetR[i] == 0) wetR[i] = 0.0f;
             pout = std::fmax(pout, std::fmax(std::fabs(wetL[i]), std::fabs(wetR[i])));
@@ -404,6 +460,7 @@ private:
     float glide(int row) { return sm[row] += sk1 * (cfg.v[row] - sm[row]); }
     float glide16(int row) { return sm[row] += sk * (cfg.v[row] - sm[row]); }
     float glide100(int row) { return sm[row] += sk100 * (cfg.v[row] - sm[row]); }
+    float glide_cap(int row, float cap) { return sm[row] += std::fmax(-cap, std::fmin(cap, sk1 * (cfg.v[row] - sm[row]))); }   /* glide, at most cap a sample */
     /* A frequency glided in octaves, per 16, at most 20 octaves a second: a 5-octave jump takes 250 ms, not one step of
        brightness (the click metric weighs f^2; a filter opening faster than ~2 octaves in 50 ms reads as a click). */
     float glide_oct(int row, float k) {
@@ -419,6 +476,8 @@ private:
         else if (m == COMB) comb(L, R, n);
         else if (m == TAPE) tape(L, R, n);
         else if (m == CLOUD) cloud(L, R, n);
+        else if (m == ECHO) echo(L, R, n);
+        else if (m == SPACE) space(L, R, n);
     }
     void clear(int m) {
         for (int i = 0; i < NPARAM; i++) if (PARAMS[i].mod == m) sm[i] = cfg.v[i];
@@ -454,6 +513,17 @@ private:
             for (auto &l : cl_dl) zero(l);
             for (auto &g : cl_g) g.len = 0;
             cl_ph = 1; cl_j = 1; cl_fz = 0; cl_fill = 0; cl_rng = CL_SEED;
+        } else if (m == ECHO) {
+            for (auto &l : ec_dl) zero(l);
+            ec_hil.clear(); ec_g = ec_d = ec_target(); ec_lp[0] = ec_lp[1] = ec_w[0] = ec_w[1] = 0; ec_ph = ec_wp = 0;
+        } else if (m == SPACE) {
+            for (auto &l : sp_dl) zero(l);
+            for (auto &s : sp_ap) for (auto &l : s) zero(l);
+            std::memset(sp_lp, 0, sizeof sp_lp);
+            sp_sz = sp_szd = cfg.v[R_SP_SIZE];
+            for (int i = 0; i < 8; i++) { sp_ph[i] = 0.785 * i; sp_m[i] = (float)(sp_mod() * std::sin(sp_ph[i])); }
+            std::memset(sp_hp, 0, sizeof sp_hp);
+            sp_design(sp_g, sp_c, sp_h, sp_out);
         }
     }
 
@@ -722,6 +792,119 @@ private:
             }
         }
         match(tp_lm, L, R, n);
+    }
+
+    /* Echo: the line read d samples back (the division at the running tempo, at most 4 s) + the wobble; the read passes
+       the tilt (a one-pole split at 1 kHz: tone < 0 takes the highs down by -tone, > 0 the lows by tone; 0 is the input),
+       then the shifter (single side band, I cos - Q sin; blended in over |shift| 0 -> 1 Hz on a smoothstep, so at 0 the
+       repeats are not smeared by the all-passes); that is the repeat heard and fed back: line <- sclip(in + fb x repeat),
+       so every pass is transformed again and nothing in the loop passes 2. Spread s: the input (1 - s) to its own side,
+       s of the mid to the left; the repeats (1 - s) back to their side, s across (s 1: ping-pong).
+       Time: a new delay glides as a tape would - a 100 ms glide whose speed is capped at 0.3 sample a sample (the pitch
+       at most 0.7x down, 1.3x up), its corners rounded over 10 ms (no step in pitch: no click, no zipper). 8n -> 4n at
+       90 bpm takes 1.1 s. Wobble: +-2 ms at 0.53 Hz, the right side 90 degrees behind (+-0.67 % pitch at 1, each pass
+       again). tone glides at most 2 a second and shift 800 Hz a second (a sweep across the range in 1 s: faster, the
+       repeats brighten or rise in pitch quicker than the click metric allows). tone's level make-up (+1.9 dB at -1,
+       +5.3 dB at +1, out of the loop) holds pink within 1 dB at the default feedback (A-18).
+       ponytail: a 32n -> 4 s jump glides 13 s; a cross-fade jump if that is too slow to hear as a change. */
+    float ec_target() const { return (float)(std::fmin(EC_MAX, cfg.v[R_EC_TIME] * 60 / tempo) * sr); }
+    void echo(float *L, float *R, int n) {
+        const float tgt = ec_target(), cap = 16 * EC_SPEED, W = (float)(EC_WOB * sr);
+        for (int o = 0; o < n; o += 16) {
+            const int m = n - o < 16 ? n - o : 16;
+            ec_g += std::fmax(-cap, std::fmin(cap, sk100 * (tgt - ec_g)));
+            const float wob = glide100(R_EC_WOBBLE) * W;
+            ec_wp += 2 * PI * EC_WOB_HZ * m / sr; if (ec_wp > 2 * PI) ec_wp -= 2 * PI;
+            const float w1[2] = { wob * (float)std::sin(ec_wp), wob * (float)std::cos(ec_wp) - wob };   /* both start at 0 */
+            for (int i = o, j = 1; i < o + m; i++, j++) {
+                const float w = (float)j / m, fb = glide(R_EC_FB), tone = glide_cap(R_EC_TONE, ec_tcap), sh = glide_cap(R_EC_SHIFT, ec_scap), spr = glide(R_EC_SPREAD);
+                const float u = std::fmin(1.0f, std::fabs(sh)), ws = u * u * (3 - 2 * u);
+                const float mk = std::exp2(tone < 0 ? -tone * EC_MK_DARK : tone * EC_MK_THIN);
+                ec_d += k10 * (ec_g - ec_d);
+                float c = 1, s = 0;
+                if (ws > 0) { c = (float)std::cos(ec_ph); s = (float)std::sin(ec_ph); }
+                ec_ph += 2 * PI * sh / sr; if (ec_ph > PI) ec_ph -= 2 * PI; else if (ec_ph < -PI) ec_ph += 2 * PI;
+                float p[2];
+                for (int ch = 0; ch < 2; ch++) {
+                    const float r = ec_dl[ch].read(ec_d + ec_w[ch] + (w1[ch] - ec_w[ch]) * w);
+                    float &lp = ec_lp[ch]; lp = flush(lp + ec_a * (r - lp));
+                    const float t = tone < 0 ? r + tone * (r - lp) : r - tone * lp;
+                    float I, Q; ec_hil.run(ch, t, I, Q);
+                    p[ch] = t + ws * ((I * c - Q * s) - t);
+                }
+                const float a = 1 - spr;
+                ec_dl[0].push(sclip(a * L[i] + spr * 0.5f * (L[i] + R[i]) + fb * (a * p[0] + spr * p[1])));
+                ec_dl[1].push(sclip(a * R[i] + fb * (a * p[1] + spr * p[0])));
+                L[i] = mk * p[0]; R[i] = mk * p[1];
+            }
+            ec_w[0] = w1[0]; ec_w[1] = w1[1];
+        }
+    }
+
+    /* Space: eight lines, lengths SP_LEN x size (at 48 kHz; scaled by sr), each swung +-mod x 8 samples on its own slow
+       sine; each line's read -> one-pole at damp -> x 10^(-3 len / (decay sr)) -> Householder (x - 2/8 sum) -> back in.
+       The input, two all-passes a side (142, 379 samples, 0.5), enters lines 0 2 4 6 (left) and 1 3 5 7 (right); the
+       left output is lines 0 2 4 6 ("odd", counted from 1), the right 1 3 5 7. A one-pole low cut at 30 Hz / size on the
+       input: under ~1 / the lines' length spread the eight lines ring in phase, and a small room boomed (+5.7 dB on pink
+       at size 0.2 without it); outside the loop, so the decay is untouched. Level: the output is scaled by the
+       steady-state gain the network has for pink noise (ten octave bands, 31 Hz-16 kHz: each band's power
+       |cut|^2 / (1 - g^2 |H(f)|^2), g at the mean length, H the damping), so decay, size and damp move the time and
+       colour, not the level (A-18). Size glides 100 ms with its corners rounded over 10 ms (the delay times: a tape glide).
+       ponytail: a held sine's level still depends on where it falls among the modes (110-440 Hz spans ~9 dB at mod 0.3);
+       a deeper swing (the room fix used +-100 samples) if a held note is heard dropping out. */
+    float sp_mod() const { return sm[R_SP_MOD] * 8 * (float)(sr / 48000); }
+    void sp_design(float g[8], float &c, float &h, float &out) const {
+        const double sc = sp_sz * sr / 48000, dec = sm[R_SP_DECAY] * sr, fc = std::fmin(sm[R_SP_DAMP], 0.45 * sr);
+        double mean = 0;
+        for (int i = 0; i < 8; i++) { g[i] = (float)std::pow(10.0, -3 * SP_LEN[i] * sc / dec); mean += SP_LEN[i] * sc / 8; }
+        const double a = 1 - std::exp(-2 * PI * fc / sr), b = 1 - a, gm2 = std::pow(10.0, -6 * mean / dec);
+        const double ah = 1 - std::exp(-2 * PI * SP_LOW / sp_sz / sr), bh = 1 - ah;
+        double P = 0;
+        for (int k = 0; k < 10; k++) {
+            const double w = 2 * PI * 31.25 * std::exp2(k) / sr, cw = std::cos(w);
+            const double h2 = a * a / (1 - 2 * b * cw + b * b), hi2 = bh * bh * 2 * (1 - cw) / (1 - 2 * bh * cw + bh * bh);
+            P += 0.1 * hi2 / (1 - gm2 * h2);
+        }
+        c = (float)a; h = (float)ah; out = (float)(SP_GAIN / std::sqrt(P));
+    }
+    void space(float *L, float *R, int n) {
+        const float sc = (float)(sr / 48000);
+        const int D[2] = { (int)(SP_AP[0] * sc), (int)(SP_AP[1] * sc) };
+        for (int o = 0; o < n; o += 16) {
+            const int m = n - o < 16 ? n - o : 16;
+            sp_sz += sk100 * (cfg.v[R_SP_SIZE] - sp_sz);
+            glide_oct(R_SP_DECAY, sk); glide_oct(R_SP_DAMP, sk); glide16(R_SP_MOD);
+            const float md = sp_mod();
+            float m1[8], g1[8], c1, h1, o1;
+            for (int l = 0; l < 8; l++) {
+                sp_ph[l] += 2 * PI * SP_HZ[l] * m / sr; if (sp_ph[l] > 2 * PI) sp_ph[l] -= 2 * PI;
+                m1[l] = md * (float)std::sin(sp_ph[l]);
+            }
+            sp_design(g1, c1, h1, o1);
+            for (int i = o, j = 1; i < o + m; i++, j++) {
+                const float w = (float)j / m, c = sp_c + (c1 - sp_c) * w, h = sp_h + (h1 - sp_h) * w, out = sp_out + (o1 - sp_out) * w;
+                sp_szd += k10 * (sp_sz - sp_szd);
+                float in[2] = { L[i], R[i] };
+                for (int ch = 0; ch < 2; ch++) {
+                    float &hp = sp_hp[ch]; hp = flush(hp + h * (in[ch] - hp)); in[ch] -= hp;
+                    for (int k = 0; k < 2; k++) {
+                        tone::DelayLine &ap = sp_ap[ch][k];
+                        const float d = ap.read(D[k]), v = in[ch] + 0.5f * d;
+                        ap.push(v); in[ch] = d - 0.5f * v;
+                    }
+                }
+                float a[8], v[8], S = 0;
+                for (int l = 0; l < 8; l++) {
+                    a[l] = sp_dl[l].read(SP_LEN[l] * sc * sp_szd + sp_m[l] + (m1[l] - sp_m[l]) * w);
+                    float &lp = sp_lp[l]; lp = flush(lp + c * (a[l] - lp));
+                    v[l] = (sp_g[l] + (g1[l] - sp_g[l]) * w) * lp; S += v[l];
+                }
+                S *= 0.25f;
+                for (int l = 0; l < 8; l++) sp_dl[l].push(v[l] - S + in[l & 1]);
+                L[i] = out * (a[0] + a[2] + a[4] + a[6]); R[i] = out * (a[1] + a[3] + a[5] + a[7]);
+            }
+            std::memcpy(sp_m, m1, sizeof sp_m); std::memcpy(sp_g, g1, sizeof sp_g); sp_c = c1; sp_h = h1; sp_out = o1;
+        }
     }
 
     /* Cloud: up to eight Hann grains read from the last 2 s. Onsets come dens a second, each interval x 1 / (0.8 + 0.4 u).
