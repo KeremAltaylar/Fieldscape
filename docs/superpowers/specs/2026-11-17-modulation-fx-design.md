@@ -84,7 +84,7 @@ All defaults are dry. Ranges are the stored units; `d` = a bar division (below).
 | **Cloud** | grains from the last 2 s: up to 8 Hann grains, re-pitched, scattered back in time, reversed by chance; `freeze` stops the buffer taking new sound (the grains keep reading it) | `mix` · `size` 20–500 ms (120) · `dens` 1–40 /s (12) · `pitch` −24…24 st (0) · `spray` 0–1 chance of ×2, ×0.5, ×1.5 (0) · `scatter` 0–1 (0.3) · `rev` 0–1 (0) · `freeze` off/on |
 | **Tape** | wow (≈ 0.4 Hz + drift, to ±2 % pitch), flutter (7.3 Hz, to ±0.4 %), saturation at the signal's own scale (A-19), age filter | `mix` · `wow` 0–1 (0.3) · `flutter` 0–1 (0.2) · `drive` 0–1 (0.2) · `tone` 500–16000 Hz (9000) |
 | **Echo** | the feedback delay, up to 4 s. **In its loop:** a tilt filter, a frequency shifter (each repeat moves by `shift` Hz), a wobbling delay time and a soft clip — every repeat is transformed again | `mix` · `time` d (8n.) · `fb` 0–0.98 (0.45) · `tone` −1…1: dark…thin (0) · `shift` −200…200 Hz (0) · `wobble` 0–1 (0) · `spread` 0–1 ping-pong (0.5) |
-| **Space** | eight-line feedback delay network, lines modulated (as the room fix of 2026-10-20), decay to a minute | `mix` · `size` 0.2–1 (0.7) · `decay` 0.3–60 s (4) · `damp` 500–16000 Hz (7000) · `mod` 0–1 (0.3) |
+| **Space** | eight-line feedback delay network, lines modulated (as the room fix of 2026-10-20), decay to a minute | `mix` · `size` 0.2–1 (0.7) · `decay` 0.3–60 s (4) · `damp` 500–16000 Hz (7000) · `mod` 0–1 (1; 1 = the 2026-10-20 room fix swing; below ~0.75 held low notes can dip) |
 
 Route only: `ret` 0–1 (0) and `send[3]` 0–1 (1, 1, 1). Point only: `on`, `wet` 0–1 (0).
 

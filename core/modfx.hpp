@@ -74,7 +74,7 @@ inline constexpr ParamDef PARAMS[] = {
     { "space.size", SPACE, 0.2f, 1, 0.7f, LIN, true },
     { "space.decay", SPACE, 0.3f, 60, 4, EXP, true },
     { "space.damp", SPACE, 500, 16000, 7000, EXP, true },
-    { "space.mod", SPACE, 0, 1, 0.3f, LIN, true },
+    { "space.mod", SPACE, 0, 1, 1, LIN, true },
 };
 inline constexpr int NPARAM = (int)(sizeof PARAMS / sizeof *PARAMS);
 static_assert(NPARAM <= 64, "Cfg::v holds 64");

@@ -50,7 +50,7 @@ static void test_table() {
         { "echo.mix", 0, 1, 0, true }, { "echo.time", 0.125f, 128, 0.75f, false }, { "echo.fb", 0, 0.98f, 0.45f, true }, { "echo.tone", -1, 1, 0, true },
         { "echo.shift", -200, 200, 0, true }, { "echo.wobble", 0, 1, 0, true }, { "echo.spread", 0, 1, 0.5f, true },
         { "space.mix", 0, 1, 0, true }, { "space.size", 0.2f, 1, 0.7f, true }, { "space.decay", 0.3f, 60, 4, true }, { "space.damp", 500, 16000, 7000, true },
-        { "space.mod", 0, 1, 0.3f, true },
+        { "space.mod", 0, 1, 1, true },
     };
     const int n = (int)(sizeof T / sizeof *T);
     check("table: 52 rows in the spec", n == 52);
@@ -1170,15 +1170,14 @@ static void test_space() {
     };
     double range[2] = {};
     for (int k = 0; k < 2; k++) {
-        const float mod = k ? 0.3f : 1.0f; double hmin = 1e9, hmax = -1e9;
+        const float mod = k ? 0.3f : PARAMS[R_SP_MOD].def; double hmin = 1e9, hmax = -1e9;   /* the default (1, +-100), then 0.3 (printed) */
         std::printf("\nfx space: held sine wet level (dB), mod %.1f (+-%.0f samples):", mod, 100 * mod);
         for (double hz : { 110.0, 146.83, 165.0, 196.0, 220.0, 262.0, 294.0, 440.0 }) {
             double v = sine(hz, mod); hmin = std::fmin(hmin, v); hmax = std::fmax(hmax, v); std::printf(" %.0f: %.2f", hz, v);
         }
         range[k] = hmax - hmin; std::printf("; range %.2f dB", range[k]);
     }
-    /* checked at mod 1 (+-100, the room fix's depth); the default 0.3 is printed: see the task 5 fix report */
-    check("space: mod 1 -> held sines 110-440 Hz (D3 147 among them) within 6 dB of each other", range[0] <= 6);
+    check("space: default mod -> held sines 110-440 Hz (D3 147 among them) within 6 dB of each other", PARAMS[R_SP_MOD].def == 1 && range[0] <= 6);
     /* A-18: damp moves the spectrum, not the level; size holds the level */
     double lmin = 1e9, lmax = -1e9, cmin = 1e9, cmax = 0;
     std::printf("\nfx space: damp level/centroid:");
