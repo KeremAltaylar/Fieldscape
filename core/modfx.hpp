@@ -81,6 +81,7 @@ static_assert(NPARAM <= 64, "Cfg::v holds 64");
 enum Row { R_SH_HZ = 1, R_SH_MODE = 2, R_SH_FB = 3, R_SW_RATE = 5, R_SW_DEPTH = 6, R_SW_DELAY = 7, R_SW_FB = 8, R_SW_SPREAD = 9,
            R_SW_ZERO = 10, R_PH_STAGES = 12, R_PH_HZ = 13, R_PH_SPAN = 14, R_PH_RATE = 15, R_PH_FB = 16,
            R_CB_TUNE = 18, R_CB_HZ = 19, R_CB_DECAY = 20, R_CB_DAMP = 21, R_CB_DETUNE = 22, R_VW_POS = 24, R_VW_Q = 25, R_VW_SIZE = 26,
+           R_CL_SIZE = 28, R_CL_DENS = 29, R_CL_PITCH = 30, R_CL_SPRAY = 31, R_CL_SCATTER = 32, R_CL_REV = 33, R_CL_FREEZE = 34,
            R_TP_WOW = 36, R_TP_FLUTTER = 37, R_TP_DRIVE = 38, R_TP_TONE = 39 };   /* the PARAMS rows the modules read (test_table checks them) */
 inline constexpr const char *MOD_NAMES[NMOD] = { "shift", "swarm", "phase", "comb", "vowel", "cloud", "tape", "echo", "space" };
 inline constexpr const char *SRC_NAMES[NSRC] = { "lfo1", "lfo2", "lfo3", "lfo4", "env", "chord" };
@@ -292,6 +293,11 @@ struct Engine {
     /* Tape: one moving read a side (wow, flutter), the drive's level follower, the age filter */
     tone::DelayLine tp_dl[2]; double tp_pw = 0, tp_pf = 0; float tp_d = 1, tp_c = 1, tp_dr = 0, tp_dt = 0, tp_ms[2] = {}, tp_lp[2] = {};
     uint32_t tp_rng = 1; int tp_cnt = 0; LevelMatch tp_lm;
+    /* Cloud: the capture lines (2.5 s: grains read the last 2 s, and live up to 0.5 s more), eight grains, the onset
+       phase, the freeze cross-fade, the seeded random */
+    struct Grain { double d = 0; float dd = 0, g = 0; int k = 0, len = 0; double c = 1, s = 0, cr = 1, sr = 0; };
+    tone::DelayLine cl_dl[2]; Grain cl_g[8]; double cl_ph = 1; float cl_j = 1, cl_fz = 0; uint32_t cl_rng = 1; int cl_R = 96000;
+    static constexpr uint32_t CL_SEED = 0x9E3779B9u;
     static constexpr double TP_WOW = 0.02 / (2 * 3.141592653589793 * 0.4), TP_FLUTTER = 0.004 / (2 * 3.141592653589793 * 7.3);   /* seconds of swing for +-2 %, +-0.4 % */
 
     Engine() { cfg_defaults(cfg); std::memcpy(sm, cfg.v, sizeof sm); }
@@ -307,6 +313,8 @@ struct Engine {
         for (auto &l : sw_dl) l.init((int)(0.06 * sr) + 2);
         for (auto &s : cb_dl) for (auto &l : s) l.init((int)(sr / 35) + 8);
         for (auto &l : tp_dl) l.init((int)(2 * (TP_WOW + TP_FLUTTER) * sr) + 8);
+        cl_R = (int)(2 * sr);
+        for (auto &l : cl_dl) l.init(cl_R + (int)(0.5 * sr) + 8);
         reset();
     }
     void apply(const Cfg &c) {
@@ -410,6 +418,7 @@ private:
         else if (m == SWARM) swarm(L, R, n);
         else if (m == COMB) comb(L, R, n);
         else if (m == TAPE) tape(L, R, n);
+        else if (m == CLOUD) cloud(L, R, n);
     }
     void clear(int m) {
         for (int i = 0; i < NPARAM; i++) if (PARAMS[i].mod == m) sm[i] = cfg.v[i];
@@ -441,6 +450,10 @@ private:
             tp_pw = tp_pf = 0; tp_d = 1; tp_c = tp_coef(); tp_dr = tp_dt = 0; tp_rng = 1; tp_cnt = 0;
             tp_ms[0] = tp_ms[1] = tp_lp[0] = tp_lp[1] = 0;
             tp_lm.clear();
+        } else if (m == CLOUD) {
+            for (auto &l : cl_dl) zero(l);
+            for (auto &g : cl_g) g.len = 0;
+            cl_ph = 1; cl_j = 1; cl_fz = cfg.v[R_CL_FREEZE] >= 0.5f; cl_rng = CL_SEED;
         }
     }
 
@@ -709,6 +722,65 @@ private:
             }
         }
         match(tp_lm, L, R, n);
+    }
+
+    /* Cloud: up to eight Hann grains read from the last 2 s. Onsets come dens a second, each interval x 1 / (0.8 + 0.4 u).
+       Each grain takes its settings at its onset (so no parameter can step a sounding grain): rate 2^(pitch / 12), x 2,
+       0.5 or 1.5 by the chance spray; reversed by the chance rev; the material it reads (rate x size samples) ends at
+       scatter x u x (2 s - that span) behind now, so at scatter 0 a grain plays the last size (a plain delay at pitch 0).
+       Gain sqrt(8/3) (the Hann's mean square) / sqrt(max(1, min(8, dens size))): the level holds from one grain to eight
+       overlapping. A grain reads only what was written before its onset and the line holds 0.5 s past the 2 s, so the
+       write head never reaches a sounding grain. Freeze: the write cross-fades (30 ms) from the input to the slot's own
+       old sample, so the line keeps turning as a 2.5 s loop of what it held, joined by that 30 ms cross-fade; no grain
+       reads the slot being written, so the toggle changes nothing a grain is playing. The pitch row glides at most 10
+       octaves a second (a 4-octave step takes 400 ms). A full pool skips the onset.
+       ponytail: linear interpolation (aliases pitched up on bright input); a grain whose span outgrows 2 s (x8 at 500 ms)
+       is shortened to fit. */
+    float cl_u() { cl_rng ^= cl_rng << 13; cl_rng ^= cl_rng >> 17; cl_rng ^= cl_rng << 5; return (float)(cl_rng >> 8) / 16777216.0f; }
+    void cl_spawn() {
+        Grain *g = nullptr;
+        for (auto &q : cl_g) if (!q.len) { g = &q; break; }
+        const float u1 = cl_u(), u2 = cl_u(), u3 = cl_u(), u4 = cl_u();   /* drawn even when the pool is full: one stream */
+        if (!g) return;
+        const float size = cfg.v[R_CL_SIZE] * 0.001f, dens = cfg.v[R_CL_DENS];
+        double r = std::exp2(sm[R_CL_PITCH] / 12.0);
+        if (u1 < cfg.v[R_CL_SPRAY]) r *= u2 < 1 / 3.0f ? 2 : u2 < 2 / 3.0f ? 0.5 : 1.5;
+        int len = std::max(2, (int)(size * sr));
+        if (r * len > cl_R - 2) len = std::max(2, (int)((cl_R - 2) / r));
+        const double span = r * len, e = 1 + cfg.v[R_CL_SCATTER] * u3 * (cl_R - 2 - span);
+        const bool rev = u4 < cfg.v[R_CL_REV];
+        g->d = rev ? e : e + span;                   /* delay behind the write head; it moves 1 - (+-r) a sample */
+        g->dd = (float)(rev ? 1 + r : 1 - r);
+        g->g = (float)(1.6329932 / std::sqrt(std::fmax(1.0f, std::fmin(8.0f, dens * size))));
+        g->len = len; g->k = 0; g->c = 1; g->s = 0;
+        g->cr = std::cos(2 * PI / len); g->sr = std::sin(2 * PI / len);
+    }
+    void cloud(float *L, float *R, int n) {
+        const float want = cfg.v[R_CL_FREEZE] >= 0.5f, xstep = (float)(1 / (0.03 * sr)), pstep = (float)(120 * 16 / sr);
+        for (int o = 0; o < n; o += 16) {
+            const float d = cfg.v[R_CL_PITCH] - sm[R_CL_PITCH];
+            sm[R_CL_PITCH] += std::fmax(-pstep, std::fmin(pstep, sk * d));
+            if (std::fabs(cfg.v[R_CL_PITCH] - sm[R_CL_PITCH]) < 1e-4f) sm[R_CL_PITCH] = cfg.v[R_CL_PITCH];
+            for (int i = o; i < o + 16 && i < n; i++) {
+                cl_fz = cl_fz < want ? std::fmin(want, cl_fz + xstep) : std::fmax(want, cl_fz - xstep);
+                if ((cl_ph += cfg.v[R_CL_DENS] * cl_j / sr) >= 1) { cl_ph -= 1; cl_j = 1 / (0.8f + 0.4f * cl_u()); cl_spawn(); }
+                for (int ch = 0; ch < 2; ch++) {
+                    tone::DelayLine &dl = cl_dl[ch];
+                    const float x = ch ? R[i] : L[i];
+                    dl.push(x + cl_fz * (dl.buf[dl.w] - x));   /* buf[w]: the oldest slot, about to be written */
+                }
+                float l = 0, r = 0;
+                for (auto &g : cl_g) {
+                    if (!g.len) continue;
+                    const double c = g.c * g.cr - g.s * g.sr; g.s = g.c * g.sr + g.s * g.cr; g.c = c;
+                    g.d += g.dd;
+                    const float w = g.g * (float)(0.5 - 0.5 * c);
+                    l += w * cl_dl[0].read(g.d); r += w * cl_dl[1].read(g.d);
+                    if (++g.k >= g.len - 1) g.len = 0;
+                }
+                L[i] = l; R[i] = r;
+            }
+        }
     }
 };
 

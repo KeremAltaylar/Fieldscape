@@ -76,7 +76,10 @@ static void test_table() {
         && R_SW_FB == param_of("swarm.fb") && R_SW_SPREAD == param_of("swarm.spread") && R_SW_ZERO == param_of("swarm.zero")
         && R_CB_TUNE == param_of("comb.tune") && R_CB_HZ == param_of("comb.hz") && R_CB_DECAY == param_of("comb.decay")
         && R_CB_DAMP == param_of("comb.damp") && R_CB_DETUNE == param_of("comb.detune") && R_TP_WOW == param_of("tape.wow")
-        && R_TP_FLUTTER == param_of("tape.flutter") && R_TP_DRIVE == param_of("tape.drive") && R_TP_TONE == param_of("tape.tone"));
+        && R_TP_FLUTTER == param_of("tape.flutter") && R_TP_DRIVE == param_of("tape.drive") && R_TP_TONE == param_of("tape.tone")
+        && R_CL_SIZE == param_of("cloud.size") && R_CL_DENS == param_of("cloud.dens") && R_CL_PITCH == param_of("cloud.pitch")
+        && R_CL_SPRAY == param_of("cloud.spray") && R_CL_SCATTER == param_of("cloud.scatter") && R_CL_REV == param_of("cloud.rev")
+        && R_CL_FREEZE == param_of("cloud.freeze"));
     int e = param_of("echo.fb");
     check("table: param_of round-trips", e >= 0 && !std::strcmp(PARAMS[e].key, "echo.fb"));
     check("table: unknown -1", param_of("nope.x") == -1 && param_of("echo") == -1 && param_of("") == -1);
@@ -265,11 +268,15 @@ static void test_linear() {
 static const double SR = 48000, TAU = 6.283185307179586;
 
 /* A sound source the tests feed, stereo: 0 a 220 Hz sine at -12 dBFS, 1 pink noise (x g), 2 white noise, 3 a 1 kHz sine
-   at -6 dBFS, 4 a sine at hz and amp, 5 silence. */
+   at -6 dBFS, 4 a sine at hz and amp, 5 silence, 6 an impulse train (1 kHz, 0.5), 7 a rising chirp (200 -> 1600 Hz
+   in 1.5 s, again), 8 a time code (left 0.05 x seconds, right 0.5: left / right x 10 is the time it was played). */
 struct Sig {
-    int kind; long n = 0; Pink pl, pr; uint32_t w = 777; double hz = 440, amp = 0.5; float g = 1;
+    int kind; long n = 0; Pink pl, pr; uint32_t w = 777; double hz = 440, amp = 0.5, ph = 0; float g = 1;
     explicit Sig(int k) : kind(k) { pr.s = 99991; }
     void next(float &l, float &r) {
+        if (kind == 6) { l = r = n++ % 48 == 0 ? 0.5f : 0.0f; return; }
+        if (kind == 7) { ph += TAU * 200 * std::pow(2.0, 2 * std::fmod(n++ / SR, 1.5)) / SR; l = r = (float)(0.5 * std::sin(ph)); return; }
+        if (kind == 8) { l = (float)(0.05 * n++ / SR); r = 0.5f; return; }
         if (kind == 0) { l = r = (float)(0.2512 * std::sin(TAU * 220 * n++ / SR)); return; }
         if (kind == 3) { l = r = (float)(0.5 * std::sin(TAU * 1000 * n++ / SR)); return; }
         if (kind == 4) { l = r = (float)(amp * std::sin(TAU * hz * n++ / SR)); return; }
@@ -300,8 +307,8 @@ static void play(mfx::Engine &e, Sig &s, int frames, std::vector<float> *out, bo
 
 /* The click metric (brief, constraints): over the 50 ms after a change, max |y[n] - 2y[n-1] + y[n-2]| <= 4x its
    maximum over the 500 ms before. y holds the 500 ms before then the 50 ms after; returns after / before. */
-static double click_ratio(const std::vector<float> &y) {
-    const int pre = (int)(0.5 * SR), post = (int)(0.05 * SR);
+static double click_ratio(const std::vector<float> &y, double post_s = 0.05) {
+    const int pre = (int)(0.5 * SR), post = (int)(post_s * SR);
     double a = 0, b = 0;
     for (int n = 2; n < pre + post && n < (int)y.size(); n++) {
         double d = std::fabs((double)y[n] - 2.0 * y[n - 1] + y[n - 2]);
@@ -756,10 +763,160 @@ static void test_comb() {
     std::printf(" decay level range %.2f dB; mix err %.2g\n", lmax - lmin, lin);
 }
 
+/* ---- Task 4: Cloud ---- */
+
+static void test_cloud() {
+    using namespace mfx;
+    /* density: the 1 kHz impulse train, 20 ms grains at scatter 0; a grain is a run of output impulses over 0.2 x the
+       peak with gaps under 3 ms (grains start >= 0.8 / dens apart: >= 6 ms of quiet between runs at 40) */
+    std::printf("fx cloud: grains/s (want):");
+    for (float dens : { 4.0f, 12.0f, 40.0f }) {
+        Engine e; e.init(SR); e.apply(with({ { "cloud.mix", 1 }, { "cloud.size", 20 }, { "cloud.scatter", 0 }, { "cloud.dens", dens } }));
+        Sig s(6); play(e, s, (int)SR, nullptr);
+        std::vector<float> y; play(e, s, 10 * (int)SR, &y);
+        float pk = 0; for (float v : y) pk = std::fmax(pk, std::fabs(v));
+        int grains = 0; long last = -100000;
+        for (long i = 0; i < (long)y.size(); i++)
+            if (std::fabs(y[i]) > 0.2f * pk) { if (i - last > (long)(0.003 * SR)) grains++; last = i; }
+        const double rate = grains / 10.0;
+        check("cloud: grains per second within 20 % of dens", std::fabs(rate / dens - 1) <= 0.2);
+        std::printf(" %.1f (%.0f)", rate, dens);
+    }
+    /* pitch +12 on the 220 Hz sine -> 440 Hz */
+    {
+        Engine e; e.init(SR); e.apply(with({ { "cloud.mix", 1 }, { "cloud.pitch", 12 } }));
+        Sig s(0); play(e, s, (int)SR, nullptr);
+        std::vector<float> y; play(e, s, 4 * (int)SR, &y);
+        auto P = power(y);
+        double up = tone_db(P, 440) - tone_db(P, 220);
+        check("cloud: pitch +12 -> 440 Hz >= 20 dB over 220", up >= 20);
+        std::printf("; pitch +12: 440 over 220 %.1f dB", up);
+    }
+    /* rev on the rising chirp: of the 1 ms steps inside grains (both blocks >= a quarter of the loudest's energy), the
+       share falling */
+    auto falling = [](float rev) {
+        Engine e; e.init(SR); e.apply(with({ { "cloud.mix", 1 }, { "cloud.size", 200 }, { "cloud.dens", 2 }, { "cloud.scatter", 0 }, { "cloud.rev", rev } }));
+        Sig s(7); play(e, s, (int)SR, nullptr);
+        std::vector<float> y; play(e, s, 6 * (int)SR, &y);
+        auto f = inst_freq(y);
+        std::vector<double> en(f.size());
+        double mx = 0;
+        for (size_t j = 0; j < f.size(); j++) {
+            double s2 = 0; for (int i = 0; i < 48; i++) { double v = y[(size_t)(0.1 * SR) + 48 * j + i]; s2 += v * v; }
+            en[j] = s2; mx = std::fmax(mx, s2);
+        }
+        int down = 0, all = 0;
+        for (size_t j = 0; j + 1 < f.size(); j++) {
+            if (en[j] < 0.25 * mx || en[j + 1] < 0.25 * mx || std::fabs(f[j + 1] - f[j]) > 20) continue;
+            all++; down += f[j + 1] < f[j];
+        }
+        return all ? (double)down / all : -1;
+    };
+    double f0 = falling(0), f1 = falling(1);
+    check("cloud: rev 0 -> the chirps still rise (<= 10 % of steps fall)", f0 >= 0 && f0 <= 0.1);
+    check("cloud: rev 1 -> falling chirps (>= 90 % of steps fall)", f1 >= 0.9);
+    std::printf("; chirp steps falling rev 0 %.0f %%, rev 1 %.0f %%\n", 100 * f0, 100 * f1);
+
+    /* scatter: the time code read back (left / right x 10 = when it was played): each grain's delay behind now */
+    auto delays = [](float scatter, double &lo, double &hi) {
+        Engine e; e.init(SR); e.apply(with({ { "cloud.mix", 1 }, { "cloud.dens", 2 }, { "cloud.scatter", scatter } }));
+        Sig s(8); std::vector<float> l, r; play(e, s, 12 * (int)SR, &l, false, 90, nullptr, &r);
+        lo = 1e9; hi = -1e9;
+        for (size_t i = 3 * (size_t)SR; i < l.size(); i++) {
+            if (std::fabs(r[i]) < 0.05f) continue;
+            double d = i / SR - 10.0 * l[i] / r[i];
+            lo = std::fmin(lo, d); hi = std::fmax(hi, d);
+        }
+    };
+    double l0, h0, l1, h1; delays(0, l0, h0); delays(1, l1, h1);
+    check("cloud: scatter 0 -> every grain size (120 ms) behind now, +-1 ms", std::fabs(l0 - 0.12) <= 0.001 && std::fabs(h0 - 0.12) <= 0.001);
+    check("cloud: scatter 1 -> start times spread >= 1 s", h1 - l1 >= 1);
+    std::printf("fx cloud: scatter 0 delays %.4f..%.4f s (want 0.120), scatter 1 %.3f..%.3f s\n", l0, h0, l1, h1);
+
+    /* freeze: pink, freeze on, then 5 s of silence: every second within 3 dB of the level before */
+    {
+        Engine e; e.init(SR); Cfg c = with({ { "cloud.mix", 1 } }); e.apply(c);
+        Sig s(1); play(e, s, 3 * (int)SR, nullptr);
+        std::vector<float> y; play(e, s, (int)SR, &y);
+        const double before = rms_db(y);
+        c.v[param_of("cloud.freeze")] = 1; e.apply(c);
+        play(e, s, (int)(0.1 * SR), nullptr);
+        s.kind = 5;
+        double worst = 0; std::printf("fx cloud: freeze, silence in, level vs before (dB):");
+        for (int sec = 0; sec < 5; sec++) {
+            y.clear(); play(e, s, (int)SR, &y);
+            double d = rms_db(y) - before; worst = std::fmax(worst, std::fabs(d));
+            std::printf(" %.2f", d);
+        }
+        check("cloud: frozen, 5 s of silence in -> level within 3 dB of before", worst <= 3);
+        /* the toggle, both ways: on after 3 s live, off after 1.5 s more frozen (the loop full: frozen sooner, it still
+           holds the silence from before the engine started). The click metric over the 0.8 s after, not 50 ms: a splice in
+           the line is heard only when a grain reaches it, >= size (120 ms) behind the head. */
+        double ck = 0;
+        Cfg off = with({ { "cloud.mix", 1 } }), on = with({ { "cloud.mix", 1 }, { "cloud.freeze", 1 } });
+        for (int kind = 0; kind < 2; kind++) {
+            Engine f; f.init(SR); f.apply(off);
+            Sig t(kind); std::vector<float> za, zb; double bt = 0;
+            play(f, t, (int)(2.5 * SR), nullptr, false, 90, &bt);
+            play(f, t, (int)(0.5 * SR), &za, false, 90, &bt);
+            f.apply(on); play(f, t, (int)(0.8 * SR) + 128, &za, false, 90, &bt);
+            play(f, t, (int)(0.2 * SR), nullptr, false, 90, &bt);
+            play(f, t, (int)(0.5 * SR), &zb, false, 90, &bt);
+            f.apply(off); play(f, t, (int)(0.8 * SR) + 128, &zb, false, 90, &bt);
+            const double a = click_ratio(za, 0.8), b = click_ratio(zb, 0.8);
+            ck = std::fmax(ck, std::fmax(a, b));
+            std::printf("; toggle %s on %.2f off %.2f", kind ? "pink" : "sine", a, b);
+        }
+        check("cloud: the freeze toggle passes the click metric (both ways)", ck <= 4);
+        std::printf("\n");
+    }
+    /* the same input twice -> the same output (seeded per engine) */
+    {
+        Cfg c = with({ { "cloud.mix", 1 }, { "cloud.spray", 0.5f }, { "cloud.rev", 0.5f }, { "cloud.scatter", 0.7f } });
+        Engine a, b; a.init(SR); b.init(SR); a.apply(c); b.apply(c);
+        Sig sa(1), sb(1); std::vector<float> ya, yb;
+        play(a, sa, 3 * (int)SR, &ya); play(b, sb, 3 * (int)SR, &yb);
+        check("cloud: the same input twice -> identical output", ya == yb);
+        Cfg off = c; off.v[param_of("cloud.mix")] = 0;      /* skipped (cleared), back on: the same cloud again */
+        a.apply(off); play(a, sa, (int)(0.1 * SR), nullptr);
+        a.apply(c); Sig sc(1); std::vector<float> yc; play(a, sc, 3 * (int)SR, &yc);
+        check("cloud: skipped and back on -> the same cloud again", yc == ya);
+    }
+    /* dens x size, sparse to dense: the level held (1 / sqrt(max(1, dens size))) */
+    double lmin = 1e9, lmax = -1e9;
+    std::printf("fx cloud: dens x size level (dB):");
+    for (auto ds : { std::pair<float, float>{ 2, 500 }, { 4, 250 }, { 12, 120 }, { 20, 200 }, { 40, 200 }, { 40, 500 } }) {
+        double lv = level_rel(with({ { "cloud.mix", 1 }, { "cloud.dens", ds.first }, { "cloud.size", ds.second } }), 1);
+        lmin = std::fmin(lmin, lv); lmax = std::fmax(lmax, lv);
+        std::printf(" %gx%g: %.2f", ds.first, ds.second, lv);
+    }
+    check("cloud: level range <= 4 dB, sparse to dense", lmax - lmin <= 4);
+    double lin = mix_linearity(with({ { "cloud.mix", 1 }, { "cloud.spray", 0.5f }, { "cloud.rev", 0.3f } }), "cloud.mix");
+    check("cloud: wet at mix 0.37 == 0.37 x wet at mix 1", lin < 1e-5);
+    std::printf("; range %.2f dB; mix err %.2g\n", lmax - lmin, lin);
+
+    /* every parameter min -> max and back (y = the wet), mix 0 -> 1 -> 0 (y = in + wet), sine and pink; freeze is the
+       toggle above (from a frozen start, "off" would unfreeze an empty loop) */
+    double worst = 0; std::string wk;
+    for (int i = 0; i < NPARAM; i++) {
+        const ParamDef &p = PARAMS[i];
+        if (p.mod != CLOUD || i == R_CL_FREEZE) continue;
+        for (int kind = 0; kind < 2; kind++) {
+            const bool mx = !std::strcmp(p.key, "cloud.mix");
+            Cfg a = mx ? with({}) : with({ { "cloud.mix", 1 }, { p.key, p.min } }), b = mx ? with({ { p.key, 1 } }) : with({ { "cloud.mix", 1 }, { p.key, p.max } });
+            const double r = click_of(a, b, kind, mx), rb = click_of(b, a, kind, mx), m = std::fmax(r, rb);
+            std::printf("  click %-13s %s %.2f back %.2f%s\n", p.key, kind ? "pink" : "sine", r, rb, m > 4 ? "  FAIL" : "");
+            check("cloud clicks: every parameter both ways <= 4", m <= 4);
+            if (m > worst) { worst = m; wk = p.key; }
+        }
+    }
+    std::printf("fx cloud clicks: worst %.2f (%s)\n", worst, wk.c_str());
+}
+
 /* A-19: the LevelMatch modules (Vowel, Comb, Tape, at mix 1) hold the level at -30 dBFS as at -6 (pink 24 dB apart). */
 static void test_levels() {
     std::printf("fx levels: module out-in (dB) loud/quiet:");
-    for (const char *m : { "vowel.mix", "comb.mix", "tape.mix" }) {
+    for (const char *m : { "vowel.mix", "comb.mix", "tape.mix", "cloud.mix" }) {
         mfx::Cfg c = with({ { m, 1 }, { "vowel.pos", 2 } });
         double a = level_rel(c, 1), b = level_rel(c, 1 / 16.0f);
         check("levels: within 3 dB of the input, loud and quiet", std::fabs(a) <= 3 && std::fabs(b) <= 3);
@@ -816,6 +973,7 @@ int main() {
     test_swarm();
     test_tape();
     test_comb();
+    test_cloud();
     test_levels();
     test_clicks();
     if (failed) { std::printf("fx FAILED: %d checks\n", failed); return 1; }
