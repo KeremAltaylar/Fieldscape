@@ -5,12 +5,14 @@
 #pragma once
 #include "json.hpp"
 #include "tone.hpp"
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <type_traits>
 
 namespace mfx {
+using tone::PI;
 
 enum Mod { SHIFT, SWARM, PHASE, COMB, VOWEL, CLOUD, TAPE, ECHO, SPACE, NMOD };
 enum Src { S_LFO1, S_LFO2, S_LFO3, S_LFO4, S_ENV, S_CHORD, NSRC };   /* no walk sources: Kerem's decision 3 */
@@ -76,6 +78,8 @@ inline constexpr ParamDef PARAMS[] = {
 };
 inline constexpr int NPARAM = (int)(sizeof PARAMS / sizeof *PARAMS);
 static_assert(NPARAM <= 64, "Cfg::v holds 64");
+enum Row { R_SH_HZ = 1, R_SH_MODE = 2, R_SH_FB = 3, R_PH_STAGES = 12, R_PH_HZ = 13, R_PH_SPAN = 14, R_PH_RATE = 15, R_PH_FB = 16,
+           R_VW_POS = 24, R_VW_Q = 25, R_VW_SIZE = 26 };   /* the PARAMS rows the modules read (test_table checks them) */
 inline constexpr const char *MOD_NAMES[NMOD] = { "shift", "swarm", "phase", "comb", "vowel", "cloud", "tape", "echo", "space" };
 inline constexpr const char *SRC_NAMES[NSRC] = { "lfo1", "lfo2", "lfo3", "lfo4", "env", "chord" };
 inline constexpr const char *LFO_SHAPES[] = { "sine", "tri", "up", "down", "square", "steps", "drift" };
@@ -209,6 +213,51 @@ struct Ramp {
     bool off() const { return cur == 0 && tgt == 0; }
 };
 
+inline float flush(float x) { return std::fabs(x) < 1e-25f ? 0.0f : x; }
+
+/* A-18: Comb, Vowel and Tape hold their level - output gain = the slow (400 ms) in/out RMS ratio, within +-12 dB.
+   Each mean square rises at 10 ms (falls at 400), as an AGC's attack: a timbre move that brings a tone onto a
+   resonance is caught within the move, not 400 ms later (+12 dB for that long otherwise).
+   gain() returns this block's gain; `last` is the previous one, so the caller ramps last -> g across the block. */
+struct LevelMatch {
+    double k = 1 / 19200.0, kup = 1 / 1440.0, ein = 0, eout = 0; float g = 1, last = 1; bool fresh = true;
+    void init(double sr) { k = 1 / (0.4 * sr); kup = 1 / (0.01 * sr); clear(); }
+    void clear() { ein = eout = 0; g = last = 1; fresh = true; }
+    static void follow(double &e, double x, double a_up, double a_dn) { double a = x > e ? a_up : a_dn; e = a * e + (1 - a) * x; }
+    float gain(const float *in, const float *out, int n) {
+        double si = 0, so = 0;
+        for (int i = 0; i < n; i++) { si += (double)in[i] * in[i]; so += (double)out[i] * out[i]; }
+        const double dn = std::exp(-n * k), up = std::exp(-n * kup);
+        follow(ein, si / n, up, dn); follow(eout, so / n, up, dn);
+        last = g;
+        if (ein > 1e-12 && eout > 1e-12) {           /* silence keeps the gain it had */
+            g = (float)std::fmin(3.981, std::fmax(0.2512, std::sqrt(ein / eout)));
+            if (fresh) { last = g; fresh = false; }
+        }
+        return g;
+    }
+};
+
+/* Olli Niemitalo's Hilbert pair: two chains of four second-order all-passes y[n] = c (x[n] + y[n-2]) - x[n-2], c = a^2;
+   chain 1 then one sample of delay is I, minus chain 2 is Q: the analytic signal I + jQ across the audio band. */
+constexpr float sq(double a) { return (float)(a * a); }
+struct Hilbert {
+    static constexpr float C[8] = { sq(0.6923878), sq(0.9360654322959), sq(0.9882295226860), sq(0.9987488452737),
+                                    sq(0.4021921162426), sq(0.8561710882420), sq(0.9722909545651), sq(0.9952884791278) };
+    float z[2][8][4], d[2];                          /* per side, per section: x1 x2 y1 y2; the delay */
+    void clear() { std::memset(z, 0, sizeof z); d[0] = d[1] = 0; }
+    void run(int ch, float x, float &i, float &q) {
+        float a = x, b = x;
+        for (int k = 0; k < 8; k++) {
+            float *s = z[ch][k], u = k < 4 ? a : b;
+            float y = flush(C[k] * (u + s[3]) - s[1]);
+            s[1] = s[0]; s[0] = u; s[3] = s[2]; s[2] = y;
+            (k < 4 ? a : b) = y;
+        }
+        i = d[ch]; d[ch] = a; q = -b;               /* chain 2 lags I by 90 degrees: Q = -chain 2 (x = cos gives Q = sin) */
+    }
+};
+
 struct Engine {
     double sr = 48000, bpm = 72, beats = 0;
     Cfg cfg;
@@ -218,18 +267,33 @@ struct Engine {
     float lvl[NMOD] = {}, lvl_in = 0, lvl_out = 0;
     int quiet = 0;                                   /* frames the output has stayed under -80 dB */
     float xL[128], xR[128], yL[128], yR[128], keep[128];   /* keep: the product of (1 - mix) over the modules run */
+    float tA[128], tB[128];                          /* scratch (Vowel's level match) */
+    float sm[64];                                    /* the continuous rows, glided (30 ms) */
+    float sk = 0.4f, sk1 = 0.001f, sk_fast = 1;      /* glide coefficients: 30 ms per 16 samples, 30 ms per sample, 5 ms per 16 (Phase's sweep) */
 
-    Engine() { cfg_defaults(cfg); }
+    /* Shift */
+    Hilbert hil; tone::DelayLine sh_dl[2]; double sh_ph = 0; float sh_ssb = 1; int sh_D = 1440;
+    /* Phase: 12 first-order all-passes a side; the stage count cross-fades between two taps (30 ms) */
+    float ph_x1[2][12], ph_y1[2][12], ph_fb[2], ph_lf[2], ph_a[2] = {}, ph_nf = 0.2679f; int ph_from = 6, ph_to = 6; float ph_x = 1;
+    /* Vowel */
+    tone::Biquad vw_bp[3]; float vw_c[3][6] = {}; LevelMatch vw_lm;   /* vw_c: the last design (b0 b1 b2 a1 a2, gain) */
+
+    Engine() { cfg_defaults(cfg); std::memcpy(sm, cfg.v, sizeof sm); }
     void init(double rate) {
         sr = rate;
         for (auto &m : mix) m.step = (float)(1 / (0.03 * sr));
+        sk = (float)(1 - std::exp(-16 / (0.03 * sr))); sk1 = (float)(1 - std::exp(-1 / (0.03 * sr))); sk_fast = (float)(1 - std::exp(-16 / (0.005 * sr)));
+        sh_D = (int)(0.03 * sr);
+        for (auto &l : sh_dl) l.init(sh_D + 2);
+        for (auto &b : vw_bp) b.type = tone::BANDPASS;
+        vw_lm.init(sr);
         reset();
     }
     void apply(const Cfg &c) {
         cfg = c;
         for (int m = 0; m < NMOD; m++) mix[m].tgt = c.v[mix_row(m)];
     }
-    void clock(double b, double pos) { bpm = b; beats = pos; }
+    void clock(double b, double pos) { bpm = b; beats = pos; }   /* bpm 0 holds the transport (the tests' LFO freeze) */
     void chord(const float *midi5, float root, int serial) {
         for (int i = 0; i < 5; i++) chord_midi[i] = midi5[i];
         chord_root = root; chord_serial = serial;
@@ -247,7 +311,7 @@ struct Engine {
     /* Nothing on, or the tail under -80 dB for 0.5 s. */
     bool idle() const { return all_off() || quiet >= (int)(0.5 * sr); }
     void reset() {
-        for (int m = 0; m < NMOD; m++) { clear(m); dirty[m] = false; mix[m].cur = 0; lvl[m] = 0; }
+        for (int m = 0; m < NMOD; m++) { clear(m); dirty[m] = true; mix[m].cur = 0; lvl[m] = 0; }
         quiet = 0; lvl_in = lvl_out = 0;
     }
     void live(Live &out) const {
@@ -266,6 +330,7 @@ private:
             std::memset(wetL, 0, sizeof(float) * n); std::memset(wetR, 0, sizeof(float) * n);
             for (int m = 0; m < NMOD; m++) { lvl[m] = 0; dirty[m] = true; }
             lvl_out = 0; quiet = 0;                  /* idle by all_off(); the tail count starts when a mix rises */
+            beats += n * bpm / 60 / sr;
             return;
         }
         std::memcpy(xL, inL, sizeof(float) * n); std::memcpy(xR, inR, sizeof(float) * n);
@@ -293,14 +358,142 @@ private:
         }
         lvl_out = pout;
         quiet = pout < 1e-4f ? quiet + n : 0;
+        beats += n * bpm / 60 / sr;
     }
     static int mix_row(int m) {                      /* each module's rows start with its mix */
         for (int i = 0; i < NPARAM; i++) if (PARAMS[i].mod == m) return i;
         return 0;
     }
-    /* The modules: pass-through stubs until Tasks 2-5 fill them. */
-    void run(int, float *, float *, int) {}
-    void clear(int) {}
+    /* The modules. Gains glide per sample (sm, 30 ms); filter coefficients are designed every 16 samples from the glided
+       rows and interpolated per sample between those designs, so no parameter ever steps. */
+    float glide(int row) { return sm[row] += sk1 * (cfg.v[row] - sm[row]); }
+    float glide16(int row) { return sm[row] += sk * (cfg.v[row] - sm[row]); }
+    void run(int m, float *L, float *R, int n) {
+        if (m == SHIFT) shift(L, R, n);
+        else if (m == PHASE) phase(L, R, n);
+        else if (m == VOWEL) vowel(L, R, n);
+    }
+    void clear(int m) {
+        for (int i = 0; i < NPARAM; i++) if (PARAMS[i].mod == m) sm[i] = cfg.v[i];
+        if (m == SHIFT) {
+            hil.clear(); sh_ph = 0; sh_ssb = cfg.v[R_SH_MODE] < 0.5f;
+            for (auto &l : sh_dl) std::fill(l.buf.begin(), l.buf.end(), 0.0f);
+        } else if (m == PHASE) {
+            std::memset(ph_x1, 0, sizeof ph_x1); std::memset(ph_y1, 0, sizeof ph_y1); ph_fb[0] = ph_fb[1] = 0;
+            ph_from = ph_to = (int)cfg.v[R_PH_STAGES]; ph_x = 1; ph_nf = (float)std::tan(PI / (2 * ph_to));
+            ph_lf[0] = ph_lf[1] = -1;                /* -1: take the sweep's value at once */
+        } else if (m == VOWEL) {
+            for (auto &b : vw_bp) { std::memset(b.x1, 0, sizeof b.x1); std::memset(b.x2, 0, sizeof b.x2); std::memset(b.y1, 0, sizeof b.y1); std::memset(b.y2, 0, sizeof b.y2); }
+            vw_design(vw_c);
+            vw_lm.clear();
+        }
+    }
+
+    /* Shift: single side band I cos(phi) - Q sin(phi), or ring I cos(phi) (the Q term fades over 30 ms on a mode change);
+       feedback through 30 ms re-enters the Hilbert, so every pass moves by hz again (barber-pole). */
+    void shift(float *L, float *R, int n) {
+        const float xstep = (float)(1 / (0.03 * sr)), want = cfg.v[R_SH_MODE] < 0.5f;
+        float *x[2] = { L, R };
+        for (int o = 0; o < n; o += 16) {
+            const double inc = 2 * PI * glide16(R_SH_HZ) / sr;   /* a frequency step keeps the phase: no click */
+            for (int i = o; i < o + 16 && i < n; i++) {
+                float fb = glide(R_SH_FB);
+                sh_ssb = sh_ssb < want ? std::fmin(want, sh_ssb + xstep) : std::fmax(want, sh_ssb - xstep);
+                float c = (float)std::cos(sh_ph), s = (float)std::sin(sh_ph) * sh_ssb;
+                sh_ph += inc; if (sh_ph > PI) sh_ph -= 2 * PI; else if (sh_ph < -PI) sh_ph += 2 * PI;
+                for (int ch = 0; ch < 2; ch++) {
+                    float v = x[ch][i] + fb * sh_dl[ch].read(sh_D), I, Q;
+                    hil.run(ch, v, I, Q);
+                    float y = I * c - Q * s;
+                    sh_dl[ch].push(y);
+                    x[ch][i] = y;
+                }
+            }
+        }
+    }
+
+    /* Phase: 0.5 (x + the all-pass chain), the chain's input x + fb * its last output. The corner is set so the LOWEST
+       notch sits at hz 2^(span (s - 1/2)), s = the LFO (raised cosine of its phase, from the transport); right side 90
+       degrees behind. All 12 stages always run (warm), and a stage count change cross-fades the two taps (30 ms) while
+       the corner glides to the new count. */
+    void phase(float *L, float *R, int n) {
+        const int want = (int)cfg.v[R_PH_STAGES];
+        const float xstep = (float)(16 / (0.03 * sr));
+        if (want != ph_to) { ph_from = ph_to; ph_to = want; ph_x = 0; }   /* ponytail: a change mid-fade restarts from the target tap */
+        const float nf_t = (float)std::tan(PI / (2 * ph_to));
+        const double rate = cfg.v[R_PH_RATE] > 0 ? cfg.v[R_PH_RATE] : 2, bps = bpm / 60 / sr;
+        float *x[2] = { L, R };
+        for (int o = 0; o < n; o += 16) {
+            const int m = n - o < 16 ? n - o : 16;
+            float hz = glide16(R_PH_HZ), span = glide16(R_PH_SPAN), fb0 = sm[R_PH_FB];
+            ph_nf += sk * (nf_t - ph_nf);
+            const float x0 = ph_x; ph_x = std::fmin(1.0f, ph_x + xstep);
+            for (int ch = 0; ch < 2; ch++) {
+                double p = (beats + (o + m) * bps) / rate - ch * 0.25; p -= std::floor(p);
+                float s = (float)(0.5 - 0.5 * std::cos(2 * PI * p));
+                float lf = std::log2(hz) + span * (s - 0.5f);   /* the lowest notch, log2 Hz */
+                bool first = ph_lf[ch] < 0;
+                ph_lf[ch] = first ? lf : ph_lf[ch] + sk_fast * (lf - ph_lf[ch]);   /* a rate change never jumps the sweep */
+                double fn = std::fmin(0.45 * sr, std::exp2((double)ph_lf[ch]));
+                double t = std::fmin(1e4, std::tan(PI * fn / sr) / ph_nf);
+                const float a1 = (float)((t - 1) / (t + 1)), a0 = first ? a1 : ph_a[ch];
+                ph_a[ch] = a1;
+                float *x1 = ph_x1[ch], *y1 = ph_y1[ch];
+                if (ch) sm[R_PH_FB] = fb0;               /* both sides glide fb alike */
+                for (int i = o, j = 1; i < o + m; i++, j++) {
+                    const float a = a0 + (a1 - a0) * j / m, xf = x0 + (ph_x - x0) * j / m, fb = glide(R_PH_FB);
+                    float u = x[ch][i] + fb * ph_fb[ch], tf = 0, tt = 0;
+                    for (int k = 0; k < 12; k++) {
+                        float y = flush(a * u + x1[k] - a * y1[k]);
+                        x1[k] = u; y1[k] = y; u = y;
+                        if (k + 1 == ph_from) tf = y;
+                        if (k + 1 == ph_to) tt = y;
+                    }
+                    float ap = tf + xf * (tt - tf);
+                    ph_fb[ch] = ap;
+                    x[ch][i] = 0.5f * (x[ch][i] + ap);
+                }
+            }
+        }
+    }
+
+    /* Vowel: three band-passes (gains 1, 1/2, 1/4, made up by sqrt(q)) on the formants of a e i o u, interpolated in
+       log frequency by pos, x size; the level held by LevelMatch on the mid. */
+    void vw_design(float c[3][6]) {
+        static const float F[3][5] = { { 800, 400, 300, 450, 325 }, { 1150, 1700, 2200, 800, 700 }, { 2900, 2600, 3000, 2830, 2700 } };
+        const float pos = sm[R_VW_POS], q = sm[R_VW_Q], size = sm[R_VW_SIZE];
+        const int j = pos >= 4 ? 3 : pos <= 0 ? 0 : (int)pos; const float t = std::fmin(1.0f, std::fmax(0.0f, pos - j));
+        for (int f = 0; f < 3; f++) {
+            tone::Biquad &b = vw_bp[f];
+            b.design(std::fmin(0.45 * sr, F[f][j] * std::pow(F[f][j + 1] / F[f][j], t) * size), q, sr);
+            c[f][0] = (float)b.b0; c[f][1] = (float)b.b1; c[f][2] = (float)b.b2; c[f][3] = (float)b.a1; c[f][4] = (float)b.a2;
+            c[f][5] = std::sqrt(q) * (f == 0 ? 1 : f == 1 ? 0.5f : 0.25f);
+        }
+    }
+    void vowel(float *L, float *R, int n) {
+        for (int i = 0; i < n; i++) tA[i] = L[i] + R[i];
+        for (int o = 0; o < n; o += 16) {
+            const int m = n - o < 16 ? n - o : 16;
+            glide16(R_VW_POS); glide16(R_VW_Q); glide16(R_VW_SIZE);
+            float c1[3][6]; vw_design(c1);
+            for (int i = o, j = 1; i < o + m; i++, j++) {
+                const float w = (float)j / m;
+                float l = 0, r = 0;
+                for (int f = 0; f < 3; f++) {
+                    tone::Biquad &b = vw_bp[f]; const float *p = vw_c[f], *q = c1[f];
+                    b.b0 = p[0] + (q[0] - p[0]) * w; b.b1 = p[1] + (q[1] - p[1]) * w; b.b2 = p[2] + (q[2] - p[2]) * w;
+                    b.a1 = p[3] + (q[3] - p[3]) * w; b.a2 = p[4] + (q[4] - p[4]) * w;
+                    const float g = p[5] + (q[5] - p[5]) * w;
+                    l += g * b.run(0, L[i]); r += g * b.run(1, R[i]);
+                }
+                L[i] = l; R[i] = r;
+            }
+            std::memcpy(vw_c, c1, sizeof vw_c);
+        }
+        for (int i = 0; i < n; i++) tB[i] = L[i] + R[i];
+        float g1 = vw_lm.gain(tA, tB, n), g0 = vw_lm.last;
+        for (int i = 0; i < n; i++) { float g = g0 + (g1 - g0) * (i + 1) / n; L[i] *= g; R[i] *= g; }
+    }
 };
 
 }  // namespace mfx
