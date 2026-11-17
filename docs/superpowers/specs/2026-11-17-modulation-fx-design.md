@@ -50,8 +50,8 @@ spec assumes. Nothing in the dock or a panel is built before its mock is approve
 
 `core/modfx.hpp`, namespace `mfx`, header-only, depends on `tone.hpp` and `json.hpp` only. **It makes no sound**: with
 silence in, its output decays to exact 0. One `mfx::Engine` is the route's master FX (inside `Piece`); a pool of two
-more serves the points (inside `fs_mix`). Every buffer is allocated in `Engine::init(sr)` (≈ 2.8 MB an instance: 4 s
-echo, 2 s cloud, the rest small); `apply(cfg)` only sets smoothed targets.
+more serves the points (inside `fs_mix`). Every buffer is allocated in `Engine::init(sr)` (2.69 MB an instance, measured by `core/tests/fx_bench.cpp`: 4 s
+echo, 2.5 s cloud, the rest small); `apply(cfg)` only sets smoothed targets.
 
 ### Signal path
 

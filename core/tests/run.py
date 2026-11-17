@@ -29,7 +29,7 @@ def build():
         f.write('{"type": "commonjs"}')  # the repo's package.json says "module"; em++ output is CommonJS
     env = dict(os.environ)
     if env.get("FS_PREBUILT"):   # built on the Mac mini by tools/mac-tests.sh (Smart App Control blocks wasm-ld here, 2026-10-29)
-        return {n: ["node", os.path.join(BUILD, n + ".js")] for n in ("core_test", "composer_test", "stretch_test")}
+        return {n: ["node", os.path.join(BUILD, n + ".js")] for n in ("core_test", "composer_test", "stretch_test", "fx_bench")}
     native = "CXX" in env
     if native:
         cxx, flags, ext = [env["CXX"]], ["-std=c++17", "-O2", "-Wall", "-Wextra"], ".exe" if os.name == "nt" else ""
@@ -44,6 +44,7 @@ def build():
     targets = {
         "core_test": ["core/core.cpp", "core/mix.cpp", "core/place.cpp", "core/webm.cpp", "core/sections.cpp", "core/resample.cpp", "core/analysis.cpp", "core/bench.cpp", "core/composer.cpp", "core/piece.cpp", "core/engine.cpp", *devices, "core/test.cpp"],
         "composer_test": ["core/core.cpp", "core/mix.cpp", "core/place.cpp", "core/webm.cpp", "core/sections.cpp", "core/resample.cpp", "core/analysis.cpp", "core/bench.cpp", "core/composer.cpp", "core/piece.cpp", "core/engine.cpp", *devices, "core/tests/composer_test.cpp"],
+        "fx_bench": ["core/tests/fx_bench.cpp"],   # the modulation-FX engine: fx_test's checks ("check") and its cost
         "stretch_test": ["core/core.cpp", "core/mix.cpp", "core/place.cpp", "core/webm.cpp", "core/sections.cpp", "core/resample.cpp", "core/bench.cpp", "core/composer.cpp", "core/piece.cpp", "core/devices/test_devices.cpp", "core/devices/play.cpp", "core/tests/stretch_test.cpp"],
     }
     exe = {}
@@ -218,6 +219,24 @@ def main():
     row(0, "core self-check (core/test.cpp)", out.strip().splitlines()[-1], "exits 0", "core ok" in out)
     out = run(exe["composer_test"])
     row("C", "composition (core/tests/composer_test.cpp)", out.strip().splitlines()[-1], "exits 0", "composer ok" in out)
+
+    # FX: the modulation-FX engine (core/tests/fx_bench.cpp): fx_test's checks in this build, then its cost against the
+    # plan's budgets (it exits 1 past one: rows, not an abort). Its timings want the PC idle, as this whole run does.
+    out = run(exe["fx_bench"], "check")
+    row("FX", "modulation FX checks (core/tests/fx_test.cpp, wasm)", out.strip().splitlines()[-1], "exits 0", "fx ok" in out)
+    r = subprocess.run(exe["fx_bench"], cwd=ROOT, capture_output=True, text=True)
+    for line in r.stdout.splitlines():
+        m = re.match(r"RESULT fxcost case=(\S+) pct=(\S+) p50=\S+ p99=\S+ p999=(\S+) max=(\S+) limit_pct=(\S+) (ok|OVER)$", line)
+        if m:
+            row("FX", f"FX cost, {m[1]} (20 s pink, 128 frames)", f"{m[2]} % of realtime, p99.9 {m[3]} ms, max {m[4]} ms",
+                f"<= {m[5]} %, p99.9 <= 0.35 ms", m[6] == "ok")
+        m = re.match(r"RESULT fxfirst mod=(\S+) ms=(\S+) (ok|OVER)$", line)
+        if m:
+            row("FX", f"FX first block after {m[1]}.mix leaves 0", f"{m[2]} ms", "<= 1.5 ms", m[3] == "ok")
+        m = re.match(r"RESULT fxmem bytes=(\d+)", line)
+        if m:
+            row("FX", "FX engine memory per instance", f"{int(m[1]) / 1e6:.2f} MB", "measured", True)
+    row("FX", "FX cost program", (r.stdout.strip().splitlines() or ["(no output)"])[-1], "fx bench ok", r.returncode == 0 and "fx bench ok" in r.stdout)
 
     e = float(results(run(exe["stretch_test"], "fft"))[0]["fft_rel_err"])
     row("F", "FFT vs direct DFT, 12 sizes 16..2400", f"rel err {e:.2g}", "< 1e-5", e < 1e-5)
