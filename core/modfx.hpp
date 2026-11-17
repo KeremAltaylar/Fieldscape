@@ -367,7 +367,10 @@ struct Engine {
     Cfg base;
     uint32_t seed = 0x6D2B79F5u;                     /* steps, drift, chord: the same walk sounds the same */
     float lfo_ph[4] = {}, lfo_v[4] = {}, env = 0, ch_v = 0, ch_tgt = 0, slot_v[8] = {};
-    int ch_seen = 0; bool mix_mod = false;           /* mix_mod: a slot aims at a mix row (idle() must not stop it) */
+    double lfo_d[4] = { 4, 2, 8, 16 };               /* each LFO's division in beats (apply: no string lookups a block) */
+    int ch_seen = 0;
+    bool mix_mod[NMOD] = {};                         /* a slot aims at this module's mix: it runs (silent) at mix 0, keeping
+                                                        its state, so an LFO through 0 does not wipe its tail every cycle */
 
     Engine() { cfg_defaults(cfg); base = cfg; std::memcpy(sm, cfg.v, sizeof sm); }
     void init(double rate) {
@@ -393,13 +396,15 @@ struct Engine {
         reset();
     }
     void apply(const Cfg &c) {
-        base = cfg = c; mix_mod = false;
-        for (auto &s : c.mods) if (valid(s) && s.amt != 0 && mix_row(PARAMS[s.dst].mod) == s.dst) mix_mod = true;
+        base = cfg = c;
+        for (auto &m : mix_mod) m = false;
+        for (auto &s : c.mods) if (valid(s) && s.amt != 0 && mix_row(PARAMS[s.dst].mod) == s.dst) mix_mod[PARAMS[s.dst].mod] = true;
+        for (int i = 0; i < 4; i++) lfo_d[i] = div_beats(c.lfo[i].rate);
         resolve();
     }
     /* LFO i's value at the transport position b (its phase, 0-1, to *ph). */
     float lfo_at(int i, double b, float *ph = nullptr) const {
-        const LfoCfg &l = base.lfo[i]; const double d = div_beats(l.rate), t = b / d + l.phase;
+        const LfoCfg &l = base.lfo[i]; const double d = lfo_d[i], t = b / d + l.phase;
         if (ph) *ph = (float)(t - std::floor(t));
         return wave(l.shape, t, 0.0025 * tempo / (60 * d), seed + 0x9E3779B9u * (uint32_t)(i + 1));
     }
@@ -423,7 +428,7 @@ struct Engine {
     /* Nothing on, or the tail under -80 dB for 0.5 s - plus, while they run, the echo's delay and Cloud's longest gap and
        reach back (a repeat or a grain may still be on its way). From then on, while the input stays exactly 0 (and Cloud
        is not frozen), the output is exactly 0. */
-    bool idle() const { return (all_off() && !mix_mod) || quiet >= hold; }
+    bool idle() const { return all_off() || quiet >= hold; }
     void reset() {
         for (int m = 0; m < NMOD; m++) { clear(m); dirty[m] = true; mix[m].cur = 0; lvl[m] = 0; }
         quiet = 0; lvl_in = lvl_out = 0;
@@ -442,9 +447,12 @@ private:
     static bool valid(const Slot &s) { return s.src >= 0 && s.src < NSRC && s.dst >= 0 && s.dst < NPARAM && PARAMS[s.dst].cont; }
     float env_v() const { return std::fmin(1.0f, base.env_s * env); }
     /* Once a block, before anything reads cfg: the sources at the block's start, then resolve. env follows the block's
-       input peak (attack/release one-poles); chord glides to its new seeded value at most the range in 200 ms. */
+       input peak in dB (-60..0 dBFS -> 0..1, so -30 dBFS moves a slot as -6 does, A-19) with attack/release one-poles;
+       sens scales it. chord is rate-limited, not timed: it moves to its new seeded value at most the full range in
+       200 ms (a small change arrives sooner). */
     void modulate(float pin, int n) {
-        env += (float)(1 - std::exp(-n / ((pin > env ? base.env_a : base.env_r) * 0.001 * sr))) * (pin - env);
+        const float x = std::fmax(0.0f, 1 + std::log10(std::fmax(pin, 1e-6f)) / 3);   /* 20 log10(pin) / 60 + 1 */
+        env += (float)(1 - std::exp(-n / ((x > env ? base.env_a : base.env_r) * 0.001 * sr))) * (x - env);
         if (chord_serial != ch_seen) { ch_seen = chord_serial; ch_tgt = rnd(seed ^ 0xC4D0u, chord_serial); }
         const float st = (float)(n / (0.2 * sr));
         ch_v = ch_v < ch_tgt ? std::fmin(ch_tgt, ch_v + st) : std::fmax(ch_tgt, ch_v - st);
@@ -454,7 +462,7 @@ private:
     void resolve() {
         std::memcpy(cfg.v, base.v, sizeof cfg.v);
         const float src[NSRC] = { lfo_v[0], lfo_v[1], lfo_v[2], lfo_v[3], env_v(), ch_v };
-        float off[64]; uint64_t hit = 0;
+        float off[NPARAM]; uint64_t hit = 0;
         for (const Slot &s : base.mods)
             if (valid(s)) { if (!(hit >> s.dst & 1)) off[s.dst] = 0; hit |= 1ull << s.dst; off[s.dst] += s.amt * src[s.src]; }
         for (int i = 0; i < NPARAM; i++)
@@ -462,7 +470,8 @@ private:
         for (int s = 0; s < 8; s++) slot_v[s] = valid(base.mods[s]) ? off[base.mods[s].dst] : 0;
         for (int m = 0; m < NMOD; m++) mix[m].tgt = cfg.v[mix_row(m)];
     }
-    bool all_off() const { for (auto &m : mix) if (!m.off()) return false; return true; }
+    bool on(int m) const { return !mix[m].off() || mix_mod[m]; }   /* runs this block (a modulated mix runs at 0, silent) */
+    bool all_off() const { for (int m = 0; m < NMOD; m++) if (on(m)) return false; return true; }
     void block(const float *rawL, const float *rawR, float *wetL, float *wetR, int n) {
         float pin = 0, pout = 0; bool silent = true;
         for (int i = 0; i < n; i++) {                /* a NaN or inf in the input is 0 to the engine (finite input: unchanged) */
@@ -474,17 +483,17 @@ private:
         lvl_in = pin;
         modulate(pin, n);
         float reach = 0;                             /* Cloud: the longest gap between onsets, the furthest a grain reads back */
-        if (!mix[CLOUD].off())
+        if (on(CLOUD))
             reach = 1.25f / cfg.v[R_CL_DENS] + std::fmin(2.5f, 2 * cfg.v[R_CL_SCATTER]
                   + 0.001f * cfg.v[R_CL_SIZE] * std::exp2(std::fabs(cfg.v[R_CL_PITCH]) / 12) * (cfg.v[R_CL_SPRAY] > 0 ? 2 : 1));
-        hold = (int)(0.5 * sr) + (mix[ECHO].off() ? 0 : (int)(std::fmax(ec_d, ec_dn) + EC_WOB * sr)) + (int)(reach * sr);
+        hold = (int)(0.5 * sr) + (!on(ECHO) ? 0 : (int)(std::fmax(ec_d, ec_dn) + EC_WOB * sr)) + (int)(reach * sr);
         if (pin >= 1e-4f) quiet = 0;                  /* a sound came in: its repeats and grains are on their way */
-        const bool frozen = !mix[CLOUD].off() && cfg.v[R_CL_FREEZE] >= 0.5f;
+        const bool frozen = on(CLOUD) && cfg.v[R_CL_FREEZE] >= 0.5f;
         if (!all_off() && silent && quiet >= hold && !frozen) {   /* the tail is over: exact 0 while the input stays silent */
             std::memset(wetL, 0, sizeof(float) * n); std::memset(wetR, 0, sizeof(float) * n);
             for (int m = 0; m < NMOD; m++) {         /* state kept (it is under -80 dB): a new onset is not cleared or faded in */
                 lvl[m] = 0; mix[m].cur = mix[m].tgt;
-                if (mix[m].off()) dirty[m] = true;   /* a mix that left 0 meanwhile: cleared before it next runs */
+                if (!on(m)) dirty[m] = true;         /* a mix that left 0 meanwhile: cleared before it next runs */
             }
             lvl_out = 0; quiet += n;
             beats += n * bpm / 60 / sr;
@@ -500,7 +509,7 @@ private:
         std::memcpy(xL, inL, sizeof(float) * n); std::memcpy(xR, inR, sizeof(float) * n);
         for (int i = 0; i < n; i++) keep[i] = 1;
         for (int m = 0; m < NMOD; m++) {
-            if (mix[m].off()) { dirty[m] = true; lvl[m] = 0; continue; }   /* skipped: bit-exact pass-through */
+            if (!on(m)) { dirty[m] = true; lvl[m] = 0; continue; }   /* skipped: bit-exact pass-through */
             if (dirty[m]) { clear(m); dirty[m] = false; warm[m] = 0; }
             std::memcpy(yL, xL, sizeof(float) * n); std::memcpy(yR, xR, sizeof(float) * n);
             if (warm[m] < (int)(0.01 * sr)) {        /* cold: its input fades in (smoothstep, 10 ms), so empty delay lines never step */

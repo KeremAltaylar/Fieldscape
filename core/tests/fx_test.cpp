@@ -1419,11 +1419,20 @@ static void test_env() {
         const double tr = rise * 128 / SR * 1000, tf = fall * 128 / SR * 1000;
         check("env: rises to 90 % within attack x 3", rise > 0 && tr <= 3 * k.a + 128 / SR * 1000);
         check("env: falls to 10 % within release x 3", fall > 0 && tf <= 3 * k.r + 128 / SR * 1000);
-        check("env: plateau = the burst's peak x sens (0.5)", near(plat, 0.5, 0.02));
+        check("env: plateau = the burst's peak in dB (-6 dBFS -> 0.85)", near(plat, 1 + std::log10(0.5) / 3, 0.02));
         check("env: silence before the burst reads 0", v[on - 1] == 0);
         std::printf(" attack %.0f -> 90 %% in %.1f ms, release %.0f -> 10 %% in %.1f ms, plateau %.3f;", k.a, tr, k.r, tf, plat);
     }
-    std::printf("\n");
+    /* A-19: a -30 dBFS input moves the env as a -6 dBFS one does (both well inside 0..1), and sens scales it */
+    auto level = [](double amp, float sens) {
+        Cfg c; cfg_defaults(c); c.env_s = sens; Engine e; e.init(SR); e.apply(c);
+        Sig s(4); s.hz = 1000; s.amp = amp; double b = 0; play(e, s, (int)SR, nullptr, false, 90, &b);
+        Live l; e.live(l); return l.v[8];
+    };
+    const float q = level(0.0316, 1), d = level(0.5, 1), q2 = level(0.0316, 1.5f);
+    check("env: A-19, -30 dBFS and -6 dBFS both read 0.4..1", q >= 0.4f && q <= 1 && d >= 0.4f && d <= 1);
+    check("env: sens scales it", near(q2, 1.5 * q, 1e-4));
+    std::printf(" -30 dBFS %.3f, -6 dBFS %.3f, -30 at sens 1.5 %.3f\n", q, d, q2);
 }
 
 static void test_matrix() {
@@ -1499,6 +1508,48 @@ static void test_hold() {
             std::printf("  modclick %-9s %s %.2f\n", d.dst, kind ? "pink" : "sine", r);
         }
     std::printf("fx modclicks: lfo1 amt 0 <-> 1 on phase.hz, echo.fb, vowel.pos, echo.mix: worst %.2f\n", worst);
+    /* a running square and steps LFO (16n) on phase.hz: 0.5 s after the slot comes on, several edges / steps */
+    double wsq = 0;
+    for (int sh = 4; sh <= 5; sh++)
+        for (int kind = 0; kind < 2; kind++) {
+            Cfg a = with({ { "phase.mix", 1 } }); std::strcpy(a.lfo[0].rate, "16n"); a.lfo[0].shape = (uint8_t)sh;
+            a.mods[0] = { S_LFO1, (int16_t)R_PH_HZ, 0 };
+            Cfg z = a; z.mods[0].amt = 0.5f;
+            const double r = click_of(a, z, kind, false, 0.5);
+            check("modclicks: square / steps 16n on phase.hz <= 4", r <= 4);
+            wsq = std::fmax(wsq, r);
+            std::printf("  modclick %-6s 16n phase.hz %s %.2f\n", LFO_SHAPES[sh], kind ? "pink" : "sine", r);
+        }
+    std::printf("fx modclicks: square and steps 16n on phase.hz, 0.5 s: worst %.2f\n", wsq);
+}
+
+/* A mix modulated through 0 keeps its module's state: an echo repeat that falls in the LFO's trough is still there
+   on the next rise (not cleared), with no click; idle once everything has rung out. */
+static void test_trough() {
+    using namespace mfx;
+    const int N = (int)(3 * SR);
+    std::vector<float> in(N, 0.0f), aL, aR, rL, rR;
+    for (int i = (int)(0.1 * SR); i < (int)(0.2 * SR); i++) { const double t = (i - 0.1 * SR) / (0.1 * SR); in[i] = (float)(0.5 * (0.5 - 0.5 * std::cos(TAU * t)) * std::sin(TAU * 1000 * i / SR)); }
+    Cfg a = with({}); std::strcpy(a.lfo[0].rate, "2n"); a.mods[0] = { S_LFO1, (int16_t)param_of("echo.mix"), 1 };
+    Cfg r = with({ { "echo.mix", 1 } });
+    Engine ea, er; ea.init(SR); er.init(SR); ea.apply(a); er.apply(r);
+    feed(ea, in, in, aL, aR); feed(er, in, in, rL, rR);
+    /* 90 bpm, 2n = 1.333 s: on 0-0.667 s, trough 0.667-1.333, on again; repeats every 0.5 s from 0.65 s */
+    auto en = [](const std::vector<float> &y, double t0, double t1) { double s = 1e-30; for (long i = (long)(t0 * SR); i < (long)(t1 * SR); i++) s += (double)y[i] * y[i]; return s; };
+    const double m = std::sin(TAU * 1.65 / (4.0 / 3)), d = 10 * std::log10(en(aL, 1.6, 1.7) / (m * m * en(rL, 1.6, 1.7)));
+    const double tr = 10 * std::log10(en(aL, 1.1, 1.2) / en(rL, 1.1, 1.2));
+    double ca = 0, cr = 0;
+    for (long i = (long)(0.6 * SR); i < (long)(2.2 * SR); i++) {
+        ca = std::fmax(ca, std::fabs((double)aL[i] - 2.0 * aL[i - 1] + aL[i - 2]));
+        cr = std::fmax(cr, std::fabs((double)rL[i] - 2.0 * rL[i - 1] + rL[i - 2]));
+    }
+    check("trough: the repeat after the trough is there (within 1.5 dB of mix x the unmodulated echo)", std::fabs(d) <= 1.5);
+    check("trough: the repeat in the trough is silent (< -40 dB)", tr < -40);
+    check("trough: no click (d2 <= 4x the unmodulated echo's)", ca <= 4 * cr);
+    Sig s(5); play(ea, s, 10 * (int)SR, nullptr);
+    check("trough: idle once it has rung out", ea.idle());
+    std::printf("fx trough: lfo 2n -> echo.mix from 0: repeat after the trough %+.2f dB vs expected, in the trough %.1f dB, d2 ratio %.2f, idle after %s\n",
+                d, tr, ca / cr, ea.idle() ? "yes" : "NO");
 }
 
 int main() {
@@ -1506,6 +1557,7 @@ int main() {
     test_env();
     test_matrix();
     test_hold();
+    test_trough();
     test_table();
     test_div();
     test_parse();
