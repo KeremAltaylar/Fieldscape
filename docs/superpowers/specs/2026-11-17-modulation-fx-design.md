@@ -217,21 +217,26 @@ nature icon moves to the card and list; the mock shows both ways).
 - Patch version stays 17. `fs_piece_morphs`' 7-double layout stays. `rfx` stays in the core.
 - The patch read stays ≤ 1 ms warm with a full `mfx`.
 
-## Open questions for Kerem (default assumed in brackets)
+## Kerem's decisions (2026-11-17, binding: they override anything above that disagrees)
 
-1. **Routes that use rhythm effects today** — [keep their sound until the setter presses Remove on that route; new
-   routes start clean]. Alternatives: strip them from every route now (every published route with rhythm points
-   loses its echo and room at once), or keep the section but hidden.
-2. **Sends** — [one send knob per voice, all at 1]. Alternative: one summed input, no sends.
-3. **Walk/GPS as a modulation source** — [yes, on both the master and the points: along, pace, near].
-4. **Loop: a new device, or FX added to Recording?** — [a new sixth device named "Loop"; Recording stays plain].
-5. **Rates** — [bar divisions only, 32 bars to 1/32, per A-9; shift, wow and flutter in Hz]. Alternative: a free-Hz
-   switch per LFO.
-6. **Web markers** — [the device badge becomes the map marker on all three; the nature icon stays on the card/list].
-7. **Where the master taps the voices** — [after each voice's own delay and room]. Alternative: before them.
-8. **Editing on a phone** — [desk only, a phone shows the summary — as composing].
-9. **How many points' FX at once** — [two, nearest win, the rest play dry]. More costs phones the most.
-10. **Do Rhythm/Grains/Melody points get FX too?** — [not in this round; the engine allows it later for free].
+1. **Rhythm effects: removed.** The section leaves the patch screen and the core no longer applies `patch.rfx`
+   (rhythm/grains/melody points play clean; old saved `rfx` values are ignored, new saves write the clean values).
+   No legacy line, no Remove button. Kerem accepts that published routes with rhythm points lose that echo/room.
+2. **One master FX bus** (one chain, one engine per route, which saves CPU); each of the three voices has its own
+   **send amount** into it; a **return gain** knob sets the bus level beside the untouched dry.
+3. **No walk/GPS modulation sources** (too heavy for now): no `along`, `pace`, `near`, no `walk()`, no
+   `fs_piece_pace`, no `fs_mix_fx_walk`, no app `fxWalk`. Sources: lfo1-4, env, chord.
+4. **Loop is a new sixth device**; Recording stays as it is.
+5. **Rates in bar divisions** (shift, wow, flutter in Hz), and the patch window **shows them**: division · seconds
+   and the LFO wave with its moving playhead.
+6. **Icons:** just better, more distinctive point icons. The marker structure stays as it is; the mock shows candidates.
+7. **The master taps each voice after its own delay** (and room).
+8. **Editing is setter-only, in the desktop browser patch window.** No phone summary, no listener-view FX UI.
+   (Listeners still hear the FX; only the editing is desk-only.)
+9. **Point FX at once: more than two if the budget allows.** The cap is one constant, set from measurement
+   (target 4; the phone CPU check at Test 24 decides), nearest win, the rest play dry.
+10. **The master FX is fed only by the three route voices.** Rhythm/Grains/Melody points get no FX this round.
+11. **LFOs:** every morph cell (six on a typical route) shows its wave with a moving playhead and its target's live value.
 
 ## Build order
 

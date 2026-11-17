@@ -12,7 +12,14 @@
 
 ## Global Constraints
 
-- **Kerem's open questions come first.** The spec's ten open questions carry assumed defaults; the controller confirms them with Kerem (or records "do as you recommend") in `scratch/fx-ledger.md` before Task 1. A changed answer changes the tasks that name it.
+- **Kerem answered the open questions (2026-11-17); see the spec's "Kerem's decisions". They override the tasks below:**
+  - Part 1 Task 6: drop the walk sources (`S_ALONG/S_PACE/S_NEAR`, `walk()`, `test_walk`, Live slots 9-11 become unused). Sources = lfo1-4, env, chord.
+  - Part 1 Task 8: drop `fs_piece_pace` and `master.walk`. **The core stops applying `rfx`** (rhythm points run clean). `rfx` stays parsed only so old patches still load. Update the "`rfx` stays in the core" constraint accordingly.
+  - Part 1 Tasks 10-11: no legacy line or Remove button; no phone summary frame; no `web/patch.js` phone-tab change. The Master FX section fills the column the rhythm effects left. Show each rate as division · seconds.
+  - Part 2: drop `fs_mix_fx_walk`, Task 2's pace/near feeding and the apps' `fxWalk`. Task 2 keeps only `fs_point_fx_follow` (chord) and the live read. The cap is one constant `MFX_POINT_CAP` (start at 4) and the test is "exactly CAP loudest". The phone CPU gate at Test 24 sets the final value. Mock text: "other points' effects are sounding".
+  - Part 3: the mock and the build show **every morph cell** (six on a typical route) with its wave, a moving playhead and the live target value.
+  - Part 4: better distinctive icons per point kind/device. Keep the current marker structure (no badge/marker swap on the web).
+- **(Superseded) Kerem's open questions come first.** The spec's ten open questions carry assumed defaults; the controller confirms them with Kerem (or records "do as you recommend") in `scratch/fx-ledger.md` before Task 1. A changed answer changes the tasks that name it.
 - Dry by default (A-8): a route without `mfx`, or with `ret` 0, renders **bit-identical** to main `99f0459` (`test_kept`, the step-2 repeat hash `7233712993534382426`, `core/test.cpp` row 0). A point without `fx.on` is untouched.
 - Patch version stays 17. `rfx` stays in the core. `fs_piece_morphs` keeps its 7-double layout. `DEST_KEYS` only grows at the end.
 - Audio thread: nothing allocates, locks, sorts or simulates; the patch read stays ≤ 1 ms warm; the composer cost lines (p99.9 < 1.0 ms, no block > 1.5 ms after warm-up) still pass with the master FX all on.
