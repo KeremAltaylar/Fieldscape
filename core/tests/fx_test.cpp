@@ -71,7 +71,12 @@ static void test_table() {
     check("table: the rows the modules read", R_SH_HZ == param_of("shift.hz") && R_SH_MODE == param_of("shift.mode") && R_SH_FB == param_of("shift.fb")
         && R_PH_STAGES == param_of("phase.stages") && R_PH_HZ == param_of("phase.hz") && R_PH_SPAN == param_of("phase.span")
         && R_PH_RATE == param_of("phase.rate") && R_PH_FB == param_of("phase.fb") && R_VW_POS == param_of("vowel.pos")
-        && R_VW_Q == param_of("vowel.q") && R_VW_SIZE == param_of("vowel.size"));
+        && R_VW_Q == param_of("vowel.q") && R_VW_SIZE == param_of("vowel.size")
+        && R_SW_RATE == param_of("swarm.rate") && R_SW_DEPTH == param_of("swarm.depth") && R_SW_DELAY == param_of("swarm.delay")
+        && R_SW_FB == param_of("swarm.fb") && R_SW_SPREAD == param_of("swarm.spread") && R_SW_ZERO == param_of("swarm.zero")
+        && R_CB_TUNE == param_of("comb.tune") && R_CB_HZ == param_of("comb.hz") && R_CB_DECAY == param_of("comb.decay")
+        && R_CB_DAMP == param_of("comb.damp") && R_CB_DETUNE == param_of("comb.detune") && R_TP_WOW == param_of("tape.wow")
+        && R_TP_FLUTTER == param_of("tape.flutter") && R_TP_DRIVE == param_of("tape.drive") && R_TP_TONE == param_of("tape.tone"));
     int e = param_of("echo.fb");
     check("table: param_of round-trips", e >= 0 && !std::strcmp(PARAMS[e].key, "echo.fb"));
     check("table: unknown -1", param_of("nope.x") == -1 && param_of("echo") == -1 && param_of("") == -1);
@@ -259,14 +264,17 @@ static void test_linear() {
 /* ---- Task 2: Shift, Phase, Vowel ---- */
 static const double SR = 48000, TAU = 6.283185307179586;
 
-/* A sound source the tests feed, stereo: 0 a 220 Hz sine at -12 dBFS, 1 pink noise, 2 white noise, 3 a 1 kHz sine at -6 dBFS. */
+/* A sound source the tests feed, stereo: 0 a 220 Hz sine at -12 dBFS, 1 pink noise (x g), 2 white noise, 3 a 1 kHz sine
+   at -6 dBFS, 4 a sine at hz and amp, 5 silence. */
 struct Sig {
-    int kind; long n = 0; Pink pl, pr; uint32_t w = 777;
+    int kind; long n = 0; Pink pl, pr; uint32_t w = 777; double hz = 440, amp = 0.5; float g = 1;
     explicit Sig(int k) : kind(k) { pr.s = 99991; }
     void next(float &l, float &r) {
         if (kind == 0) { l = r = (float)(0.2512 * std::sin(TAU * 220 * n++ / SR)); return; }
         if (kind == 3) { l = r = (float)(0.5 * std::sin(TAU * 1000 * n++ / SR)); return; }
-        if (kind == 1) { l = pl.next(); r = pr.next(); return; }
+        if (kind == 4) { l = r = (float)(amp * std::sin(TAU * hz * n++ / SR)); return; }
+        if (kind == 5) { l = r = 0; return; }
+        if (kind == 1) { l = g * pl.next(); r = g * pr.next(); return; }
         w ^= w << 13; w ^= w >> 17; w ^= w << 5; l = (float)w / 4294967296.0f - 0.5f;
         w ^= w << 13; w ^= w >> 17; w ^= w << 5; r = (float)w / 4294967296.0f - 0.5f;
     }
@@ -487,34 +495,311 @@ static void test_vowel() {
     check("vowel: centroid range >= 30 % across pos", crange >= 0.3);
 }
 
-/* Every parameter of the three stepped min -> max (module at mix 1, its other parameters default; y = the wet), and
-   each mix 0 -> 1 -> 0 (y = in + wet, since the wet alone is 0 before), on the sine and on pink noise. */
+/* ---- Task 3: Swarm, Tape, Comb ---- */
+
+/* The instantaneous frequency of x (Hz) from its analytic signal (one FFT over the first 2^k samples), averaged per ms
+   (48 samples); the first and last 100 ms dropped (the FFT wraps). */
+static std::vector<double> inst_freq(const std::vector<float> &x) {
+    int N = 1; while (2 * N <= (int)x.size()) N *= 2;
+    std::vector<double> re(x.begin(), x.begin() + N), im(N, 0.0);
+    fft(re, im);
+    for (int k = 1; k < N; k++) { double s = k < N / 2 ? 2 : k == N / 2 ? 1 : 0; re[k] *= s; im[k] *= s; }
+    for (auto &v : im) v = -v;
+    fft(re, im);                                         /* = N conj(analytic); the conjugate is undone below */
+    const int D = 48, edge = (int)(0.1 * SR); std::vector<double> f;
+    for (int o = edge; o + D <= N - edge; o += D) {
+        double s = 0;
+        for (int i = o; i < o + D; i++) {
+            const double ar = re[i], ai = -im[i], br = re[i - 1], bi = -im[i - 1];
+            s += std::atan2(ai * br - ar * bi, ar * br + ai * bi);
+        }
+        f.push_back(s / D * SR / TAU);
+    }
+    return f;
+}
+/* The strongest bin within +-50 cents of f, refined by a parabola on its dB: its offset from f in cents. */
+static double peak_cents(const std::vector<double> &P, double f, int N) {
+    int lo = (int)std::floor(f * std::pow(2, -50 / 1200.0) * N / SR), hi = (int)std::ceil(f * std::pow(2, 50 / 1200.0) * N / SR), b = lo;
+    for (int k = lo; k <= hi; k++) if (P[k] > P[b]) b = k;
+    const double a = 10 * std::log10(P[b - 1]), c = 10 * std::log10(P[b]), d = 10 * std::log10(P[b + 1]);
+    const double den = a - 2 * c + d, delta = den != 0 ? 0.5 * (a - d) / den : 0;
+    return 1200 * std::log2((b + delta) * SR / N / f);
+}
+static double band_db(const std::vector<double> &P, double f, double cents, int N) {   /* the strongest bin within +-cents of f */
+    int lo = (int)std::floor(f * std::pow(2, -cents / 1200) * N / SR), hi = (int)std::ceil(f * std::pow(2, cents / 1200) * N / SR);
+    double m = 1e-30; for (int k = lo; k <= hi; k++) m = std::fmax(m, P[k]);
+    return 10 * std::log10(m);
+}
+static double centroid(const std::vector<double> &P) {
+    double num = 0, den = 0;
+    for (size_t b = 1; b < P.size(); b++) { num += b * SR / (2 * P.size()) * P[b]; den += P[b]; }
+    return num / den;
+}
+/* Task 1's carried check for a real module: wet at mix 0.37 == 0.37 x wet at mix 1 (pink, after 100 ms). */
+static double mix_linearity(mfx::Cfg c1, const char *mixk) {
+    mfx::Cfg cm = c1; cm.v[mfx::param_of(mixk)] = 0.37f;
+    mfx::Engine a, b; a.init(SR); b.init(SR); a.apply(c1); b.apply(cm);
+    Sig sa(1), sb(1); std::vector<float> ya, yb;
+    play(a, sa, (int)SR, &ya); play(b, sb, (int)SR, &yb);
+    double lin = 0;
+    for (size_t i = (size_t)(0.1 * SR); i < ya.size(); i++) lin = std::fmax(lin, std::fabs(yb[i] - 0.37 * ya[i]));
+    return lin;
+}
+/* Level of the wet relative to the input (dB) for a module at mix 1, pink x g (settle 2 s, measure 4 s). */
+static double level_rel(const mfx::Cfg &c, float g) {
+    mfx::Engine e; e.init(SR); e.apply(c);
+    Sig s(1); s.g = g; play(e, s, 2 * (int)SR, nullptr);
+    std::vector<float> y, in; play(e, s, 4 * (int)SR, &y, false, 90, nullptr, nullptr, &in);
+    return rms_db(y) - rms_db(in);
+}
+
+static void test_swarm() {
+    using namespace mfx;
+    /* depth 1, rate 4n at 120 bpm: the pitch wobble repeats every 0.5 s */
+    Cfg c = with({ { "swarm.mix", 1 }, { "swarm.depth", 1 }, { "swarm.rate", 1 } }); std::strcpy(c.rate[SWARM], "4n");
+    Engine e; e.init(SR); e.apply(c);
+    Sig s(4); s.hz = 440; double beats = 0;
+    play(e, s, (int)(0.5 * SR), nullptr, false, 120, &beats);
+    std::vector<float> y; play(e, s, 6 * (int)SR, &y, false, 120, &beats);
+    auto f = inst_freq(y);
+    double mean = 0, dev = 0;
+    for (double &v : f) { v = std::fmax(-200.0, std::fmin(200.0, v - 440)); mean += v; }
+    mean /= f.size();
+    std::vector<double> d(f.size()); for (size_t i = 0; i < f.size(); i++) { d[i] = f[i] - mean; dev += d[i] * d[i]; }
+    dev = std::sqrt(dev / d.size());
+    int best = 0; double bv = -1e300;
+    for (int lag = 300; lag <= 750; lag++) {
+        double r = 0; for (size_t i = 0; i + lag < d.size(); i++) r += d[i] * d[i + lag];
+        r /= d.size() - lag;
+        if (r > bv) { bv = r; best = lag; }
+    }
+    const double period = best / 1000.0;
+    check("swarm: the pitch deviation repeats at 0.5 s (4n at 120 bpm) +-1 %", std::fabs(period / 0.5 - 1) <= 0.01);
+    check("swarm: depth 1 moves the pitch (RMS >= 1 %)", dev >= 4.4);
+
+    /* zero: defaults (depth 0.5, 8 ms, 1n) at 120 bpm: tap 0 crosses the centre at each whole second. The envelope
+       (two-period RMS) at its lowest within +-10 ms of the crossings at 2, 3 and 4 s, against its highest: the shallowest. */
+    auto null_at_cross = [](float zero) {
+        Engine z; z.init(SR); z.apply(with({ { "swarm.mix", 1 }, { "swarm.zero", zero } }));
+        Sig s(4); s.hz = 440; double b = 0;
+        play(z, s, (int)SR, nullptr, false, 120, &b);
+        std::vector<float> y; play(z, s, 4 * (int)SR, &y, false, 120, &b);
+        const int W = 218; double mx = 0, mn[3] = { 1e300, 1e300, 1e300 };
+        for (size_t o = 0; o + W <= y.size(); o += 8) {
+            double s2 = 0; for (int i = 0; i < W; i++) s2 += (double)y[o + i] * y[o + i];
+            double r = std::sqrt(s2 / W), t = 1 + (o + W / 2) / SR;
+            mx = std::fmax(mx, r);
+            for (int c = 0; c < 3; c++) if (std::fabs(t - (2 + c)) <= 0.01) mn[c] = std::fmin(mn[c], r);
+        }
+        return 20 * std::log10(mx / std::fmax(std::fmax(mn[0], mn[1]), std::fmax(mn[2], 1e-12)));
+    };
+    double nz = null_at_cross(1), nn = null_at_cross(0);
+    check("swarm: zero on -> the output nulls >= 20 dB at the sweep's crossing", nz >= 20);
+
+    /* spread */
+    auto lr = [](float spread) {
+        Engine e; e.init(SR); e.apply(with({ { "swarm.mix", 1 }, { "swarm.spread", spread } }));
+        Sig s(4); s.hz = 440; std::vector<float> l, r;
+        play(e, s, (int)SR, &l, false, 90, nullptr, &r);
+        double d = 0, pk = 0; for (size_t i = 0; i < l.size(); i++) { d = std::fmax(d, std::fabs(l[i] - r[i])); pk = std::fmax(pk, std::fabs(l[i])); }
+        return d / pk;
+    };
+    double s0 = lr(0), s1 = lr(1);
+    check("swarm: spread 0 -> L == R", s0 == 0);
+    check("swarm: spread 1 -> L != R", s1 > 0.1);
+    double lin = mix_linearity(with({ { "swarm.mix", 1 }, { "swarm.fb", 0.5f }, { "swarm.depth", 0.8f } }), "swarm.mix");
+    check("swarm: wet at mix 0.37 == 0.37 x wet at mix 1", lin < 1e-5);
+    std::printf("fx swarm: 4n at 120 bpm -> deviation period %.3f s (want 0.500), RMS %.1f Hz; zero on: null %.1f dB at the crossings (off: %.1f dB); spread 0 L-R %.2g, 1 %.2f; mix err %.2g\n",
+                period, dev, nz, nn, s0, s1, lin);
+}
+
+static void test_tape() {
+    using namespace mfx;
+    auto dev_of = [](float wow, float fl) {
+        Engine e; e.init(SR); e.apply(with({ { "tape.mix", 1 }, { "tape.wow", wow }, { "tape.flutter", fl }, { "tape.drive", 0 }, { "tape.tone", 16000 } }));
+        Sig s(3); play(e, s, (int)(0.5 * SR), nullptr);
+        std::vector<float> y; play(e, s, 11 * (int)SR, &y);
+        auto f = inst_freq(y);
+        for (double &v : f) v = v - 1000;
+        return f;
+    };
+    auto w = dev_of(1, 0);
+    double wpk = 0; for (double v : w) wpk = std::fmax(wpk, std::fabs(v) / 10);   /* % of 1 kHz */
+    check("tape: wow 1 -> pitch deviation 1.5-2.5 % peak", wpk >= 1.5 && wpk <= 2.5);
+    auto fl = dev_of(0, 1);
+    double fpk = 0, mean = 0; for (double v : fl) { fpk = std::fmax(fpk, std::fabs(v) / 10); mean += v; }
+    mean /= fl.size();
+    const int N = 8192; std::vector<double> re(N), im(N, 0.0);
+    for (int i = 0; i < N; i++) re[i] = (fl[i] - mean) * (0.5 - 0.5 * std::cos(TAU * i / N));
+    fft(re, im);
+    int kb = 0; double pb = 0;
+    for (int k = (int)(1.0 * N / 1000); k <= (int)(40.0 * N / 1000); k++) { double p = re[k] * re[k] + im[k] * im[k]; if (p > pb) { pb = p; kb = k; } }
+    const double ff = kb * 1000.0 / N;
+    check("tape: flutter 1 -> the deviation's energy at 7.3 Hz +-0.5", std::fabs(ff - 7.3) <= 0.5);
+
+    /* drive 0 -> 1 at -30 and -6 dBFS: the level held, the third harmonic up >= 12 dB at both (A-19) */
+    std::printf("fx tape: drive level / H3 (dB):");
+    for (double amp : { 0.0316, 0.5 }) {
+        double h0 = 0, h1 = 0;
+        for (float dr : { 0.0f, 0.5f, 1.0f }) {
+            Engine e; e.init(SR); e.apply(with({ { "tape.mix", 1 }, { "tape.wow", 0 }, { "tape.flutter", 0 }, { "tape.drive", dr }, { "tape.tone", 16000 } }));
+            Sig s(4); s.hz = 1000; s.amp = amp; play(e, s, (int)SR, nullptr);
+            std::vector<float> y, in; play(e, s, 2 * (int)SR, &y, false, 90, nullptr, nullptr, &in);
+            auto P = power(y);
+            double lv = rms_db(y) - rms_db(in), h3 = tone_db(P, 3000) - tone_db(P, 1000);
+            if (dr == 0) h0 = h3; if (dr == 1) h1 = h3;
+            check("tape: drive keeps the level within 3 dB", std::fabs(lv) <= 3);
+            std::printf(" %s%.1f d%.1f: %.2f/%.0f", dr == 0 ? "| " : "", 20 * std::log10(amp), dr, lv, h3);
+        }
+        check("tape: drive 0 -> 1 raises the third harmonic >= 12 dB", h1 - h0 >= 12);
+    }
+    /* A-18: tone moves the spectrum, not the level */
+    double lmin = 1e9, lmax = -1e9, cmin = 1e9, cmax = 0;
+    for (float t : { 500.0f, 1000.0f, 2000.0f, 4000.0f, 8000.0f, 16000.0f }) {
+        Engine e; e.init(SR); e.apply(with({ { "tape.mix", 1 }, { "tape.tone", t } }));
+        Sig s(1); play(e, s, 2 * (int)SR, nullptr);
+        std::vector<float> y, in; play(e, s, 4 * (int)SR, &y, false, 90, nullptr, nullptr, &in);
+        double lv = rms_db(y) - rms_db(in), cen = centroid(power(y));
+        lmin = std::fmin(lmin, lv); lmax = std::fmax(lmax, lv); cmin = std::fmin(cmin, cen); cmax = std::fmax(cmax, cen);
+    }
+    check("tape: level within 3 dB across tone", lmax - lmin <= 3);
+    check("tape: tone moves the centroid >= 30 %", (cmax - cmin) / cmax >= 0.3);
+    double lin = mix_linearity(with({ { "tape.mix", 1 }, { "tape.drive", 0.6f } }), "tape.mix");
+    check("tape: wet at mix 0.37 == 0.37 x wet at mix 1", lin < 1e-5);
+    std::printf("\nfx tape: wow 1 peak %.2f %%, flutter 1 at %.2f Hz (peak %.2f %%); tone level range %.2f dB, centroid %.0f..%.0f Hz; mix err %.2g\n",
+                wpk, ff, fpk, lmax - lmin, cmin, cmax, lin);
+}
+
+static void test_comb() {
+    using namespace mfx;
+    static const float DM[5] = { 50, 53, 57, 60, -1 }, GM[5] = { 55, 59, 62, -1, -1 };
+    const int N = 1 << 18;
+    auto spectrum = [&](const Cfg &c, bool chord) {
+        Engine e; e.init(SR); e.apply(c);
+        if (chord) e.chord(DM, 50, 1);
+        Sig s(1); play(e, s, 2 * (int)SR, nullptr);
+        std::vector<float> l, r; play(e, s, 16 * (int)SR, &l, false, 90, nullptr, &r);
+        for (size_t i = 0; i < l.size(); i++) l[i] = 0.5f * (l[i] + r[i]);
+        return power(l, N);
+    };
+    auto mtof = [](double m) { return 440 * std::pow(2, (m - 69) / 12); };
+    /* the chord D F A C: combs on D3 F3 A3 C4, the fifth comb D4 (the root an octave up) */
+    auto P = spectrum(with({ { "comb.mix", 1 } }), true);
+    double worst = 0;
+    std::printf("fx comb: chord peaks (cents):");
+    for (double m : { 50.0, 53.0, 57.0, 60.0, 62.0 }) {
+        double c = peak_cents(P, mtof(m), N); worst = std::fmax(worst, std::fabs(c));
+        std::printf(" %.0f:%+.1f", m, c);
+    }
+    double contrast = band_db(P, mtof(50), 20, N) - band_db(P, mtof(52), 20, N);
+    check("comb: chord peaks within +-10 cents of D F A C", worst <= 10);
+    check("comb: E3 (no chord note) >= 6 dB under the D3 peak", contrast >= 6);
+    auto F = spectrum(with({ { "comb.mix", 1 }, { "comb.tune", 1 }, { "comb.hz", 110 } }), false);
+    double fw = 0;
+    std::printf("; free 110:");
+    for (double f : { 110.0, 165.0, 220.0, 330.0, 440.0 }) { double c = peak_cents(F, f, N); fw = std::fmax(fw, std::fabs(c)); std::printf(" %.0f:%+.1f", f, c); }
+    check("comb: free 110 -> peaks at 110 165 220 330 440 +-10 cents", fw <= 10);
+    std::printf("; D3 over E3 %.1f dB\n", contrast);
+
+    /* a chord change glides: D -> G and back, sine and pink */
+    double gw = 0;
+    for (int kind = 0; kind < 2; kind++)
+        for (int dir = 0; dir < 2; dir++) {
+            Engine e; e.init(SR); e.apply(with({ { "comb.mix", 1 } }));
+            e.chord(dir ? GM : DM, dir ? 55 : 50, 1);
+            Sig s(kind); std::vector<float> y; double beats = 0;
+            play(e, s, (int)SR, nullptr, false, 90, &beats);
+            play(e, s, (int)(0.5 * SR), &y, false, 90, &beats);
+            e.chord(dir ? DM : GM, dir ? 50 : 55, 2);
+            play(e, s, (int)(0.05 * SR) + 128, &y, false, 90, &beats);
+            double r = click_ratio(y); gw = std::fmax(gw, r);
+            std::printf("  click comb chord %s %s %.2f\n", dir ? "G->D" : "D->G", kind ? "pink" : "sine", r);
+        }
+    check("comb: a chord change glides (click <= 4)", gw <= 4);
+
+    /* decay 0.05 -> 20 s: the level held while the peaks sharpen (A-18) */
+    double lmin = 1e9, lmax = -1e9;
+    std::printf("fx comb: decay level/D3-over-E3 (dB):");
+    for (float d : { 0.05f, 0.2f, 0.5f, 2.0f, 8.0f, 20.0f }) {
+        Engine e; e.init(SR); e.apply(with({ { "comb.mix", 1 }, { "comb.decay", d } })); e.chord(DM, 50, 1);
+        Sig s(1); play(e, s, 4 * (int)SR, nullptr);
+        std::vector<float> y, in; play(e, s, 8 * (int)SR, &y, false, 90, nullptr, nullptr, &in);
+        auto Q = power(y, 1 << 16);
+        double lv = rms_db(y) - rms_db(in), ct = band_db(Q, mtof(50), 20, 1 << 16) - band_db(Q, mtof(52), 20, 1 << 16);
+        lmin = std::fmin(lmin, lv); lmax = std::fmax(lmax, lv);
+        std::printf(" %.2g s: %.2f/%.1f", d, lv, ct);
+    }
+    check("comb: level within 3 dB across decay 0.05-20 s", lmax - lmin <= 3);
+
+    /* RT60 (Schroeder, -5 to -35 dB, x2) after 3 s of pink, the chord D */
+    std::printf("\nfx comb: RT60 measured:");
+    for (float d : { 0.5f, 2.0f, 8.0f }) {
+        Engine e; e.init(SR); e.apply(with({ { "comb.mix", 1 }, { "comb.decay", d } })); e.chord(DM, 50, 1);
+        Sig s(1); play(e, s, 3 * (int)SR, nullptr);
+        s.kind = 5; std::vector<float> l, r; play(e, s, (int)((1.5 * d + 0.5) * SR), &l, false, 90, nullptr, &r);
+        std::vector<double> edc(l.size() + 1, 0.0);
+        for (size_t i = l.size(); i-- > 0;) edc[i] = edc[i + 1] + (double)l[i] * l[i] + (double)r[i] * r[i];
+        const size_t i0 = (size_t)(0.01 * SR); double t5 = -1, t35 = -1;
+        for (size_t i = i0; i < l.size(); i++) {
+            double db = 10 * std::log10(edc[i] / edc[i0] + 1e-300);
+            if (t5 < 0 && db <= -5) t5 = i / SR;
+            if (t35 < 0 && db <= -35) { t35 = i / SR; break; }
+        }
+        double rt = t35 > 0 && t5 >= 0 ? 2 * (t35 - t5) : -1;
+        check("comb: RT60 within 25 % of decay", rt > 0 && std::fabs(rt / d - 1) <= 0.25);
+        std::printf(" %.1f s -> %.2f s;", d, rt);
+    }
+    double lin = mix_linearity(with({ { "comb.mix", 1 } }), "comb.mix");
+    check("comb: wet at mix 0.37 == 0.37 x wet at mix 1", lin < 1e-5);
+    std::printf(" decay level range %.2f dB; mix err %.2g\n", lmax - lmin, lin);
+}
+
+/* A-19: the LevelMatch modules (Vowel, Comb, Tape, at mix 1) hold the level at -30 dBFS as at -6 (pink 24 dB apart). */
+static void test_levels() {
+    std::printf("fx levels: module out-in (dB) loud/quiet:");
+    for (const char *m : { "vowel.mix", "comb.mix", "tape.mix" }) {
+        mfx::Cfg c = with({ { m, 1 }, { "vowel.pos", 2 } });
+        double a = level_rel(c, 1), b = level_rel(c, 1 / 16.0f);
+        check("levels: within 3 dB of the input, loud and quiet", std::fabs(a) <= 3 && std::fabs(b) <= 3);
+        check("levels: quiet within 1 dB of loud", std::fabs(a - b) <= 1);
+        std::printf(" %s %.2f/%.2f", m, a, b);
+    }
+    std::printf("\n");
+}
+
+/* Every parameter stepped min -> max (module at mix 1, its other parameters default; y = the wet) - and for Swarm, Comb,
+   Tape also max -> min - and each mix 0 -> 1 -> 0 (y = in + wet, since the wet alone is 0 before), on the sine and pink. */
 static void test_clicks() {
     using namespace mfx;
-    const char *mods[3] = { "shift", "phase", "vowel" };
-    double worst = 0; const char *wk = "";
-    for (int i = 0; i < NPARAM; i++) {
-        const ParamDef &p = PARAMS[i];
-        if (p.mod != SHIFT && p.mod != PHASE && p.mod != VOWEL) continue;
-        const char *mk = mods[p.mod == SHIFT ? 0 : p.mod == PHASE ? 1 : 2];
-        std::string mixk = std::string(mk) + ".mix";
-        bool is_mix = !std::strcmp(p.key, mixk.c_str());
-        for (int kind = 0; kind < 2; kind++) {
-            double r;
-            if (is_mix) {
-                Cfg off = with({}), on = with({ { p.key, 1 } });
-                r = std::fmax(click_of(off, on, kind, true), click_of(on, off, kind, true));
-            } else {
-                Cfg a = with({ { mixk.c_str(), 1 }, { p.key, p.min } }), b = with({ { mixk.c_str(), 1 }, { p.key, p.max } });
-                if (!p.cont && p.taper == EXP) { std::strcpy(a.rate[p.mod], "32n"); std::strcpy(b.rate[p.mod], "32m"); }
-                r = click_of(a, b, kind, false);
+    struct M { Mod mod; bool back; };
+    static const M MODS[] = { { SHIFT, false }, { PHASE, false }, { VOWEL, false }, { SWARM, true }, { COMB, true }, { TAPE, true } };
+    double worst = 0; std::string wk;
+    for (const M &md : MODS)
+        for (int i = 0; i < NPARAM; i++) {
+            const ParamDef &p = PARAMS[i];
+            if (p.mod != md.mod) continue;
+            std::string mixk = std::string(MOD_NAMES[p.mod]) + ".mix";
+            bool is_mix = !std::strcmp(p.key, mixk.c_str());
+            for (int kind = 0; kind < 2; kind++) {
+                double r, rb = 0;
+                if (is_mix) {
+                    Cfg off = with({}), on = with({ { p.key, 1 } });
+                    r = std::fmax(click_of(off, on, kind, true), click_of(on, off, kind, true));
+                } else {
+                    Cfg a = with({ { mixk.c_str(), 1 }, { p.key, p.min } }), b = with({ { mixk.c_str(), 1 }, { p.key, p.max } });
+                    if (!p.cont && p.taper == EXP) { std::strcpy(a.rate[p.mod], "32n"); std::strcpy(b.rate[p.mod], "32m"); }
+                    r = click_of(a, b, kind, false);
+                    if (md.back) rb = click_of(b, a, kind, false);
+                }
+                std::printf("  click %-13s %s %.2f", p.key, kind ? "pink" : "sine", r);
+                if (md.back && !is_mix) std::printf(" back %.2f", rb);
+                std::printf("%s\n", std::fmax(r, rb) > 4 ? "  FAIL" : "");
+                check("clicks: every parameter (both ways for swarm/comb/tape) and mix <= 4", std::fmax(r, rb) <= 4);
+                if (std::fmax(r, rb) > worst) { worst = std::fmax(r, rb); wk = p.key; }
             }
-            std::printf("  click %-13s %s %.2f%s\n", p.key, kind ? "pink" : "sine", r, r > 4 ? "  FAIL" : "");
-            check("clicks: every shift/phase/vowel parameter and mix <= 4", r <= 4);
-            if (r > worst) { worst = r; wk = p.key; }
         }
-    }
-    std::printf("fx clicks: shift, phase, vowel - every parameter min -> max and mix 0 -> 1 -> 0, sine and pink: worst %.2f (%s)\n", worst, wk);
+    std::printf("fx clicks: all six modules - every parameter min -> max (swarm/comb/tape also back), mix 0 -> 1 -> 0, sine and pink: worst %.2f (%s)\n",
+                worst, wk.c_str());
 }
 
 int main() {
@@ -526,6 +811,10 @@ int main() {
     test_shift();
     test_phase();
     test_vowel();
+    test_swarm();
+    test_tape();
+    test_comb();
+    test_levels();
     test_clicks();
     if (failed) { std::printf("fx FAILED: %d checks\n", failed); return 1; }
     std::printf("fx ok\n");
