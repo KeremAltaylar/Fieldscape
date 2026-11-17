@@ -196,7 +196,8 @@
     if (u === "oct") { return trimZeros(v.toFixed(1)) + " oct"; }
     if (u === "/s") { return trimZeros(v.toFixed(v < 10 ? 1 : 0)) + " /s"; }
     if (u === "x") { return "×" + trimZeros(v.toFixed(2)); }
-    return sgn(v, trimZeros(v.toFixed(u === "n2" ? 2 : 1)));
+    var t = trimZeros(v.toFixed(u === "n2" ? 2 : 1));
+    return p.min < 0 ? sgn(v, t) : t;   /* only a bipolar row (echo.tone) carries a "+" */
   }
 
   function destinations() {   /* the continuous rows (44), for the matrix and the LFO targets */

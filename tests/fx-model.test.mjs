@@ -72,6 +72,9 @@ test("fmt: real units, divisions with seconds", () => {
   assert.equal(M.fmt("comb.detune", 8), "8 ct");
   assert.equal(M.fmt("shift.mode", "ring"), "Ring");
   assert.equal(M.fmt("swarm.zero", true), "On");
+  assert.equal(M.fmt("echo.tone", 0.3), "+0.3");
+  assert.equal(M.fmt("vowel.pos", 2), "2");
+  assert.equal(M.fmt("space.size", 0.7), "0.7");
   assert.equal(M.divSeconds("4n", 120), 0.5); assert.equal(M.divSeconds("1n", 60), 4);
 });
 
