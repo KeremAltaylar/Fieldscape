@@ -142,6 +142,10 @@ static void test_parse() {
     check("junk: ret clamped", cj.ret == 1);
     check("junk: send", cj.send[0] == 1 && cj.send[1] == 0 && cj.send[2] == 1);
     check("junk: wet string -> 0", cj.wet == 0);
+    check("junk: on string -> false", !cj.on);
+    Json on1 = Json::parse(R"({"on":true})"), on2 = Json::parse(R"({"on":1})"), on3 = Json::parse(R"({"on":"false"})");
+    Cfg co; cfg_of(&on1, co); bool a1 = co.on; cfg_of(&on2, co); bool a2 = co.on; cfg_of(&on3, co);
+    check("parse: on true / 1 -> on, \"false\" -> off", a1 && a2 && !co.on);
     check("junk: hz string -> default", val(cj, "shift.hz") == 0);
     check("junk: mode ring", val(cj, "shift.mode") == 1);
     check("junk: fb nan -> default", val(cj, "shift.fb") == 0);
@@ -195,19 +199,54 @@ static void test_silent() {
 
     /* the frame: a stub module at mix 1 passes its input; back to 0, the gate gives exact 0 again */
     c.v[param_of("echo.mix")] = 1; e.apply(c);
-    check("gate: a mix on -> not idle", !e.idle());
+    check("frame: a mix on -> not idle", !e.idle());
     float pk = 0; run(e, p, 48000, &pk, nullptr);
     e.live(l);
-    check("gate: mix 1 -> wet sounds", pk > 0.05f && l.v[23] > 0 && l.v[13 + ECHO] > 0);
-    check("gate: other modules skipped", l.v[13 + SHIFT] == 0 && l.v[13 + SPACE] == 0);
+    check("frame: mix 1 -> wet sounds", pk > 0.05f && l.v[23] > 0 && l.v[13 + ECHO] > 0);
+    check("frame: other modules skipped", l.v[13 + SHIFT] == 0 && l.v[13 + SPACE] == 0);
     c.v[param_of("echo.mix")] = 0; e.apply(c);
     run(e, p, 48000 / 20, nullptr, nullptr);       /* 50 ms: past the 30 ms fade */
     zero = true; run(e, p, 48000, nullptr, &zero);
-    check("gate: all mixes back to 0 -> wet exactly 0", zero);
-    check("gate: idle again", e.idle());
+    check("frame: all mixes back to 0 -> wet exactly 0", zero);
+    check("frame: idle again", e.idle());
     e.reset();
     check("reset: config kept, still dry", e.idle());
     std::printf("fx silent: 2 s pink noise through the defaults -> wet 0.0f every sample, idle; a mix on sounds, off gives 0 again\n");
+}
+
+/* wet = chain - prod(1 - mix) * in: with the pass-through stubs (f(x) = x) the wet is (1 - prod(1 - mix)) * in, so one
+   module's wet is linear in its mix and no untouched input reaches the return. Task 2's first real module must assert
+   wet == mix * f(x) for itself (its own output scaled linearly by its mix). */
+static float worst(mfx::Engine &e, float expect, int frames, int n) {
+    Pink p; float iL[512], iR[512], wL[512], wR[512], err = 0;
+    for (int done = 0; done < frames; done += n) {
+        for (int i = 0; i < n; i++) { iL[i] = p.next(); iR[i] = p.next(); }
+        e.process(iL, iR, wL, wR, n);
+        for (int i = 0; i < n; i++) err = std::fmax(err, std::fmax(std::fabs(wL[i] - expect * iL[i]), std::fabs(wR[i] - expect * iR[i])));
+    }
+    return err;
+}
+static void test_linear() {
+    using namespace mfx;
+    Cfg c; cfg_defaults(c);
+    c.v[param_of("echo.mix")] = 0.5f;
+    Engine e; e.init(48000); e.apply(c);
+    worst(e, 0, 4800, 128);                                   /* past the 30 ms ramp */
+    float e1 = worst(e, 0.5f, 48000, 128);
+    check("linear: one stub at mix 0.5 -> wet == 0.5 in", e1 < 1e-6f);
+    c.v[param_of("echo.mix")] = 0.25f; e.apply(c);
+    worst(e, 0, 4800, 128);
+    float e2 = worst(e, 0.25f, 48000, 128);
+    check("linear: mix 0.25 -> wet == 0.25 in", e2 < 1e-6f);
+    c.v[param_of("space.mix")] = 0.5f; e.apply(c);
+    worst(e, 0, 4800, 128);
+    float e3 = worst(e, 1 - 0.75f * 0.5f, 48000, 128);
+    check("linear: two stubs 0.25, 0.5 -> wet == (1 - 0.75 * 0.5) in", e3 < 1e-6f);
+    Engine f; f.init(48000); f.apply(c);
+    worst(f, 0, 4800, 300);                                   /* n > 128: chunked, no overrun */
+    float e4 = worst(f, 1 - 0.75f * 0.5f, 48000 - 48000 % 300, 300);
+    check("chunks: n 300 gives the same", e4 < 1e-6f);
+    std::printf("fx linear: stub wet = (1 - prod(1 - mix)) * in, max error %.2g %.2g %.2g, n 300 %.2g\n", e1, e2, e3, e4);
 }
 
 int main() {
@@ -215,6 +254,7 @@ int main() {
     test_div();
     test_parse();
     test_silent();
+    test_linear();
     if (failed) { std::printf("fx FAILED: %d checks\n", failed); return 1; }
     std::printf("fx ok\n");
     return 0;

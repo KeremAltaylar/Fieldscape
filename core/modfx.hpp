@@ -142,7 +142,7 @@ inline void cfg_of(const Json *j, Cfg &c) {
     if (!j || j->kind != Json::OBJ) return;
     c.ret = num_of(j, "ret", 0, 1, 0);
     c.wet = num_of(j, "wet", 0, 1, 0);
-    c.on = j->flag("on", false);
+    if (const Json *o = j->get("on")) c.on = o->kind == Json::BOOL ? o->b : o->kind == Json::NUM && o->num != 0;   /* a string reads false */
     if (const Json *s = j->get("send"))
         for (int q = 0; q < 3; q++) { const Json *v = s->at(q); if (v && v->kind == Json::NUM && std::isfinite(v->num)) c.send[q] = (float)std::fmin(1, std::fmax(0, v->num)); }
     for (int i = 0; i < NPARAM; i++) {
@@ -212,43 +212,64 @@ struct Ramp {
 struct Engine {
     double sr = 48000, bpm = 72, beats = 0;
     Cfg cfg;
-    Ramp mix[NMOD], gate;                            /* gate: toward the largest mix, so all mixes 0 -> output 0 */
+    Ramp mix[NMOD];
     bool dirty[NMOD] = {};                           /* skipped since it last ran: clear its state before it runs again */
     float chord_midi[5] = { -1, -1, -1, -1, -1 }, chord_root = -1; int chord_serial = 0;
     float lvl[NMOD] = {}, lvl_in = 0, lvl_out = 0;
     int quiet = 0;                                   /* frames the output has stayed under -80 dB */
-    float xL[128], xR[128], yL[128], yR[128];
+    float xL[128], xR[128], yL[128], yR[128], keep[128];   /* keep: the product of (1 - mix) over the modules run */
 
     Engine() { cfg_defaults(cfg); }
     void init(double rate) {
         sr = rate;
         for (auto &m : mix) m.step = (float)(1 / (0.03 * sr));
-        gate.step = mix[0].step;
         reset();
     }
     void apply(const Cfg &c) {
         cfg = c;
-        float g = 0;
-        for (int m = 0; m < NMOD; m++) { mix[m].tgt = c.v[mix_row(m)]; g = std::fmax(g, mix[m].tgt); }
-        gate.tgt = g;
+        for (int m = 0; m < NMOD; m++) mix[m].tgt = c.v[mix_row(m)];
     }
     void clock(double b, double pos) { bpm = b; beats = pos; }
     void chord(const float *midi5, float root, int serial) {
         for (int i = 0; i < 5; i++) chord_midi[i] = midi5[i];
         chord_root = root; chord_serial = serial;
     }
-    /* Writes the wet only; n <= 128. */
+    /* Writes the wet only: the chain minus the input it left untouched, wet = chain - prod(1 - mix_m) * in, so the
+       return carries only processed sound and one module's wet is mix * f(x) (linear in its mix). Any n: 128 at a time. */
     void process(const float *inL, const float *inR, float *wetL, float *wetR, int n) {
+        float pin = 0, pout = 0;
+        for (int o = 0; o < n; o += 128) {
+            block(inL + o, inR + o, wetL + o, wetR + o, n - o < 128 ? n - o : 128);
+            pin = std::fmax(pin, lvl_in); pout = std::fmax(pout, lvl_out);
+        }
+        lvl_in = pin; lvl_out = pout;
+    }
+    /* Nothing on, or the tail under -80 dB for 0.5 s. */
+    bool idle() const { return all_off() || quiet >= (int)(0.5 * sr); }
+    void reset() {
+        for (int m = 0; m < NMOD; m++) { clear(m); dirty[m] = false; mix[m].cur = 0; lvl[m] = 0; }
+        quiet = 0; lvl_in = lvl_out = 0;
+    }
+    void live(Live &out) const {
+        std::memset(out.v, 0, sizeof out.v);         /* 0-8, 12, 24-31: the modulators (Task 6) */
+        for (int m = 0; m < NMOD; m++) out.v[13 + m] = lvl[m];
+        out.v[22] = lvl_in; out.v[23] = lvl_out;
+    }
+
+private:
+    bool all_off() const { for (auto &m : mix) if (!m.off()) return false; return true; }
+    void block(const float *inL, const float *inR, float *wetL, float *wetR, int n) {
         float pin = 0, pout = 0;
         for (int i = 0; i < n; i++) pin = std::fmax(pin, std::fmax(std::fabs(inL[i]), std::fabs(inR[i])));
         lvl_in = pin;
-        if (gate.off()) {
+        if (all_off()) {
             std::memset(wetL, 0, sizeof(float) * n); std::memset(wetR, 0, sizeof(float) * n);
-            for (int m = 0; m < NMOD; m++) { lvl[m] = 0; if (mix[m].off()) dirty[m] = true; }
-            lvl_out = 0; quiet = 0;                  /* idle by gate.off(); the tail count starts when a mix rises */
+            for (int m = 0; m < NMOD; m++) { lvl[m] = 0; dirty[m] = true; }
+            lvl_out = 0; quiet = 0;                  /* idle by all_off(); the tail count starts when a mix rises */
             return;
         }
         std::memcpy(xL, inL, sizeof(float) * n); std::memcpy(xR, inR, sizeof(float) * n);
+        for (int i = 0; i < n; i++) keep[i] = 1;
         for (int m = 0; m < NMOD; m++) {
             if (mix[m].off()) { dirty[m] = true; lvl[m] = 0; continue; }   /* skipped: bit-exact pass-through */
             if (dirty[m]) { clear(m); dirty[m] = false; }
@@ -258,31 +279,21 @@ struct Engine {
             for (int i = 0; i < n; i++) {
                 float k = mix[m].next();
                 xL[i] += k * (yL[i] - xL[i]); xR[i] += k * (yR[i] - xR[i]);
+                keep[i] *= 1 - k;
                 pk = std::fmax(pk, std::fmax(std::fabs(yL[i]), std::fabs(yR[i])));
             }
             lvl[m] = pk;
         }
         for (int i = 0; i < n; i++) {
-            float g = gate.next();
-            wetL[i] = g == 0 ? 0.0f : g * xL[i]; wetR[i] = g == 0 ? 0.0f : g * xR[i];   /* exact 0, never -0.0f */
+            float g = keep[i];
+            wetL[i] = g == 1 ? 0.0f : xL[i] - g * inL[i]; wetR[i] = g == 1 ? 0.0f : xR[i] - g * inR[i];   /* exact +0 */
+            if (wetL[i] == 0) wetL[i] = 0.0f;
+            if (wetR[i] == 0) wetR[i] = 0.0f;
             pout = std::fmax(pout, std::fmax(std::fabs(wetL[i]), std::fabs(wetR[i])));
         }
         lvl_out = pout;
         quiet = pout < 1e-4f ? quiet + n : 0;
     }
-    /* Nothing on, or the tail under -80 dB for 0.5 s. */
-    bool idle() const { return gate.off() || quiet >= (int)(0.5 * sr); }
-    void reset() {
-        for (int m = 0; m < NMOD; m++) { clear(m); dirty[m] = false; mix[m].cur = 0; lvl[m] = 0; }
-        gate.cur = 0; quiet = 0; lvl_in = lvl_out = 0;
-    }
-    void live(Live &out) const {
-        std::memset(out.v, 0, sizeof out.v);         /* 0-8, 12, 24-31: the modulators (Task 6) */
-        for (int m = 0; m < NMOD; m++) out.v[13 + m] = lvl[m];
-        out.v[22] = lvl_in; out.v[23] = lvl_out;
-    }
-
-private:
     static int mix_row(int m) {                      /* each module's rows start with its mix */
         for (int i = 0; i < NPARAM; i++) if (PARAMS[i].mod == m) return i;
         return 0;
