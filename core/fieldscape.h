@@ -179,6 +179,10 @@ int fs_piece_morphs(fs_device *d, double *out, int max, double *clock, int *root
 void fs_piece_route_gate(fs_device *d, float g);   /* the route's synths and zones on (1) or resting (0), ramped 350 ms */
 void fs_piece_solo(fs_device *d, int handle);   /* Listen on a rhythm point: it alone, the route and other points resting (-1: all) */
 int fs_piece_chord_notes(fs_device *d, float *notes5, float *root);   /* the chord playing, MIDI, root first; -1 none */
+/* The route's master FX, live (mfx::Live: 0-3 LFO phase, 4-7 LFO value, 8 env, 12 chord, 13-21 module levels, 22 in,
+   23 out, 24-31 each slot's destination now): 1 while a route plays, else 0. The playing route's tempo (0: none). */
+int fs_piece_fx_live(fs_device *d, float *out32);
+double fs_piece_tempo(fs_device *d);
 /* The tuning a route plays in when its patch does not say (0 equal - the default - or 1 just).
    Only the lab sets it; the live site and the apps keep equal temperament (sample harmony, D1/D8). */
 void fs_piece_default_tuning(fs_device *d, int tuning);
@@ -272,6 +276,8 @@ const char *fs_engine_state(fs_engine *e);
 /* live reads for the screen, ~30 times a second: the piece's morph cells (fs_piece_morphs), the chord
    and the route playing (-1: none) */
 int fs_engine_morphs(fs_engine *e, double *out, int max, double *clock, int *root, int *shown);
+/* the FX live values (fs_piece_fx_live): which 0 the route's master, 1 the watched point (Part 2; 0 until then) */
+int fs_engine_fx_live(fs_engine *e, int which, float *out32);
 int fs_engine_chord(fs_engine *e, int *count, char *label, int size);
 int fs_engine_route(fs_engine *e);
 /* Listen: that point (stretch or rhythm) alone at its full level from any distance, the route's synths and every

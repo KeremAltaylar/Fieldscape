@@ -545,5 +545,9 @@ int fs_engine_morphs(fs_engine *e, double *out, int max, double *clock, int *roo
     if (e->route_name.empty()) { if (clock) *clock = 0; if (root) *root = 0; if (shown) *shown = 0; return -1; }
     return fs_piece_morphs(e->piece, out, max, clock, root, shown);
 }
+int fs_engine_fx_live(fs_engine *e, int which, float *out32) {
+    if (which != 0 || e->route_name.empty()) return 0;   /* 1: the watched point's FX, Part 2 */
+    return fs_piece_fx_live(e->piece, out32);
+}
 
 }

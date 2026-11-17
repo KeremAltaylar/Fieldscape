@@ -21,6 +21,7 @@
 #include "eq.hpp"
 #include "composer.hpp"
 #include "levels.hpp"
+#include "modfx.hpp"
 
 #include <cstdio>
 #include <cstring>
@@ -165,12 +166,12 @@ struct SectCfg { bool on; int n; double gain; Div rhythm; double chordPull, harm
 struct V3Cfg { bool on; double gain; Div rhythm; int synth; double harm, index, drive, warp; };
 /* a sampler role's settings (3a): the bench's controls; Focus / Colour are its two timbre slots (morphs drive them) */
 struct SamplerCfg { int body = 0, excite = 0, method = 0, mode = 0, octave = 0; double focus = 0.5, colour = 0.5, tune = 1; };
-struct RfxCfg { double cutoff, drive; Div delayDiv; double delayWet, delayFb, revWet, revDecay; };
 struct Patch {
     double tempo = 72; int key = 50, key2 = 55;
     Chord prog[64]; int nprog = 0;
     bool bed_on = true; int bed_voices = 4;
-    VoiceCfg voice; FxCfg fx, fx2, fx3; V3Cfg v3; RfxCfg rfx; SectCfg sect;
+    VoiceCfg voice; FxCfg fx, fx2, fx3; V3Cfg v3; SectCfg sect;
+    mfx::Cfg mfx;      /* the route's master FX (modulation FX B): sends, return, the nine modules (absent: ret 0, dry) */
     bool zones_on = true, morph_on = true, morph_cells = true;   /* morph.cells: the cells shown when it loads */
     Morph morph[24]; int nmorph = 0;
     Sector sectors[32]; int nsectors = 0;
@@ -265,9 +266,8 @@ static void patch_of(const Json *p, Patch &P, GainMemo *memo = nullptr) {
     P.v3 = V3Cfg{ v3 ? v3->flag("on", true) : true, v3 ? v3->n("gain", 0.55) : 0.55, div_of(v3 ? v3->s("rhythm", "1n") : "1n"),
         find_synth(v3 ? v3->s("synth", "am") : "am", AM), v3 ? v3->n("harm", 1.5) : 1.5, v3 ? v3->n("index", 3) : 3,
         v3 ? v3->n("drive", 0.1) : 0.1, v3 ? v3->n("warp", 0.22) : 0.22 };
-    const Json *r = p ? p->get("rfx") : nullptr;
-    P.rfx = RfxCfg{ r ? r->n("cutoff", 9000) : 9000, r ? r->n("drive", 0.15) : 0.15, div_of(r ? r->s("delayDiv", "8n") : "8n"),
-        r ? r->n("delayWet", 0.22) : 0.22, r ? r->n("delayFb", 0.34) : 0.34, r ? r->n("revWet", 0.14) : 0.14, r ? r->n("revDecay", 1.2) : 1.2 };
+    /* "rfx" (the old rhythm effects) is no longer read: Kerem's decision 1 - rhythm points play clean */
+    mfx::cfg_of(p ? p->get("mfx") : nullptr, P.mfx);
     const Json *z = p ? p->get("zones") : nullptr;
     P.zones_on = z ? z->flag("on", true) : true;
     const Json *s = p ? p->get("sect") : nullptr;
@@ -693,6 +693,7 @@ struct Inbox {
     int chord = -1, nprog = 0; char chord_label[24] = "";   /* the chord playing, for the screen */
     double clock = 0; int root = 0;   /* the piece's seconds and the chord root's pc, for the cells */
     int chord_n = -1; float chord_notes[5] = { 0 }, chord_root_midi = 0;   /* the chord's notes, for the stretch's tune and layers */
+    mfx::Live fx = {}; double tempo = 0;   /* the master FX's live values; the playing route's tempo (0: none) */
 };
 
 /* chordRoot / chordQuality of a patch's step */
@@ -1175,8 +1176,13 @@ struct Piece : Device {
     /* 6c: a digital role's notes as played (bass, top, sect, v3; 8 each, the oldest replaced) - for the live row, as a
        sampler names its sounding notes. A held note (dur < 0) lasts until the role's next held note */
     struct Heard { double f = 0, from = 0, until = -1; bool held = false; } heard[4][8];
-    FxChain fx, fx2, fx3, rfx;
-    Layer rdrive;                     /* the rhythm effects' drive and lowpass (no warp) */
+    FxChain fx, fx2, fx3;
+    /* the master FX (modulation FX B): fed by the three voices after their own chains (send, 30 ms), its wet added beside
+       the dry (ret, 30 ms) before the route's level. vL/vR: each chain's output this block; m: the bus; w: its wet */
+    mfx::Engine master;
+    Ctl ret, send[3];
+    int chord_serial = 0;             /* bumped on every chord change (the engine's Comb glides on a new one) */
+    float vL[3][SUB], vR[3][SUB], mL[SUB], mR[SUB], wL[SUB], wR[SUB];
     Ctl synth_level;
     Ctl route_solo;                   /* 0 while a rhythm point is soloed: the route's synths and zones rest */
     int solo = -1;
@@ -1274,6 +1280,7 @@ struct Piece : Device {
         patch = d;
         need_all(d);
         for (auto &o : shots) { o.s.init(sr); o.ns.init(sr); o.ns.rnd = Rng::call; o.ns.rnd_ctx = &rnd; }
+        master.init(sr);
         build_voice(d);
         routes.reserve(64); my_trash.reserve(64);
         transport_start();
@@ -1291,12 +1298,7 @@ struct Piece : Device {
         for (auto &e : eqs) e.init(sr);
         bass_g.init(0.9); top_g.init(0.8);
         swap(bass, p.voice.synth, 0); swap(top, p.voice.synth, 0); swap(sectr, p.sect.synth, 0); swap(v3r, p.v3.synth, 0);
-        /* buildRhythmFx */
-        FxCfg rc{ p.rfx.delayDiv, p.rfx.delayWet, p.rfx.delayFb, p.rfx.revWet, p.rfx.revDecay };
-        rfx.init(sr, rc, p.tempo, 220);
-        rdrive.init(sr, 3, 0.6, 1, 0, 0, p.rfx.cutoff, 1, 1);
-        rdrive.q = 1.1;
-        apply_rhythm_fx(p, 0);
+        master.apply(p.mfx); ret.init(p.mfx.ret); for (int q = 0; q < 3; q++) send[q].init(p.mfx.send[q]);
         synth_level.init(0);          /* silent until a walk says a route is near (world mode starts with none) */
         route_solo.init(1);
         bpm = p.tempo;
@@ -1311,18 +1313,6 @@ struct Piece : Device {
         }
     }
 
-    /* applyRhythmFx */
-    void apply_rhythm_fx(const Patch &p, double now) {
-        const RfxCfg &c = p.rfx;
-        rdrive.cutoff.p.exponentialRampTo(c.cutoff, 0.2, now);
-        rdrive.fade.p.linearRampTo(c.drive, 0.2, now);
-        rdrive.pre.p.linearRampTo(1 + c.drive * 12, 0.2, now);
-        rdrive.post.p.linearRampTo(0.6 / (1 + c.drive * 3.4), 0.2, now);
-        rfx.dl.time.p.linearRampTo(std::min(MAX_DELAY_S - 0.01, div_seconds(c.delayDiv, p.tempo)), 0.2, now);
-        rfx.dl.fb.p.linearRampTo(c.delayFb, 0.2, now);
-        rfx.send.p.linearRampTo(c.delayWet, 0.2, now);
-        rfx.rv.wet.p.linearRampTo(c.revWet, 0.2, now);
-    }
         /* applyHitFx */
     void apply_hit_fx(Rhythm &R, double now) {
         for (int s = 0; s < 4; s++) {
@@ -1360,7 +1350,9 @@ struct Piece : Device {
         for (Role *r : { &bass, &top, &sectr, &v3r }) shape_role(*r);   /* 8b: a changed envelope on the same instrument */
         fx2.apply(p.fx2, p.tempo, now);
         if (sect_div != p.sect.rhythm.s) { sect_div = p.sect.rhythm.s; C.tick = 0; }
-        apply_rhythm_fx(p, now);
+        master.apply(p.mfx);
+        ret.p.linearRampTo(p.mfx.ret, 0.03, now);
+        for (int q = 0; q < 3; q++) send[q].p.linearRampTo(p.mfx.send[q], 0.03, now);
         for (auto &R : rh) if (R.used) apply_hit_fx(R, now);
     }
 
@@ -1731,6 +1723,14 @@ struct Piece : Device {
             H.bass = b; H.have_bass = true; H.held = true;
         }
         std::memcpy(H.tones, tones, sizeof tones); H.ntones = nt;
+        if (changed) { float m[5]; int r; chord_midi(step, m, r); master.chord(m, (float)r, ++chord_serial); }
+    }
+    /* a chord's notes, MIDI, root first, at most 5 (the rest -1); returns the count */
+    int chord_midi(int step, float *m, int &r) {
+        const int q = chord_quality(step); r = chord_root(step);
+        int n = q >= 0 ? CHORDS[q].n : 4; if (n > 5) n = 5;
+        for (int i = 0; i < 5; i++) m[i] = i < n ? (float)(r + (q >= 0 ? CHORDS[q].iv[i] : (i == 0 ? 0 : i == 1 ? 3 : i == 2 ? 7 : 10))) : -1.0f;
+        return n;
     }
 
     /* ---- voiceStep ---- */
@@ -2737,6 +2737,7 @@ struct Piece : Device {
         pending = -1;
         if (reported != near || near < 0 || near >= (int)routes.size()) return;
         route = near;
+        if (patch.mfx.ret == 0 && !master.idle()) master.reset();   /* a return up: its tail rings on under the crossfade */
         patch = routes[near];
         apply_patch(now);
         H.idx = -1; H.chord = -1; H.ntones = -1;
@@ -2842,12 +2843,9 @@ struct Piece : Device {
         in.taken = route; in.sect_n = patch.sect.n; in.bed_voices = patch.bed_on ? patch.bed_voices : 0;
         in.chord = H.chord; in.nprog = patch.nprog;
         in.clock = now; in.root = pc12(H.chord >= 0 ? chord_root(H.chord) : patch.key);
-        if (H.chord >= 0) {
-            int q = chord_quality(H.chord), r = chord_root(H.chord);
-            int n = q >= 0 ? CHORDS[q].n : 4; if (n > 5) n = 5;
-            for (int i = 0; i < n; i++) in.chord_notes[i] = (float)(r + (q >= 0 ? CHORDS[q].iv[i] : (i == 0 ? 0 : i == 1 ? 3 : i == 2 ? 7 : 10)));
-            in.chord_n = n; in.chord_root_midi = (float)r;
-        } else in.chord_n = -1;
+        if (H.chord >= 0) { int r; in.chord_n = chord_midi(H.chord, in.chord_notes, r); in.chord_root_midi = (float)r; }
+        else in.chord_n = -1;
+        master.live(in.fx); in.tempo = route >= 0 ? bpm : 0;
         if (H.chord >= 0) {                /* chordLabel: root name + quality, as the web writes it */
             int q = chord_quality(H.chord);
             std::snprintf(in.chord_label, sizeof in.chord_label, "%s%s", NOTE[pc(chord_root(H.chord))], q >= 0 ? CHORDS[q].name : "m7");
@@ -3040,6 +3038,22 @@ struct Piece : Device {
         R.lvl += (e * own * own / std::max(1, n) - R.lvl) * (1 - std::exp(-n / (0.1 * sr)));
     }
 
+    /* The master FX: sum of send[q] x voice q into the engine, ret x its wet onto the dry. While the return is 0 the
+       engine is fed silence until its tail is over (idle), then not run - nothing of it is heard, and it costs nothing */
+    void master_bus(int n, double t0, double te) {
+        ret.block(te); for (auto &s : send) s.block(te);
+        /* -120 dB: a ramp from 0 starts at 1e-7 (Tone's setRampPoint), which must not count as a return up */
+        const bool live = ret.a > 1e-6f || ret.b > 1e-6f;
+        if (!live && master.idle()) return;
+        if (live) for (int i = 0; i < n; i++) {
+            const float s0 = send[0].at(i, n), s1 = send[1].at(i, n), s2 = send[2].at(i, n);
+            mL[i] = s0 * vL[0][i] + s1 * vL[1][i] + s2 * vL[2][i]; mR[i] = s0 * vR[0][i] + s1 * vR[1][i] + s2 * vR[2][i];
+        } else { std::memset(mL, 0, sizeof mL); std::memset(mR, 0, sizeof mR); }
+        master.clock(tick_bpm, (ticks - (next_tick - t0) * tick_bpm * 4 / 60) / 4);   /* the transport in beats at t0 */
+        master.process(mL, mR, wL, wR, n);
+        if (live) for (int i = 0; i < n; i++) { const float g = ret.at(i, n); oL[i] += g * wL[i]; oR[i] += g * wR[i]; }
+    }
+
     void render(float *outL, float *outR, int n, double t0) {
         double te = t0 + n / sr;
         std::memset(oL, 0, sizeof oL); std::memset(oR, 0, sizeof oR);
@@ -3073,15 +3087,21 @@ struct Piece : Device {
             for (int q = 0; q < 3; q++) { double s = 0; for (int i = 0; i < n; i++) s += 0.5 * ((double)Ls[q][i] * Ls[q][i] + (double)Rs[q][i] * Rs[q][i]); lvl[q] += (s / n - lvl[q]) * k; }
         }
         for (auto &o : shots) if (o.free_at > t0) { if (o.noise) o.ns.render(fx.L, fx.R, n, t0); else o.s.render(fx.L, fx.R, n, t0); }
-        fx.process(oL, oR, n, te); fx2.process(oL, oR, n, te); fx3.process(oL, oR, n, te);
+        {   /* each chain into its own buffer, added in today's order (the dry sum bit-identical) */
+            FxChain *ch[3] = { &fx, &fx2, &fx3 };
+            for (int q = 0; q < 3; q++) {
+                std::memset(vL[q], 0, sizeof vL[q]); std::memset(vR[q], 0, sizeof vR[q]);
+                ch[q]->process(vL[q], vR[q], n, te);
+                for (int i = 0; i < n; i++) { oL[i] += vL[q][i]; oR[i] += vR[q][i]; }
+            }
+        }
+        master_bus(n, t0, te);
         synth_level.block(te); route_solo.block(te);
         for (int i = 0; i < n; i++) { float g = synth_level.at(i, n) * route_solo.at(i, n); oL[i] *= g; oR[i] *= g; }
-        /* the rhythm points, through the rhythm effects, beside the route (bed.master, not bed.synth) */
-        bool any = false;
-        for (auto &R : rh) if (R.used) { any = true; render_rhythm(R, rdrive.L, rdrive.R, n, t0); }
-        (void)any;
-        rdrive.process(rfx.L, rfx.R, n, te);
-        rfx.process(oL, oR, n, te);
+        /* the rhythm points, clean, beside the route (bed.master, not bed.synth; the rhythm effects are gone: decision 1) */
+        std::memset(rL, 0, sizeof rL); std::memset(rR, 0, sizeof rR);
+        for (auto &R : rh) if (R.used) render_rhythm(R, rL, rR, n, t0);
+        for (int i = 0; i < n; i++) { oL[i] += rL[i]; oR[i] += rR[i]; }
         for (int i = 0; i < n; i++) { outL[i] = oL[i]; outR[i] = oR[i]; }
     }
 
@@ -3482,6 +3502,17 @@ int fs_piece_morphs(fs_device *d, double *out, int max, double *clock, int *root
         o[6] = t / std::max(4.0, m.period ? m.period : 60) + m.phase;
     }
     return n;
+}
+int fs_piece_fx_live(fs_device *d, float *out32) {
+    Piece *p = P(d); if (!p) return 0;
+    std::lock_guard<std::mutex> g(p->mu);
+    std::memcpy(out32, p->in.fx.v, sizeof p->in.fx.v);
+    return p->in.taken >= 0;
+}
+double fs_piece_tempo(fs_device *d) {
+    Piece *p = P(d); if (!p) return 0;
+    std::lock_guard<std::mutex> g(p->mu);
+    return p->in.tempo;
 }
 /* The chord playing, as MIDI notes (root first, at most 5), for the stretch's tune and layers; -1 before any. */
 int fs_piece_chord_notes(fs_device *d, float *notes, float *root) {
