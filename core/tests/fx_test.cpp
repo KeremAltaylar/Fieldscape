@@ -577,14 +577,14 @@ static void test_swarm() {
     check("swarm: the pitch deviation repeats at 0.5 s (4n at 120 bpm) +-1 %", std::fabs(period / 0.5 - 1) <= 0.01);
     check("swarm: depth 1 moves the pitch (RMS >= 1 %)", dev >= 4.4);
 
-    /* zero: defaults (depth 0.5, 8 ms, 1n) at 120 bpm: tap 0 crosses the centre at each whole second. The envelope
+    /* zero: defaults (depth 0.5, 8 ms, 1n) at 120 bpm, a sine at hz: tap 0 crosses the centre at each whole second. The envelope
        (two-period RMS) at its lowest within +-10 ms of the crossings at 2, 3 and 4 s, against its highest: the shallowest. */
-    auto null_at_cross = [](float zero) {
+    auto null_at_cross = [](float zero, double hz) {
         Engine z; z.init(SR); z.apply(with({ { "swarm.mix", 1 }, { "swarm.zero", zero } }));
-        Sig s(4); s.hz = 440; double b = 0;
+        Sig s(4); s.hz = hz; double b = 0;
         play(z, s, (int)SR, nullptr, false, 120, &b);
         std::vector<float> y; play(z, s, 4 * (int)SR, &y, false, 120, &b);
-        const int W = 218; double mx = 0, mn[3] = { 1e300, 1e300, 1e300 };
+        const int W = (int)std::lround(2 * SR / hz); double mx = 0, mn[3] = { 1e300, 1e300, 1e300 };
         for (size_t o = 0; o + W <= y.size(); o += 8) {
             double s2 = 0; for (int i = 0; i < W; i++) s2 += (double)y[o + i] * y[o + i];
             double r = std::sqrt(s2 / W), t = 1 + (o + W / 2) / SR;
@@ -593,8 +593,10 @@ static void test_swarm() {
         }
         return 20 * std::log10(mx / std::fmax(std::fmax(mn[0], mn[1]), std::fmax(mn[2], 1e-12)));
     };
-    double nz = null_at_cross(1), nn = null_at_cross(0);
+    /* 300 Hz: there the three taps (zero off) do not cancel at the crossings (at 440 Hz they do, by chance, 29 dB) */
+    double nz = null_at_cross(1, 300), nn = null_at_cross(0, 300);
     check("swarm: zero on -> the output nulls >= 20 dB at the sweep's crossing", nz >= 20);
+    check("swarm: the null is zero's (>= 10 dB deeper than zero off)", nz - nn >= 10);
 
     /* spread */
     auto lr = [](float spread) {

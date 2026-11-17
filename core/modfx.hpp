@@ -314,6 +314,8 @@ struct Engine {
         for (int m = 0; m < NMOD; m++) mix[m].tgt = c.v[mix_row(m)];
     }
     void clock(double b, double pos) { bpm = b; beats = pos; }   /* bpm 0 holds the transport (the tests' LFO freeze) */
+    /* The caller bumps `serial` on every chord change: Comb glides (80 ms) only on a new serial; new notes under the
+       same serial jump the combs. */
     void chord(const float *midi5, float root, int serial) {
         for (int i = 0; i < 5; i++) chord_midi[i] = midi5[i];
         chord_root = root; chord_serial = serial;
@@ -545,17 +547,20 @@ private:
         }
         match(vw_lm, L, R, n);
     }
-    /* A-18: the level of the module's input (tA, its mid) put back on its output. */
+    /* A-18: the level of the module's input (tA, its mid) put back on its output. The gain moves last -> g across the
+       block on a smoothstep (flat at both ends): a straight ramp kinks at every block edge, and a level swing (a comb
+       filling on a resonant tone) read 3.88 on the click metric that way. */
     void match(LevelMatch &lm, float *L, float *R, int n) {
         for (int i = 0; i < n; i++) tB[i] = L[i] + R[i];
         float g1 = lm.gain(tA, tB, n), g0 = lm.last;
-        for (int i = 0; i < n; i++) { float g = g0 + (g1 - g0) * (i + 1) / n; L[i] *= g; R[i] *= g; }
+        for (int i = 0; i < n; i++) { float t = (float)(i + 1) / n, g = g0 + (g1 - g0) * t * t * (3 - 2 * t); L[i] *= g; R[i] *= g; }
     }
 
     /* Swarm: three taps a side, delay x (1 + 0.9 depth sin), the LFO a third apart per tap (weights 0.5 0.4 0.3, so the
        sum repeats at the rate, not at a third of it), the right side spread/4 of a period behind; tap 0 feeds back.
        zero: 0.5 (the line at the centre delay - tap 0), which nulls as tap 0 crosses the centre (through-zero); the
-       switch cross-fades 30 ms. The LFO is transport / rate; a rate change glides the rate (100 ms, in octaves) and keeps
+       switch cross-fades 30 ms. The delayed dry lives inside the wet (the frame's parallel return stays exact), so the
+       engine's undelayed dry joins at mix < 1: true through-zero only at mix 1 (accepted, controller 2026-11-17). The LFO is transport / rate; a rate change glides the rate (100 ms, in octaves) and keeps
        the phase (an offset that returns to the transport over 1 s). Delays: every 16 samples, interpolated per sample. */
     void sw_delays(double b, float d[2][4]) {
         const double p = b / sw_rate + sw_off;
