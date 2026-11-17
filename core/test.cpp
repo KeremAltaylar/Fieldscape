@@ -194,7 +194,241 @@ static void ref_resample(const short *in, long long frames, double from_rate, sh
     }
 }
 
-int main() {
+/* FX (modulation FX Part 1 Task 8), alone with: node core_test.js fx */
+static void test_fx() {
+    const float SR = 48000;
+    const int B = 128;
+    /* FX (modulation FX Part 1 Task 8): the route's master FX - sends from the three voices (after their own delay
+           and room), a return beside the untouched dry; rhythm effects removed */
+        static const char *FXR = R"({"version":17,"tempo":96,"key":50,"prog":[{"r":0,"q":"m7"},{"r":5,"q":"maj7"},{"r":7,"q":"7"},{"r":0,"q":"m9"}],%s,"zones":{"on":false},"bed":{"on":false}%s})";
+        static const char *ALL3 = R"("voice":{"on":true,"synth":"fm"},"sect":{"on":true,"synth":"fm"},"v3":{"on":true,"synth":"am"})";
+        /* `secs` of a route (stereo, interleaved L R), walked 0 -> 1 with fixed draws; at `at` s, fs_piece_set_route(edit) */
+        auto fxr = [&](const char *more, double secs, const char *edit = nullptr, double at = 0, const char *voices = nullptr, int *kept = nullptr) {
+            if (!voices) voices = ALL3;
+            char buf[8192]; std::snprintf(buf, sizeof buf, FXR, voices, more);
+            unsigned seed = 11; fs_device *pc = fs_create("piece"); fs_prepare(pc, SR, B); fs_piece_test_hooks(pc, fixed_draw, &seed, nullptr, nullptr);
+            const int r = fs_piece_add_route(pc, buf); const int blocks = (int)(secs * SR / B);
+            std::vector<float> o; o.reserve((size_t)blocks * B * 2);
+            for (int b = 0; b < blocks; b++) {
+                if (edit && b == (int)(at * SR / B)) { char e[8192]; std::snprintf(e, sizeof e, FXR, voices, edit); fs_piece_set_route(pc, r, e); }
+                fs_piece_walk(pc, r, (double)b / blocks, 0); fs_process(pc, B);
+                const float *l = fs_out(pc, 0), *rr = fs_out(pc, 1); for (int i = 0; i < B; i++) { o.push_back(l[i]); o.push_back(rr[i]); }
+            }
+            if (kept) *kept = fs_piece_test_kept(pc);
+            fs_destroy(pc); return o;
+        };
+        auto hash = [](const std::vector<float> &o) { uint64_t h = 1469598103934665603ULL; for (float v : o) { uint32_t u; std::memcpy(&u, &v, 4); h = (h ^ u) * 1099511628211ULL; } return h; };
+        auto db_of = [](const std::vector<float> &a, const std::vector<float> &b) {   /* rms of a - b (b empty: a), dBFS */
+            double s = 0; for (size_t i = 0; i < a.size(); i++) { const double d = a[i] - (b.empty() ? 0 : b[i]); s += d * d; }
+            return 10 * std::log10(s / a.size() + 1e-30); };
+        /* the click metric on the left channel: the 50 ms after `at` s vs the 500 ms before */
+        auto click = [&](const std::vector<float> &o, double at) {
+            const long c = (long)(at * SR); double a = 0, b = 0;
+            for (long n = c - (long)(0.5 * SR); n < c + (long)(0.05 * SR); n++) {
+                const double d = std::fabs((double)o[2 * n] - 2.0 * o[2 * (n - 1)] + o[2 * (n - 2)]);
+                if (n < c) a = std::fmax(a, d); else b = std::fmax(b, d);
+            }
+            return b / a; };
+
+        /* 1: dry by default - no mfx, and ret 0 with a module on: byte-identical, and to the build before the master FX */
+        int k0 = 0, k1 = 0;
+        const auto dry = fxr("", 10, nullptr, 0, ALL3, &k0), ret0 = fxr(R"(,"mfx":{"ret":0,"phase":{"mix":1}})", 10, nullptr, 0, ALL3, &k1);
+        std::printf("FX dry: 10 s without mfx, hash %llu (before the master FX: %llu); ret 0 + phase on identical %d; kept %d %d\n",
+                    (unsigned long long)hash(dry), 3188419885914509479ULL, (int)(dry == ret0), k0, k1);
+        assert(dry == ret0 && k0 == k1 && hash(dry) == 3188419885914509479ULL);   /* recorded on afc35eb (piece.cpp as main 99f0459) */
+
+        /* 2: the return is added beside the dry: out(ret .8) - dry == 2 (out(ret .4) - dry), and it is heard */
+        const auto r8 = fxr(R"(,"mfx":{"ret":0.8,"echo":{"mix":1,"fb":0.6}})", 10), r4 = fxr(R"(,"mfx":{"ret":0.4,"echo":{"mix":1,"fb":0.6}})", 10);
+        double lin = 0; for (size_t i = 0; i < dry.size(); i++) lin = std::fmax(lin, std::fabs((r8[i] - dry[i]) - 2 * (r4[i] - dry[i])));
+        const double wet8 = db_of(r8, dry), drydb = db_of(dry, {});
+        std::printf("FX return: dry %.1f dBFS, ret 0.8 echo adds %.1f dBFS; (out .8 - dry) - 2 (out .4 - dry) max %.2e\n", drydb, wet8, lin);
+        assert(r8 != dry && wet8 > drydb - 20 && lin < 1e-6);
+
+        /* 3: send [0,0,1] - only the third voice reaches the bus: voices 1-2 alone, nothing; the third alone, its echo */
+        const char *V12 = R"("voice":{"on":true,"synth":"fm"},"sect":{"on":true,"synth":"fm"},"v3":{"on":false})", *V3 = R"("voice":{"on":false},"sect":{"on":false},"v3":{"on":true,"synth":"am"})";
+        /* a voice turned off still sounds for the first 0.2 s (its gain ramps down from the default patch's at the route's
+           take): the third voice's own chain dry and a single repeat, the wet read from 4 s on */
+        const char *S0 = R"(,"fx3":{"delayWet":0,"revWet":0})", *S3 = R"(,"fx3":{"delayWet":0,"revWet":0},"mfx":{"ret":1,"send":[0,0,1],"echo":{"mix":1,"fb":0}})";
+        const auto d12 = fxr(S0, 10, nullptr, 0, V12), w12 = fxr(S3, 10, nullptr, 0, V12), d3 = fxr(S0, 10, nullptr, 0, V3), w3 = fxr(S3, 10, nullptr, 0, V3);
+        auto from4 = [&](const std::vector<float> &o) { return std::vector<float>(o.begin() + (size_t)(4 * SR) * 2, o.end()); };
+        const double leak = db_of(from4(w12), from4(d12)), heard = db_of(from4(w3), from4(d3)), early = db_of(w12, d12);
+        std::printf("FX send [0,0,1]: voices 1-2 alone, wet %.1f dBFS from 4 s (%.1f over all 10 s: the off voice's first 0.2 s); voice 3 alone, wet %.1f dBFS\n", leak, early, heard);
+        assert(leak < -90 && heard > -60);
+
+        /* 4: no clicks - ret stepped 0 -> 1 mid-note; then an edit of every mfx key (all nine on before and after) */
+        const auto st = fxr(R"(,"mfx":{"ret":0,"echo":{"mix":1,"fb":0.5},"space":{"mix":1}})", 8, R"(,"mfx":{"ret":1,"echo":{"mix":1,"fb":0.5},"space":{"mix":1}})", 6);
+        static const char *FA = R"(,"mfx":{"ret":0.7,"send":[1,1,1],"shift":{"mix":0.5,"hz":30,"mode":"ssb","fb":0.3},"swarm":{"mix":0.5,"rate":"2n","depth":0.5,"delay":8,"fb":0.2,"spread":1,"zero":1},
+            "phase":{"mix":0.5,"stages":12,"hz":800,"span":2,"rate":"2n","fb":0.3},"comb":{"mix":0.4,"tune":"chord","hz":110,"decay":2,"damp":6000,"detune":8},"vowel":{"mix":0.5,"pos":0,"q":8,"size":1},
+            "cloud":{"mix":0.5,"size":120,"dens":12,"pitch":0,"spray":0.2,"scatter":0.3,"rev":0,"freeze":0},"tape":{"mix":0.5,"wow":0.3,"flutter":0.2,"drive":0.2,"tone":9000},
+            "echo":{"mix":0.5,"time":"8n.","fb":0.45,"tone":0,"shift":0,"wobble":0,"spread":0.5},"space":{"mix":0.5,"size":0.7,"decay":4,"damp":7000,"mod":1},
+            "lfo":[{"shape":"sine","rate":"1n"},{"shape":"tri","rate":"2n"},{"shape":"drift","rate":"2m"},{"shape":"steps","rate":"4m"}],"env":{"attack":10,"release":300,"sens":1},
+            "mods":[{"src":"lfo1","dst":"phase.hz","amt":0.3},{"src":"lfo2","dst":"vowel.pos","amt":0.4}]})";
+        static const char *FB = R"(,"mfx":{"ret":1,"send":[0.8,0.6,0.9],"shift":{"mix":0.3,"hz":-40,"mode":"ring","fb":0.5},"swarm":{"mix":0.7,"rate":"8n","depth":0.3,"delay":12,"fb":0.4,"spread":0.5,"zero":0},
+            "phase":{"mix":0.7,"stages":6,"hz":1500,"span":1,"rate":"1n","fb":-0.3},"comb":{"mix":0.6,"tune":"free","hz":220,"decay":4,"damp":3000,"detune":20},"vowel":{"mix":0.3,"pos":2,"q":12,"size":1.5},
+            "cloud":{"mix":0.3,"size":200,"dens":20,"pitch":7,"spray":0.4,"scatter":0.6,"rev":0.5,"freeze":1},"tape":{"mix":0.7,"wow":0.6,"flutter":0.4,"drive":0.4,"tone":5000},
+            "echo":{"mix":0.7,"time":"4n","fb":0.6,"tone":-0.3,"shift":-10,"wobble":0.2,"spread":0.8},"space":{"mix":0.7,"size":0.5,"decay":8,"damp":4000,"mod":0.5},
+            "lfo":[{"shape":"tri","rate":"2n","phase":0.25},{"shape":"sine","rate":"1n"},{"shape":"steps","rate":"4m"},{"shape":"drift","rate":"2m"}],"env":{"attack":30,"release":800,"sens":2},
+            "mods":[{"src":"lfo2","dst":"comb.hz","amt":0.2},{"src":"env","dst":"cloud.pitch","amt":0.3},{"src":"chord","dst":"tape.tone","amt":0.3}]})";
+        const auto ed = fxr(FA, 8, FB, 6);
+        const double c1 = click(st, 6), c2 = click(ed, 6);
+        std::printf("FX clicks: ret 0 -> 1 mid-note %.2f, an edit of every mfx key %.2f (limit 4)\n", c1, c2);
+        assert(c1 <= 4 && c2 <= 4);
+
+        /* 5: out of the route's leash the wet goes with the dry (the return sits before the route's level) */
+        {
+            char buf[8192]; std::snprintf(buf, sizeof buf, FXR, ALL3, R"(,"mfx":{"ret":1,"echo":{"mix":1,"fb":0.9},"space":{"mix":1,"decay":30}})");
+            unsigned seed = 11; fs_device *pc = fs_create("piece"); fs_prepare(pc, SR, B); fs_piece_test_hooks(pc, fixed_draw, &seed, nullptr, nullptr);
+            const int r = fs_piece_add_route(pc, buf); float in_ = 0, out_ = 0;
+            for (int b = 0; b < (int)(8 * SR / B); b++) {
+                const bool far = b >= (int)(5 * SR / B);
+                if (b == 0 || b == (int)(5 * SR / B)) fs_piece_walk(pc, r, 0.3, far ? FS_GPS_LEASH + 10 : 0);   /* once each: a walk every block restarts the 0.35 s fade */
+                fs_process(pc, B);
+                for (int c = 0; c < 2; c++) for (int i = 0; i < B; i++) { const float v = std::fabs(fs_out(pc, c)[i]); if (!far) in_ = std::fmax(in_, v); else if (b >= (int)(5.5 * SR / B)) out_ = std::fmax(out_, v); }
+            }
+            fs_destroy(pc);
+            std::printf("FX leash: peak %.3f on the route, %.3g past the leash (echo fb 0.9, space 30 s ringing)\n", in_, out_);
+            assert(in_ > 0.01 && out_ == 0);
+        }
+
+        /* 6: the patch read with a full mfx (all nine, 8 slots) on the heaviest route (64 chords overridden, metal), warm */
+        static const char *FULL = R"(,"mfx":{"ret":1,"shift":{"mix":1,"hz":30,"fb":0.3},"swarm":{"mix":1,"zero":1},"phase":{"mix":1,"stages":12},"comb":{"mix":1},"vowel":{"mix":1},
+            "cloud":{"mix":1,"dens":40,"size":500,"spray":0.5},"tape":{"mix":1,"drive":0.5},"echo":{"mix":1,"shift":5,"wobble":0.5,"tone":0.3},"space":{"mix":1},
+            "mods":[{"src":"lfo1","dst":"shift.hz","amt":0.1},{"src":"lfo2","dst":"phase.hz","amt":0.3},{"src":"lfo3","dst":"comb.hz","amt":0.2},{"src":"lfo4","dst":"vowel.pos","amt":0.5},
+            {"src":"env","dst":"cloud.pitch","amt":0.2},{"src":"chord","dst":"tape.tone","amt":0.3},{"src":"lfo1","dst":"echo.tone","amt":0.3},{"src":"lfo1","dst":"space.size","amt":0.3}]})";
+        {
+            static const char *const OV[10] = { "strum", "arpeggio", "pedal", "euclid", "ostinato", "chorale", "tintinnabuli", "swells", "pointillist", "arpeggio" };
+            std::string prog = "[", over = "{";
+            for (int i = 0; i < 64; i++) { prog += std::string(i ? "," : "") + R"({"r":0,"q":"m7"})";
+                over += std::string(i ? "," : "") + "\"" + std::to_string(i) + "\":{\"voice\":{\"style\":\"" + OV[i % 10] + (i % 4 == 0 ? R"(","orn":"trill","orn_every":2)" : "\"") + "}}"; }
+            prog += "]"; over += "}";
+            const std::string base = std::string(R"({"version":17,"tempo":96,"key":50,"prog":)") + prog + R"(,"voice":{"on":true,"synth":"metal"},"sect":{"on":true,"synth":"metal"},"v3":{"on":true,"synth":"metal"},"zones":{"on":false},"bed":{"on":false},"comp":{"voice":{"style":"arpeggio"},"sect":{"style":"strum"},"v3":{"style":"swells"},"over":{"chord":)" + over + "}}";
+            double w[2] = { 0, 0 };
+            for (int f = 0; f < 2; f++) {
+                const std::string r = base + (f ? FULL : "") + "}";
+                fs_device *pc = fs_create("piece"); fs_prepare(pc, SR, B); const int id = fs_piece_add_route(pc, r.c_str());
+                /* the worst of 5 reads after 10 (the JIT warm, as it is after the first route; run alone it is not) */
+                for (int rep = 0; rep < 15; rep++) { auto t0 = std::chrono::steady_clock::now(); fs_piece_set_route(pc, id, r.c_str());
+                    if (rep >= 10) w[f] = std::fmax(w[f], std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count()); }
+                fs_destroy(pc);
+            }
+            std::printf("FX patch read (64 chords overridden, metal), warm worst: %.2f ms without mfx, %.2f ms with a full mfx (limit 1)\n", w[0], w[1]);
+            assert(w[1] < 1.0);
+        }
+
+        /* 7: the composer's cost lines with the master all on (C cost: p99.9 < 1.0 ms, no more than 2 blocks over 1.5 ms after
+           the warm-up); and the host's cost of a return up with nothing on (an idle engine) */
+        auto cost = [&](const char *voices, const char *more, double &p999, double &worst, int &over, double &mean) {
+            char buf[8192]; std::snprintf(buf, sizeof buf, FXR, voices, more);
+            unsigned seed = 3; fs_device *pc = fs_create("piece"); fs_prepare(pc, SR, B); fs_piece_test_hooks(pc, fixed_draw, &seed, nullptr, nullptr);
+            const int r = fs_piece_add_route(pc, buf); std::vector<double> ms;
+            for (int k = 0; k < (int)(30 * SR / B); k++) { fs_piece_walk(pc, r, k / 11250.0, 0);
+                auto t0 = std::chrono::steady_clock::now(); fs_process(pc, B); if (k > 375) ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count()); }
+            fs_destroy(pc);
+            over = 0; mean = 0; for (double m : ms) { over += m > 1.5; mean += m / ms.size(); }
+            std::sort(ms.begin(), ms.end()); worst = ms.back(); p999 = ms[(size_t)(ms.size() * 0.999)];
+        };
+        const char *FMV = R"("voice":{"on":true,"synth":"fm"},"sect":{"on":true,"synth":"fm"},"v3":{"on":true,"synth":"am"})", *METV = R"("voice":{"on":true,"synth":"metal"},"sect":{"on":true,"synth":"metal"},"v3":{"on":true,"synth":"metal"})";
+        const std::string C1 = R"(,"comp":{"voice":{"style":"arpeggio","rate":"16n"},"sect":{"style":"strum","rate":"8n","tones":[0,1,2,3,4],"spread":20},"v3":{"style":"swells","rate":"2n","tones":[0,1,2,3,4]}})",
+                          C2 = R"(,"comp":{"voice":{"style":"strum","rate":"8n","tones":[0,1,2,3,4],"spread":20},"sect":{"style":"strum","rate":"8n","tones":[0,1,2,3,4],"spread":20},"v3":{"style":"swells","rate":"2n","tones":[0,1,2,3,4]}})";
+        /* the typical preset (fx_bench's: phase comb cloud echo space, two slots) */
+        static const char *TYP = R"(,"mfx":{"ret":1,"phase":{"mix":1},"comb":{"mix":1},"cloud":{"mix":1},"echo":{"mix":1},"space":{"mix":1},
+            "mods":[{"src":"lfo1","dst":"comb.hz","amt":0.2},{"src":"env","dst":"cloud.dens","amt":0.3}]})";
+        double metal_all = 1e9;
+        for (int line = 0; line < 2; line++) for (int f = 0; f < 3; f++) {
+            if (line == 0 && f == 1) continue;
+            const std::string more = (line ? C2 : C1) + (f == 2 ? FULL : f == 1 ? TYP : "");
+            const bool waiver = line == 1 && f == 2;
+            for (int rep = 0; rep < (waiver ? 2 : 1); rep++) {
+                double p, w, m; int o; cost(line ? METV : FMV, more.c_str(), p, w, o, m);
+                std::printf("FX cost: %s %s - p99.9 %.3f ms, worst %.3f ms, %d blocks over 1.5 ms, mean %.4f ms\n",
+                            line ? "metal x3 strum-strum-swells" : "fm/fm/am arpeggio-strum-swells", f == 2 ? "+ master all nine, 8 slots" : f == 1 ? "+ master typical" : "(no mfx)", p, w, o, m);
+                if (f && rep == 0) assert(o <= 2);   /* as the composer's own lines: two blocks over 1.5 ms in 30 s for the OS */
+                if (waiver) metal_all = std::fmin(metal_all, p);
+                else if (f) assert(p < 1.0);
+            }
+        }
+        /* WAIVER (controller, fix round 1 - for Kerem): metal x3, every chord voice busy, + the master with all nine modules at
+           their costliest and 8 slots sits at the 1.0 ms line (0.98-1.27 ms single runs on this PC after the engine's cost came
+           down ~20 %; 0.72-0.90 without the master). Gated at 1.1 ms on the better of two runs; every other line at 1.0 */
+        std::printf("FX cost WAIVER: metal x3 + master all nine p99.9 %.3f ms, the better of two (waiver line 1.1 ms; the composer line is 1.0)\n", metal_all);
+        assert(metal_all < 1.1);
+        {   /* a quiet route (voices off): what the host adds with ret 1 and nothing on, best of three */
+            const char *OFF = R"("voice":{"on":false},"sect":{"on":false},"v3":{"on":false})";
+            double best[2] = { 1e9, 1e9 };
+            for (int rep = 0; rep < 3; rep++) for (int f = 0; f < 2; f++) { double p, w, m; int o; cost(OFF, f ? R"(,"mfx":{"ret":1})" : "", p, w, o, m); best[f] = std::fmin(best[f], m); }
+            const double pct = 100 * (best[1] - best[0]) / (B / SR * 1000);
+            std::printf("FX host idle: a block %.4f ms without mfx, %.4f ms with ret 1 and nothing on: +%.3f %% of realtime\n", best[0], best[1], pct);
+            assert(pct < 0.1);
+        }
+
+        /* 8: the live values - 1 while a route plays, the LFO phases advance with the transport (96 bpm: 1n 2.5 s, 2n
+           1.25 s, 2m 5 s, 4m 10 s), the chord source moves at a chord change; the tempo; the engine's read */
+        {
+            char buf[8192]; std::snprintf(buf, sizeof buf, FXR, ALL3, R"(,"mfx":{"ret":1,"echo":{"mix":1}})");
+            fs_device *pc = fs_create("piece"); fs_prepare(pc, SR, B);
+            float v[32], a[32], c[32], e[32]; const int none = fs_piece_fx_live(pc, v);
+            const int r = fs_piece_add_route(pc, buf); const int blocks = (int)(10 * SR / B);
+            for (int b = 0; b < blocks; b++) {
+                fs_piece_walk(pc, r, (double)b / blocks, 0); fs_process(pc, B);
+                if (b == (int)(2.0 * SR / B)) fs_piece_fx_live(pc, a);
+                if (b == (int)(2.5 * SR / B)) fs_piece_fx_live(pc, v);
+                if (b == (int)(7.0 * SR / B)) fs_piece_fx_live(pc, c);
+            }
+            const int on = fs_piece_fx_live(pc, e); const double tempo = fs_piece_tempo(pc);
+            fs_destroy(pc);
+            const double want[4] = { 0.2, 0.4, 0.1, 0.05 }; double err = 0;
+            for (int i = 0; i < 4; i++) { double d = v[i] - a[i]; d -= std::floor(d); err = std::fmax(err, std::fabs(d - want[i])); }
+            fs_engine *en = fs_engine_create(48000, 128); const int e0 = fs_engine_fx_live(en, 0, v), e1 = fs_engine_fx_live(en, 1, v); fs_engine_destroy(en);
+            std::printf("FX live: none %d, playing %d; LFO phases over 0.5 s off by %.4f; chord source %.3f -> %.3f; tempo %.0f; engine (no route) %d %d\n",
+                        none, on, err, a[12], c[12], tempo, e0, e1);
+            assert(none == 0 && on == 1 && err < 0.01 && a[12] != c[12] && tempo == 96 && e0 == 0 && e1 == 0);
+        }
+
+        /* 9: rhythm effects removed (decision 1) - a rhythm point under a non-clean rfx renders as under the clean one */
+        {
+            const int n = (int)SR; short *pcm = fs_alloc_i16(n);
+            for (int i = 0; i < n; i++) pcm[i] = (short)(12000 * std::sin(2 * 3.141592653589793 * 220.0 * i / SR));
+            auto play = [&](const char *rfx) {
+                char buf[1024]; std::snprintf(buf, sizeof buf, R"({"version":17,"key":50,"tempo":90,"prog":[{"r":0,"q":"m7"}],"voice":{"on":false},"sect":{"on":false},"v3":{"on":false},"bed":{"on":false},"zones":{"on":false},"rfx":%s})", rfx);
+                fs_device *pc = fs_create("piece"); fs_prepare(pc, SR, B); const int r = fs_piece_add_route(pc, buf);
+                const int h = fs_piece_rhythm_add(pc, R"({"div":"8n"})", 2);
+                short *q = fs_alloc_i16(n); std::memcpy(q, pcm, sizeof(short) * n);
+                fs_piece_rhythm_source(pc, h, 0, 1, n, q); fs_piece_rhythm_gain(pc, h, 1);
+                std::vector<float> o;
+                for (int b = 0; b < (int)(4.0 * SR / B); b++) { fs_piece_walk(pc, r, 0.3, 0); fs_process(pc, B); const float *l = fs_out(pc, 0), *rr = fs_out(pc, 1); o.insert(o.end(), l, l + B); o.insert(o.end(), rr, rr + B); }
+                fs_destroy(pc); return o;
+            };
+            const auto clean = play(R"({"drive":0,"delayWet":0,"revWet":0,"cutoff":20000})"), old = play(R"({"drive":0.6,"delayWet":0.5,"delayFb":0.6,"revWet":0.4,"cutoff":2000})");
+            std::printf("FX rfx: a rhythm point under the old rhythm effects renders as under clean ones %d (%.1f dBFS)\n", (int)(clean == old), db_of(clean, {}));
+            assert(clean == old && db_of(clean, {}) > -60);
+            std::free(pcm);
+        }
+
+        /* 10: ret down to 0 stops the engine - fed silence until its tail is over (idle), then not run; a frozen Cloud
+           never goes quiet, so with freeze on it stops at once (fix round 1, review minor 3) */
+        {
+            auto runs = [&](const char *mods, long long &at_drop, long long &at12, long long &at15) {
+                char a[2048], b[2048]; std::snprintf(a, sizeof a, R"(,"mfx":{"ret":1,%s})", mods); std::snprintf(b, sizeof b, R"(,"mfx":{"ret":0,%s})", mods);
+                char buf[8192]; std::snprintf(buf, sizeof buf, FXR, ALL3, a);
+                unsigned seed = 11; fs_device *pc = fs_create("piece"); fs_prepare(pc, SR, B); fs_piece_test_hooks(pc, fixed_draw, &seed, nullptr, nullptr);
+                const int r = fs_piece_add_route(pc, buf);
+                for (int k = 0; k < (int)(15 * SR / B); k++) {
+                    if (k == (int)(3 * SR / B)) { std::snprintf(buf, sizeof buf, FXR, ALL3, b); fs_piece_set_route(pc, r, buf); }
+                    fs_piece_walk(pc, r, k / (15 * SR / B), 0); fs_process(pc, B);
+                    if (k == (int)(3.1 * SR / B)) at_drop = fs_piece_test_fx_runs(pc);
+                    if (k == (int)(12 * SR / B)) at12 = fs_piece_test_fx_runs(pc);
+                }
+                at15 = fs_piece_test_fx_runs(pc); fs_destroy(pc);
+            };
+            long long e0, e12, e15, f0, f12, f15;
+            runs(R"("echo":{"mix":1,"fb":0.5})", e0, e12, e15);
+            runs(R"("cloud":{"mix":1,"freeze":1},"echo":{"mix":1,"fb":0.5})", f0, f12, f15);
+            std::printf("FX ret 0: engine runs at 0.1 s / 9 s / 12 s after ret 0 - echo %lld %lld %lld (drained, then idle); cloud frozen %lld %lld %lld\n", e0, e12, e15, f0, f12, f15);
+            assert(e12 > e0 && e15 == e12 && f15 == f0);
+        }
+}
+int main(int argc, char **argv) {
+    if (argc > 1 && !std::strcmp(argv[1], "fx")) { test_fx(); std::printf("core ok (fx only)\n"); return 0; }
     const float SR = 48000;
     const int B = 128;
 
@@ -3197,207 +3431,7 @@ int main() {
             fs_engine_destroy(e);
         }
     }
-    {   /* FX (modulation FX Part 1 Task 8): the route's master FX - sends from the three voices (after their own delay
-           and room), a return beside the untouched dry; rhythm effects removed */
-        static const char *FXR = R"({"version":17,"tempo":96,"key":50,"prog":[{"r":0,"q":"m7"},{"r":5,"q":"maj7"},{"r":7,"q":"7"},{"r":0,"q":"m9"}],%s,"zones":{"on":false},"bed":{"on":false}%s})";
-        static const char *ALL3 = R"("voice":{"on":true,"synth":"fm"},"sect":{"on":true,"synth":"fm"},"v3":{"on":true,"synth":"am"})";
-        /* `secs` of a route (stereo, interleaved L R), walked 0 -> 1 with fixed draws; at `at` s, fs_piece_set_route(edit) */
-        auto fxr = [&](const char *more, double secs, const char *edit = nullptr, double at = 0, const char *voices = nullptr, int *kept = nullptr) {
-            if (!voices) voices = ALL3;
-            char buf[8192]; std::snprintf(buf, sizeof buf, FXR, voices, more);
-            unsigned seed = 11; fs_device *pc = fs_create("piece"); fs_prepare(pc, SR, B); fs_piece_test_hooks(pc, fixed_draw, &seed, nullptr, nullptr);
-            const int r = fs_piece_add_route(pc, buf); const int blocks = (int)(secs * SR / B);
-            std::vector<float> o; o.reserve((size_t)blocks * B * 2);
-            for (int b = 0; b < blocks; b++) {
-                if (edit && b == (int)(at * SR / B)) { char e[8192]; std::snprintf(e, sizeof e, FXR, voices, edit); fs_piece_set_route(pc, r, e); }
-                fs_piece_walk(pc, r, (double)b / blocks, 0); fs_process(pc, B);
-                const float *l = fs_out(pc, 0), *rr = fs_out(pc, 1); for (int i = 0; i < B; i++) { o.push_back(l[i]); o.push_back(rr[i]); }
-            }
-            if (kept) *kept = fs_piece_test_kept(pc);
-            fs_destroy(pc); return o;
-        };
-        auto hash = [](const std::vector<float> &o) { uint64_t h = 1469598103934665603ULL; for (float v : o) { uint32_t u; std::memcpy(&u, &v, 4); h = (h ^ u) * 1099511628211ULL; } return h; };
-        auto db_of = [](const std::vector<float> &a, const std::vector<float> &b) {   /* rms of a - b (b empty: a), dBFS */
-            double s = 0; for (size_t i = 0; i < a.size(); i++) { const double d = a[i] - (b.empty() ? 0 : b[i]); s += d * d; }
-            return 10 * std::log10(s / a.size() + 1e-30); };
-        /* the click metric on the left channel: the 50 ms after `at` s vs the 500 ms before */
-        auto click = [&](const std::vector<float> &o, double at) {
-            const long c = (long)(at * SR); double a = 0, b = 0;
-            for (long n = c - (long)(0.5 * SR); n < c + (long)(0.05 * SR); n++) {
-                const double d = std::fabs((double)o[2 * n] - 2.0 * o[2 * (n - 1)] + o[2 * (n - 2)]);
-                if (n < c) a = std::fmax(a, d); else b = std::fmax(b, d);
-            }
-            return b / a; };
-
-        /* 1: dry by default - no mfx, and ret 0 with a module on: byte-identical, and to the build before the master FX */
-        int k0 = 0, k1 = 0;
-        const auto dry = fxr("", 10, nullptr, 0, ALL3, &k0), ret0 = fxr(R"(,"mfx":{"ret":0,"phase":{"mix":1}})", 10, nullptr, 0, ALL3, &k1);
-        std::printf("FX dry: 10 s without mfx, hash %llu (before the master FX: %llu); ret 0 + phase on identical %d; kept %d %d\n",
-                    (unsigned long long)hash(dry), 3188419885914509479ULL, (int)(dry == ret0), k0, k1);
-        assert(dry == ret0 && k0 == k1 && hash(dry) == 3188419885914509479ULL);   /* recorded on afc35eb (piece.cpp as main 99f0459) */
-
-        /* 2: the return is added beside the dry: out(ret .8) - dry == 2 (out(ret .4) - dry), and it is heard */
-        const auto r8 = fxr(R"(,"mfx":{"ret":0.8,"echo":{"mix":1,"fb":0.6}})", 10), r4 = fxr(R"(,"mfx":{"ret":0.4,"echo":{"mix":1,"fb":0.6}})", 10);
-        double lin = 0; for (size_t i = 0; i < dry.size(); i++) lin = std::fmax(lin, std::fabs((r8[i] - dry[i]) - 2 * (r4[i] - dry[i])));
-        const double wet8 = db_of(r8, dry), drydb = db_of(dry, {});
-        std::printf("FX return: dry %.1f dBFS, ret 0.8 echo adds %.1f dBFS; (out .8 - dry) - 2 (out .4 - dry) max %.2e\n", drydb, wet8, lin);
-        assert(r8 != dry && wet8 > drydb - 20 && lin < 1e-6);
-
-        /* 3: send [0,0,1] - only the third voice reaches the bus: voices 1-2 alone, nothing; the third alone, its echo */
-        const char *V12 = R"("voice":{"on":true,"synth":"fm"},"sect":{"on":true,"synth":"fm"},"v3":{"on":false})", *V3 = R"("voice":{"on":false},"sect":{"on":false},"v3":{"on":true,"synth":"am"})";
-        /* a voice turned off still sounds for the first 0.2 s (its gain ramps down from the default patch's at the route's
-           take): the third voice's own chain dry and a single repeat, the wet read from 4 s on */
-        const char *S0 = R"(,"fx3":{"delayWet":0,"revWet":0})", *S3 = R"(,"fx3":{"delayWet":0,"revWet":0},"mfx":{"ret":1,"send":[0,0,1],"echo":{"mix":1,"fb":0}})";
-        const auto d12 = fxr(S0, 10, nullptr, 0, V12), w12 = fxr(S3, 10, nullptr, 0, V12), d3 = fxr(S0, 10, nullptr, 0, V3), w3 = fxr(S3, 10, nullptr, 0, V3);
-        auto from4 = [&](const std::vector<float> &o) { return std::vector<float>(o.begin() + (size_t)(4 * SR) * 2, o.end()); };
-        const double leak = db_of(from4(w12), from4(d12)), heard = db_of(from4(w3), from4(d3)), early = db_of(w12, d12);
-        std::printf("FX send [0,0,1]: voices 1-2 alone, wet %.1f dBFS from 4 s (%.1f over all 10 s: the off voice's first 0.2 s); voice 3 alone, wet %.1f dBFS\n", leak, early, heard);
-        assert(leak < -90 && heard > -60);
-
-        /* 4: no clicks - ret stepped 0 -> 1 mid-note; then an edit of every mfx key (all nine on before and after) */
-        const auto st = fxr(R"(,"mfx":{"ret":0,"echo":{"mix":1,"fb":0.5},"space":{"mix":1}})", 8, R"(,"mfx":{"ret":1,"echo":{"mix":1,"fb":0.5},"space":{"mix":1}})", 6);
-        static const char *FA = R"(,"mfx":{"ret":0.7,"send":[1,1,1],"shift":{"mix":0.5,"hz":30,"mode":"ssb","fb":0.3},"swarm":{"mix":0.5,"rate":"2n","depth":0.5,"delay":8,"fb":0.2,"spread":1,"zero":1},
-            "phase":{"mix":0.5,"stages":12,"hz":800,"span":2,"rate":"2n","fb":0.3},"comb":{"mix":0.4,"tune":"chord","hz":110,"decay":2,"damp":6000,"detune":8},"vowel":{"mix":0.5,"pos":0,"q":8,"size":1},
-            "cloud":{"mix":0.5,"size":120,"dens":12,"pitch":0,"spray":0.2,"scatter":0.3,"rev":0,"freeze":0},"tape":{"mix":0.5,"wow":0.3,"flutter":0.2,"drive":0.2,"tone":9000},
-            "echo":{"mix":0.5,"time":"8n.","fb":0.45,"tone":0,"shift":0,"wobble":0,"spread":0.5},"space":{"mix":0.5,"size":0.7,"decay":4,"damp":7000,"mod":1},
-            "lfo":[{"shape":"sine","rate":"1n"},{"shape":"tri","rate":"2n"},{"shape":"drift","rate":"2m"},{"shape":"steps","rate":"4m"}],"env":{"attack":10,"release":300,"sens":1},
-            "mods":[{"src":"lfo1","dst":"phase.hz","amt":0.3},{"src":"lfo2","dst":"vowel.pos","amt":0.4}]})";
-        static const char *FB = R"(,"mfx":{"ret":1,"send":[0.8,0.6,0.9],"shift":{"mix":0.3,"hz":-40,"mode":"ring","fb":0.5},"swarm":{"mix":0.7,"rate":"8n","depth":0.3,"delay":12,"fb":0.4,"spread":0.5,"zero":0},
-            "phase":{"mix":0.7,"stages":6,"hz":1500,"span":1,"rate":"1n","fb":-0.3},"comb":{"mix":0.6,"tune":"free","hz":220,"decay":4,"damp":3000,"detune":20},"vowel":{"mix":0.3,"pos":2,"q":12,"size":1.5},
-            "cloud":{"mix":0.3,"size":200,"dens":20,"pitch":7,"spray":0.4,"scatter":0.6,"rev":0.5,"freeze":1},"tape":{"mix":0.7,"wow":0.6,"flutter":0.4,"drive":0.4,"tone":5000},
-            "echo":{"mix":0.7,"time":"4n","fb":0.6,"tone":-0.3,"shift":-10,"wobble":0.2,"spread":0.8},"space":{"mix":0.7,"size":0.5,"decay":8,"damp":4000,"mod":0.5},
-            "lfo":[{"shape":"tri","rate":"2n","phase":0.25},{"shape":"sine","rate":"1n"},{"shape":"steps","rate":"4m"},{"shape":"drift","rate":"2m"}],"env":{"attack":30,"release":800,"sens":2},
-            "mods":[{"src":"lfo2","dst":"comb.hz","amt":0.2},{"src":"env","dst":"cloud.pitch","amt":0.3},{"src":"chord","dst":"tape.tone","amt":0.3}]})";
-        const auto ed = fxr(FA, 8, FB, 6);
-        const double c1 = click(st, 6), c2 = click(ed, 6);
-        std::printf("FX clicks: ret 0 -> 1 mid-note %.2f, an edit of every mfx key %.2f (limit 4)\n", c1, c2);
-        assert(c1 <= 4 && c2 <= 4);
-
-        /* 5: out of the route's leash the wet goes with the dry (the return sits before the route's level) */
-        {
-            char buf[8192]; std::snprintf(buf, sizeof buf, FXR, ALL3, R"(,"mfx":{"ret":1,"echo":{"mix":1,"fb":0.9},"space":{"mix":1,"decay":30}})");
-            unsigned seed = 11; fs_device *pc = fs_create("piece"); fs_prepare(pc, SR, B); fs_piece_test_hooks(pc, fixed_draw, &seed, nullptr, nullptr);
-            const int r = fs_piece_add_route(pc, buf); float in_ = 0, out_ = 0;
-            for (int b = 0; b < (int)(8 * SR / B); b++) {
-                const bool far = b >= (int)(5 * SR / B);
-                if (b == 0 || b == (int)(5 * SR / B)) fs_piece_walk(pc, r, 0.3, far ? FS_GPS_LEASH + 10 : 0);   /* once each: a walk every block restarts the 0.35 s fade */
-                fs_process(pc, B);
-                for (int c = 0; c < 2; c++) for (int i = 0; i < B; i++) { const float v = std::fabs(fs_out(pc, c)[i]); if (!far) in_ = std::fmax(in_, v); else if (b >= (int)(5.5 * SR / B)) out_ = std::fmax(out_, v); }
-            }
-            fs_destroy(pc);
-            std::printf("FX leash: peak %.3f on the route, %.3g past the leash (echo fb 0.9, space 30 s ringing)\n", in_, out_);
-            assert(in_ > 0.01 && out_ == 0);
-        }
-
-        /* 6: the patch read with a full mfx (all nine, 8 slots) on the heaviest route (64 chords overridden, metal), warm */
-        static const char *FULL = R"(,"mfx":{"ret":1,"shift":{"mix":1,"hz":30,"fb":0.3},"swarm":{"mix":1,"zero":1},"phase":{"mix":1,"stages":12},"comb":{"mix":1},"vowel":{"mix":1},
-            "cloud":{"mix":1,"dens":40,"size":500,"spray":0.5},"tape":{"mix":1,"drive":0.5},"echo":{"mix":1,"shift":5,"wobble":0.5,"tone":0.3},"space":{"mix":1},
-            "mods":[{"src":"lfo1","dst":"shift.hz","amt":0.1},{"src":"lfo2","dst":"phase.hz","amt":0.3},{"src":"lfo3","dst":"comb.hz","amt":0.2},{"src":"lfo4","dst":"vowel.pos","amt":0.5},
-            {"src":"env","dst":"cloud.pitch","amt":0.2},{"src":"chord","dst":"tape.tone","amt":0.3},{"src":"lfo1","dst":"echo.tone","amt":0.3},{"src":"lfo1","dst":"space.size","amt":0.3}]})";
-        {
-            static const char *const OV[10] = { "strum", "arpeggio", "pedal", "euclid", "ostinato", "chorale", "tintinnabuli", "swells", "pointillist", "arpeggio" };
-            std::string prog = "[", over = "{";
-            for (int i = 0; i < 64; i++) { prog += std::string(i ? "," : "") + R"({"r":0,"q":"m7"})";
-                over += std::string(i ? "," : "") + "\"" + std::to_string(i) + "\":{\"voice\":{\"style\":\"" + OV[i % 10] + (i % 4 == 0 ? R"(","orn":"trill","orn_every":2)" : "\"") + "}}"; }
-            prog += "]"; over += "}";
-            const std::string base = std::string(R"({"version":17,"tempo":96,"key":50,"prog":)") + prog + R"(,"voice":{"on":true,"synth":"metal"},"sect":{"on":true,"synth":"metal"},"v3":{"on":true,"synth":"metal"},"zones":{"on":false},"bed":{"on":false},"comp":{"voice":{"style":"arpeggio"},"sect":{"style":"strum"},"v3":{"style":"swells"},"over":{"chord":)" + over + "}}";
-            double w[2] = { 0, 0 };
-            for (int f = 0; f < 2; f++) {
-                const std::string r = base + (f ? FULL : "") + "}";
-                fs_device *pc = fs_create("piece"); fs_prepare(pc, SR, B); const int id = fs_piece_add_route(pc, r.c_str());
-                for (int rep = 0; rep < 5; rep++) { auto t0 = std::chrono::steady_clock::now(); fs_piece_set_route(pc, id, r.c_str());
-                    w[f] = std::fmax(w[f], std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count()); }
-                fs_destroy(pc);
-            }
-            std::printf("FX patch read (64 chords overridden, metal), warm worst: %.2f ms without mfx, %.2f ms with a full mfx (limit 1)\n", w[0], w[1]);
-            assert(w[1] < 1.0);
-        }
-
-        /* 7: the composer's cost lines with the master all on (C cost: p99.9 < 1.0 ms, no more than 2 blocks over 1.5 ms after
-           the warm-up); and the host's cost of a return up with nothing on (an idle engine) */
-        auto cost = [&](const char *voices, const char *more, double &p999, double &worst, int &over, double &mean) {
-            char buf[8192]; std::snprintf(buf, sizeof buf, FXR, voices, more);
-            unsigned seed = 3; fs_device *pc = fs_create("piece"); fs_prepare(pc, SR, B); fs_piece_test_hooks(pc, fixed_draw, &seed, nullptr, nullptr);
-            const int r = fs_piece_add_route(pc, buf); std::vector<double> ms;
-            for (int k = 0; k < (int)(30 * SR / B); k++) { fs_piece_walk(pc, r, k / 11250.0, 0);
-                auto t0 = std::chrono::steady_clock::now(); fs_process(pc, B); if (k > 375) ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count()); }
-            fs_destroy(pc);
-            over = 0; mean = 0; for (double m : ms) { over += m > 1.5; mean += m / ms.size(); }
-            std::sort(ms.begin(), ms.end()); worst = ms.back(); p999 = ms[(size_t)(ms.size() * 0.999)];
-        };
-        const char *FMV = R"("voice":{"on":true,"synth":"fm"},"sect":{"on":true,"synth":"fm"},"v3":{"on":true,"synth":"am"})", *METV = R"("voice":{"on":true,"synth":"metal"},"sect":{"on":true,"synth":"metal"},"v3":{"on":true,"synth":"metal"})";
-        const std::string C1 = R"(,"comp":{"voice":{"style":"arpeggio","rate":"16n"},"sect":{"style":"strum","rate":"8n","tones":[0,1,2,3,4],"spread":20},"v3":{"style":"swells","rate":"2n","tones":[0,1,2,3,4]}})",
-                          C2 = R"(,"comp":{"voice":{"style":"strum","rate":"8n","tones":[0,1,2,3,4],"spread":20},"sect":{"style":"strum","rate":"8n","tones":[0,1,2,3,4],"spread":20},"v3":{"style":"swells","rate":"2n","tones":[0,1,2,3,4]}})";
-        /* the typical preset (fx_bench's: phase comb cloud echo space, two slots) */
-        static const char *TYP = R"(,"mfx":{"ret":1,"phase":{"mix":1},"comb":{"mix":1},"cloud":{"mix":1},"echo":{"mix":1},"space":{"mix":1},
-            "mods":[{"src":"lfo1","dst":"comb.hz","amt":0.2},{"src":"env","dst":"cloud.dens","amt":0.3}]})";
-        int overs = 0; double metal_all = 0;
-        for (int line = 0; line < 2; line++) for (int f = 0; f < 3; f++) {
-            if (line == 0 && f == 1) continue;
-            const std::string more = (line ? C2 : C1) + (f == 2 ? FULL : f == 1 ? TYP : "");
-            double p, w, m; int o; cost(line ? METV : FMV, more.c_str(), p, w, o, m);
-            std::printf("FX cost: %s %s - p99.9 %.3f ms, worst %.3f ms, %d blocks over 1.5 ms, mean %.4f ms\n",
-                        line ? "metal x3 strum-strum-swells" : "fm/fm/am arpeggio-strum-swells", f == 2 ? "+ master all nine, 8 slots" : f == 1 ? "+ master typical" : "(no mfx)", p, w, o, m);
-            if (f) overs += o;
-            /* ponytail: metal x3 (the heaviest synth on every voice, every chord voice busy) + all nine at their costliest
-               measured p99.9 1.06 ms here (0.85 without the master): reported, not gated - the controller's call */
-            if (f && !(line == 1 && f == 2)) assert(p < 1.0);
-            if (line == 1 && f == 2) metal_all = p;
-        }
-        std::printf("FX cost: metal x3 + all nine p99.9 %.3f ms (%s the 1.0 ms line; not gated)\n", metal_all, metal_all < 1.0 ? "within" : "OVER");
-        assert(overs <= 2);
-        {   /* a quiet route (voices off): what the host adds with ret 1 and nothing on, best of three */
-            const char *OFF = R"("voice":{"on":false},"sect":{"on":false},"v3":{"on":false})";
-            double best[2] = { 1e9, 1e9 };
-            for (int rep = 0; rep < 3; rep++) for (int f = 0; f < 2; f++) { double p, w, m; int o; cost(OFF, f ? R"(,"mfx":{"ret":1})" : "", p, w, o, m); best[f] = std::fmin(best[f], m); }
-            const double pct = 100 * (best[1] - best[0]) / (B / SR * 1000);
-            std::printf("FX host idle: a block %.4f ms without mfx, %.4f ms with ret 1 and nothing on: +%.3f %% of realtime\n", best[0], best[1], pct);
-            assert(pct < 0.1);
-        }
-
-        /* 8: the live values - 1 while a route plays, the LFO phases advance with the transport (96 bpm: 1n 2.5 s, 2n
-           1.25 s, 2m 5 s, 4m 10 s), the chord source moves at a chord change; the tempo; the engine's read */
-        {
-            char buf[8192]; std::snprintf(buf, sizeof buf, FXR, ALL3, R"(,"mfx":{"ret":1,"echo":{"mix":1}})");
-            fs_device *pc = fs_create("piece"); fs_prepare(pc, SR, B);
-            float v[32], a[32], c[32], e[32]; const int none = fs_piece_fx_live(pc, v);
-            const int r = fs_piece_add_route(pc, buf); const int blocks = (int)(10 * SR / B);
-            for (int b = 0; b < blocks; b++) {
-                fs_piece_walk(pc, r, (double)b / blocks, 0); fs_process(pc, B);
-                if (b == (int)(2.0 * SR / B)) fs_piece_fx_live(pc, a);
-                if (b == (int)(2.5 * SR / B)) fs_piece_fx_live(pc, v);
-                if (b == (int)(7.0 * SR / B)) fs_piece_fx_live(pc, c);
-            }
-            const int on = fs_piece_fx_live(pc, e); const double tempo = fs_piece_tempo(pc);
-            fs_destroy(pc);
-            const double want[4] = { 0.2, 0.4, 0.1, 0.05 }; double err = 0;
-            for (int i = 0; i < 4; i++) { double d = v[i] - a[i]; d -= std::floor(d); err = std::fmax(err, std::fabs(d - want[i])); }
-            fs_engine *en = fs_engine_create(48000, 128); const int e0 = fs_engine_fx_live(en, 0, v), e1 = fs_engine_fx_live(en, 1, v); fs_engine_destroy(en);
-            std::printf("FX live: none %d, playing %d; LFO phases over 0.5 s off by %.4f; chord source %.3f -> %.3f; tempo %.0f; engine (no route) %d %d\n",
-                        none, on, err, a[12], c[12], tempo, e0, e1);
-            assert(none == 0 && on == 1 && err < 0.01 && a[12] != c[12] && tempo == 96 && e0 == 0 && e1 == 0);
-        }
-
-        /* 9: rhythm effects removed (decision 1) - a rhythm point under a non-clean rfx renders as under the clean one */
-        {
-            const int n = (int)SR; short *pcm = fs_alloc_i16(n);
-            for (int i = 0; i < n; i++) pcm[i] = (short)(12000 * std::sin(2 * 3.141592653589793 * 220.0 * i / SR));
-            auto play = [&](const char *rfx) {
-                char buf[1024]; std::snprintf(buf, sizeof buf, R"({"version":17,"key":50,"tempo":90,"prog":[{"r":0,"q":"m7"}],"voice":{"on":false},"sect":{"on":false},"v3":{"on":false},"bed":{"on":false},"zones":{"on":false},"rfx":%s})", rfx);
-                fs_device *pc = fs_create("piece"); fs_prepare(pc, SR, B); const int r = fs_piece_add_route(pc, buf);
-                const int h = fs_piece_rhythm_add(pc, R"({"div":"8n"})", 2);
-                short *q = fs_alloc_i16(n); std::memcpy(q, pcm, sizeof(short) * n);
-                fs_piece_rhythm_source(pc, h, 0, 1, n, q); fs_piece_rhythm_gain(pc, h, 1);
-                std::vector<float> o;
-                for (int b = 0; b < (int)(4.0 * SR / B); b++) { fs_piece_walk(pc, r, 0.3, 0); fs_process(pc, B); const float *l = fs_out(pc, 0), *rr = fs_out(pc, 1); o.insert(o.end(), l, l + B); o.insert(o.end(), rr, rr + B); }
-                fs_destroy(pc); return o;
-            };
-            const auto clean = play(R"({"drive":0,"delayWet":0,"revWet":0,"cutoff":20000})"), old = play(R"({"drive":0.6,"delayWet":0.5,"delayFb":0.6,"revWet":0.4,"cutoff":2000})");
-            std::printf("FX rfx: a rhythm point under the old rhythm effects renders as under clean ones %d (%.1f dBFS)\n", (int)(clean == old), db_of(clean, {}));
-            assert(clean == old && db_of(clean, {}) > -60);
-            std::free(pcm);
-        }
-    }
+    test_fx();
     std::printf("core ok\n");
     return 0;
 }

@@ -1182,7 +1182,12 @@ struct Piece : Device {
     mfx::Engine master;
     Ctl ret, send[3];
     int chord_serial = 0;             /* bumped on every chord change (the engine's Comb glides on a new one) */
-    float vL[3][SUB], vR[3][SUB], mL[SUB], mR[SUB], wL[SUB], wR[SUB];
+    /* the bus is gathered over a whole process() chunk (up to MCH frames: SUB-frame renders) and run once at its end:
+       the engine called 32 frames at a time cost ~10 % more. Nothing feeds back, so this adds no latency - the wet is
+       added to the chunk's output with each sample's ret x synth_level x route_solo (mg) */
+    static const int MCH = 128;
+    float vL[3][SUB], vR[3][SUB], mL[MCH], mR[MCH], wL[MCH], wR[MCH], mg[MCH];
+    int mb = 0; bool m_live = false, m_frozen = false; double m_beats = 0, m_bpm = 72; long long m_runs = 0;   /* m_runs: tests */
     Ctl synth_level;
     Ctl route_solo;                   /* 0 while a rhythm point is soloed: the route's synths and zones rest */
     int solo = -1;
@@ -1350,7 +1355,7 @@ struct Piece : Device {
         for (Role *r : { &bass, &top, &sectr, &v3r }) shape_role(*r);   /* 8b: a changed envelope on the same instrument */
         fx2.apply(p.fx2, p.tempo, now);
         if (sect_div != p.sect.rhythm.s) { sect_div = p.sect.rhythm.s; C.tick = 0; }
-        master.apply(p.mfx);
+        master.apply(p.mfx); m_frozen = p.mfx.v[mfx::R_CL_FREEZE] >= 0.5f;
         ret.p.linearRampTo(p.mfx.ret, 0.03, now);
         for (int q = 0; q < 3; q++) send[q].p.linearRampTo(p.mfx.send[q], 0.03, now);
         for (auto &R : rh) if (R.used) apply_hit_fx(R, now);
@@ -3042,16 +3047,29 @@ struct Piece : Device {
        engine is fed silence until its tail is over (idle), then not run - nothing of it is heard, and it costs nothing */
     void master_bus(int n, double t0, double te) {
         ret.block(te); for (auto &s : send) s.block(te);
+        if (mb == 0) { m_bpm = tick_bpm; m_beats = (ticks - (next_tick - t0) * tick_bpm * 4 / 60) / 4; }   /* the transport in beats at the chunk's start */
         /* -120 dB: a ramp from 0 starts at 1e-7 (Tone's setRampPoint), which must not count as a return up */
         const bool live = ret.a > 1e-6f || ret.b > 1e-6f;
-        if (!live && master.idle()) return;
-        if (live) for (int i = 0; i < n; i++) {
-            const float s0 = send[0].at(i, n), s1 = send[1].at(i, n), s2 = send[2].at(i, n);
-            mL[i] = s0 * vL[0][i] + s1 * vL[1][i] + s2 * vL[2][i]; mR[i] = s0 * vR[0][i] + s1 * vR[1][i] + s2 * vR[2][i];
-        } else { std::memset(mL, 0, sizeof mL); std::memset(mR, 0, sizeof mR); }
-        master.clock(tick_bpm, (ticks - (next_tick - t0) * tick_bpm * 4 / 60) / 4);   /* the transport in beats at t0 */
+        float *bl = mL + mb, *br = mR + mb, *g = mg + mb;
+        if (live) {
+            m_live = true;
+            for (int i = 0; i < n; i++) {
+                const float s0 = send[0].at(i, n), s1 = send[1].at(i, n), s2 = send[2].at(i, n);
+                bl[i] = s0 * vL[0][i] + s1 * vL[1][i] + s2 * vL[2][i]; br[i] = s0 * vR[0][i] + s1 * vR[1][i] + s2 * vR[2][i];
+                g[i] = ret.at(i, n);
+            }
+        } else for (int i = 0; i < n; i++) bl[i] = br[i] = g[i] = 0;   /* ret 0: the engine is fed silence (its tail drains unheard) */
+    }
+    /* the chunk's bus through the engine, its wet onto the output (n frames from out). While ret is 0 the engine runs on
+       silence until idle, then not at all */
+    void master_run(float *outL, float *outR, int n) {
+        const bool live = m_live; mb = 0; m_live = false;
+        /* ret 0: drained on silence until idle - but a frozen Cloud never goes quiet, so it simply stops (its loop waits) */
+        if (master.off() || (!live && (m_frozen || master.idle()))) return;   /* off: its wet is 0 - nothing to add */
+        m_runs++;
+        master.clock(m_bpm, m_beats);
         master.process(mL, mR, wL, wR, n);
-        if (live) for (int i = 0; i < n; i++) { const float g = ret.at(i, n); oL[i] += g * wL[i]; oR[i] += g * wR[i]; }
+        if (live) for (int i = 0; i < n; i++) { outL[i] += mg[i] * wL[i]; outR[i] += mg[i] * wR[i]; }
     }
 
     void render(float *outL, float *outR, int n, double t0) {
@@ -3097,7 +3115,8 @@ struct Piece : Device {
         }
         master_bus(n, t0, te);
         synth_level.block(te); route_solo.block(te);
-        for (int i = 0; i < n; i++) { float g = synth_level.at(i, n) * route_solo.at(i, n); oL[i] *= g; oR[i] *= g; }
+        for (int i = 0; i < n; i++) { float g = synth_level.at(i, n) * route_solo.at(i, n); oL[i] *= g; oR[i] *= g; mg[mb + i] *= g; }
+        mb += n;
         /* the rhythm points, clean, beside the route (bed.master, not bed.synth; the rhythm effects are gone: decision 1) */
         std::memset(rL, 0, sizeof rL); std::memset(rR, 0, sizeof rR);
         for (auto &R : rh) if (R.used) render_rhythm(R, rL, rR, n, t0);
@@ -3107,7 +3126,7 @@ struct Piece : Device {
 
     void process(int frames) override {
         float *L = out[0].data(), *R = out[1].data();
-        int done = 0;
+        int done = 0, c0 = 0;
         while (done < frames) {
             int n = std::min(SUB, frames - done);
             double t0 = (double)frame / sr, te = (double)(frame + n) / sr;
@@ -3120,6 +3139,7 @@ struct Piece : Device {
             }
             render(L + done, R + done, n, t0);
             frame += n; done += n;
+            if (done - c0 + SUB > MCH || done == frames) { master_run(L + c0, R + c0, done - c0); c0 = done; }
         }
     }
 };
@@ -3560,6 +3580,7 @@ void fs_piece_test_route_rgains(fs_device *d, int i, float *out) {
     Piece *p = P(d); if (!p) return; std::lock_guard<std::mutex> g(p->mu);
     if (i >= 0 && i < (int)p->in.routes.size()) for (int r = 0; r < comp::REL_MAX; r++) for (int q = 0; q < comp::NVOICE; q++) out[r * comp::NVOICE + q] = p->in.routes[i].rgain[r][q];
 }
+long long fs_piece_test_fx_runs(fs_device *d) { Piece *p = P(d); if (!p) return -1; std::lock_guard<std::mutex> g(p->mu); return p->m_runs; }
 int fs_piece_test_kept(fs_device *d) { Piece *p = P(d); if (!p) return -1; std::lock_guard<std::mutex> g(p->mu); sweep(p); return (int)p->keep.b.size(); }
 void fs_piece_test_hooks(fs_device *d, double (*rnd)(void *), void *rnd_ctx,
                          void (*on_note)(void *, int, double, double, double, double), void *note_ctx) {

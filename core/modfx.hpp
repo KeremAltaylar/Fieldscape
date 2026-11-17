@@ -272,7 +272,30 @@ inline void read2(const tone::DelayLine &a, const tone::DelayLine &b, double d, 
     const Tap t = tap_at(a, d); const int j = t.i + 1 >= a.size ? 0 : t.i + 1;
     ya = a.buf[t.i] + (a.buf[j] - a.buf[t.i]) * t.f; yb = b.buf[t.i] + (b.buf[j] - b.buf[t.i]) * t.f;
 }
+/* l.read(d) in float, for the short lines (Space, Swarm, Comb, Tape: under 8192 samples, so w - d keeps 1/1024 of a
+   sample): the double read's conversions were a good part of those modules' per-sample cost */
+inline float rdf(const tone::DelayLine &l, float d) {
+    const float hi_ = (float)(l.size - 2);
+    d = d < 1 ? 1 : d > hi_ ? hi_ : d;
+    float p = (float)l.w - d; if (p < 0) p += (float)l.size;
+    const int i0 = (int)p, i = i0 >= l.size ? i0 - l.size : i0; const float f = p - (float)i0; const int j = i + 1 >= l.size ? 0 : i + 1;   /* p + size can round up to size */
+    return l.buf[i] + (l.buf[j] - l.buf[i]) * f;
+}
+inline void rdf2(const tone::DelayLine &a, const tone::DelayLine &b, float d, float &ya, float &yb) {
+    const float hi_ = (float)(a.size - 2);
+    d = d < 1 ? 1 : d > hi_ ? hi_ : d;
+    float p = (float)a.w - d; if (p < 0) p += (float)a.size;
+    const int i0 = (int)p, i = i0 >= a.size ? i0 - a.size : i0; const float f = p - (float)i0; const int j = i + 1 >= a.size ? 0 : i + 1;
+    ya = a.buf[i] + (a.buf[j] - a.buf[i]) * f; yb = b.buf[i] + (b.buf[j] - b.buf[i]) * f;
+}
 inline float flush(float x) { return std::fabs(x) < 1e-25f ? 0.0f : x; }
+/* tanh by Lambert's continued fraction ([7/6]): within 2e-7 of tanh to |x| 4.97, held there beyond (tanh 4.97 = 0.9999,
+   the slope already 2e-4) - a libm tanh a sample was a third of Tape's cost */
+inline float ftanh(float x) {
+    x = x > 4.97f ? 4.97f : x < -4.97f ? -4.97f : x;
+    const float x2 = x * x;
+    return x * (135135.0f + x2 * (17325.0f + x2 * (378.0f + x2))) / (135135.0f + x2 * (62370.0f + x2 * (3150.0f + 28.0f * x2)));
+}
 /* Linear to 1, then bends to at most 2 (slope continuous): a feedback loop's safety, not a drive. */
 inline float sclip(float x) { const float a = std::fabs(x); return a <= 1 ? x : std::copysign(1 + std::tanh(a - 1), x); }
 /* The engine's last stage: linear to 4 (+12 dBFS), then bends to at most 8; nothing the modules make ever passes 8. */
@@ -371,6 +394,7 @@ struct Engine {
        sines (rad), two input all-passes a side */
     tone::DelayLine sp_dl[8], sp_ap[2][2]; float sp_sz = 0.7f, sp_sa = 0.7f, sp_sb = 0.7f, sp_x = 0, sp_lp[8] = {}, sp_hp[2] = {}, sp_h = 0.002f, sp_m[8] = {}, sp_g[8] = {}, sp_c = 0.5f, sp_out = 0.1f;
     double sp_ph[8] = {}, sp_cw[10] = {}; float sp_key[3] = {};   /* sp_cw: cos of the level's ten bands (fixed by sr) */      /* sp_sz, decay, damp at the last design */
+    double sp_rc[8] = {}, sp_rs[8] = {}, sp_kc[8] = {}, sp_ks[8] = {}; int sp_n = 0;   /* each line's sine as cos/sin (rotated, renormalised now and then), and its 16-sample step */
     static constexpr float SP_LEN[8] = { 1087, 1283, 1481, 1699, 1907, 2129, 2351, 2579 };
     static constexpr double SP_HZ[8] = { 0.13, 0.19, 0.23, 0.29, 0.17, 0.31, 0.37, 0.41 };
     static constexpr int SP_AP[2] = { 142, 379 };
@@ -416,6 +440,7 @@ struct Engine {
         for (auto &l : sp_dl) l.init((int)((SP_LEN[7] + SP_SWING) * sr / 48000) + 8);
         for (auto &s : sp_ap) for (int k = 0; k < 2; k++) s[k].init((int)(SP_AP[k] * sr / 48000) + 2);
         for (int k = 0; k < 10; k++) sp_cw[k] = std::cos(2 * PI * 31.25 * std::exp2(k) / sr);
+        for (int l = 0; l < 8; l++) { sp_kc[l] = std::cos(2 * PI * SP_HZ[l] * 16 / sr); sp_ks[l] = std::sin(2 * PI * SP_HZ[l] * 16 / sr); }
         hold = (int)(0.5 * sr);
         reset();
     }
@@ -453,6 +478,7 @@ struct Engine {
        reach back (a repeat or a grain may still be on its way). From then on, while the input stays exactly 0 (and Cloud
        is not frozen), the output is exactly 0. */
     bool idle() const { return all_off() || quiet >= hold; }
+    bool off() const { return all_off(); }          /* every module off: nothing to run, the wet is 0 */
     void reset() {
         for (int m = 0; m < NMOD; m++) { clear(m); dirty[m] = true; mix[m].cur = 0; lvl[m] = 0; }
         quiet = 0; lvl_in = lvl_out = 0;
@@ -548,30 +574,35 @@ private:
         for (int m = 0; m < NMOD; m++) {
             if (!on(m)) { dirty[m] = true; lvl[m] = 0; continue; }   /* skipped: bit-exact pass-through */
             if (dirty[m]) { clear(m); dirty[m] = false; warm[m] = 0; }
-            std::memcpy(yL, xL, sizeof(float) * n); std::memcpy(yR, xR, sizeof(float) * n);
+            /* settled at mix 1 the module's output is the chain: it runs in place on x (no copy, no mix pass) */
+            const bool full = mix[m].cur == 1 && mix[m].tgt == 1;
+            float *YL = full ? xL : yL, *YR = full ? xR : yR;
+            if (!full) { std::memcpy(yL, xL, sizeof(float) * n); std::memcpy(yR, xR, sizeof(float) * n); }
             if (warm[m] < (int)(0.01 * sr)) {        /* cold: its input fades in (smoothstep, 10 ms), so empty delay lines never step */
                 const float W = (float)(0.01 * sr);
-                for (int i = 0; i < n; i++) { float t = std::fmin(1.0f, (warm[m] + i + 1) / W), r = t * t * (3 - 2 * t); yL[i] *= r; yR[i] *= r; }
+                for (int i = 0; i < n; i++) { float t = std::fmin(1.0f, (warm[m] + i + 1) / W), r = t * t * (3 - 2 * t); YL[i] *= r; YR[i] *= r; }
                 warm[m] += n;
             }
-            run(m, yL, yR, n);
-            float z = 0;                             /* y - y: 0 for a finite sample, NaN for inf or NaN (no branch a sample) */
-            for (int i = 0; i < n; i++) z += (yL[i] - yL[i]) + (yR[i] - yR[i]);
-            if (z != 0) {                               /* a non-finite sample: this module starts over, 0 for the block */
-                clear(m); warm[m] = 0;
-                std::memset(yL, 0, sizeof(float) * n); std::memset(yR, 0, sizeof(float) * n);
+            run(m, YL, YR, n);
+            float z = 0, pk = 0;                     /* y - y: 0 for a finite sample, NaN for inf or NaN (no branch a sample) */
+            for (int i = 0; i < n; i++) {
+                z += (YL[i] - YL[i]) + (YR[i] - YR[i]);
+                const float a = std::fabs(YL[i]), b = std::fabs(YR[i]);   /* compares, not fmax (a NaN is caught by z) */
+                pk = a > pk ? a : pk; pk = b > pk ? b : pk;
             }
-            float pk = 0;
+            if (z != 0) {                               /* a non-finite sample: this module starts over, 0 for the block */
+                clear(m); warm[m] = 0; pk = 0;
+                std::memset(YL, 0, sizeof(float) * n); std::memset(YR, 0, sizeof(float) * n);
+            }
             auto mixin = [&](auto next) {
                 for (int i = 0; i < n; i++) {
                     float k = next();
                     xL[i] += k * (yL[i] - xL[i]); xR[i] += k * (yR[i] - xR[i]);
                     keep[i] *= 1 - k;
-                    const float a = std::fabs(yL[i]), b = std::fabs(yR[i]);   /* finite here: compares, not fmax */
-                    pk = a > pk ? a : pk; pk = b > pk ? b : pk;
                 }
             };
-            if (mix[m].cur == mix[m].tgt) { const float k = mix[m].cur; mixin([k] { return k; }); }   /* settled: next() would return cur */
+            if (full) std::memset(keep, 0, sizeof(float) * n);
+            else if (mix[m].cur == mix[m].tgt) { const float k = mix[m].cur; mixin([k] { return k; }); }   /* settled: next() would return cur */
             else mixin([&] { return mix[m].next(); });
             lvl[m] = pk;
         }
@@ -666,7 +697,7 @@ private:
             for (auto &s : sp_ap) for (auto &l : s) zero(l);
             std::memset(sp_lp, 0, sizeof sp_lp);
             sp_sz = sp_sa = sp_sb = cfg.v[R_SP_SIZE]; sp_x = 0;
-            for (int i = 0; i < 8; i++) { sp_ph[i] = 0.785 * i; sp_m[i] = (float)(sp_mod() * std::sin(sp_ph[i])); }
+            for (int i = 0; i < 8; i++) { sp_ph[i] = 0.785 * i; sp_rc[i] = std::cos(sp_ph[i]); sp_rs[i] = std::sin(sp_ph[i]); sp_m[i] = (float)(sp_mod() * sp_rs[i]); }
             std::memset(sp_hp, 0, sizeof sp_hp);
             sp_design(sp_g, sp_c, sp_h, sp_out);
             sp_key[0] = sp_sz; sp_key[1] = sm[R_SP_DECAY]; sp_key[2] = sm[R_SP_DAMP];
@@ -716,15 +747,15 @@ private:
             const int m = n - o < 16 ? n - o : 16; const float im = 1.0f / m;   /* 1/16: j * im is j / m exactly */
             float hz = glide16(R_PH_HZ), span = glide16(R_PH_SPAN), fb0 = sm[R_PH_FB];
             ph_nf += sk * (nf_t - ph_nf);
-            const float x0 = ph_x; ph_x = std::fmin(1.0f, ph_x + xstep);
+            const float x0 = ph_x, lhz = std::log2(hz); ph_x = std::fmin(1.0f, ph_x + xstep);
             for (int ch = 0; ch < 2; ch++) {
                 double p = (beats + (o + m) * bps) / rate - ch * 0.25; p -= std::floor(p);
                 float s = (float)(0.5 - 0.5 * std::cos(2 * PI * p));
-                float lf = std::log2(hz) + span * (s - 0.5f);   /* the lowest notch, log2 Hz */
+                float lf = lhz + span * (s - 0.5f);   /* the lowest notch, log2 Hz */
                 bool first = ph_lf[ch] < 0;
                 ph_lf[ch] = first ? lf : ph_lf[ch] + sk_fast * (lf - ph_lf[ch]);   /* a rate change never jumps the sweep */
-                double fn = std::fmin(0.45 * sr, std::exp2((double)ph_lf[ch]));
-                double t = std::fmin(1e4, std::tan(PI * fn / sr) / ph_nf);
+                const float fn = std::fmin(0.45f * (float)sr, std::exp2(ph_lf[ch]));   /* float: the libm calls a 16 were half of the design */
+                const float t = std::fmin(1e4f, std::tan((float)PI * fn / (float)sr) / ph_nf);
                 const float a1 = (float)((t - 1) / (t + 1)), a0 = first ? a1 : ph_a[ch];
                 ph_a[ch] = a1;
                 float *x1 = ph_x1[ch], *y1 = ph_y1[ch];
@@ -798,8 +829,12 @@ private:
     void sw_delays(double b, float d[2][4]) {
         const double p = b / sw_rate + sw_off;
         const float D0 = (float)(sm[R_SW_DELAY] * 0.001 * sr), dep = 0.9f * sm[R_SW_DEPTH], spr = 0.25f * sm[R_SW_SPREAD];
+        static const double C3 = -0.5, S3 = 0.8660254037844386;   /* cos, sin of a third of a turn */
         for (int ch = 0; ch < 2; ch++) {
-            for (int k = 0; k < 3; k++) d[ch][k] = D0 * (1 + dep * (float)std::sin(2 * PI * (p + k / 3.0 + ch * spr)));
+            const double a = 2 * PI * (p + ch * spr), c = std::cos(a), sn = std::sin(a);
+            d[ch][0] = D0 * (1 + dep * (float)sn);
+            d[ch][1] = D0 * (1 + dep * (float)(sn * C3 + c * S3));
+            d[ch][2] = D0 * (1 + dep * (float)(sn * C3 - c * S3));
             d[ch][3] = D0;
         }
     }
@@ -810,10 +845,13 @@ private:
         for (int o = 0; o < n; o += 16) {
             const int m = n - o < 16 ? n - o : 16; const float im = 1.0f / m;
             glide16(R_SW_DEPTH); glide16(R_SW_SPREAD); glide100(R_SW_DELAY);
-            const double r0 = sw_rate, b = beats + o * bps, lr = std::log2(r0);
-            sw_rate = std::exp2(lr + sk100 * (std::log2(rate) - lr));
-            if (std::fabs(sw_rate / rate - 1) < 1e-6) sw_rate = rate;
-            sw_off += b / r0 - b / sw_rate;          /* the phase stays where it was; only its speed glides */
+            const double r0 = sw_rate, b = beats + o * bps;
+            if (r0 != rate) {                        /* settled: no log2 / exp2 a 16 */
+                const double lr = std::log2(r0);
+                sw_rate = std::exp2(lr + sk100 * (std::log2(rate) - lr));
+                if (std::fabs(sw_rate / rate - 1) < 1e-6) sw_rate = rate;
+                sw_off += b / r0 - b / sw_rate;      /* the phase stays where it was; only its speed glides */
+            }
             sw_off -= std::floor(sw_off + 0.5);
             sw_off -= sk1s * sw_off;
             float d1[2][4]; sw_delays(beats + (o + m) * bps, d1);
@@ -822,9 +860,9 @@ private:
                 sw_z = sw_z < want ? lo(want, sw_z + xstep) : hi(want, sw_z - xstep);
                 for (int ch = 0; ch < 2; ch++) {
                     tone::DelayLine &dl = sw_dl[ch]; const float *a = sw_d[ch], *b = d1[ch];
-                    float t0 = dl.read(a[0] + (b[0] - a[0]) * w), t1 = dl.read(a[1] + (b[1] - a[1]) * w), t2 = dl.read(a[2] + (b[2] - a[2]) * w);
+                    float t0 = rdf(dl, a[0] + (b[0] - a[0]) * w), t1 = rdf(dl, a[1] + (b[1] - a[1]) * w), t2 = rdf(dl, a[2] + (b[2] - a[2]) * w);
                     float y = 0.5f * t0 + 0.4f * t1 + 0.3f * t2;
-                    if (sw_z > 0) y += sw_z * (0.5f * (dl.read(a[3] + (b[3] - a[3]) * w) - t0) - y);
+                    if (sw_z > 0) y += sw_z * (0.5f * (rdf(dl, a[3] + (b[3] - a[3]) * w) - t0) - y);
                     dl.push(x[ch][i] + fb * t0);
                     x[ch][i] = y;
                 }
@@ -859,12 +897,13 @@ private:
     void cb_keyed(float k[8]) const { for (int i = 0; i < 5; i++) k[i] = cb_cur[i]; k[5] = sm[R_CB_DECAY]; k[6] = sm[R_CB_DETUNE]; k[7] = sm[R_CB_DAMP]; }
     float cb_coef() { return (float)(1 - std::exp(-2 * PI * std::fmin(sm[R_CB_DAMP], 0.45 * sr) / sr)); }
     void cb_design(float k[2][5][3]) {
-        const double dec = sm[R_CB_DECAY], det = sm[R_CB_DETUNE] / 2400.0, b = 1 - cb_a;
+        /* float maths (the design is redesigned every 16 while hz moves: double libm was most of Comb's cost) */
+        const float dec = sm[R_CB_DECAY], det = sm[R_CB_DETUNE] / 2400.0f, b = 1 - cb_a, fs = (float)sr, fmax = 0.45f * fs;
         for (int ch = 0; ch < 2; ch++)
             for (int i = 0; i < 5; i++) {
-                const double f = std::fmin(0.45 * sr, std::exp2(cb_cur[i] + (ch ? det : -det))), w = 2 * PI * f / sr;
-                const double tau = std::atan2(b * std::sin(w), 1 - b * std::cos(w)) / w, g = std::pow(10.0, -3 / (dec * f));
-                k[ch][i][0] = (float)std::fmax(1.0, sr / f - tau); k[ch][i][1] = (float)g; k[ch][i][2] = (float)std::sqrt((1 - g * g) / 5);
+                const float f = std::fmin(fmax, std::exp2(cb_cur[i] + (ch ? det : -det))), w = 2 * (float)PI * f / fs;
+                const float tau = std::atan2(b * std::sin(w), 1 - b * std::cos(w)) / w, g = std::exp(-3 * (float)LN10 / (dec * f));
+                k[ch][i][0] = std::fmax(1.0f, fs / f - tau); k[ch][i][1] = g; k[ch][i][2] = std::sqrt((1 - g * g) / 5);
             }
     }
     void comb(float *L, float *R, int n) {
@@ -919,7 +958,7 @@ private:
                     for (int c = 0; c < 5; c++) {
                         const float *p = cb_k[ch][c], *q = k1[ch][c];
                         tone::DelayLine &dl = cb_dl[ch][c];
-                        const float y = dl.read(p[0] + (q[0] - p[0]) * w);
+                        const float y = rdf(dl, p[0] + (q[0] - p[0]) * w);
                         float &lp = cb_lp[ch][c]; lp = flush(lp + a * (y - lp));
                         dl.push((p[2] + (q[2] - p[2]) * w) * cb_hy[ch] + (p[1] + (q[1] - p[1]) * w) * lp);
                         acc += y;
@@ -955,11 +994,11 @@ private:
             for (int i = o, j = 1; i < o + m; i++, j++) {
                 const float w = j * im, d = d0 + (tp_d - d0) * w, c = c0 + (tp_c - c0) * w, a = 3 * glide(R_TP_DRIVE);
                 tp_dl[0].push(x[0][i]); tp_dl[1].push(x[1][i]);
-                float rd[2]; read2(tp_dl[0], tp_dl[1], d, rd[0], rd[1]);
+                float rd[2]; rdf2(tp_dl[0], tp_dl[1], d, rd[0], rd[1]);
                 for (int ch = 0; ch < 2; ch++) {
                     float v = rd[ch], &ms = tp_ms[ch];
                     ms = flush(ms + (v * v > ms ? kr : kf) * (v * v - ms));
-                    if (a > 1e-4f) { const float s = std::sqrt(2 * ms) + 1e-9f; v = s * std::tanh(a * v / s) / a; }
+                    if (a > 1e-4f) { const float s = std::sqrt(2 * ms) + 1e-9f; v = s * ftanh(a * v / s) / a; }
                     tp_lp[ch] = flush(tp_lp[ch] + c * (v - tp_lp[ch]));
                     x[ch][i] = tp_lp[ch];
                 }
@@ -993,11 +1032,13 @@ private:
                its cos and sin by series to d^7, off by < 1e-17) */
             double rc = 1, rs = 0;
             if (ec_hon || cfg.v[R_EC_SHIFT] != 0) { rc = std::cos(ec_ph); rs = std::sin(ec_ph); }
+            /* tone's make-up at the 16's end (tone moves at most 2 a second: 7e-4 in 16), ramped from the last: one exp2 a 16 */
+            const float tn = sm[R_EC_TONE] + hi(-ec_tcap * m, lo(ec_tcap * m, cfg.v[R_EC_TONE] - sm[R_EC_TONE])), mk0 = ec_mk;
+            if (tn != ec_tk) { ec_tk = tn; ec_mk = std::exp2(tn < 0 ? -tn * EC_MK_DARK : tn * EC_MK_THIN); }
             for (int i = o, j = 1; i < o + m; i++, j++) {
                 const float w = j * im, fb = glide(R_EC_FB), tone = glide_cap(R_EC_TONE, ec_tcap), sh = glide_cap(R_EC_SHIFT, ec_scap), spr = glide(R_EC_SPREAD);
                 const float u = lo(1.0f, std::fabs(sh)), ws = u * u * (3 - 2 * u);
-                if (tone != ec_tk) { ec_tk = tone; ec_mk = std::exp2(tone < 0 ? -tone * EC_MK_DARK : tone * EC_MK_THIN); }
-                const float mk = ec_mk;
+                const float mk = mk0 + (ec_mk - mk0) * w;
                 float x = 0;
                 if (ec_d != ec_dn && (x = ec_x += xs100) >= 1) { ec_d = ec_dn; ec_x = x = 0; }
                 float c = 1, s = 0;
@@ -1066,8 +1107,10 @@ private:
             const float md = sp_mod();
             float m1[8], g1[8], c1, h1, o1;
             for (int l = 0; l < 8; l++) {
-                sp_ph[l] += 2 * PI * SP_HZ[l] * m / sr; if (sp_ph[l] > 2 * PI) sp_ph[l] -= 2 * PI;
-                m1[l] = md * (float)std::sin(sp_ph[l]);
+                if (m == 16) { const double c = sp_rc[l] * sp_kc[l] - sp_rs[l] * sp_ks[l]; sp_rs[l] = sp_rs[l] * sp_kc[l] + sp_rc[l] * sp_ks[l]; sp_rc[l] = c; }
+                else { const double a = 2 * PI * SP_HZ[l] * m / sr, c = std::cos(a), sn = std::sin(a), t = sp_rc[l] * c - sp_rs[l] * sn; sp_rs[l] = sp_rs[l] * c + sp_rc[l] * sn; sp_rc[l] = t; }
+                if (++sp_n >= 4096) { sp_n = 0; for (int k = 0; k < 8; k++) { const double r = 1 / std::sqrt(sp_rc[k] * sp_rc[k] + sp_rs[k] * sp_rs[k]); sp_rc[k] *= r; sp_rs[k] *= r; } }
+                m1[l] = md * (float)sp_rs[l];
             }
             const float key[3] = { sp_sz, sm[R_SP_DECAY], sm[R_SP_DAMP] };
             if (std::memcmp(key, sp_key, sizeof key)) { sp_design(g1, c1, h1, o1); std::memcpy(sp_key, key, sizeof key); }
@@ -1088,8 +1131,8 @@ private:
                 float a[8], v[8], S = 0;
                 for (int l = 0; l < 8; l++) {
                     const float md = sp_m[l] + (m1[l] - sp_m[l]) * w;
-                    a[l] = sp_dl[l].read(SP_LEN[l] * sc * sp_sa + md);
-                    if (x > 0) a[l] += x * (sp_dl[l].read(SP_LEN[l] * sc * sp_sb + md) - a[l]);
+                    a[l] = rdf(sp_dl[l], SP_LEN[l] * sc * sp_sa + md);
+                    if (x > 0) a[l] += x * (rdf(sp_dl[l], SP_LEN[l] * sc * sp_sb + md) - a[l]);
                     float &lp = sp_lp[l]; lp = flush(lp + c * (a[l] - lp));
                     v[l] = (sp_g[l] + (g1[l] - sp_g[l]) * w) * lp; S += v[l];
                 }

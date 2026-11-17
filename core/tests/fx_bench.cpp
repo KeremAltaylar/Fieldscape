@@ -119,6 +119,7 @@ int main(int argc, char **argv) {
     cost("all", all, false, 8.0);
     cost("typical@32", typ, false, 3.0, false, 32);   /* as the piece calls it: 32 frames at a time (info) */
     cost("all@32", all, false, 8.0, false, 32);
+    { Cfg c = all; for (auto &s : c.mods) s = Slot{}; cost("all-nomods@32", c, false, 8.0, false, 32); }   /* designs memoised: what the slots cost */
     /* each module of a case alone, at that case's settings and slots (not a budget: where the cost is) */
     for (const Cfg *b : { &typ, &all })
         for (int m = 0; m < NMOD; m++) {

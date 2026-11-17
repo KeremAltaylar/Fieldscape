@@ -126,7 +126,8 @@ const page = `<!doctype html><meta charset="utf-8"><pre id="out">running</pre>
       pacer = { patch: patchOf({ properties: {} }), t: 0, world: true, zones: [] };
       transport.bpm.value = pacer.patch.tempo;
       bed.voice = buildVoice(Tone, pacer.patch);
-      bed.rfx = buildRhythmFx(Tone, pacer.patch); applyRhythmFx(pacer.patch);
+      /* no bed.rfx: the core no longer applies the rhythm effects (modulation FX, Kerem's decision 1) - a rhythm point
+         connects to bed.master, clean, and applyRhythmFx (still called by applyPatchToVoice) does nothing */
       /* the first route arrives at once (worldSwap with nothing running): take() */
       pacer.patch = P; applyPatchToVoice(P);
       harmony.idx = null; harmony.chord = null; harmony.tones = null; sect.idx = null;
