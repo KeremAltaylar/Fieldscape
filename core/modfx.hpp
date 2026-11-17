@@ -296,8 +296,8 @@ struct Engine {
     /* Cloud: the capture lines (2.5 s: grains read the last 2 s, and live up to 0.5 s more), eight grains, the onset
        phase, the freeze cross-fade, the seeded random */
     struct Grain { double d = 0; float dd = 0, g = 0; int k = 0, len = 0; double c = 1, s = 0, cr = 1, sr = 0; };
-    tone::DelayLine cl_dl[2]; Grain cl_g[8]; double cl_ph = 1; float cl_j = 1, cl_fz = 0; uint32_t cl_rng = 1; int cl_R = 96000;
-    static constexpr uint32_t CL_SEED = 0x9E3779B9u;
+    tone::DelayLine cl_dl[2]; Grain cl_g[8]; double cl_ph = 1; float cl_j = 1, cl_fz = 0; uint32_t cl_rng = 1; int cl_R = 96000, cl_fill = 0;
+    static constexpr uint32_t CL_SEED = 0x9E3779B9u; static constexpr double CL_S0 = 0.002;
     static constexpr double TP_WOW = 0.02 / (2 * 3.141592653589793 * 0.4), TP_FLUTTER = 0.004 / (2 * 3.141592653589793 * 7.3);   /* seconds of swing for +-2 %, +-0.4 % */
 
     Engine() { cfg_defaults(cfg); std::memcpy(sm, cfg.v, sizeof sm); }
@@ -453,7 +453,7 @@ private:
         } else if (m == CLOUD) {
             for (auto &l : cl_dl) zero(l);
             for (auto &g : cl_g) g.len = 0;
-            cl_ph = 1; cl_j = 1; cl_fz = cfg.v[R_CL_FREEZE] >= 0.5f; cl_rng = CL_SEED;
+            cl_ph = 1; cl_j = 1; cl_fz = 0; cl_fill = 0; cl_rng = CL_SEED;
         }
     }
 
@@ -728,11 +728,14 @@ private:
        Each grain takes its settings at its onset (so no parameter can step a sounding grain): rate 2^(pitch / 12), x 2,
        0.5 or 1.5 by the chance spray; reversed by the chance rev; the material it reads (rate x size samples) ends at
        scatter x u x (2 s - that span) behind now, so at scatter 0 a grain plays the last size (a plain delay at pitch 0).
-       Gain sqrt(8/3) (the Hann's mean square) / sqrt(max(1, min(8, dens size))): the level holds from one grain to eight
-       overlapping. A grain reads only what was written before its onset and the line holds 0.5 s past the 2 s, so the
+       Gain 1 / sqrt(3N/8 + rho (N^2 - N) / 4), N = max(1, min(8, dens size)) grains overlapping: 3N/8 the power of N
+       uncorrelated Hann grains, N^2/4 + N/8 that of N reading the same sound (in phase: scatter 0, pitch 0); rho = 1 /
+       (1 + S / 2 ms) blends them by how far this grain's read strays from the others' (S = the scatter spread plus its
+       drift over its life, |1 - (+-rate)| len), so the level holds from one grain to eight, scattered or in phase. A grain reads only what was written before its onset and the line holds 0.5 s past the 2 s, so the
        write head never reaches a sounding grain. Freeze: the write cross-fades (30 ms) from the input to the slot's own
        old sample, so the line keeps turning as a 2.5 s loop of what it held, joined by that 30 ms cross-fade; no grain
-       reads the slot being written, so the toggle changes nothing a grain is playing. The pitch row glides at most 10
+       reads the slot being written, so the toggle changes nothing a grain is playing. Freeze waits until the line has
+       filled once since the clear (2.5 s after mix leaves 0), so it never freezes an empty loop. The pitch row glides at most 10
        octaves a second (a 4-octave step takes 400 ms). A full pool skips the onset.
        ponytail: linear interpolation (aliases pitched up on bright input); a grain whose span outgrows 2 s (x8 at 500 ms)
        is shortened to fit. */
@@ -751,18 +754,21 @@ private:
         const bool rev = u4 < cfg.v[R_CL_REV];
         g->d = rev ? e : e + span;                   /* delay behind the write head; it moves 1 - (+-r) a sample */
         g->dd = (float)(rev ? 1 + r : 1 - r);
-        g->g = (float)(1.6329932 / std::sqrt(std::fmax(1.0f, std::fmin(8.0f, dens * size))));
+        const double N = std::fmax(1.0f, std::fmin(8.0f, dens * size));
+        const double S = cfg.v[R_CL_SCATTER] * (cl_R - 2 - span) + std::fabs(g->dd) * len, rho = 1 / (1 + S / (CL_S0 * sr));
+        g->g = (float)(1 / std::sqrt(0.375 * N + rho * (N * N - N) / 4));
         g->len = len; g->k = 0; g->c = 1; g->s = 0;
         g->cr = std::cos(2 * PI / len); g->sr = std::sin(2 * PI / len);
     }
     void cloud(float *L, float *R, int n) {
-        const float want = cfg.v[R_CL_FREEZE] >= 0.5f, xstep = (float)(1 / (0.03 * sr)), pstep = (float)(120 * 16 / sr);
+        const float want = cfg.v[R_CL_FREEZE] >= 0.5f && cl_fill >= cl_dl[0].size, xstep = (float)(1 / (0.03 * sr)), pstep = (float)(120 * 16 / sr);
         for (int o = 0; o < n; o += 16) {
             const float d = cfg.v[R_CL_PITCH] - sm[R_CL_PITCH];
             sm[R_CL_PITCH] += std::fmax(-pstep, std::fmin(pstep, sk * d));
             if (std::fabs(cfg.v[R_CL_PITCH] - sm[R_CL_PITCH]) < 1e-4f) sm[R_CL_PITCH] = cfg.v[R_CL_PITCH];
             for (int i = o; i < o + 16 && i < n; i++) {
                 cl_fz = cl_fz < want ? std::fmin(want, cl_fz + xstep) : std::fmax(want, cl_fz - xstep);
+                if (cl_fill < cl_dl[0].size) cl_fill++;
                 if ((cl_ph += cfg.v[R_CL_DENS] * cl_j / sr) >= 1) { cl_ph -= 1; cl_j = 1 / (0.8f + 0.4f * cl_u()); cl_spawn(); }
                 for (int ch = 0; ch < 2; ch++) {
                     tone::DelayLine &dl = cl_dl[ch];

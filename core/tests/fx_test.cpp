@@ -869,6 +869,17 @@ static void test_cloud() {
         }
         check("cloud: the freeze toggle passes the click metric (both ways)", ck <= 4);
         std::printf("\n");
+        /* freeze already on when mix leaves 0 (the line just cleared): it sounds from the start, freezes once the line has
+           filled (2.5 s), then holds through silence */
+        Engine g; g.init(SR); g.apply(on);
+        Sig u(1); std::vector<float> early, late, held, ie, il;
+        play(g, u, (int)SR, nullptr); play(g, u, (int)SR, &early, false, 90, nullptr, nullptr, &ie);
+        play(g, u, (int)SR, nullptr); play(g, u, (int)SR, &late, false, 90, nullptr, nullptr, &il);
+        u.kind = 5; play(g, u, (int)SR, nullptr); play(g, u, 2 * (int)SR, &held);
+        const double de = rms_db(early) - rms_db(ie), dl = rms_db(late) - rms_db(il), dh = rms_db(held) - rms_db(late);
+        check("cloud: freeze on before mix rises -> sounds at once (1-2 s and 3-4 s within 3 dB of the input)", std::fabs(de) <= 3 && std::fabs(dl) <= 3);
+        check("cloud: ... and freezes once the line has filled (silence in: within 3 dB)", std::fabs(dh) <= 3);
+        std::printf("fx cloud: freeze set before mix rises: 1-2 s %.2f dB, 3-4 s %.2f dB (vs the input), silence in 5-7 s %.2f dB (vs 3-4 s)\n", de, dl, dh);
     }
     /* the same input twice -> the same output (seeded per engine) */
     {
@@ -882,15 +893,36 @@ static void test_cloud() {
         a.apply(c); Sig sc(1); std::vector<float> yc; play(a, sc, 3 * (int)SR, &yc);
         check("cloud: skipped and back on -> the same cloud again", yc == ya);
     }
-    /* dens x size, sparse to dense: the level held (1 / sqrt(max(1, dens size))) */
+    /* dens x size, dens size >= 1 to dense (the sparse end, under one grain at a time, is quieter by its duty: controller
+       2026-11-17), at scatter 0.3 and at scatter 0 (pitch 0: the grains read the same sound, in phase): the level held */
     double lmin = 1e9, lmax = -1e9;
-    std::printf("fx cloud: dens x size level (dB):");
-    for (auto ds : { std::pair<float, float>{ 2, 500 }, { 4, 250 }, { 12, 120 }, { 20, 200 }, { 40, 200 }, { 40, 500 } }) {
-        double lv = level_rel(with({ { "cloud.mix", 1 }, { "cloud.dens", ds.first }, { "cloud.size", ds.second } }), 1);
-        lmin = std::fmin(lmin, lv); lmax = std::fmax(lmax, lv);
-        std::printf(" %gx%g: %.2f", ds.first, ds.second, lv);
+    for (float sc : { 0.3f, 0.0f }) {
+        std::printf("fx cloud: dens x size level (dB) at scatter %.1f:", sc);
+        for (auto ds : { std::pair<float, float>{ 2, 500 }, { 4, 250 }, { 12, 120 }, { 20, 200 }, { 40, 200 }, { 40, 500 } }) {
+            double lv = level_rel(with({ { "cloud.mix", 1 }, { "cloud.dens", ds.first }, { "cloud.size", ds.second }, { "cloud.scatter", sc } }), 1);
+            lmin = std::fmin(lmin, lv); lmax = std::fmax(lmax, lv);
+            std::printf(" %gx%g: %.2f", ds.first, ds.second, lv);
+        }
+        std::printf("\n");
     }
-    check("cloud: level range <= 4 dB, sparse to dense", lmax - lmin <= 4);
+    check("cloud: level range <= 4 dB, dens size 1 to dense, scatter 0.3 and 0", lmax - lmin <= 4);
+    /* A-18: scatter and pitch are timbre: on a dense cloud (40 x 200) the level within 3 dB across scatter 0 -> 1 and
+       pitch -12 -> +12 (at scatter 0, where the in-phase sum is strongest) */
+    double smin = 1e9, smax = -1e9;
+    std::printf("fx cloud: 40x200 level (dB) by scatter:");
+    for (float sc : { 0.0f, 0.001f, 0.003f, 0.01f, 0.03f, 0.1f, 0.3f, 1.0f }) {
+        double lv = level_rel(with({ { "cloud.mix", 1 }, { "cloud.dens", 40 }, { "cloud.size", 200 }, { "cloud.scatter", sc } }), 1);
+        smin = std::fmin(smin, lv); smax = std::fmax(smax, lv);
+        std::printf(" %g: %.2f", sc, lv);
+    }
+    std::printf("; by pitch at scatter 0:");
+    for (float pt : { -12.0f, -1.0f, -0.1f, 0.1f, 1.0f, 12.0f }) {
+        double lv = level_rel(with({ { "cloud.mix", 1 }, { "cloud.dens", 40 }, { "cloud.size", 200 }, { "cloud.scatter", 0 }, { "cloud.pitch", pt } }), 1);
+        smin = std::fmin(smin, lv); smax = std::fmax(smax, lv);
+        std::printf(" %g: %.2f", pt, lv);
+    }
+    check("cloud: A-18 level within 3 dB across scatter 0 -> 1 and pitch (dense, scatter 0)", smax - smin <= 3);
+    std::printf("; range %.2f dB\n", smax - smin);
     double lin = mix_linearity(with({ { "cloud.mix", 1 }, { "cloud.spray", 0.5f }, { "cloud.rev", 0.3f } }), "cloud.mix");
     check("cloud: wet at mix 0.37 == 0.37 x wet at mix 1", lin < 1e-5);
     std::printf("; range %.2f dB; mix err %.2g\n", lmax - lmin, lin);
