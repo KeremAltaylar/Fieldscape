@@ -1180,7 +1180,7 @@ struct Piece : Device {
     /* the master FX (modulation FX B): fed by the three voices after their own chains (send, 30 ms), its wet added beside
        the dry (ret, 30 ms) before the route's level. vL/vR: each chain's output this block; m: the bus; w: its wet */
     mfx::Engine master;
-    Ctl ret, send[3];
+    Ctl ret, send[3], feed;           /* feed: the bus input's fade (30 ms; 1 while ret's target is up, else 0) */
     int chord_serial = 0;             /* bumped on every chord change (the engine's Comb glides on a new one) */
     /* the bus is gathered over a whole process() chunk (up to MCH frames: SUB-frame renders) and run once at its end:
        the engine called 32 frames at a time cost ~10 % more. Nothing feeds back, so this adds no latency - the wet is
@@ -1303,7 +1303,7 @@ struct Piece : Device {
         for (auto &e : eqs) e.init(sr);
         bass_g.init(0.9); top_g.init(0.8);
         swap(bass, p.voice.synth, 0); swap(top, p.voice.synth, 0); swap(sectr, p.sect.synth, 0); swap(v3r, p.v3.synth, 0);
-        master.apply(p.mfx); ret.init(p.mfx.ret); for (int q = 0; q < 3; q++) send[q].init(p.mfx.send[q]);
+        master.apply(p.mfx); ret.init(p.mfx.ret); feed.init(p.mfx.ret > 0); for (int q = 0; q < 3; q++) send[q].init(p.mfx.send[q]);
         synth_level.init(0);          /* silent until a walk says a route is near (world mode starts with none) */
         route_solo.init(1);
         bpm = p.tempo;
@@ -1357,6 +1357,7 @@ struct Piece : Device {
         if (sect_div != p.sect.rhythm.s) { sect_div = p.sect.rhythm.s; C.tick = 0; }
         master.apply(p.mfx); m_frozen = p.mfx.v[mfx::R_CL_FREEZE] >= 0.5f;
         ret.p.linearRampTo(p.mfx.ret, 0.03, now);
+        feed.p.linearRampTo(p.mfx.ret > 0, 0.03, now);   /* the bus never steps: a step into Echo comes back as its first repeat */
         for (int q = 0; q < 3; q++) send[q].p.linearRampTo(p.mfx.send[q], 0.03, now);
         for (auto &R : rh) if (R.used) apply_hit_fx(R, now);
     }
@@ -2742,7 +2743,7 @@ struct Piece : Device {
         pending = -1;
         if (reported != near || near < 0 || near >= (int)routes.size()) return;
         route = near;
-        if (patch.mfx.ret == 0 && !master.idle()) master.reset();   /* a return up: its tail rings on under the crossfade */
+        master.reset();   /* the old route's wet is silent here (synth_level faded it): nothing of its Echo, Space or frozen Cloud plays in this one */
         patch = routes[near];
         apply_patch(now);
         H.idx = -1; H.chord = -1; H.ntones = -1;
@@ -3046,7 +3047,7 @@ struct Piece : Device {
     /* The master FX: sum of send[q] x voice q into the engine, ret x its wet onto the dry. While the return is 0 the
        engine is fed silence until its tail is over (idle), then not run - nothing of it is heard, and it costs nothing */
     void master_bus(int n, double t0, double te) {
-        ret.block(te); for (auto &s : send) s.block(te);
+        ret.block(te); feed.block(te); for (auto &s : send) s.block(te);
         if (mb == 0) { m_bpm = tick_bpm; m_beats = (ticks - (next_tick - t0) * tick_bpm * 4 / 60) / 4; }   /* the transport in beats at the chunk's start */
         /* -120 dB: a ramp from 0 starts at 1e-7 (Tone's setRampPoint), which must not count as a return up */
         const bool live = ret.a > 1e-6f || ret.b > 1e-6f;
@@ -3054,7 +3055,7 @@ struct Piece : Device {
         if (live) {
             m_live = true;
             for (int i = 0; i < n; i++) {
-                const float s0 = send[0].at(i, n), s1 = send[1].at(i, n), s2 = send[2].at(i, n);
+                const float f = feed.at(i, n), s0 = f * send[0].at(i, n), s1 = f * send[1].at(i, n), s2 = f * send[2].at(i, n);
                 bl[i] = s0 * vL[0][i] + s1 * vL[1][i] + s2 * vL[2][i]; br[i] = s0 * vR[0][i] + s1 * vR[1][i] + s2 * vR[2][i];
                 g[i] = ret.at(i, n);
             }

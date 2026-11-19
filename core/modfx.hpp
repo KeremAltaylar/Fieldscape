@@ -479,8 +479,10 @@ struct Engine {
        is not frozen), the output is exactly 0. */
     bool idle() const { return all_off() || quiet >= hold; }
     bool off() const { return all_off(); }          /* every module off: nothing to run, the wet is 0 */
+    /* Everything starts over - lazily: each module is cleared on its next run (the first-block path), so a route change
+       does not zero-fill ~2.6 MB of lines in one audio block (nor clear the running ones twice) */
     void reset() {
-        for (int m = 0; m < NMOD; m++) { clear(m); dirty[m] = true; mix[m].cur = 0; lvl[m] = 0; }
+        for (int m = 0; m < NMOD; m++) { dirty[m] = true; mix[m].cur = 0; lvl[m] = 0; }
         quiet = 0; lvl_in = lvl_out = 0;
         env = 0; ch_seen = chord_serial; ch_v = ch_tgt = rnd(seed ^ 0xC4D0u, chord_serial);
     }

@@ -88,6 +88,25 @@ static void first_block(int m, const Cfg &all) {
     std::printf("RESULT fxfirst mod=%s ms=%.4f %s\n", MOD_NAMES[m], worst, ok ? "ok" : "OVER");
 }
 
+/* A route change (Piece::take): reset() on an engine that ran 1 s with all nine on, then its next block (where every module
+   clears, lazily) - the worst of 3, timed together */
+static void reset_block(const Cfg &all) {
+    double worst = 0;
+    for (int r = 0; r < 3; r++) {
+        Engine *e = fresh(all);
+        Pink p; float iL[N], iR[N], wL[N], wR[N];
+        for (int k = 0; k < 375; k++) { for (int i = 0; i < N; i++) { iL[i] = p.next(); iR[i] = p.next(); } e->process(iL, iR, wL, wR, N); }
+        for (int i = 0; i < N; i++) { iL[i] = p.next(); iR[i] = p.next(); }
+        const double t0 = now_ms();
+        e->reset(); e->process(iL, iR, wL, wR, N);
+        worst = std::fmax(worst, now_ms() - t0);
+        delete e;
+    }
+    const bool ok = worst <= 1.5;
+    over += !ok;
+    std::printf("RESULT fxreset ms=%.4f %s\n", worst, ok ? "ok" : "OVER");
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && !std::strcmp(argv[1], "check")) return fx_test_main();
 
@@ -131,6 +150,7 @@ int main(int argc, char **argv) {
             cost(nm, c, false, 8.0, false);
         }
     for (int m = 0; m < NMOD; m++) first_block(m, all);
+    reset_block(all);
     std::printf(over ? "fx bench OVER: %d budgets\n" : "fx bench ok\n", over);
     return over ? 1 : 0;
 }

@@ -222,9 +222,9 @@ static void test_fx() {
             double s = 0; for (size_t i = 0; i < a.size(); i++) { const double d = a[i] - (b.empty() ? 0 : b[i]); s += d * d; }
             return 10 * std::log10(s / a.size() + 1e-30); };
         /* the click metric on the left channel: the 50 ms after `at` s vs the 500 ms before */
-        auto click = [&](const std::vector<float> &o, double at) {
+        auto click = [&](const std::vector<float> &o, double at, double win = 0.05) {
             const long c = (long)(at * SR); double a = 0, b = 0;
-            for (long n = c - (long)(0.5 * SR); n < c + (long)(0.05 * SR); n++) {
+            for (long n = c - (long)(0.5 * SR); n < c + (long)(win * SR); n++) {
                 const double d = std::fabs((double)o[2 * n] - 2.0 * o[2 * (n - 1)] + o[2 * (n - 2)]);
                 if (n < c) a = std::fmax(a, d); else b = std::fmax(b, d);
             }
@@ -273,6 +273,38 @@ static void test_fx() {
         const double c1 = click(st, 6), c2 = click(ed, 6);
         std::printf("FX clicks: ret 0 -> 1 mid-note %.2f, an edit of every mfx key %.2f (limit 4)\n", c1, c2);
         assert(c1 <= 4 && c2 <= 4);
+        /* 4b (final review I1): the bus fades in (30 ms) - the window runs from the change past the first repeat (8n. at 96 bpm
+           is 0.47 s), so a step into the bus that returns as that repeat (or is smeared by Space) is seen */
+        const auto eo = fxr(R"(,"mfx":{"ret":0,"echo":{"mix":1,"fb":0.6}})", 8, R"(,"mfx":{"ret":1,"echo":{"mix":1,"fb":0.6}})", 6),
+                   es = fxr(R"(,"mfx":{"ret":0,"echo":{"mix":1,"fb":0.6},"space":{"mix":1,"decay":8}})", 8, R"(,"mfx":{"ret":1,"echo":{"mix":1,"fb":0.6},"space":{"mix":1,"decay":8}})", 6);
+        const double c3 = click(eo, 6, 0.6), c4 = click(es, 6, 0.6);
+        std::printf("FX clicks over the change + one echo time (0.6 s): ret 0 -> 1, echo %.2f, echo + space %.2f (limit 4)\n", c3, c4);
+        assert(c3 <= 4 && c4 <= 4);
+
+        /* 4c (final review I2): a new route starts clean - route A (Cloud frozen on its 2.5 s, Echo fb 0.9, Space 30 s) walked
+           5 s, then route B (another key, the same modules): from B's take on, the output is the same as after an A whose
+           master has nothing on (ret 1 too: the same return ramps, transport and draws - nothing of A's buffers plays in B) */
+        {
+            const char *M = R"(,"mfx":{"ret":1,"cloud":{"mix":1,"freeze":1},"echo":{"mix":1,"fb":0.9},"space":{"mix":1,"decay":30}})";
+            auto ab = [&](const char *amore) {
+                char a[8192], b[8192]; std::snprintf(a, sizeof a, FXR, ALL3, amore); std::snprintf(b, sizeof b, FXR, ALL3, M);
+                std::string bs(b); bs.replace(bs.find("\"key\":50"), 8, "\"key\":57");
+                unsigned seed = 11; fs_device *pc = fs_create("piece"); fs_prepare(pc, SR, B); fs_piece_test_hooks(pc, fixed_draw, &seed, nullptr, nullptr);
+                const int ra = fs_piece_add_route(pc, a), rb = fs_piece_add_route(pc, bs.c_str());
+                std::vector<float> o;
+                for (int k = 0; k < (int)(14 * SR / B); k++) {
+                    if (k == 0) fs_piece_walk(pc, ra, 0.3, 0);
+                    if (k == (int)(5 * SR / B)) fs_piece_walk(pc, rb, 0.3, 0);   /* B taken 1.5 s later (A faded out by then) */
+                    fs_process(pc, B);
+                    if (k >= (int)(6.5 * SR / B)) for (int i = 0; i < B; i++) { o.push_back(fs_out(pc, 0)[i]); o.push_back(fs_out(pc, 1)[i]); }
+                }
+                fs_destroy(pc); return o;
+            };
+            const auto withA = ab(M), clean = ab(R"(,"mfx":{"ret":1})");
+            const double leak = db_of(withA, clean), level = db_of(clean, {});
+            std::printf("FX route change: B after an A with frozen Cloud + Echo + Space vs after an A with nothing on: difference %.1f dBFS (B %.1f dBFS)\n", leak, level);
+            assert(level > -60 && leak < -120);
+        }
 
         /* 5: out of the route's leash the wet goes with the dry (the return sits before the route's level) */
         {

@@ -233,6 +233,9 @@ def main():
         m = re.match(r"RESULT fxfirst mod=(\S+) ms=(\S+) (ok|OVER)$", line)
         if m:
             row("FX", f"FX first block after {m[1]}.mix leaves 0", f"{m[2]} ms", "<= 1.5 ms", m[3] == "ok")
+        m = re.match(r"RESULT fxreset ms=(\S+) (ok|OVER)$", line)
+        if m:
+            row("FX", "FX route change: reset + the next block, all nine on", f"{m[1]} ms", "<= 1.5 ms", m[2] == "ok")
         m = re.match(r"RESULT fxmem bytes=(\d+)", line)
         if m:
             row("FX", "FX engine memory per instance", f"{int(m[1]) / 1e6:.2f} MB", "measured", True)
