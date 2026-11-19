@@ -83,6 +83,18 @@ try {
   /* the editor: Open swaps the patch for it (a toggle, C-8) */
   await ev("document.getElementById('pp-fx-open').click(), 0"); await sleep(600);
   check("Open shows the editor in place of the patch", await ev("!document.getElementById('pp-fx').hidden && document.getElementById('pp-body').hidden && !document.getElementById('pp-fx-back').hidden"), null);
+  /* a Retina screen (devicePixelRatio 2): the strip's meters once fed their pixel size back into the row and it grew every frame */
+  await s.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 2, mobile: false }); await sleep(300);
+  const stripH = () => ev("document.querySelector('#pp-fx .fx-strip').getBoundingClientRect().height");
+  const h0 = await stripH(); await sleep(1500); const h1 = await stripH();
+  /* whatever a browser does with a canvas's own pixel size, it must not reach the layout: give the meters a huge one */
+  const h2 = await ev("(function(){ [].forEach.call(document.querySelectorAll('#pp-fx canvas[data-io]'), function (c) { c.height = 4000; }); return document.querySelector('#pp-fx .fx-strip').getBoundingClientRect().height; })()");
+  check("at devicePixelRatio 2 the strip holds its height", h0 > 0 && h0 < 200 && Math.abs(h1 - h0) < 1 && Math.abs(h2 - h0) < 1, [h0, h1, h2]);
+  await size(1440, 900);
+  const ret = await ev("(function(){ var i = document.querySelector('#pp-fx .fx-ret input'); i.value = 0.6; i.dispatchEvent(new Event('input', { bubbles: true })); return __fa.routePatch(" + R + ").mfx.ret; })()");
+  check("the editor's return fader writes mfx.ret", Math.abs(ret - 0.6) < 1e-6, ret);
+  await ev("(function(){ var i = document.querySelector('#pp-fx .fx-ret input'); i.value = 0; i.dispatchEvent(new Event('input', { bubbles: true })); })(), 0");
+  check("…and 0 leaves the voices only (stored clean)", await ev(`!(__fa.routePatch(${R}).mfx || {}).ret`), await J(`__fa.routePatch(${R}).mfx || {}`));
   check("the editor is dry: it says nothing is on", /Nothing is on/.test(await ev("(document.querySelector('#pp-fx .fx-empty') || {}).textContent || ''")), null);
   const mods = await J("FsFxModel.MODULES.map(function (m) { return { id: m.id, params: m.params.map(function (p) { return { key: p.key, kind: p.kind, max: p.max }; }) }; })");
   const bad = [];

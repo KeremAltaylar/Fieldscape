@@ -220,10 +220,16 @@
     host.textContent = "";
     var ed = el("div", "fx-ed"); host.appendChild(ed);
     var strip = el("div", "fx-strip"); ed.appendChild(strip);
-    strip.appendChild(el("div", "fx-io", '<canvas data-io="in" aria-label="Into the bus"></canvas><span>in</span>'));
+    strip.appendChild(el("div", "fx-io", '<div class="fx-iob"><canvas data-io="in" aria-label="Into the bus"></canvas></div><span>in</span>'));
     var mods = el("div", "fx-mods"); mods.setAttribute("role", "tablist"); mods.setAttribute("aria-label", "Modules, in signal order"); strip.appendChild(mods);
-    strip.appendChild(el("div", "fx-io", '<canvas data-io="out" aria-label="Out of the bus"></canvas><span>out</span>'));
-    var ld = el("div", "fx-load"); strip.appendChild(ld);
+    strip.appendChild(el("div", "fx-io", '<div class="fx-iob"><canvas data-io="out" aria-label="Out of the bus"></canvas></div><span>out</span>'));
+    var rt = el("label", "fx-load fx-ret", '<div class="fx-lt"><span>return</span><em></em></div><input type="range" min="0" max="1" step="0.01" aria-label="Master FX return: 0 = the voices only">');
+    rt.title = "How much of the FX bus is heard. 0 = the voices only, dry.";
+    var stack = el("div", "fx-stack"); stack.appendChild(rt); strip.appendChild(stack);   /* the return over the load: one box, so the tiles keep their width */
+    var rtIn = rt.querySelector("input"), rtShow = function () { var v = M.get(fx, "ret"); rtIn.value = v; rt.querySelector("em").textContent = M.fmt("ret", v); };
+    rtIn.addEventListener("input", function () { M.set(fx, "ret", +rtIn.value); rtShow(); commit(); setNotice(stateNow()); });
+    rtIn.addEventListener("dblclick", function () { M.set(fx, "ret", M.get({}, "ret")); rtShow(); commit(); setNotice(stateNow()); });
+    var ld = el("div", "fx-load"); stack.appendChild(ld);
     var nt = el("div", "fx-notice"); nt.hidden = true; ed.appendChild(nt);
     var card = el("section", "fx-card fx-left fx-r1"); ed.appendChild(card);
     var right = el("section", "fx-card fx-right fx-r1"); ed.appendChild(right);
@@ -275,7 +281,7 @@
         off: ["", "Preview", "Sound is off. The scopes run on a preview clock at the route's tempo; the meters wait for sound.", "Turn the sound on", o.onSound],
         away: ["", "Preview", "The walk is not on this route. The scopes run on a preview clock at its tempo; the meters wait until you walk onto it.", null],
         novoice: ["", "No input", "No voice is on, so nothing reaches the bus. Turn a voice on in the patch.", "Back to the patch", o.onBack],
-        noreturn: ["warn", "No return", "The return is at 0 %, so nothing of the bus is heard.", "Raise the return to 50 %", function () { M.set(fx, "ret", 0.5); commit(); note = null; }],
+        noreturn: ["warn", "No return", "The return is at 0 %, so nothing of the bus is heard.", "Raise the return to 50 %", function () { M.set(fx, "ret", 0.5); commit(); rtShow(); note = null; setNotice(stateNow()); }],
         over: ["warn", "Over budget", "≈ " + loadOf(fx).toFixed(1) + " % of a core (estimated), over the " + BUDGET + " % budget: a phone may drop out. " + costly.join(", ") + " cost the most.", null]
       }[s];
       ed.classList.toggle("has-note", !!N);
@@ -433,7 +439,7 @@
       side.textContent = ""; side.appendChild(e); side.appendChild(c);
     }
 
-    function render() { tiles(); loadBox(); moduleCard(); lfoCard(); matrix(); sideCards(); note = null; setNotice(stateNow()); }
+    function render() { rtShow(); tiles(); loadBox(); moduleCard(); lfoCard(); matrix(); sideCards(); note = null; setNotice(stateNow()); }
     render();
 
     /* ---------- the animation: the engine's live values, ~30 a second, drawn each frame ---------- */
