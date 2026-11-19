@@ -93,8 +93,6 @@ test("a device that measures too expensive gets algorithmic rooms; a capable one
   const chain = src("buildFxChain");
   assert.match(chain, /makeRoom\(Tone, cfg\.revDecay\)/);
   assert.ok(!/new Tone\.Reverb/.test(chain), "no second construction site");
-  /* The rhythm room is the fourth one, and counts the same. */
-  assert.match(src("buildRhythmFx"), /makeRoom\(/, "the rhythm room is a room too");
 });
 
 test("a room's size still follows the patch's decay, on both kinds", () => {

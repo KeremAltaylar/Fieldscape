@@ -154,7 +154,7 @@ test("defaultRhythm's voices carry a stretch field, off by default", () => {
 });
 
 test("rhythmOf backfills stretch without touching the other five per-voice fields", () => {
-  const of = slice("function rhythmOf(f)", "function buildRhythmFx(");
+  const of = slice("function rhythmOf(f)", "  /* One slot's own insert chain");
   assert.match(of, /v\.stretch\s*===?\s*undefined/,
     "stretch must be backfilled by absence-check, not overwritten if already set");
   const backfillStart = of.indexOf("if (v.crush === undefined)");

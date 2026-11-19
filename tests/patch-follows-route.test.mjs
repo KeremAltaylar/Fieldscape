@@ -30,8 +30,7 @@ test("applyPatchToVoice exists, and is the only place the ramps are written", ()
                    "fx2.delay.wet", "fx2.reverb.wet", "fx3.delay.wet", "fx3.reverb.wet"]) {
     assert.ok(fn.includes(p), "applyPatchToVoice must carry " + p);
   }
-  for (const call of ["applySynths(patch)", "applyRevDecay(patch)", "applySectRhythm(patch)",
-                      "applyRhythmFx(patch)"]) {
+  for (const call of ["applySynths(patch)", "applyRevDecay(patch)", "applySectRhythm(patch)"]) {
     assert.ok(fn.includes(call), "applyPatchToVoice must carry " + call);
   }
   /* DRY: commitPatch delegates rather than keeping its own copy, or the two drift apart the
@@ -89,9 +88,9 @@ test("every FX parameter the patch names reaches the graph", () => {
   const noop = () => {};
   const run = new Function(
     "patch", "bed", "MAX_DELAY_S", "delaySeconds", "divSeconds", "applySynths",
-    "applyRevDecay", "applySectRhythm", "applyRhythmFx", "applyHitFx", "feature", "rhythmOf",
+    "applyRevDecay", "applySectRhythm", "applyHitFx", "feature", "rhythmOf",
     body);
-  run(patch, bed, 4, () => 0.3, () => 0.5, noop, noop, noop, noop, noop, () => null, noop);
+  run(patch, bed, 4, () => 0.3, () => 0.5, noop, noop, noop, noop, () => null, noop);
 
   assert.equal(ramped.bpm, 96, "tempo");
   assert.equal(ramped.bus, 0.8, "the pad's level");

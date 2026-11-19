@@ -24,7 +24,7 @@ test("defaultRhythm's voices carry the five new fields, all at their off positio
 });
 
 test("rhythmOf backfills all five new voice fields without touching pulses/rotate/gain/pitch", () => {
-  const of = slice("function rhythmOf(f)", "function buildRhythmFx(");
+  const of = slice("function rhythmOf(f)", "  /* One slot's own insert chain");
   ["crush", "drive", "delayDiv", "delayFb", "delayWet"].forEach((k) => {
     assert.match(of, new RegExp("v\\." + k + "\\s*===?\\s*undefined"),
       k + " must be backfilled by absence-check, not overwritten if already set");
@@ -139,7 +139,7 @@ test("rhythmStep applies each point's fx once it is ready, without adding new sc
    the one call this test also pins. */
 test("applying a patch re-applies each in-range point's hit fx, so a tempo change reaches the per-slot delay", () => {
   const src = slice("function applyPatchToVoice(patch)", "\n  }\n");
-  assert.match(src, /applyRhythmFx\(patch\)/, "the shared room must still re-apply");
+  assert.doesNotMatch(src, /applyRhythmFx/, "the shared rhythm room is gone (modulation FX, decision 1)");
   assert.match(src, /bed\.rhythms/, "must reach into the live rhythm points, not just the shared room");
   assert.match(src, /applyHitFx\(/, "must re-apply each point's per-slot fx too, not just the shared room's");
   assert.match(slice("function commitPatch(f, patch)", "\n  }\n"), /applyPatchToVoice\(patch\)/,

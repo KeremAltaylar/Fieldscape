@@ -57,13 +57,13 @@ const code = [
   v("SECT_GRID"), v("SECT_STRIDE"), fn("sectorStep"), v("third"), fn("thirdStep"), fn("zoneFire"),
   v("CHORDS"), v("MODES"), fn("defaultSectors"), v("DOM_Q"), v("MORPH_SHAPES"), v("MORPH_DESTS"),
   fn("hash01"), fn("morphShape"), fn("morphPhase"), fn("morphSeed"), fn("morphValue"), fn("morphList"), fn("morphFor"),
-  v("ZONE_TIMBRE"), fn("defaultMorph"), fn("defaultProgression"), fn("defaultPatch"), fn("patchOf"),
+  v("ZONE_TIMBRE"), fn("defaultMorph"), fn("defaultProgression"), fn("rfxClean"), fn("defaultPatch"), fn("patchOf"),
   fn("midiToFreq"), v("harmony"), fn("chordIndexFor"), fn("chordRoot"), fn("chordQuality"), fn("chordTones"), fn("leadTo"),
   v("MAX_DELAY_S"), fn("delaySeconds"), fn("divSeconds"),
   fn("applyPatchToVoice"), fn("applySynths"), fn("applyDecayTo"), fn("applyRevDecay"), fn("applySectRhythm"),
   v("HIT_SLOTS"), fn("euclid"), fn("rotated"), fn("metricWeight"), fn("defaultRhythm"), fn("defaultGrains"), fn("rhythmOf"),
   fn("gcd"), v("RHYTHM_BAND"), v("SENTENCE_VARIATIONS"), fn("oneComboSet"), fn("buildSentenceSet"), fn("advanceSentence"),
-  fn("buildRhythmFx"), fn("applyRhythmFx"), fn("buildHitFx"), fn("applyHitFx"), v("MAX_STRETCH_HIT_S"), v("STRETCH_STOP_FADE_S"),
+  fn("buildHitFx"), fn("applyHitFx"), v("MAX_STRETCH_HIT_S"), v("STRETCH_STOP_FADE_S"),
   fn("applyHitStretch"), fn("stretchParams"), fn("applyStretch"), fn("ensureRhythm"), fn("variedGrains"), fn("grainEnvelope"),
   fn("fireGrains"), fn("rhythmStep"),
 ].join("\n");
@@ -126,8 +126,7 @@ const page = `<!doctype html><meta charset="utf-8"><pre id="out">running</pre>
       pacer = { patch: patchOf({ properties: {} }), t: 0, world: true, zones: [] };
       transport.bpm.value = pacer.patch.tempo;
       bed.voice = buildVoice(Tone, pacer.patch);
-      /* no bed.rfx: the core no longer applies the rhythm effects (modulation FX, Kerem's decision 1) - a rhythm point
-         connects to bed.master, clean, and applyRhythmFx (still called by applyPatchToVoice) does nothing */
+      /* the rhythm effects are gone (modulation FX, Kerem's decision 1): a rhythm point connects to bed.master, clean */
       /* the first route arrives at once (worldSwap with nothing running): take() */
       pacer.patch = P; applyPatchToVoice(P);
       harmony.idx = null; harmony.chord = null; harmony.tones = null; sect.idx = null;

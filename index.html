@@ -1322,20 +1322,6 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   gap: var(--s-1) var(--s-3);
   opacity: 0.82;
 }
-.rfxrow {
-  display: grid; grid-template-columns: 3.4rem 1fr 2.2rem; align-items: center;
-  gap: var(--s-1);
-  font-family: var(--font-mono); font-size: 10px;
-  letter-spacing: 0.02em; text-transform: uppercase; color: var(--faint);
-}
-.rfxrow > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.rfxrow i {
-  font-style: normal; text-align: right; color: var(--ink);
-  font-variant-numeric: tabular-nums; text-transform: none; letter-spacing: 0;
-  white-space: nowrap;
-}
-.rfxrow input[type=range] { width: 100%; height: 12px; accent-color: #bbceb5; }
-.rfxrow select { width: 100%; padding: 0 2px; font-size: 10px; }
 @media (max-width: 900px) {
   .rvoice-main, .rvoice-fx { grid-template-columns: repeat(2, 1fr); }
 }
@@ -8772,7 +8758,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
          all the way round, not just the promise: a rejection is normal (declined) and handled
          below, but a SYNCHRONOUS throw from play() itself would otherwise escape this function
          and, since it runs inside bedStart's .then() chain after bed.on is already true, skip
-         every step after it — buildRhythmFx, buildVoice, the loop scheduling, Transport.start(),
+         every step after it — buildVoice, the loop scheduling, Transport.start(),
          the fade-in. The button would say Stop over a graph that was never built.
 
          A decline is normal and costs only the backgrounding trick: the walk reaches the
@@ -9284,11 +9270,6 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           if (!wantSound) { bed.on = false; return; }
           keepAwake(true);
           mediaSessionStart();
-          if (!bed.rfx) { bed.rfx = buildRhythmFx(Tone, patch); }
-          /* Built dry, then given the patch. Without this the drive stage sits at zero
-             whatever the patch says, because construction only sets what the constructor
-             takes and the drive is three nodes deep. */
-          applyRhythmFx(patch);
           /* Built from this patch the first time; told this patch every time after, because
              bedStop leaves the voice standing and the next Sound press may well belong to a
              different route than the one that built it. */
@@ -11241,68 +11222,6 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     return r;
   }
 
-  /* ---- The rhythm chain ----
-     Its own, and not the synths'. Point rhythms were joining the synth delay, which meant a
-     long dotted delay chosen to suit a held pad was also smearing every hit, and a reverb
-     decay set for harmony was set for percussion too. They are different instruments and
-     they want different rooms: the rhythm chain is short, dark and tight by default, and the
-     morphs never touch it.
-
-     Built once with the bed and kept — nothing here is torn down while it runs (A-16). */
-  function buildRhythmFx(Tone, patch) {
-    var out = new Tone.Gain(1).connect(bed.master);
-    /* The rhythm's own room is the fourth convolver on the walk, and counts exactly as much as
-       the other three — see makeRoom. */
-    var rv = makeRoom(Tone, patch.rfx.revDecay).connect(out);
-    /* A send again, and a high-passed one, for the same reason the synth delay is: repeats
-       of a kick accumulate into a rumble otherwise. */
-    var din = new Tone.Gain(1);
-    var hp = new Tone.Filter({ type: "highpass", frequency: 220, Q: 0.7 });
-    var dl = new Tone.FeedbackDelay({
-      maxDelay: MAX_DELAY_S, delayTime: divSeconds(patch.rfx.delayDiv, patch.tempo),
-      feedback: patch.rfx.delayFb, wet: 1
-    });
-    var send = new Tone.Gain(0);
-    din.connect(rv);
-    din.connect(hp); hp.connect(dl); dl.connect(send); send.connect(rv);
-
-    /* Tone shaping before the sends: one filter that sweeps from a low-pass through to
-       almost open, and a drive with the same gain staging the voices use — a crossfade into
-       a curve with nothing pushing it is not a drive control. */
-    var filt = new Tone.Filter({ type: "lowpass", frequency: patch.rfx.cutoff, Q: 1.1 });
-    var pre = new Tone.Gain(1);
-    var shape = new Tone.WaveShaper(function (x) { return Math.tanh(x * 3); }, 2048);
-    var post = new Tone.Gain(0.6);
-    var drive = makeBlend(Tone, 0);
-    var input = new Tone.Gain(1);
-    input.connect(drive.a);
-    input.connect(pre); pre.connect(shape); shape.connect(post); post.connect(drive.b);
-    drive.connect(filt);
-    filt.connect(din);
-
-    rv.wet.rampTo(patch.rfx.revWet, 0.3);
-    send.gain.rampTo(patch.rfx.delayWet, 0.3);
-
-    return { input: input, out: out, reverb: rv, delay: dl, send: send.gain,
-             filter: filt, drive: drive, pre: pre, post: post };
-  }
-
-  /* Applied whenever the patch changes; there is one chain and every rhythm point feeds it. */
-  function applyRhythmFx(patch) {
-    var R = bed && bed.rfx;
-    if (!R) { return; }
-    var c = patch.rfx;
-    R.filter.frequency.rampTo(c.cutoff, 0.2);
-    R.drive.fade.rampTo(c.drive, 0.2);
-    R.pre.gain.rampTo(1 + c.drive * 12, 0.2);
-    R.post.gain.rampTo(0.6 / (1 + c.drive * 3.4), 0.2);
-    R.delay.delayTime.rampTo(Math.min(MAX_DELAY_S - 0.01,
-      divSeconds(c.delayDiv, patch.tempo)), 0.2);
-    R.delay.feedback.rampTo(c.delayFb, 0.2);
-    R.send.rampTo(c.delayWet, 0.2);
-    R.reverb.wet.rampTo(c.revWet, 0.2);
-  }
-
   /* One slot's own insert chain: bitcrush, then a distortion stage using the same tanh
      shape the shared room's own drive already uses (character consistency between "the
      room" and "this voice's own colour"), then an independent short delay — a voice's own
@@ -11335,8 +11254,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   }
 
   /* Applied once when a point's fx chain is first ready, and again whenever a setter moves
-     one of this slot's sliders — the same "there is one chain, apply on change" shape
-     applyRhythmFx already uses for the shared room. Safe with no live R: a setter can edit
+     one of this slot's sliders ("there is one chain, apply on change"). Safe with no live R: a setter can edit
      a point's effects while it happens to be out of range. */
   function applyHitFx(R, r) {
     if (!R || !R.fx) { return; }
@@ -11390,8 +11308,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (R) { return R; }
     var Tone = bed.Tone;
     R = bed.rhythms[z.id] = { ready: 0, players: {}, urls: {}, tick: 0, step: 0, recent: [],
-                              gain: new Tone.Gain(0).connect(bed.rfx ? bed.rfx.input
-                                                                     : bed.master) };
+                              gain: new Tone.Gain(0).connect(bed.master) };
     R.buffers = {};
     /* A grains point loads its one recording as a buffer rather than a player: a player
        plays a file, and what this needs is to read arbitrary slices of it at arbitrary
@@ -13614,7 +13531,6 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     }
     applyRevDecay(patch);
     applySectRhythm(patch);
-    applyRhythmFx(patch);
     Object.keys(bed.rhythms || {}).forEach(function (id) {
       var rf = feature(id);
       if (rf) { applyHitFx(bed.rhythms[id], rhythmOf(rf)); }

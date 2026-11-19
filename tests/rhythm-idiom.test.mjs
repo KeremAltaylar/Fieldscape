@@ -46,7 +46,7 @@ test("metricWeight puts the downbeat highest and degrades gracefully off the 4/8
 test("defaultRhythm carries an idiom default, and rhythmOf backfills it field-by-field", () => {
   const def = slice("function defaultRhythm()", "function ");
   assert.match(def, /idiom:\s*0\.35/, "the default must be a real, non-zero starting point");
-  const of = slice("function rhythmOf(f)", "function buildRhythmFx(");
+  const of = slice("function rhythmOf(f)", "  /* One slot's own insert chain");
   assert.match(of, /r\.idiom\s*===?\s*undefined/,
     "backfill must check for absence, not overwrite a setter's existing choice");
 });
@@ -234,7 +234,7 @@ test("rhythmStep advances the sentence on a bar boundary, counted independently 
 });
 
 test("rhythmOf backfills sentenceBars and sentenceSet without touching an existing pattern", () => {
-  const of = slice("function rhythmOf(f)", "function buildRhythmFx(");
+  const of = slice("function rhythmOf(f)", "  /* One slot's own insert chain");
   assert.match(of, /r\.sentenceBars\s*===?\s*undefined/);
   assert.match(of, /if\s*\(!r\.sentenceSet\)/);
   /* The backfill branch itself must never assign r.voices[...].pulses/.rotate — only

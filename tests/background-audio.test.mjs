@@ -57,7 +57,7 @@ test("every media-session call is guarded, because iOS has none of this", () => 
 test("play() is guarded against a synchronous throw, not just a rejected promise", () => {
   /* A rejected promise is the normal "declined" case and was always handled. A THROW from
      play() itself is a different failure: it runs inside bedStart's .then() chain after bed.on
-     is already true, so an escaped exception would skip buildRhythmFx, buildVoice, the loop
+     is already true, so an escaped exception would skip buildVoice, the loop
      scheduling, Transport.start() and the fade-in — the button says Stop over a graph that was
      never built. Same failure class the wake-lock code already carries a scar for. */
   const fn = src("mediaSessionStart");
