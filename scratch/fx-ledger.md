@@ -21,3 +21,7 @@ WebView2 were open).
 Before the optimisation (same bench, e58e9d0's engine): idle 0.050 %, typical 4.01 %, typical+modmix 4.54 %,
 all 6.83 % with p99.9 0.372 ms (over). Commit 6e8634e brought it under; `sh tools/mac-fx.sh` unchanged but
 for one click ratio (space.damp sine 0.85 -> 0.84).
+
+## Task 10 — mock approved (2026-11-19)
+Kerem: "ı mean layout is good continue". Approved as shown: 5 columns from 1400 px, one colour per source, modulation rings + "→ value", lamp-colour warnings.
+Ruling: the pre-existing 1024x700 patch overflow is not fixed in this part (out of scope; noted for later).
