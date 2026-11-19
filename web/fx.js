@@ -127,10 +127,10 @@
       M.MODULES.forEach(function (m) { var r = row(m.id + ".mix", m.label, true); r.title = m.note; chain.appendChild(r); });
       host.appendChild(chain);
     }
-    var lr = el("div", "fx-loadrow", '<span>load</span><span class="fx-bar" title="of one core; the mark is the ' + BUDGET + ' % budget"><b></b><s style="left:' + (BUDGET / BAR_MAX * 100) + '%"></s></span><i></i>');
+    var lr = el("div", "fx-loadrow", '<span>load, est.</span><span class="fx-bar" title="estimated from the bench (not measured), of one core; the mark is the ' + BUDGET + ' % budget"><b></b><s style="left:' + (BUDGET / BAR_MAX * 100) + '%"></s></span><i></i>');
     host.appendChild(lr);
     function load() {
-      var l = loadOf(fx); lr.querySelector("b").style.width = Math.min(100, l / BAR_MAX * 100) + "%"; lr.querySelector("i").textContent = l.toFixed(1) + " %";
+      var l = loadOf(fx); lr.querySelector("b").style.width = Math.min(100, l / BAR_MAX * 100) + "%"; lr.querySelector("i").textContent = "≈ " + l.toFixed(1) + " %";
       lr.classList.toggle("hot", l > BUDGET);
     }
     load();
@@ -230,6 +230,14 @@
     var mx = el("section", "fx-card fx-left fx-r2"); ed.appendChild(mx);
     var side = el("div", "fx-right fx-r2 fx-side"); ed.appendChild(side);
 
+    /* the tablist's keys: left/right move to the next module (wrapping), Home/End to the ends - and select it */
+    mods.addEventListener("keydown", function (e) {
+      var ts = [].slice.call(mods.children), i = ts.indexOf(document.activeElement), k = { ArrowLeft: -1, ArrowRight: 1 }[e.key];
+      var j = i < 0 ? -1 : e.key === "Home" ? 0 : e.key === "End" ? ts.length - 1 : k ? (i + k + ts.length) % ts.length : -1;
+      if (j < 0) { return; }
+      e.preventDefault(); var id = ts[j].dataset.m; ts[j].click();   /* the click can rebuild the editor: focus the tile found anew */
+      var t = host.querySelector('.fx-tile[data-m="' + id + '"]'); if (t) { t.focus(); }
+    });
     function tiles() {
       mods.textContent = "";
       M.MODULES.forEach(function (m) {
@@ -246,7 +254,7 @@
     function loadBox() {
       var l = loadOf(fx), hot = l > BUDGET;
       ld.className = "fx-load" + (hot ? " hot" : "");
-      ld.innerHTML = '<div class="fx-lt"><span>load</span><em>' + l.toFixed(1) + ' %</em></div>' +
+      ld.innerHTML = '<div class="fx-lt" title="estimated from the bench, not measured"><span>load</span><em>≈ ' + l.toFixed(1) + ' % est.</em></div>' +
         '<span class="fx-bar"><b style="width:' + Math.min(100, l / BAR_MAX * 100) + '%"></b><s style="left:' + (BUDGET / BAR_MAX * 100) + '%" title="the budget, ' + BUDGET + ' % of a core"></s></span>' +
         '<span class="fx-lb">' + (l === 0 ? "idle: nothing is on" : "of one core · budget " + BUDGET + " %") + '</span>';
     }
@@ -268,7 +276,7 @@
         away: ["", "Preview", "The walk is not on this route. The scopes run on a preview clock at its tempo; the meters wait until you walk onto it.", null],
         novoice: ["", "No input", "No voice is on, so nothing reaches the bus. Turn a voice on in the patch.", "Back to the patch", o.onBack],
         noreturn: ["warn", "No return", "The return is at 0 %, so nothing of the bus is heard.", "Raise the return to 50 %", function () { M.set(fx, "ret", 0.5); commit(); note = null; }],
-        over: ["warn", "Over budget", loadOf(fx).toFixed(1) + " % of a core, over the " + BUDGET + " % budget: a phone may drop out. " + costly.join(", ") + " cost the most.", null]
+        over: ["warn", "Over budget", "≈ " + loadOf(fx).toFixed(1) + " % of a core (estimated), over the " + BUDGET + " % budget: a phone may drop out. " + costly.join(", ") + " cost the most.", null]
       }[s];
       ed.classList.toggle("has-note", !!N);
       nt.hidden = !N;

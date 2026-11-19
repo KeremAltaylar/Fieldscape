@@ -9,7 +9,7 @@
 .fx-lmp { flex: none; position: relative; width: 9px; height: 9px; border-radius: 50%; background: var(--sunk); box-shadow: inset 0 0 0 1px var(--faint); }
 .fx-lmp.lit { background: var(--lamp); box-shadow: 0 0 0 3px color-mix(in oklch, var(--lamp) 22%, transparent); }
 .fx-chain .pprow.off > span, .fx-chain .pprow.off > i { color: var(--faint); }
-.fx-loadrow { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr) 3.4rem; align-items: center; gap: var(--s-2); min-height: 24px;
+.fx-loadrow { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr) 4rem; align-items: center; gap: var(--s-2); min-height: 24px;
   font-family: var(--font-body); font-size: var(--t-sm); color: var(--dim); }
 .fx-loadrow i { font: 400 var(--t-xs) var(--font-mono); font-style: normal; text-align: right; color: var(--ink); font-variant-numeric: tabular-nums; }
 .fx-loadrow.hot i { color: var(--lamp); }
@@ -45,6 +45,7 @@
 .fx-tile .fx-dots { position: absolute; top: var(--s-2); right: var(--s-2); display: flex; gap: 3px; }
 .fx-tile .fx-dots u { width: 5px; height: 5px; border-radius: 50%; }
 #pp-fx .fx-tile:hover { background: var(--panel); color: var(--ink); }
+#pp-fx .fx-tile:focus-visible { outline: 2px solid var(--lamp); outline-offset: -2px; z-index: 2; }   /* inside: .fx-mods clips */
 #pp-fx .fx-tile[aria-selected="true"] { background: var(--panel); box-shadow: inset 0 -2px 0 var(--accent); }
 .fx-tile.off .fx-nm { color: var(--dim); }
 .fx-tile.off .fx-mx i { color: var(--faint); }

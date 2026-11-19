@@ -132,6 +132,12 @@ try {
   /* keyboard: every control can be reached */
   const unfocus = await J("[].filter.call(document.querySelectorAll('#pp-fx button, #pp-fx select, #pp-fx [role=slider]'), function (e) { return e.offsetParent && (e.tabIndex < 0 || e.disabled); }).map(function (e) { return e.className || e.tagName; })");
   check("every control in the editor is focusable", unfocus.length === 0, unfocus);
+  /* the module tiles are a tablist: left/right move to the next one and select it (wrapping), the ring is drawn inside */
+  const tab = () => J("(function(){ var a = document.activeElement, cs = getComputedStyle(a); return { focus: a.dataset.m, sel: [].map.call(document.querySelectorAll('#pp-fx .fx-tile[aria-selected=true]'), function (t) { return t.dataset.m; }).join(), ring: cs.outlineStyle + ' ' + cs.outlineOffset }; })()");
+  await ev("document.querySelector('#pp-fx .fx-tile[data-m=\"shift\"]').focus(), 0"); await key("ArrowRight"); await sleep(80); const tr = await tab();
+  await key("ArrowLeft"); await key("ArrowLeft"); await sleep(80); const tl = await tab();
+  check("a tile: ArrowRight goes to the next module and selects it, ArrowLeft wraps to the last", tr.focus === "swarm" && tr.sel === "swarm" && tl.focus === "space" && tl.sel === "space", [tr, tl]);
+  check("…its focus ring is drawn inside the tile (the strip clips)", /^solid -/.test(tl.ring), tl.ring);
 
   /* the sound: return 0.8 + Echo mix 1 is heard, and the engine's live values come back */
   await ev(`__fa.patchEdit(${R}, function (p) { p.mfx = FsFxModel.clean({ ret: 0.8, echo: { mix: 1 }, lfo: [{ shape: "sine", rate: "8n" }, { shape: "tri", rate: "4n" }, { rate: "8n" }, { rate: "4n" }] }); }), 0`);
@@ -174,7 +180,22 @@ try {
   const f2 = await fit("#pp-fx");
   check("1024 x 700, editor: the page fits and nothing spills", f2.page === 0 && f2.root <= 0 && !f2.spill.length, f2);
   await shot("21-fx-editor-1024");
+  /* 1024 x 700 with the notice up ("No return"): still fits */
+  await ev(`__fa.patchEdit(${R}, function (p) { p.mfx.ret = 0; }), 0`); await sleep(900);
+  const nr = await ev("(function(){ var n = document.querySelector('#pp-fx .fx-notice'); return n && !n.hidden ? n.textContent : ''; })()");
+  const f3 = await fit("#pp-fx");
+  check("1024 x 700, editor with the No return notice: the page fits and nothing spills", /^No return/.test(nr) && f3.page === 0 && f3.root <= 0 && !f3.spill.length, [nr, f3]);
+  await shot("21-fx-editor-1024-notice");
+  await ev(`__fa.patchEdit(${R}, function (p) { p.mfx.ret = 0.8; }), 0`);
   await ev("document.getElementById('pp-close').click(), 0"); await sleep(300);
+  /* 1400 and 1459 wide (the widths just under the 1440-1460 layouts): the editor fits */
+  for (const w of [1400, 1459]) {
+    await size(w, 900); await ev("__fa.openPatchPanel(), 0"); await sleep(600);
+    await ev("document.getElementById('pp-fx-open').click(), 0"); await sleep(600);
+    const fw = await fit("#pp-fx");
+    check(w + " x 900, editor: the page fits and nothing spills", fw.page === 0 && fw.root <= 0 && !fw.spill.length, fw);
+    await ev("document.getElementById('pp-close').click(), 0"); await sleep(300);
+  }
   check("no page errors", errors.length === 0, errors);
   s.close();
 } finally { process.kill(ch.pid); await sleep(500); try { rmSync(dir, { recursive: true, force: true }); } catch {} }
