@@ -25,3 +25,8 @@ for one click ratio (space.damp sine 0.85 -> 0.84).
 ## Task 10 — mock approved (2026-11-19)
 Kerem: "ı mean layout is good continue". Approved as shown: 5 columns from 1400 px, one colour per source, modulation rings + "→ value", lamp-colour warnings.
 Ruling: the pre-existing 1024x700 patch overflow is not fixed in this part (out of scope; noted for later).
+
+## Part 1 — verify (2026-11-19)
+Built: master FX engine (9 modules, 4 LFO + env + chord, 8-slot matrix) on the piece's master bus; patch screen column + editor; rhythm effects removed; Test 23 APK + iOS (rc 0).
+Measured: run.py 38/38; typical 2.27 %, all-on 4.85 %, p99.9 0.27-0.30 ms, idle 0.022 %; return rise click 34.66 → 2.35 (limit 4); route change leaves −133.5 dBFS of the old route; reset block 0.20 ms; metal×3 + all nine p99.9 ~0.95-1.05 ms under the 1.1 ms WAIVER (Kerem decides).
+Unverified: phone CPU; how it sounds (Kerem at the test link); ping-pong asymmetry; freeze as a 2.5 s loop.
