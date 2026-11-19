@@ -129,6 +129,7 @@ class FieldscapeEngine extends AudioWorkletProcessor {
     this.rolesP = x.fs_engine_roles ? x.malloc(4 * 24) : 0;     /* 3c.1: each role's level and notes (lab build only) */
     this.pointP = x.fs_engine_point ? x.malloc(4 * (2 + 3 * 96)) : 0; this.watching = false;   /* 8a: the open point's level, grains */
     this.statsP = x.fs_engine_stats ? x.malloc(32) : 0;
+    this.fxP = x.fs_engine_fx_live ? x.malloc(4 * 32) : 0;     /* the route's master FX live values (core/modfx.hpp Live) */
     this.port.onmessage = (ev) => {
       const m = ev.data;
       try {
@@ -204,9 +205,11 @@ class FieldscapeEngine extends AudioWorkletProcessor {
       const c = x.fs_engine_point(this.e, this.pointP, 96);
       if (c >= 0) { point = new Float32Array(2 + 3 * c); point.set(new Float32Array(x.memory.buffer, this.pointP, 2 + 3 * c)); }
     }
-    const tr = [m.buffer]; if (roles) { tr.push(roles.buffer); } if (point) { tr.push(point.buffer); }
+    let fx = null;
+    if (this.fxP && x.fs_engine_fx_live(this.e, 0, this.fxP)) { fx = new Float32Array(32); fx.set(new Float32Array(x.memory.buffer, this.fxP, 32)); }
+    const tr = [m.buffer]; if (roles) { tr.push(roles.buffer); } if (point) { tr.push(point.buffer); } if (fx) { tr.push(fx.buffer); }
     this.port.postMessage({ type: "live", n, clock: v.getFloat64(0, true), root: v.getInt32(8, true), shown: v.getInt32(12, true),
-      route: x.fs_engine_route(this.e), chord: { step, count: v.getInt32(16, true), label: this.cstr(this.label) }, morphs: m, roles, point }, tr);
+      route: x.fs_engine_route(this.e), chord: { step, count: v.getInt32(16, true), label: this.cstr(this.label) }, morphs: m, roles, point, fx }, tr);
   }
   bytes(u8) {      /* a NUL-terminated copy in wasm memory; free it after the call */
     const p = this.x.malloc(u8.length + 1);

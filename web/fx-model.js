@@ -81,8 +81,10 @@
       var best = 6; p.options.forEach(function (o) { if (Math.abs(o.id - v) < Math.abs(best - v)) { best = o.id; } });
       return best;
     }
-    for (i = 0; i < p.options.length; i++) { if (p.options[i].id === v) { return v; } }
-    return num(v) ? p.options[v >= 0.5 ? 1 : 0].id : undefined;
+    /* as cfg_of: a string by name (mode ssb/ring, every other switch the core's chord/free), a boolean or a number >= 0.5 its index */
+    i = typeof v === "string" ? (p.key === "shift.mode" ? ["ssb", "ring"] : ["chord", "free"]).indexOf(v)
+      : typeof v === "boolean" ? +v : num(v) ? +(v >= 0.5) : -1;
+    return i >= 0 ? p.options[i].id : undefined;
   }
 
   function lfoDefault(i) { return { shape: "sine", rate: LFO_RATES[i], phase: 0 }; }
@@ -117,7 +119,7 @@
       var l = [0, 1, 2, 3].map(function (i) {
         var x = o.lfo[i], d = {}, df = lfoDefault(i);
         if (!x || typeof x !== "object") { return d; }
-        var sh = typeof x.shape === "string" ? x.shape : LFO_SHAPES[x.shape] && LFO_SHAPES[x.shape].id;
+        var sh = typeof x.shape === "string" ? x.shape : num(x.shape) && x.shape >= 0 && x.shape < LFO_SHAPES.length ? LFO_SHAPES[Math.floor(x.shape)].id : null;
         if (LFO_SHAPES.some(function (z) { return z.id === sh; }) && sh !== df.shape) { d.shape = sh; }
         if (typeof x.rate === "string" && divOf(x.rate) && x.rate !== df.rate) { d.rate = x.rate; }
         if (num(x.phase) && clamp(x.phase, 0, 1) !== 0) { d.phase = clamp(x.phase, 0, 1); }
@@ -212,6 +214,8 @@
     return on.length ? on.join(" · ") : "Off";
   }
 
+  function freeze(o) { Object.freeze(o); Object.keys(o).forEach(function (k) { if (o[k] && typeof o[k] === "object" && !Object.isFrozen(o[k])) { freeze(o[k]); } }); return o; }
+  [MODULES, DIVISIONS, SOURCES, LFO_SHAPES, BY, TOP].forEach(freeze);
   var api = { MODULES: MODULES, DIVISIONS: DIVISIONS, SOURCES: SOURCES, LFO_SHAPES: LFO_SHAPES, defaults: defaults, clean: clean, get: get, set: set,
     fmt: fmt, divSeconds: divSeconds, destinations: destinations, summary: summary };
   if (typeof module === "object" && module.exports) { module.exports = api; } else { root.FsFxModel = api; }

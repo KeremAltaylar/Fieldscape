@@ -98,3 +98,35 @@ test("summary names the modules that are on", () => {
   assert.equal(M.summary({}), "Off");
   assert.equal(M.summary({ phase: { mix: 1 }, echo: { mix: 0.3 }, space: { mix: 0.2 }, comb: { mix: 0 } }), "Phase · Echo · Space");
 });
+
+test("junk parses as core/modfx.hpp's cfg_of reads it (T9 deferred minors)", () => {
+  /* an LFO shape number is truncated when 0 <= s < 7 (1.5 -> tri), else the default */
+  assert.deepEqual(M.clean({ lfo: [{ shape: 1.5 }, { shape: 7 }, { shape: -1 }, { shape: "square" }] }), { lfo: [{ shape: "tri" }, {}, {}, { shape: "square" }] });
+  /* a boolean switch value is its option index: shift.mode true -> ring */
+  assert.equal(M.get({ shift: { mode: true } }, "shift.mode"), "ring");
+  assert.equal(M.get({ comb: { tune: true } }, "comb.tune"), "free");
+  /* a string reads by name: mode ssb/ring, every other switch chord/free (the core's TUNE names) */
+  assert.equal(M.get({ swarm: { zero: "free" } }, "swarm.zero"), true);
+  assert.equal(M.get({ swarm: { zero: "true" } }, "swarm.zero"), false);
+  assert.equal(M.get({ cloud: { freeze: "chord" } }, "cloud.freeze"), false);
+  assert.equal(M.get({ shift: { mode: "free" } }, "shift.mode"), "ssb");
+  assert.equal(M.get({ shift: { mode: 0.7 } }, "shift.mode"), "ring");
+  assert.equal(M.get({ phase: { stages: "8" } }, "phase.stages"), 6);
+});
+
+test("the switch options, env and LFO defaults are the core's literals", () => {
+  const opt = (k) => modelRows().find(p => p.key === k).options.map(o => o.id);
+  assert.deepEqual(opt("shift.mode"), ["ssb", "ring"]); assert.deepEqual(opt("comb.tune"), ["chord", "free"]);
+  assert.deepEqual(opt("swarm.zero"), [false, true]); assert.deepEqual(opt("cloud.freeze"), [false, true]);
+  assert.deepEqual(opt("phase.stages"), [2, 4, 6, 8, 12]);
+  const d = M.defaults("route");
+  assert.deepEqual(d.env, { attack: 10, release: 300, sens: 1 });
+  assert.deepEqual(d.lfo, [{ shape: "sine", rate: "1n", phase: 0 }, { shape: "sine", rate: "2n", phase: 0 }, { shape: "sine", rate: "2m", phase: 0 }, { shape: "sine", rate: "4m", phase: 0 }]);
+  assert.match(hpp, /c\.env_a = 10; c\.env_r = 300; c\.env_s = 1;/);
+  assert.match(hpp, /LFO_RATES\[4\] = \{ "1n", "2n", "2m", "4m" \}/);
+});
+
+test("the model's tables are frozen", () => {
+  const o = {}; M.set(o, "echo.fb", 0.5);
+  assert.ok(Object.isFrozen(M.MODULES) && Object.isFrozen(M.DIVISIONS) && Object.isFrozen(M.MODULES[0].params[0]));
+});
